@@ -2056,26 +2056,6 @@
 	)
 	(wire
 		(pts
-			(xy 171.45 119.38) (xy 175.26 119.38)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "07ff49bd-4f52-4b08-ae6c-bf9f254c2b67")
-	)
-	(wire
-		(pts
-			(xy 171.45 99.06) (xy 175.26 99.06)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0ab6a467-d2f2-490c-9ebd-80f398dbc353")
-	)
-	(wire
-		(pts
 			(xy 158.75 38.1) (xy 148.59 38.1)
 		)
 		(stroke
@@ -2093,6 +2073,16 @@
 			(type default)
 		)
 		(uuid "0d9e3fd9-5e66-4926-be57-a0ac97b286fc")
+	)
+	(wire
+		(pts
+			(xy 175.26 116.84) (xy 171.45 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0f05e56c-e7b9-4b55-94af-3ac75d17eca0")
 	)
 	(wire
 		(pts
@@ -2256,6 +2246,16 @@
 	)
 	(wire
 		(pts
+			(xy 175.26 96.52) (xy 171.45 96.52)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2c1e181f-88c0-40dd-a163-bd1affc1529a")
+	)
+	(wire
+		(pts
 			(xy 133.35 115.57) (xy 142.24 115.57)
 		)
 		(stroke
@@ -2406,16 +2406,6 @@
 	)
 	(wire
 		(pts
-			(xy 171.45 96.52) (xy 175.26 96.52)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "726190c1-7e5e-4a66-b7b6-a22492bab90e")
-	)
-	(wire
-		(pts
 			(xy 138.43 39.37) (xy 138.43 38.1)
 		)
 		(stroke
@@ -2476,13 +2466,13 @@
 	)
 	(wire
 		(pts
-			(xy 171.45 116.84) (xy 175.26 116.84)
+			(xy 175.26 119.38) (xy 171.45 119.38)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "8e9ea156-cd68-48b0-a863-574d1a255c65")
+		(uuid "8b449a07-b776-473f-908a-589e6a8b5cc7")
 	)
 	(wire
 		(pts
@@ -2553,6 +2543,16 @@
 			(type default)
 		)
 		(uuid "aa845eab-a6df-46ed-8f89-b895c66106d3")
+	)
+	(wire
+		(pts
+			(xy 175.26 99.06) (xy 171.45 99.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ac883ba2-4f24-48e6-861e-dc5683a278d8")
 	)
 	(wire
 		(pts
@@ -3259,7 +3259,7 @@
 	)
 	(hierarchical_label "V_ISENSE"
 		(shape output)
-		(at 175.26 99.06 0)
+		(at 175.26 96.52 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3270,7 +3270,7 @@
 	)
 	(hierarchical_label "W_VSENSE"
 		(shape output)
-		(at 175.26 116.84 0)
+		(at 175.26 119.38 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3314,7 +3314,7 @@
 	)
 	(hierarchical_label "V_VSENSE"
 		(shape output)
-		(at 175.26 96.52 0)
+		(at 175.26 99.06 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3325,7 +3325,7 @@
 	)
 	(hierarchical_label "W_ISENSE"
 		(shape output)
-		(at 175.26 119.38 0)
+		(at 175.26 116.84 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3915,7 +3915,7 @@
 		(on_board yes)
 		(dnp no)
 		(uuid "7db2efd2-4ac6-4734-8f24-f794d5e91003")
-		(property "Reference" "R46"
+		(property "Reference" "R47"
 			(at 53.34 87.884 0)
 			(effects
 				(font
@@ -3978,7 +3978,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9"
-					(reference "R46")
+					(reference "R47")
 					(unit 1)
 				)
 			)
@@ -4234,7 +4234,7 @@
 		(on_board yes)
 		(dnp no)
 		(uuid "961615ea-fc92-409f-9bf9-b1aa4ee0b62c")
-		(property "Reference" "TP21"
+		(property "Reference" "TP22"
 			(at 60.452 90.932 0)
 			(effects
 				(font
@@ -4286,7 +4286,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9"
-					(reference "TP21")
+					(reference "TP22")
 					(unit 1)
 				)
 			)
@@ -4301,7 +4301,7 @@
 		(on_board yes)
 		(dnp no)
 		(uuid "9f2f0012-f158-4c34-aec1-15a556fd0864")
-		(property "Reference" "R47"
+		(property "Reference" "R48"
 			(at 51.562 94.996 0)
 			(effects
 				(font
@@ -4364,7 +4364,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9"
-					(reference "R47")
+					(reference "R48")
 					(unit 1)
 				)
 			)
@@ -4664,7 +4664,7 @@
 		(on_board yes)
 		(dnp no)
 		(uuid "dc6e68af-b308-4a78-8a2e-7e3ee35e99d6")
-		(property "Reference" "R48"
+		(property "Reference" "R49"
 			(at 59.944 95.25 0)
 			(effects
 				(font
@@ -4727,7 +4727,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9"
-					(reference "R48")
+					(reference "R49")
 					(unit 1)
 				)
 			)

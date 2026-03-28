@@ -8551,7 +8551,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "5V0_VSENSE"
+		(property "Value" "VBUS"
 			(at 25.4 114.2999 0)
 			(effects
 				(font
@@ -10591,7 +10591,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "5V0_VSENSE"
+		(property "Value" "3V3"
 			(at 140.97 160.0199 0)
 			(effects
 				(font
@@ -13625,7 +13625,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ab58facf-b55f-46a7-abb3-349213a7a8c4")
-		(property "Reference" "NT10"
+		(property "Reference" "NT1"
 			(at 180.34 31.75 0)
 			(effects
 				(font
@@ -13679,7 +13679,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
-					(reference "NT10")
+					(reference "NT1")
 					(unit 1)
 				)
 			)
@@ -14666,7 +14666,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "5V0_VSENSE"
+		(property "Value" "5V0"
 			(at 96.52 160.0199 0)
 			(effects
 				(font
@@ -15534,7 +15534,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "debe34d8-9b9a-4b67-8285-0d5accfd1d60")
-		(property "Reference" "NT11"
+		(property "Reference" "NT2"
 			(at 200.66 31.75 0)
 			(effects
 				(font
@@ -15588,7 +15588,7 @@
 		(instances
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
-					(reference "NT11")
+					(reference "NT2")
 					(unit 1)
 				)
 			)
@@ -15667,7 +15667,6 @@
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "dffc0a13-0e19-47ba-bfd5-0089e2132326")
 		(property "Reference" "U3"
 			(at 256.54 58.3498 0)
@@ -15815,15 +15814,15 @@
 	(symbol
 		(lib_id "Device:C_Small")
 		(at 170.18 31.75 0)
+		(mirror y)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "e3cde990-655a-4e8d-8bc2-fa393bdabc37")
 		(property "Reference" "C4"
-			(at 172.72 30.4862 0)
+			(at 167.64 30.4862 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15832,7 +15831,7 @@
 			)
 		)
 		(property "Value" "4.7uF"
-			(at 172.72 33.0262 0)
+			(at 167.64 33.0262 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16206,16 +16205,16 @@
 	)
 	(symbol
 		(lib_id "Device:LED_Small")
-		(at 220.98 85.09 90)
+		(at 220.98 85.09 270)
+		(mirror x)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "f2b39f59-9b4a-425b-9b59-46c58e459e44")
 		(property "Reference" "D1"
-			(at 223.52 83.7564 90)
+			(at 218.44 83.7564 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16224,7 +16223,7 @@
 			)
 		)
 		(property "Value" "Red"
-			(at 223.52 86.2964 90)
+			(at 218.44 86.2964 90)
 			(effects
 				(font
 					(size 1.27 1.27)

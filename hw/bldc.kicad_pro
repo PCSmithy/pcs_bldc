@@ -48,7 +48,7 @@
         "silk_text_thickness": 0.1,
         "silk_text_upright": false,
         "zones": {
-          "min_clearance": 0.2
+          "min_clearance": 0.254
         }
       },
       "diff_pair_dimensions": [
@@ -63,7 +63,32 @@
           "width": 0.267208
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "clearance|100710000|49860200|841cec4d-d0a9-4a53-8bd9-9255f6e13824|4caa6b2c-b2c2-4d43-98f4-e6983d002a2a",
+          ""
+        ],
+        [
+          "clearance|30935000|33635000|5631dfc3-4e18-433e-99e5-2cbed27b48cf|c4350ba3-baec-4c79-889e-0ea1aeea4355",
+          ""
+        ],
+        [
+          "clearance|40460000|33635000|938dfc3e-6d56-4e7b-a1bb-d06bc0ebfc53|62ca0298-1ae6-4991-b01a-9cb00a62f098",
+          ""
+        ],
+        [
+          "shorting_items|44246800|34300000|1f6aa733-29a9-44ae-96da-961b4a6a48a3|18024ac3-8c2d-47f7-9044-64e18eb2755a",
+          ""
+        ],
+        [
+          "shorting_items|47167800|34300000|0ccc4e31-3fd1-4b1a-b5c8-9ddceaeaf69c|9aa03d77-56ab-4529-ba62-3cc00cab0854",
+          ""
+        ],
+        [
+          "silk_over_copper|123825000|114300000|899da81d-5560-40aa-b591-bc4a343d9161|00000000-0000-0000-0000-000000000000",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -105,11 +130,11 @@
         "padstack": "warning",
         "pth_inside_courtyard": "ignore",
         "shorting_items": "error",
-        "silk_edge_clearance": "warning",
+        "silk_edge_clearance": "ignore",
         "silk_over_copper": "warning",
-        "silk_overlap": "warning",
+        "silk_overlap": "ignore",
         "skew_out_of_range": "error",
-        "solder_mask_bridge": "error",
+        "solder_mask_bridge": "ignore",
         "starved_thermal": "error",
         "text_height": "warning",
         "text_on_edge_cuts": "error",
@@ -142,8 +167,8 @@
         "min_text_thickness": 0.08,
         "min_through_hole_diameter": 0.15,
         "min_track_width": 0.1524,
-        "min_via_annular_width": 0.2,
-        "min_via_diameter": 0.254,
+        "min_via_annular_width": 0.05,
+        "min_via_diameter": 0.25,
         "solder_mask_to_copper_clearance": 0.0,
         "use_height_for_length_calcs": true
       },
@@ -237,7 +262,7 @@
           "drill": 0.3048
         }
       ],
-      "zones_allow_external_fillets": false
+      "zones_allow_external_fillets": true
     },
     "ipc2581": {
       "dist": "",
@@ -487,7 +512,7 @@
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.2032,
+        "clearance": 0.2,
         "diff_pair_gap": 0.15,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.15,
@@ -504,7 +529,7 @@
         "wire_width": 6
       },
       {
-        "clearance": 0.254,
+        "clearance": 0.2,
         "name": "Power",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2,
@@ -514,7 +539,7 @@
         "via_drill": 0.3048
       },
       {
-        "clearance": 0.2032,
+        "clearance": 0.2,
         "name": "Signal",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
@@ -524,7 +549,7 @@
         "via_drill": 0.15
       },
       {
-        "clearance": 0.2032,
+        "clearance": 0.2,
         "diff_pair_gap": 0.2032,
         "diff_pair_width": 0.267208,
         "name": "USB_diff",
@@ -655,12 +680,102 @@
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
+        },
+        {
+          "group_by": false,
+          "label": "Color",
+          "name": "Color",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JCLPCB Part #",
+          "name": "JCLPCB Part #",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JLC Part. No.",
+          "name": "JLC Part. No.",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JLCPCB Part #",
+          "name": "JLCPCB Part #",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JLCPCB Part No.",
+          "name": "JLCPCB Part No.",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "MFR.Part #",
+          "name": "MFR.Part #",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Mfg. Part No.",
+          "name": "Mfg. Part No.",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Package",
+          "name": "Package",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Device",
+          "name": "Sim.Device",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Pin",
+          "name": "Sim.Pin",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Pins",
+          "name": "Sim.Pins",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Voltage",
+          "name": "Voltage",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Alt",
+          "name": "Alt",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Description",
+          "name": "Description",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "#",
+          "name": "${ITEM_NUMBER}",
+          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
       "include_excluded_from_bom": true,
-      "name": "Default Editing",
+      "name": "",
       "sort_asc": true,
       "sort_field": "Reference"
     },
