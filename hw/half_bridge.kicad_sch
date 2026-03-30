@@ -2359,6 +2359,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "64113679-1a72-400c-91bb-5eee142d23fe")
 		)
@@ -2439,6 +2448,15 @@
 		)
 		(property "Mfg. Part No." "PA1206FRF470R001L"
 			(at 121.92 119.38 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "PA1206FRF470R001L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2604,6 +2622,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0733RL"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "46dda487-f4f0-49fe-86d5-78cea82e8546")
 		)
@@ -2700,6 +2727,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ff03bcb3-96db-4ee2-a96c-be1d5b03b5cc")
 		)
@@ -2780,6 +2816,15 @@
 		)
 		(property "Mfg. Part No." "BAT41KFILM"
 			(at 105.41 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "BAT41KFILM"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2883,6 +2928,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "bfc28c7b-4923-40a6-a5ea-a161f7f28f6f")
 		)
@@ -2963,6 +3017,15 @@
 		)
 		(property "Mfg. Part No." "GCM155R71H122KA37D"
 			(at 170.18 125.73 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "GCM155R71H122KA37D"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3351,6 +3414,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SIA400EDJ-T1-GE3"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ced50564-4b7e-4c08-907b-70116f14b838")
 		)
@@ -3443,6 +3515,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 107.95 58.42 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3610,6 +3691,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "GJM1555C1H2R7BB01D"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "12d66682-1daf-4dbb-a9c7-891e9f7b4569")
 		)
@@ -3690,6 +3780,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-07274KL"
 			(at 146.05 68.58 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-07274KL"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3783,6 +3882,15 @@
 		)
 		(property "Package" "0402"
 			(at 117.856 65.532 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-070RL"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3950,6 +4058,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05C330JB5NNNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "b6b57a06-aa55-457e-9b46-6f00620dcc17")
 		)
@@ -4035,6 +4152,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0733RL"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "0fc9011e-b676-4817-a86a-63ad8f05cac5")
 		)
@@ -4104,6 +4230,15 @@
 		)
 		(property "Description" "High- and Low-Side, Bidirectional, Zero-Drift, Current-Sense Amplifier With Enhanced PWM Rejection, 100V/V, TSSOP-8"
 			(at 148.59 120.65 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "INA240A3PW"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4300,6 +4435,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "6dd48d9b-e833-4b39-b154-8130f8120cca")
 		)
@@ -4374,6 +4518,15 @@
 		)
 		(property "Description" "12A Id, 30V Vds, N-Channel MOSFET, Rds 18mΩ PowerPAK, SC70-6"
 			(at 119.888 54.356 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SIA400EDJ-T1-GE3"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4470,6 +4623,15 @@
 		)
 		(property "Package" "0402"
 			(at 162.56 120.65 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-071KL"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)

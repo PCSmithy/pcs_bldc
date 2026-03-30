@@ -2407,6 +2407,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "S3B-XH-A(LF)(SN)"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "65af4ebf-36e3-4e11-a2d5-038d7b5f73f4")
 		)
@@ -2616,6 +2625,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "S6B-PH-K-S(LF)(SN)"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "5"
 			(uuid "aafa6009-200d-4999-bd4c-a3adea4ac851")
 		)
@@ -2692,6 +2710,15 @@
 		)
 		(property "Description" "Generic connector, single row, 01x06, script generated"
 			(at 204.47 99.06 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "S6B-PH-K-S(LF)(SN)"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)

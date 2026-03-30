@@ -1,0 +1,73 @@
+{
+    "$schema": "https://schemas.kicad.org/erc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-03-28T17:56:28-0700",
+    "kicad_version": "9.0.2",
+    "sheets": [
+        {
+            "path": "/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611",
+            "violations": []
+        },
+        {
+            "path": "/input-power/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239",
+            "violations": []
+        },
+        {
+            "path": "/micro/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/be5b0ca3-73b4-4a41-bf81-8399e62c0e5f",
+            "violations": [
+                {
+                    "description": "Both MCU_BOOT0{slash}I2C_SCL and I2C_SCL are attached to the same items; MCU_BOOT0{slash}I2C_SCL will be used in the netlist",
+                    "items": [
+                        {
+                            "description": "Label 'MCU_BOOT0/I2C_SCL'",
+                            "pos": {
+                                "x": 1.778,
+                                "y": 0.3683
+                            },
+                            "uuid": "7770de26-27ff-4f04-b9a7-944ec8a7457a"
+                        },
+                        {
+                            "description": "Hierarchical Label 'I2C_SCL'",
+                            "pos": {
+                                "x": 1.9304,
+                                "y": 0.3683
+                            },
+                            "uuid": "20b70bab-2e26-4a52-a161-db1f8b34eb78"
+                        }
+                    ],
+                    "severity": "warning",
+                    "type": "multiple_net_names"
+                }
+            ]
+        },
+        {
+            "path": "/motor-phases/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9",
+            "violations": []
+        },
+        {
+            "path": "/rgb_LEDs/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/2bbb5e16-8f23-4938-94a0-d57135338c3c",
+            "violations": []
+        },
+        {
+            "path": "/motor-phases/half_bridge_U/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9/e94933e5-d530-4653-91dd-3749c1487490",
+            "violations": []
+        },
+        {
+            "path": "/motor-phases/half_bridge_V/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9/04e27305-6622-4569-b655-167b284d3f8d",
+            "violations": []
+        },
+        {
+            "path": "/motor-phases/half_bridge_W/",
+            "uuid_path": "/fdf9474f-66c9-4c2c-9436-f3125b555611/066314e2-1f8c-41a2-8da1-0e67cde6d8c9/28abe682-412f-4f29-a286-a025fbee515c",
+            "violations": []
+        }
+    ],
+    "source": "bldc.kicad_sch"
+}

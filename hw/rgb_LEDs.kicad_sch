@@ -3690,6 +3690,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "18eadff9-36e9-44e5-ac9d-e2088c28d506")
 		)
@@ -3776,6 +3785,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "59770c3f-899d-449c-850d-d3f143611218")
 		)
@@ -3855,6 +3873,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 124.46 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4013,6 +4040,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c3188fb3-82ef-400e-8147-7f34a6585f90")
 		)
@@ -4141,6 +4177,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 97.79 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4502,6 +4547,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "a7669a12-8206-4b3f-98cf-771dc3a73b3e")
 		)
@@ -4838,6 +4892,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6c40e31f-e6fe-46d0-89c9-f21c2946543c")
 		)
@@ -4995,6 +5058,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "16f92a26-3be4-47be-be90-52038251cfeb")
 		)
@@ -5058,6 +5130,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 162.56 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5134,6 +5215,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 76.2 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5349,6 +5439,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "5449e1f9-8653-4b5b-b9c9-8226120b3b22")
 		)
@@ -5434,6 +5533,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 81.28 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5571,6 +5679,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 227.33 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5719,6 +5836,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ba8c87f0-b17e-4212-aad7-b98db29c3318")
 		)
@@ -5853,6 +5979,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 33.02 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6001,6 +6136,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ea944d69-0601-472a-893b-62af2795e635")
 		)
@@ -6070,6 +6214,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 76.2 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6236,6 +6389,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c9a95e5a-de5d-4c1e-8380-07f4abfabe0f")
 		)
@@ -6299,6 +6461,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 184.15 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6516,6 +6687,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "89c0c133-08cb-4358-a0ab-b2535f573a49")
 		)
@@ -6608,6 +6788,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "88c36ce5-e08f-40db-9704-362a23cc3b15")
 		)
@@ -6687,6 +6876,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 254 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7095,6 +7293,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "06c565b6-e99e-4a31-a1f2-01a626266268")
 		)
@@ -7164,6 +7371,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 248.92 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7312,6 +7528,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "245e8c0a-22d4-4710-bcb6-f944e2c65bdd")
 		)
@@ -7448,6 +7673,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 162.56 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7607,6 +7841,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 38.1 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8033,6 +8276,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "a5b92a36-ed9b-42ca-a4d1-09b4b2517fa6")
 		)
@@ -8300,6 +8552,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ef39e5d1-6c7e-4602-945a-047c468e221b")
 		)
@@ -8457,6 +8718,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "bbfc6943-cd35-47f8-95da-72e9aabe2afe")
 		)
@@ -8543,6 +8813,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "abb492d5-90d7-4c7d-88ec-a622eb96d778")
 		)
@@ -8606,6 +8885,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 270.51 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8968,6 +9256,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-070RL"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "d9e949d0-d5bb-4dd7-9f16-bdc104d28d4e")
 		)
@@ -9054,6 +9351,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6bc55270-b4af-451c-884e-b3ab97421687")
 		)
@@ -9117,6 +9423,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 162.56 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9209,6 +9524,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 38.1 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9353,6 +9677,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "76f5219e-483a-4c80-8710-1b87009e4bf9")
 		)
@@ -9438,6 +9771,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 124.46 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9712,6 +10054,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "3041a438-3ce2-4f5b-866d-43ba1df98f3a")
 		)
@@ -9781,6 +10132,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 227.33 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9880,6 +10240,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "18c7b4ba-eb78-431d-97ab-9d07a7cbba7e")
 		)
@@ -9943,6 +10312,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 119.38 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10156,6 +10534,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "7c3f1797-c541-4d32-bca5-220d9dd9bb73")
 		)
@@ -10292,6 +10679,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 76.2 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10525,6 +10921,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6cb2695c-16f6-42ee-bec3-911895926523")
 		)
@@ -10676,6 +11081,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "590f8608-297d-4a38-b08c-432f03f1ed3b")
 		)
@@ -10813,6 +11227,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "e7458e06-3782-4ac9-9cf6-88a0890d8460")
 		)
@@ -10898,6 +11321,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 232.41 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11049,6 +11481,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 232.41 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11209,6 +11650,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "d6768bd3-d8a9-4e0d-9063-fa501fc66093")
 		)
@@ -11272,6 +11722,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 54.61 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11371,6 +11830,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "54333e23-bfe2-43d5-b06c-f39316320754")
 		)
@@ -11434,6 +11902,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 119.38 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11600,6 +12077,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c65d58d1-2e2b-469a-bb0a-6e725c219230")
 		)
@@ -11686,6 +12172,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "8762c13f-45b1-4ee1-a874-d8c6e48c3a1d")
 		)
@@ -11765,6 +12260,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 146.05 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11907,6 +12411,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "d725c963-8607-4b36-a9ec-60625bbb65d7")
 		)
@@ -11976,6 +12489,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 184.15 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12075,6 +12597,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "4dfb9da1-4380-4a97-b0a7-bc318bf9a71c")
 		)
@@ -12154,6 +12685,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 146.05 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12298,6 +12838,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "d12d0c02-b4e3-470e-b874-03276f24961a")
 		)
@@ -12383,6 +12932,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 210.82 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12518,6 +13076,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 140.97 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12668,6 +13235,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "baf844e1-8c7d-4c5d-9bfc-6ee89acc7cfe")
 		)
@@ -12753,6 +13329,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 167.64 90.17 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12980,6 +13565,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "480f6341-c8aa-4928-b312-2b0d0e83064c")
 		)
@@ -13131,6 +13725,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "b504822c-8dc8-4c94-8774-de339d71cba3")
 		)
@@ -13194,6 +13797,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 205.74 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -13626,6 +14238,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "9b8b86b3-0293-4587-82e9-ad1900c8c3c3")
 		)
@@ -13777,6 +14398,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "03637a54-faf3-4d51-88d2-d4f6ccaa6b66")
 		)
@@ -13840,6 +14470,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 97.79 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14400,6 +15039,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "68a2c089-2edc-4c50-8f7d-2f4f04256b90")
 		)
@@ -14463,6 +15111,15 @@
 		)
 		(property "Description" "RGB LED with integrated controller"
 			(at 270.51 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "SK6805"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)

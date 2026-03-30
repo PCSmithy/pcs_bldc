@@ -3991,6 +3991,107 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "power:PWR_FLAG"
+			(power)
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(offset 0)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "#FLG"
+				(at 0 1.905 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Value" "PWR_FLAG"
+				(at 0 3.81 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Special symbol for telling ERC where power comes from"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "flag power"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "PWR_FLAG_0_0"
+				(pin power_out line
+					(at 0 0 90)
+					(length 0)
+					(name "~"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(symbol "PWR_FLAG_0_1"
+				(polyline
+					(pts
+						(xy 0 0) (xy 0 1.27) (xy -1.016 1.905) (xy 0 2.54) (xy 1.016 1.905) (xy 0 1.27)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "power:VBUS"
 			(power)
 			(pin_numbers
@@ -4227,7 +4328,7 @@
 	)
 	(text_box "PR1 VRef = 1.0V\nUse 5V0_Buck if 5V0_Buck is > 2V"
 		(exclude_from_sim no)
-		(at 29.21 149.86 0)
+		(at 29.21 147.32 0)
 		(size 21.59 8.89)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
@@ -4278,22 +4379,10 @@
 		(uuid "1b67e65f-591f-4397-a2c4-59d941c8e1e7")
 	)
 	(junction
-		(at 195.58 71.12)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "1c3f0062-5470-4ecb-9f2c-88bb5587b871")
-	)
-	(junction
 		(at 143.51 58.42)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "2586d19f-5e58-48c3-9cf6-0f49b5156817")
-	)
-	(junction
-		(at 195.58 87.63)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "2b20edcb-bc01-4650-821f-2c35bf03fd1a")
 	)
 	(junction
 		(at 144.78 25.4)
@@ -4488,6 +4577,12 @@
 		(uuid "a7c72694-ecf2-41b1-b7f4-04a472186628")
 	)
 	(junction
+		(at 58.42 25.4)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "aaa3e216-877d-4e65-ad18-8b873e1f6fba")
+	)
+	(junction
 		(at 201.93 90.17)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -4516,12 +4611,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "b9322ab1-a416-465c-b37c-21c8b40a8328")
-	)
-	(junction
-		(at 189.23 85.09)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "b9fe64b7-891e-459e-a80a-8972951566c6")
 	)
 	(junction
 		(at 86.36 25.4)
@@ -4961,16 +5050,6 @@
 	)
 	(wire
 		(pts
-			(xy 195.58 78.74) (xy 195.58 87.63)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1b0ad5a4-5b26-4ba6-bc2f-88cd4347b576")
-	)
-	(wire
-		(pts
 			(xy 242.57 52.07) (xy 242.57 54.61)
 		)
 		(stroke
@@ -4998,16 +5077,6 @@
 			(type default)
 		)
 		(uuid "1c917516-24d6-4d90-b360-fbcc8b45162e")
-	)
-	(wire
-		(pts
-			(xy 189.23 78.74) (xy 189.23 85.09)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1ce7e1c1-338e-4d43-ae43-edb47378abb8")
 	)
 	(wire
 		(pts
@@ -5131,16 +5200,6 @@
 	)
 	(wire
 		(pts
-			(xy 156.21 87.63) (xy 195.58 87.63)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "279b523e-3f0b-4d71-b570-44da177411f3")
-	)
-	(wire
-		(pts
 			(xy 73.66 36.83) (xy 80.01 36.83)
 		)
 		(stroke
@@ -5158,16 +5217,6 @@
 			(type default)
 		)
 		(uuid "2ba761d4-d73f-4869-88cf-61f138651247")
-	)
-	(wire
-		(pts
-			(xy 201.93 71.12) (xy 201.93 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2c806a66-e3f3-4cee-9c5e-257f22d0669f")
 	)
 	(wire
 		(pts
@@ -5451,16 +5500,6 @@
 	)
 	(wire
 		(pts
-			(xy 189.23 73.66) (xy 189.23 71.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4c203980-6647-40a0-bc6a-9f871f22508b")
-	)
-	(wire
-		(pts
 			(xy 111.76 25.4) (xy 111.76 27.94)
 		)
 		(stroke
@@ -5551,7 +5590,7 @@
 	)
 	(wire
 		(pts
-			(xy 156.21 85.09) (xy 189.23 85.09)
+			(xy 156.21 85.09) (xy 204.47 85.09)
 		)
 		(stroke
 			(width 0)
@@ -5591,7 +5630,7 @@
 	)
 	(wire
 		(pts
-			(xy 195.58 87.63) (xy 204.47 87.63)
+			(xy 156.21 87.63) (xy 204.47 87.63)
 		)
 		(stroke
 			(width 0)
@@ -5628,16 +5667,6 @@
 			(type default)
 		)
 		(uuid "548c4ad6-c090-49ee-8e63-c7e87f2935aa")
-	)
-	(wire
-		(pts
-			(xy 195.58 71.12) (xy 195.58 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "568459b2-7230-4ab4-8678-76f07c159fd4")
 	)
 	(wire
 		(pts
@@ -6291,7 +6320,7 @@
 	)
 	(wire
 		(pts
-			(xy 195.58 68.58) (xy 195.58 71.12)
+			(xy 201.93 68.58) (xy 201.93 73.66)
 		)
 		(stroke
 			(width 0)
@@ -7001,6 +7030,16 @@
 	)
 	(wire
 		(pts
+			(xy 58.42 25.4) (xy 73.66 25.4)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "da69a41c-33f1-4aa1-9793-075ab6a266e9")
+	)
+	(wire
+		(pts
 			(xy 252.73 64.77) (xy 255.27 64.77)
 		)
 		(stroke
@@ -7028,16 +7067,6 @@
 			(type default)
 		)
 		(uuid "dd223906-d28a-4d63-926c-fdc8f984f551")
-	)
-	(wire
-		(pts
-			(xy 195.58 71.12) (xy 201.93 71.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "dee0877a-1810-450d-9a65-b25db2831c5a")
 	)
 	(wire
 		(pts
@@ -7088,16 +7117,6 @@
 			(type default)
 		)
 		(uuid "e49ff533-87e0-4624-a816-411b30d31d0a")
-	)
-	(wire
-		(pts
-			(xy 189.23 71.12) (xy 195.58 71.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e6444db0-83ff-46f1-b5a3-ac9b66012913")
 	)
 	(wire
 		(pts
@@ -7231,23 +7250,13 @@
 	)
 	(wire
 		(pts
-			(xy 44.45 25.4) (xy 73.66 25.4)
+			(xy 44.45 25.4) (xy 58.42 25.4)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "f0ae3f4e-9421-47b7-a5b1-ddf32a2a3721")
-	)
-	(wire
-		(pts
-			(xy 189.23 85.09) (xy 204.47 85.09)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "f194dbf7-036d-422f-9eba-6de1b0a5e4f7")
 	)
 	(wire
 		(pts
@@ -8027,6 +8036,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0788K7L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "5b1f9da6-ac23-4958-86c8-feca6ca5d32a")
 		)
@@ -8044,7 +8062,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 195.58 68.58 0)
+		(at 201.93 68.58 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -8052,7 +8070,7 @@
 		(dnp no)
 		(uuid "0484b50c-6c11-468f-8e55-fcb2fc40ad3e")
 		(property "Reference" "#PWR018"
-			(at 195.58 72.39 0)
+			(at 201.93 72.39 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8061,7 +8079,7 @@
 			)
 		)
 		(property "Value" "3V3"
-			(at 195.58 64.516 0)
+			(at 201.93 64.516 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8069,7 +8087,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 195.58 68.58 0)
+			(at 201.93 68.58 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8078,7 +8096,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 195.58 68.58 0)
+			(at 201.93 68.58 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8087,7 +8105,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 195.58 68.58 0)
+			(at 201.93 68.58 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8175,6 +8193,72 @@
 		)
 	)
 	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 58.42 25.4 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "066caf99-72a9-4afb-9016-02eb9f90debf")
+		(property "Reference" "#FLG01"
+			(at 58.42 27.305 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 58.42 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 58.42 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 58.42 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 58.42 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "0f10a2c9-e7cc-4f73-b44b-8808563fee57")
+		)
+		(instances
+			(project ""
+				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
+					(reference "#FLG01")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:LED_Small")
 		(at 91.44 124.46 90)
 		(unit 1)
@@ -8255,6 +8339,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "LTST-C193TGKT-5A"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c88bcf4e-3c0c-4a6e-8611-dc6a4fb496cf")
 		)
@@ -8327,6 +8420,15 @@
 		)
 		(property "MFR.Part #" "RC0402FR-07470RL"
 			(at 54.61 172.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-07470RL"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8415,6 +8517,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 73.66 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8518,6 +8629,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A106KAYNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "ded8ea38-d33f-47e2-a88b-52592b6c148b")
 		)
@@ -8602,82 +8722,6 @@
 	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 195.58 76.2 180)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "13580c0f-724b-44a9-b8ee-1a19ac12999b")
-		(property "Reference" "R15"
-			(at 195.58 76.2 90)
-			(effects
-				(font
-					(size 1.016 1.016)
-				)
-			)
-		)
-		(property "Value" "2.4k"
-			(at 193.04 76.2 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 195.58 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 195.58 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor, small symbol"
-			(at 195.58 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Mfg. Part No." "RC0402FR-072K4L"
-			(at 195.58 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "9f4d4573-c51e-47db-a8b0-cb2af203d453")
-		)
-		(pin "1"
-			(uuid "4f6cf5a1-38e9-423d-ae9d-d2ea7a6aad74")
-		)
-		(instances
-			(project "bldc"
-				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
-					(reference "R15")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R_Small")
 		(at 257.81 64.77 270)
 		(unit 1)
 		(exclude_from_sim no)
@@ -8730,6 +8774,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 257.81 64.77 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8946,6 +8999,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "5530fcc6-ae93-4d56-a069-2edee05a0116")
 		)
@@ -9007,6 +9069,15 @@
 		)
 		(property "Description" "-76A Id, -20V Vds, NexFET P-Channel Power MOSFET, 7.7mOhm Ron, Qg (typ) 7.5 nC, VSON-8 3.3x3.3mm"
 			(at 160.02 27.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CSD25402Q3A"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9102,6 +9173,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0788K7L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "958040bd-8378-4452-a5f3-e74e0f261423")
 		)
@@ -9186,6 +9266,15 @@
 		)
 		(property "JLCPCB Part No." "C85047"
 			(at 218.44 102.87 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "2N7002K-7"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9329,6 +9418,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "LD1117S33TR"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "9d13dca6-7604-4879-a4f8-558394b50e47")
 		)
@@ -9418,6 +9516,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "HoYH1206-1W-12mR-1%"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6804b768-662e-47ab-abe1-58765aa291f7")
 		)
@@ -9497,6 +9604,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "65fbc3fb-5ea5-49fe-8e88-6c059201c554")
 		)
@@ -9569,6 +9685,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-075K1L"
 			(at 246.38 143.51 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9939,6 +10064,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "LTST-C193TGKT-5A"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "54d7bb2d-a32c-4d1a-9f8a-5a3f0bbb3b4b")
 		)
@@ -10010,6 +10144,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-0722K1L"
 			(at 110.49 31.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10106,6 +10249,15 @@
 		)
 		(property "MFR.Part #" "LTST-C193TGKT-5A"
 			(at 54.61 179.07 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "LTST-C193TGKT-5A"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10257,6 +10409,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "af9db580-9f4c-4f8e-8513-4fe1de296764")
 		)
@@ -10329,6 +10490,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-0722K1L"
 			(at 73.66 125.73 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10412,6 +10582,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "ea02dbdf-c47b-4f3a-b356-0a2d5ef3850e")
 		)
@@ -10484,6 +10663,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-0722K1L"
 			(at 113.03 31.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10769,6 +10957,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "7843eafa-398f-49e4-9d65-427691a09daf")
 		)
@@ -10924,6 +11121,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "5c6b376a-9a6f-443f-a349-78fe51ff47db")
 		)
@@ -11012,6 +11218,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c07d236f-7fc7-4dc4-ae0e-399914102895")
 		)
@@ -11082,6 +11297,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-075K1L"
 			(at 181.61 137.16 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11170,6 +11394,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 194.31 143.51 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11444,6 +11677,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "LMR50410XDDCR"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "4"
 			(uuid "40766932-0e8b-4b6b-8d0f-9b0faefd4422")
 		)
@@ -11672,6 +11914,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "c3229650-5434-44bf-a0f8-fa49e82d853f")
 		)
@@ -11820,6 +12071,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 262.89 71.12 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12039,6 +12299,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 161.29 66.04 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12524,6 +12793,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-07470RL"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "eb22f9f5-845e-4867-b821-d1c0c1d1a8cc")
 		)
@@ -12593,6 +12871,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 146.05 44.45 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12742,6 +13029,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "9749aa28-5485-4e13-a1ca-0ffcdebfa7f3")
 		)
@@ -12814,6 +13110,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-075K1L"
 			(at 90.17 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12964,6 +13269,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "ac197064-40d2-46bc-8d5a-0cc5be7d76eb")
 		)
@@ -12974,6 +13288,73 @@
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
 					(reference "R8")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 205.74 25.4 270)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "98517382-ab39-48ed-bf0b-004daba85968")
+		(property "Reference" "#FLG02"
+			(at 207.645 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 209.55 25.3999 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 205.74 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 205.74 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 205.74 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "4e0497c8-65a7-4819-9301-200c564ecf78")
+		)
+		(instances
+			(project "bldc"
+				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
+					(reference "#FLG02")
 					(unit 1)
 				)
 			)
@@ -13099,6 +13480,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-076K8L"
 			(at 233.68 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-076K8L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -13242,6 +13632,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 238.76 34.29 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -13600,6 +13999,15 @@
 				)
 			)
 		)
+		(property "MPN" "CL21B225KAFNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "2d3d3699-8298-4d75-9c9b-29f20b5e1797")
 		)
@@ -13747,6 +14155,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "TYPE-C-31-M-12"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "S1"
 			(uuid "69aca20e-d505-4097-921e-3520e9df21c3")
 		)
@@ -13880,6 +14297,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "14e9af8b-6bcc-495c-af2f-d1fcffb0a4eb")
 		)
@@ -13956,6 +14382,73 @@
 			(project "bldc"
 				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
 					(reference "#PWR033")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 59.69 158.75 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "b40133b4-0774-403f-8b65-cfe6daccd250")
+		(property "Reference" "#FLG03"
+			(at 57.785 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 55.88 158.7499 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 59.69 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 59.69 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 59.69 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "c9fb2a57-f007-4ca7-bef7-63fd633aa3ee")
+		)
+		(instances
+			(project "bldc"
+				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
+					(reference "#FLG03")
 					(unit 1)
 				)
 			)
@@ -14100,6 +14593,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c302c515-9a64-4598-bc83-b68c1727eb6e")
 		)
@@ -14170,6 +14672,15 @@
 		)
 		(property "Mfg. Part No." "MWSA0624S-150MT"
 			(at 68.58 113.03 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "MWSA0624S-150MT"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14258,6 +14769,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 99.06 162.56 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14410,6 +14930,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "b2be3a25-701b-4575-8a41-27b97b1e02eb")
 		)
@@ -14489,6 +15018,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "8c733e54-1744-4222-9827-d671e7a5ebc4")
 		)
@@ -14560,6 +15098,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-0788K7L"
 			(at 143.51 31.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-0788K7L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14788,6 +15335,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "baa58747-3343-4e07-9450-1813c06f06df")
 		)
@@ -14924,6 +15480,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 201.93 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15075,6 +15640,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A226MAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "91e63d3c-a268-40bb-8a09-49748eea2ad1")
 		)
@@ -15144,6 +15718,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 167.64 100.33 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15354,6 +15937,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CYPD3177-24LQXQ"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "8"
 			(uuid "aa335ab0-b8e5-49ce-a4be-0d48843ad6c6")
 		)
@@ -15502,6 +16094,15 @@
 		)
 		(property "Voltage" "50V"
 			(at 248.92 54.61 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL05B104KB54PNC"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15711,6 +16312,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "INA180A2IDBVR"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "e1c0f4d5-0adc-47f2-9e07-f08c086bc2bd")
 		)
@@ -15789,6 +16399,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-072K4L"
 			(at 143.51 44.45 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-072K4L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15884,6 +16503,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "0428ce63-c371-461c-bbc6-505acf176067")
 		)
@@ -15966,82 +16594,6 @@
 	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 189.23 76.2 180)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "e6f3782f-c668-46cf-b51f-05845d4eaeff")
-		(property "Reference" "R14"
-			(at 189.23 76.2 90)
-			(effects
-				(font
-					(size 1.016 1.016)
-				)
-			)
-		)
-		(property "Value" "2.4k"
-			(at 186.69 76.2 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 189.23 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 189.23 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor, small symbol"
-			(at 189.23 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Mfg. Part No." "RC0402FR-072K4L"
-			(at 189.23 76.2 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "39430e02-6cbd-4638-ab3a-04b2373f3c79")
-		)
-		(pin "1"
-			(uuid "552a9054-2a2c-4a8d-90d5-d4b2ca56b1f6")
-		)
-		(instances
-			(project "bldc"
-				(path "/fdf9474f-66c9-4c2c-9436-f3125b555611/ea8b7c77-38a2-4626-ae83-899cfe040239"
-					(reference "R14")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R_Small")
 		(at 63.5 165.1 270)
 		(unit 1)
 		(exclude_from_sim no)
@@ -16095,6 +16647,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-075K1L"
 			(at 63.5 165.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16163,6 +16724,15 @@
 		)
 		(property "Description" "2 Channnels Power Mux with Manual and Priority Switchover, 1.6-5.5V Input Voltage, 2.5A Output Current, Ron 40 mOhm, SOT-583-8"
 			(at 78.74 164.846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "TPS2116DRLR"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16276,6 +16846,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "LTST-C191KRKT"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "0b4e8ecc-b363-45f8-8d22-5b3afa30e32a")
 		)
@@ -16364,6 +16943,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "31fa7356-7702-4e0c-846d-6920c3770f30")
 		)
@@ -16424,6 +17012,15 @@
 		)
 		(property "Description" "Switch, single pole double throw"
 			(at 106.68 77.47 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CAS-120A1"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16647,6 +17244,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-07470RL"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "d920cdae-1e43-4cbe-8426-2ad2eaf8bc63")
 		)
@@ -16708,6 +17314,15 @@
 		)
 		(property "Description" "-76A Id, -20V Vds, NexFET P-Channel Power MOSFET, 7.7mOhm Ron, Qg (typ) 7.5 nC, VSON-8 3.3x3.3mm"
 			(at 134.62 27.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CSD25402Q3A"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)

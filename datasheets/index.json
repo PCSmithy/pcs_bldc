@@ -1,0 +1,734 @@
+{
+  "schematic": "hw/bldc.kicad_sch",
+  "last_sync": "2026-03-28T12:00:00+00:00",
+  "parts": {
+    "0603ESDA-05N": {
+      "file": "0603ESDA-05N_50V_Bidirectional_5V_0603_ESD_and_Surge_Protection_(TVS_ESD)_ROHS.pdf",
+      "manufacturer": "",
+      "description": "50V Bidirectional 5V 0603 ESD and Surge Protection (TVS ESD) ROHS",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "D5",
+        "D6"
+      ],
+      "size_bytes": 1315660
+    },
+    "2N7002": {
+      "file": "2N7002_MOSFET_N-CH_60V_280MA_SOT23-3.pdf",
+      "manufacturer": "",
+      "description": "MOSFET N-CH 60V 280MA SOT23-3",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "Q2"
+      ],
+      "size_bytes": 310796
+    },
+    "2N7002K-7": {
+      "file": "2N7002K-7_0.38A_Id_60V_Vds_N-Channel_MOSFET_SOT-23.pdf",
+      "manufacturer": "",
+      "description": "0.38A Id 60V Vds N-Channel MOSFET SOT-23",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "Q1"
+      ],
+      "size_bytes": 539413
+    },
+    "_legacy_an2606-stm32-microcontroller-system-memory-boot-mode-stmicroelectronics": {
+      "file": "an2606-stm32-microcontroller-system-memory-boot-mode-stmicroelectronics.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 7048936
+    },
+    "_legacy_an3156-usb-dfu-protocol-used-in-the-stm32-bootloader-stmicroelectronics": {
+      "file": "an3156-usb-dfu-protocol-used-in-the-stm32-bootloader-stmicroelectronics.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 372012
+    },
+    "_legacy_an5789-considerations-on-bootstrap-circuitry-for-gate-drivers-stmicroelectronics": {
+      "file": "an5789-considerations-on-bootstrap-circuitry-for-gate-drivers-stmicroelectronics.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 237978
+    },
+    "_legacy_AS5048_DS000298_4-00": {
+      "file": "AS5048_DS000298_4-00.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 1248018
+    },
+    "B3FS-1052P": {
+      "file": "B3FS-1052P_Omron_B3FS_6x6mm_single_pole_normally-open_tactile_switch.pdf",
+      "manufacturer": "",
+      "description": "Omron B3FS 6x6mm single pole normally-open tactile switch",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "SW2",
+        "SW3"
+      ],
+      "size_bytes": 241245
+    },
+    "BNO055": {
+      "file": "BNO055_Intelligent_9-axis_absolute_orientation_sensor_LGA-28.pdf",
+      "manufacturer": "",
+      "description": "Intelligent 9-axis absolute orientation sensor LGA-28",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U9"
+      ],
+      "size_bytes": 2052876
+    },
+    "CAS-120A1": {
+      "file": "CAS-120A1_Switch_single_pole_double_throw.pdf",
+      "manufacturer": "",
+      "description": "Switch single pole double throw",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "SW1",
+        "SW4"
+      ],
+      "size_bytes": 941032
+    },
+    "CC0402KRNPO7BN100": {
+      "file": "CC0402KRNPO7BN100_CAP_CER_10PF_16V_C0G_NPO_0402.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 10PF 16V C0G NPO 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C23",
+        "C24"
+      ],
+      "size_bytes": 243029
+    },
+    "CL05C330JB5NNNC": {
+      "file": "CL05C330JB5NNNC_CAP_CER_33PF_50V_C0G_NP0_0402.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 33PF 50V C0G NP0 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C101",
+        "C87",
+        "C94"
+      ],
+      "size_bytes": 1404236
+    },
+    "CL21A106KAYNNNE": {
+      "file": "CL21A106KAYNNNE_CAP_CER_10UF_25V_X5R_0805.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 10UF 25V X5R 0805",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C18",
+        "C36"
+      ],
+      "size_bytes": 1477775
+    },
+    "CL21A226MAQNNNE": {
+      "file": "CL21A226MAQNNNE_CAP_CER_22UF_25V_X5R_0805.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 22UF 25V X5R 0805",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C14"
+      ],
+      "size_bytes": 303235
+    },
+    "CL21A475KAQNNNE": {
+      "file": "CL21A475KAQNNNE_CAP_CER_4.7UF_25V_X5R_0805.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 4.7UF 25V X5R 0805",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C1",
+        "C102",
+        "C20",
+        "C3",
+        "C30",
+        "C34",
+        "C37",
+        "C39",
+        "C4",
+        "C40",
+        "C41",
+        "C42",
+        "C43",
+        "C44",
+        "C45",
+        "C46",
+        "C47",
+        "C48",
+        "C7",
+        "C8",
+        "C85",
+        "C88",
+        "C92",
+        "C95",
+        "C99"
+      ],
+      "size_bytes": 1405254
+    },
+    "CL21B225KAFNNNE": {
+      "file": "CL21B225KAFNNNE_CAP_CER_2.2UF_25V_X7R_0805.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 2.2UF 25V X7R 0805",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C13"
+      ],
+      "size_bytes": 186384
+    },
+    "CSD25402Q3A": {
+      "file": "CSD25402Q3A_-76A_Id_-20V_Vds_NexFET_P-Channel_Power_MOSFET_7.7mOhm_Ron_Qg_(typ)_7.5.pdf",
+      "manufacturer": "",
+      "description": "-76A Id -20V Vds NexFET P-Channel Power MOSFET 7.7mOhm Ron Qg (typ) 7.5",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U1",
+        "U2"
+      ],
+      "size_bytes": 748811
+    },
+    "CYPD3177-24LQXQ": {
+      "file": "CYPD3177-24LQXQ_Stand-alone_USB_PD_controller_(with_sink_Auto-run_mode)_QFN-24.pdf",
+      "manufacturer": "",
+      "description": "Stand-alone USB PD controller (with sink Auto-run mode) QFN-24",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U4"
+      ],
+      "size_bytes": 384806
+    },
+    "_legacy_dm00355726-stm32g4-series-advanced-arm-based-32-bit-mcus-stmicroelectronics": {
+      "file": "dm00355726-stm32g4-series-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 38797277
+    },
+    "FTSH-107-01-L-DV-K-A": {
+      "file": "FTSH-107-01-L-DV-K-A_CONN_HEADER_SMD_14POS_1.27MM.pdf",
+      "manufacturer": "",
+      "description": "CONN HEADER SMD 14POS 1.27MM",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "J6"
+      ],
+      "size_bytes": 630504
+    },
+    "GCM155R71H122KA37D": {
+      "file": "GCM155R71H122KA37D_CAP_CER_1200PF_50V_X7R_0402.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 1200PF 50V X7R 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C104",
+        "C90",
+        "C97"
+      ],
+      "size_bytes": 852681
+    },
+    "GJM1555C1H2R7BB01D": {
+      "file": "GJM1555C1H2R7BB01D_CAP_CER_2.7PF_50V_C0G_NP0_0402.pdf",
+      "manufacturer": "",
+      "description": "CAP CER 2.7PF 50V C0G NP0 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "C100",
+        "C86",
+        "C93"
+      ],
+      "size_bytes": 736652
+    },
+    "INA180A2IDBVR": {
+      "file": "INA180A2IDBVR_Current_Sense_Amplifier_1_Circuit_Rail-to-Rail_26V_Gain_50_V_V_SOT-23-5.pdf",
+      "manufacturer": "",
+      "description": "Current Sense Amplifier 1 Circuit Rail-to-Rail 26V Gain 50 V V SOT-23-5",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U3"
+      ],
+      "size_bytes": 3133391
+    },
+    "INA240A3PW": {
+      "file": "INA240A3PW_High-_and_Low-Side_Bidirectional_Zero-Drift_Current-Sense_Amplifier_With.pdf",
+      "manufacturer": "",
+      "description": "High- and Low-Side Bidirectional Zero-Drift Current-Sense Amplifier With",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U12",
+        "U15",
+        "U18"
+      ],
+      "size_bytes": 1936899
+    },
+    "_legacy_infineon-cypd3177": {
+      "file": "infineon-cypd3177.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 384806
+    },
+    "_legacy_lmr50410": {
+      "file": "lmr50410.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 1943970
+    },
+    "LMR50410XDDCR": {
+      "file": "LMR50410XDDCR_Simple_Switcher_Buck_Regulator_Vin=4-36V_Iout=1A_Adjustable_output.pdf",
+      "manufacturer": "",
+      "description": "Simple Switcher Buck Regulator Vin=4-36V Iout=1A Adjustable output",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U5"
+      ],
+      "size_bytes": 1983145
+    },
+    "LTST-C191KRKT": {
+      "file": "LTST-C191KRKT_LED_RED_CLEAR_SMD.pdf",
+      "manufacturer": "",
+      "description": "LED RED CLEAR SMD",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "D1"
+      ],
+      "size_bytes": 403474
+    },
+    "LTST-C193TGKT-5A": {
+      "file": "LTST-C193TGKT-5A_LED_GREEN_CLEAR_CHIP_SMD.pdf",
+      "manufacturer": "",
+      "description": "LED GREEN CLEAR CHIP SMD",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "D2",
+        "D3",
+        "D4"
+      ],
+      "size_bytes": 540327
+    },
+    "MWSA0624S-150MT": {
+      "file": "MWSA0624S-150MT_FIXED_IND_15UH_2.5A_160_MOHM_SMD.pdf",
+      "manufacturer": "",
+      "description": "FIXED IND 15UH 2.5A 160 MOHM SMD",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "L1",
+        "L2"
+      ],
+      "size_bytes": 3584075
+    },
+    "PA1206FRF470R001L": {
+      "file": "PA1206FRF470R001L_RES_0.001_OHM_1%_1W_1206.pdf",
+      "manufacturer": "",
+      "description": "RES 0.001 OHM 1% 1W 1206",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R56",
+        "R63",
+        "R70"
+      ],
+      "size_bytes": 891829
+    },
+    "Q22FA12800569": {
+      "file": "Q22FA12800569_25MHz_Surface_Mount_Crystal_8pF_±10ppm.pdf",
+      "manufacturer": "",
+      "description": "25MHz Surface Mount Crystal 8pF ±10ppm",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "Y1"
+      ],
+      "size_bytes": 820522
+    },
+    "RC0402FR-070RL": {
+      "file": "RC0402FR-070RL_RES_0_OHM_JUMPER_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 0 OHM JUMPER 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R34",
+        "R37",
+        "R38",
+        "R39",
+        "R40",
+        "R41",
+        "R42",
+        "R43",
+        "R44",
+        "R45",
+        "R50",
+        "R52",
+        "R59",
+        "R66"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-071KL": {
+      "file": "RC0402FR-071KL_RES_1K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 1K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R35",
+        "R57",
+        "R64",
+        "R71"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-0722K1L": {
+      "file": "RC0402FR-0722K1L_RES_22.1K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 22.1K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R20",
+        "R23",
+        "R3",
+        "R4",
+        "R47",
+        "R55",
+        "R62",
+        "R69"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-07274KL": {
+      "file": "RC0402FR-07274KL_RES_274K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 274K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R53",
+        "R60",
+        "R67"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-072K4L": {
+      "file": "RC0402FR-072K4L_RES_2.4K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 2.4K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R10",
+        "R11",
+        "R13",
+        "R14",
+        "R15",
+        "R16",
+        "R17",
+        "R18",
+        "R19",
+        "R7",
+        "R8",
+        "R9"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-0733RL": {
+      "file": "RC0402FR-0733RL_RES_33_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 33 OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R51",
+        "R54",
+        "R58",
+        "R61",
+        "R65",
+        "R68"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-07470RL": {
+      "file": "RC0402FR-07470RL_RES_470_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 470 OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R22",
+        "R28",
+        "R30"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-075K1L": {
+      "file": "RC0402FR-075K1L_RES_5.1K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 5.1K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R12",
+        "R24",
+        "R25",
+        "R26",
+        "R27",
+        "R29",
+        "R31",
+        "R32",
+        "R33",
+        "R36",
+        "R46",
+        "R48",
+        "R49"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-076K8L": {
+      "file": "RC0402FR-076K8L_RES_6.8K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 6.8K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R2"
+      ],
+      "size_bytes": 542969
+    },
+    "RC0402FR-0788K7L": {
+      "file": "RC0402FR-0788K7L_RES_88.7K_OHM_1%_1_16W_0402.pdf",
+      "manufacturer": "",
+      "description": "RES 88.7K OHM 1% 1 16W 0402",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "R21",
+        "R5",
+        "R6"
+      ],
+      "size_bytes": 542969
+    },
+    "S3B-XH-A(LF)(SN)": {
+      "file": "S3B-XH-A(LF)(SN)_CONN_HEADER_R_A_3POS_2.5MM.pdf",
+      "manufacturer": "",
+      "description": "CONN HEADER R A 3POS 2.5MM",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "J1"
+      ],
+      "size_bytes": 175724
+    },
+    "S6B-PH-K-S(LF)(SN)": {
+      "file": "S6B-PH-K-S(LF)(SN)_CONN_HEADER_R_A_6POS_2MM.pdf",
+      "manufacturer": "",
+      "description": "CONN HEADER R A 6POS 2MM",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "J2",
+        "J3"
+      ],
+      "size_bytes": 103369
+    },
+    "SIA400EDJ-T1-GE3": {
+      "file": "SIA400EDJ-T1-GE3_MOSFET_N-CH_30V_12A_PPAK_SC70-6.pdf",
+      "manufacturer": "",
+      "description": "MOSFET N-CH 30V 12A PPAK SC70-6",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "U10",
+        "U11",
+        "U13",
+        "U14",
+        "U16",
+        "U17"
+      ],
+      "size_bytes": 217163
+    },
+    "SK6805": {
+      "file": "SK6805_RGB_LED_with_integrated_controller.pdf",
+      "manufacturer": "",
+      "description": "RGB LED with integrated controller",
+      "datasheet_url": "",
+      "status": "ok",
+      "references": [
+        "D10",
+        "D11",
+        "D12",
+        "D13",
+        "D14",
+        "D15",
+        "D16",
+        "D17",
+        "D18",
+        "D19",
+        "D20",
+        "D21",
+        "D22",
+        "D23",
+        "D24",
+        "D25",
+        "D26",
+        "D27",
+        "D28",
+        "D29",
+        "D30",
+        "D31",
+        "D32",
+        "D33",
+        "D34",
+        "D35",
+        "D36",
+        "D37",
+        "D38",
+        "D39",
+        "D40",
+        "D41",
+        "D42",
+        "D43",
+        "D8",
+        "D9"
+      ],
+      "size_bytes": 534654
+    },
+    "_legacy_stm32g431c6": {
+      "file": "stm32g431c6.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 2654849
+    },
+    "_legacy_stspin32g4": {
+      "file": "stspin32g4.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 1044707
+    },
+    "_legacy_TPS2116DRLR_2_Channnels_Power_Mux_with_Manual_and_Priority_Switchover_1.6-5.5V_Input": {
+      "file": "TPS2116DRLR_2_Channnels_Power_Mux_with_Manual_and_Priority_Switchover_1.6-5.5V_Input.pdf",
+      "manufacturer": "",
+      "description": "Legacy datasheet (pre-sync)",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 2924080
+    },
+    "LD1117S33TR": {
+      "file": "ld1117.pdf",
+      "manufacturer": "STMicroelectronics",
+      "description": "3.3V LDO",
+      "datasheet_url": "https://www.st.com/resource/en/datasheet/ld1117.pdf",
+      "status": "ok",
+      "references": [
+        "U6"
+      ],
+      "size_bytes": 1634512
+    },
+    "BAT41KFILM": {
+      "file": "bat41.pdf",
+      "manufacturer": "STMicroelectronics",
+      "description": "Schottky diode",
+      "datasheet_url": "https://www.st.com/resource/en/datasheet/bat41.pdf",
+      "status": "ok",
+      "references": [
+        "D44",
+        "D45",
+        "D46"
+      ],
+      "size_bytes": 198804
+    },
+    "STPS1H100A": {
+      "file": "STPS1H100.pdf",
+      "manufacturer": "STMicroelectronics",
+      "description": "Power Schottky 100V 1A",
+      "datasheet_url": "https://www.st.com/resource/en/datasheet/stps1h100a.pdf",
+      "status": "ok",
+      "references": [
+        "D7"
+      ],
+      "size_bytes": 436044
+    },
+    "CL05B104KB54PNC": {
+      "file": "DataSheet_CL05B104KB54PN_20260329.pdf",
+      "manufacturer": "Samsung",
+      "description": "100nF 50V X7R 0402",
+      "datasheet_url": "https://weblib.samsungsem.com/mlcc/mlcc-ec-data-sheet.do?partNumber=CL05B104KB54PNC",
+      "status": "ok",
+      "references": [],
+      "size_bytes": 173155
+    },
+    "HoYH1206-1W-12mR-1%": {
+      "file": "HoYH1206-1W-12mR-1%.pdf",
+      "manufacturer": "HoYH",
+      "description": "12mOhm 1W shunt resistor",
+      "datasheet_url": null,
+      "status": "ok",
+      "references": [
+        "R1"
+      ],
+      "size_bytes": 1221928
+    },
+    "TYPE-C-31-M-12": {
+      "file": "TYPE-C-31-M-12.pdf",
+      "manufacturer": "HRO Electronics",
+      "description": "USB-C receptacle 12-pin",
+      "datasheet_url": null,
+      "status": "ok",
+      "references": [
+        "J4",
+        "J5"
+      ],
+      "size_bytes": 118176
+    },
+    "STSPIN32G4": {
+      "file": "stspin32g4.pdf",
+      "manufacturer": "STMicroelectronics",
+      "description": "3-phase gate driver with integrated STM32G431",
+      "datasheet_url": "https://www.st.com/resource/en/datasheet/stspin32g4.pdf",
+      "status": "ok",
+      "references": [
+        "U8"
+      ],
+      "size_bytes": 1044707
+    }
+  }
+}

@@ -381,25 +381,23 @@
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
-			(property "Reference" "U8"
-				(at 0 33.782 0)
+			(property "Reference" "U"
+				(at -8.128 31.75 0)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
-					(hide yes)
 				)
 			)
 			(property "Value" "STSPIN32G4"
-				(at 0.254 31.496 0)
+				(at 2.54 -33.274 0)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
-					(hide yes)
 				)
 			)
-			(property "Footprint" "Package_DFN_QFN:QFN-64-1EP_9x9mm_P0.5mm_EP4.1x4.1mm"
+			(property "Footprint" ""
 				(at 0 0 0)
 				(effects
 					(font
@@ -539,7 +537,7 @@
 				(pin bidirectional line
 					(at -11.43 10.16 0)
 					(length 2.54)
-					(name "PG10"
+					(name "PG10|nRST"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1372,7 +1370,7 @@
 						)
 					)
 				)
-				(pin passive line
+				(pin no_connect line
 					(at -11.43 -7.62 0)
 					(length 2.54)
 					(name "NC"
@@ -1390,7 +1388,7 @@
 						)
 					)
 				)
-				(pin passive line
+				(pin no_connect line
 					(at -11.43 -10.16 0)
 					(length 2.54)
 					(name "NC"
@@ -3474,6 +3472,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "aad3c224-e339-4b56-a51e-10cfd0065fda")
 		)
@@ -3555,6 +3562,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 97.79 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3650,6 +3666,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "76a7f1f7-007e-4e2a-80d9-5804b146f769")
 		)
@@ -3731,6 +3756,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 158.75 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3891,6 +3925,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "5481a43f-5c0b-42d2-bf1a-2fb20f5746e5")
 		)
@@ -3962,6 +4005,15 @@
 		)
 		(property "Mfg. Part No." "RC0402FR-0722K1L"
 			(at 58.42 88.9 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "RC0402FR-0722K1L"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4050,6 +4102,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 138.43 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4210,6 +4271,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "fe33df92-945f-4cdf-93f7-8e6e39ccf5b0")
 		)
@@ -4355,6 +4425,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ea414452-e635-48fb-aa16-9c0995565e42")
 		)
@@ -4436,6 +4515,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 87.63 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4718,6 +4806,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "RC0402FR-075K1L"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "06e28e85-5424-4ffa-9ade-1d0e3b1c0a1d")
 		)
@@ -4799,6 +4896,15 @@
 		)
 		(property "Voltage" "25V"
 			(at 118.11 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4894,6 +5000,15 @@
 				(hide yes)
 			)
 		)
+		(property "MPN" "CL21A475KAQNNNE"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "02c3dbaa-0c20-44df-bc56-734a0805a36e")
 		)
@@ -4957,6 +5072,15 @@
 		)
 		(property "Description" "High performance 3-phase motor controller with embedded STM32G4 MCU"
 			(at 83.82 58.42 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "STSPIN32G4"
+			(at 0 0 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5157,7 +5281,7 @@
 			(uuid "66b59da9-89be-44dd-a5d3-729bf175cf42")
 		)
 		(pin "63"
-			(uuid "0fdce86e-c873-4f7e-9e48-209b4b8f92ff")
+			(uuid "5606d40a-0670-462a-9360-8f3796d33e4b")
 		)
 		(instances
 			(project "bldc"
