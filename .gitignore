@@ -41,3 +41,22 @@ fp-info-cache
 
 # Python virtual environment
 .venv/
+
+# CMake build trees
+build/
+
+# KiCad .history (incremental in-app backups; git is the version history)
+.history/
+
+# Generated analysis outputs (regenerable via kicad-happy scripts)
+**/drc*.json
+**/erc*.json
+**/*_analysis*.json
+**/gerber_analysis*.json
+
+# Obsidian per-user vault state (workspace layout, last-open files, etc.)
+.obsidian/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
