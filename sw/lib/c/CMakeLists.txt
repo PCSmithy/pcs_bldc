@@ -1,13 +1,20 @@
 # sw/lib/c — channelized library implementations (the "platform").
 #
-# Each library is a STATIC archive consumable by either the firmware
-# project (sw/fw) or future Rust app (via FFI). All libraries here must
-# build for both PCS_TARGET=native and PCS_TARGET=embedded.
+# Top-level layout:
+#   CMSIS/                 vendor (ARM Cortex-M standard, header-only)
+#   STM32G4xx_HAL_Driver/  vendor (ST HAL driver, embedded only)
+#   Unity/                 vendor (test framework, native only)
+#   shared/                OUR library code, layered (app/dev/io/hw/lib)
+#
+# Each library under shared/ is a STATIC archive consumable by either
+# the firmware project (sw/fw) or the future Rust app (via FFI). All
+# libraries here must build for both PCS_TARGET=native and
+# PCS_TARGET=embedded.
 #
 # Library naming convention: <layer>_<module>
 #   layer  ∈ {app, dev, io, hw, lib}
 #   module is the module's directory name
-#   e.g. sw/lib/c/lib/ringbuf/  ->  target name: lib_ringbuf
+#   e.g. sw/lib/c/shared/lib/ringbuf/  ->  target name: lib_ringbuf
 
 cmake_minimum_required(VERSION 3.20)
 project(pcs_lib_c LANGUAGES C ASM)
@@ -23,9 +30,14 @@ if(PCS_TARGET STREQUAL "native")
   add_subdirectory(Unity)
 endif()
 
-# Layer roots. Add modules as they appear; do not pre-add empty layers.
-add_subdirectory(lib)
-# add_subdirectory(app)
-# add_subdirectory(dev)
-# add_subdirectory(io)
-# add_subdirectory(hw)
+# Vendored third-party libraries that aren't tied to a specific layer.
+add_subdirectory(CMSIS)
+if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
+  # The STM32G4 HAL driver is family-specific (ARM intrinsics, doesn't
+  # compile natively) AND needs a consumer-provided pcs_stm32g4_hal_conf
+  # interface lib for stm32g4xx_hal_conf.h. Both conditions must hold.
+  add_subdirectory(STM32G4xx_HAL_Driver)
+endif()
+
+# Our own library code (layered).
+add_subdirectory(shared)

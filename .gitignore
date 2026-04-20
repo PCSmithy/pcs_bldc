@@ -42,8 +42,9 @@ fp-info-cache
 # Python virtual environment
 .venv/
 
-# CMake build trees
-build/
+# CMake build trees (top-level only — anchored so we don't accidentally
+# ignore source dirs named "build", e.g. sw/lib/c/shared/lib/build/).
+/build/
 
 # KiCad .history (incremental in-app backups; git is the version history)
 .history/

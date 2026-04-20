@@ -5,9 +5,14 @@
 # Usage:
 #   tools/build_arm.sh [<source-subdir>]
 #
-# Defaults to sw/lib/c. Build output lives in build/arm-<basename>/.
-# Re-running is incremental; pass --clean to wipe the build dir first.
-# No tests are run — the cross-compiled binaries don't run on the host.
+# Defaults to sw/fw (the firmware project — it pulls in sw/lib/c via
+# add_subdirectory transitively). Standalone embedded builds of sw/lib/c
+# are not supported because the HAL driver needs a consumer-provided
+# stm32g4xx_hal_conf.h that only exists at the project level.
+#
+# Build output lives in build/arm-<basename>/. Re-running is
+# incremental; pass --clean to wipe the build dir first. No tests are
+# run — the cross-compiled binaries don't run on the host.
 
 set -euo pipefail
 
@@ -23,7 +28,7 @@ for arg in "$@"; do
     *)       SOURCE_SUBDIR="$arg" ;;
   esac
 done
-SOURCE_SUBDIR="${SOURCE_SUBDIR:-sw/lib/c}"
+SOURCE_SUBDIR="${SOURCE_SUBDIR:-sw/fw}"
 BUILD_DIR="${REPO_ROOT}/build/arm-$(basename "${SOURCE_SUBDIR}")"
 
 if [ "${CLEAN}" -eq 1 ] && [ -d "${BUILD_DIR}" ]; then

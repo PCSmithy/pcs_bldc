@@ -10,6 +10,11 @@
 
 set(PCS_TARGET "native" CACHE STRING "Build target identifier")
 
+# Preprocessor-visible build target. Source files use
+#   #if (BUILD_TARGET == BUILD_TARGET_SIM) ...
+# with the named constants defined in sw/lib/c/shared/lib/build/lib_build.h.
+add_compile_definitions(BUILD_TARGET=BUILD_TARGET_SIM)
+
 # Find host GCC explicitly so CMake doesn't auto-pick MSVC on Windows when
 # invoked outside a Visual Studio dev shell.
 find_program(NATIVE_C   gcc REQUIRED)

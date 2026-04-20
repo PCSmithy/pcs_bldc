@@ -5,8 +5,12 @@
 # Usage:
 #   tools/build_native.sh [<source-subdir>]
 #
-# Defaults to sw/lib/c. Build output lives in build/native-<basename>/.
-# Re-running is incremental; pass --clean to wipe the build dir first.
+# Defaults to sw/fw (the firmware project — pulls sw/lib/c in via
+# add_subdirectory, so all lib unit tests run too). Pass `sw/lib/c`
+# explicitly for a lib-only build.
+#
+# Build output lives in build/native-<basename>/. Re-running is
+# incremental; pass --clean to wipe the build dir first.
 
 set -euo pipefail
 
@@ -22,7 +26,7 @@ for arg in "$@"; do
     *)       SOURCE_SUBDIR="$arg" ;;
   esac
 done
-SOURCE_SUBDIR="${SOURCE_SUBDIR:-sw/lib/c}"
+SOURCE_SUBDIR="${SOURCE_SUBDIR:-sw/fw}"
 BUILD_DIR="${REPO_ROOT}/build/native-$(basename "${SOURCE_SUBDIR}")"
 
 if [ "${CLEAN}" -eq 1 ] && [ -d "${BUILD_DIR}" ]; then

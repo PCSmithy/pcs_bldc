@@ -12,6 +12,11 @@ set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 set(PCS_TARGET             "embedded" CACHE STRING "Build target identifier")
 
+# Preprocessor-visible build target. Source files use
+#   #if (BUILD_TARGET == BUILD_TARGET_STM32G4) ...
+# with the named constants defined in sw/lib/c/shared/lib/build/lib_build.h.
+add_compile_definitions(BUILD_TARGET=BUILD_TARGET_STM32G4)
+
 # Locate arm-none-eabi-gcc: PATH first, then known install locations.
 find_program(ARM_GCC arm-none-eabi-gcc
   PATHS

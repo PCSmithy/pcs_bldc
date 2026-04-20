@@ -46,13 +46,29 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── cmake/
 │   │   └── toolchains/   native.cmake + arm-none-eabi.cmake
 │   ├── lib/
-│   │   ├── c/            C/C++ libraries — channelized; layered app/dev/io/hw/lib
-│   │   │   ├── Unity/    Vendored Unity v2.6.1 (test framework)
-│   │   │   └── lib/ringbuf/   First demo library + Unity tests
+│   │   ├── c/            C/C++ libraries (vendor + ours)
+│   │   │   ├── CMSIS/                ARM Cortex-M std headers (vendor)
+│   │   │   ├── STM32G4xx_HAL_Driver/ ST HAL driver (vendor, embedded only)
+│   │   │   ├── Unity/                Test framework (vendor, native only)
+│   │   │   └── shared/               OUR library code, layered app/dev/io/hw/lib
+│   │   │       ├── lib/build/        BUILD_TARGET_* constants
+│   │   │       ├── lib/types/        lib_types.h (uint8_t, bool, size_t, ...)
+│   │   │       ├── lib/utils/        lib_utils.h (COUNTOF, ...)
+│   │   │       ├── lib/ringbuf/      Demo library + Unity tests
+│   │   │       └── hw/               Channelized HW modules:
+│   │   │           ├── systemClock/  systemClock_init (single-instance)
+│   │   │           ├── ADC/          ADC_init (multi-channel)
+│   │   │           └── stm32g4/      Family glue (system_, syscalls, sysmem)
 │   │   └── rust/         Rust libraries (future)
 │   └── fw/               Firmware project (pcs_bldc-specific integration)
 │       ├── stm32cube/g4/ STM32CubeMX-generated reference (not built directly)
-│       └── src/          Layered: app/ dev/ io/ hw/{sim,stm32g4} lib/
+│       └── src/
+│           ├── main.c    Entry point: orchestrates HW_*_init calls + Error_Handler
+│           └── hw/       pcs_bldc-board channel configs + STM32G4 board glue
+│               ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
+│               ├── sim/          STATIC fw_hw placeholder for native build
+│               ├── systemClock/  HW_systemClock_config.{h,c}
+│               └── ADC/          HW_ADC_channels.{h,c}
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC
@@ -72,7 +88,12 @@ The project uses **spec-driven development with end-to-end traceability** via
     ├── validate-specs.py Validate all spec IDs against the convention
     ├── spec_convention.py Shared helper (parses the canonical topic table)
     ├── build_native.sh   Configure + build + ctest a CMake project natively
-    └── build_arm.sh      Cross-compile a CMake project for STM32G431
+    ├── build_arm.sh      Cross-compile a CMake project for STM32G431
+    └── convert_cubemx_to_canonical.sh
+                          Copy CubeMX-generated code from sw/fw/stm32cube/g4/
+                          into the canonical layout (vendor packages at the
+                          top of sw/lib/c/, board-specific files at
+                          sw/fw/src/hw/stm32g4/)
 
 (Build outputs: build/<target>-<source-basename>/, gitignored. Real fw
 source code, sim/, notebooks/ — created when that work begins.)
@@ -197,47 +218,190 @@ Use the wrapper scripts (they handle the absolute-path requirement that
 CMake imposes for toolchain files):
 
 ```bash
-tools/build_native.sh                # configure + build + ctest sw/lib/c
-tools/build_native.sh sw/fw          # same, but for sw/fw (when populated)
+tools/build_native.sh                # native firmware build (default: sw/fw) + ctest
 tools/build_native.sh --clean        # wipe build dir first
-tools/build_arm.sh                   # cross-compile sw/lib/c for embedded
-tools/build_arm.sh sw/fw             # same, but for sw/fw
+tools/build_arm.sh                   # cross-compile firmware (.elf/.bin/.hex)
+tools/build_native.sh sw/lib/c       # standalone lib-only native build (cross-cutting libs + tests)
 ```
 
+Default source dir for both scripts is `sw/fw` (the firmware project,
+which pulls in `sw/lib/c` transitively). Standalone embedded builds of
+`sw/lib/c` aren't supported — the HAL needs project-provided
+`stm32g4xx_hal_conf.h` that only exists at `sw/fw` level. Standalone
+native `sw/lib/c` skips the channelized HW modules (they need
+project-provided `pcs_<module>_channels` libs) and just builds the
+cross-cutting libs and their unit tests; gating is via `PCS_BUILDING_FW`.
+
 Build outputs land in `build/native-<basename>/` and `build/arm-<basename>/`.
+For `tools/build_arm.sh`, post-build hooks emit `pcs_bldc_fw.bin`,
+`pcs_bldc_fw.hex`, and a `--print-memory-usage` size report alongside
+`pcs_bldc_fw.elf`.
 
 ### Code organization
 
 Two layered trees that mirror each other in folder names:
 
-- **`sw/lib/c/`** — channelized library implementations (the "platform").
-  Reusable, generic, channel-config-driven. Builds for both targets.
-- **`sw/fw/src/`** — pcs_bldc-specific integration: channel configs, board
-  glue, entry point at `sw/fw/src/main.c`.
+- **`sw/lib/c/shared/`** — channelized library implementations (the
+  "platform"). Reusable, generic, channel-config-driven. Builds for both
+  targets. Sits alongside the vendor packages (`CMSIS/`,
+  `STM32G4xx_HAL_Driver/`, `Unity/`) at the `sw/lib/c/` level so the
+  vendor-vs-ours distinction is visually obvious.
+- **`sw/fw/src/`** — pcs_bldc-specific integration: channel configs,
+  board glue, entry point at `sw/fw/src/main.c`.
 
 Layered architecture used in both: **`app → dev → io → hw`**, with `lib/`
-(cross-cutting libraries — `nvm/`, `rtos/`) available to all layers.
-Strict downward dependency by convention; same-layer or one-layer-down
-calls are fine; calling up or skipping layers is discouraged but not
-forbidden (judgment-call exceptions allowed).
+(cross-cutting libraries) available to all layers. Strict downward
+dependency by convention; same-layer or one-layer-down calls are fine;
+calling up or skipping layers is discouraged but not forbidden
+(judgment-call exceptions allowed).
 
-The HW layer holds the dual-target swap:
+`main.c` orchestrates startup directly:
 
-- `sw/lib/c/hw/sim/` — stub HAL (linked into native builds for SIL).
-- `sw/lib/c/hw/stm32g4/` — vendored ST HAL + CMSIS + wrapper code (linked
-  into embedded builds).
-- `sw/fw/src/hw/stm32g4/` — board-specific files (linker script, startup,
-  HAL MSP, IT) that depend on *our* MCU pinout and memory map.
+```c
+bool initSuccess = true;
+initSuccess &= HW_systemClock_init(&HW_systemClock_config);
+initSuccess &= HW_ADC_init(&HW_ADC_config);
+// ...
+if (!initSuccess) Error_Handler();
+```
+
+All `HW_*_init` / `IO_*_init` etc. functions return `bool`; `main.c` is
+the single place that calls `Error_Handler` (which is itself defined in
+`main.c`, always part of the executable's link). Library code never
+calls `Error_Handler` directly. See
+`memory/feedback_init_returns_bool.md`.
+
+### Channelization pattern (canonical idiom)
+
+Every HW-layer (and most IO-layer) module is split into two halves:
+
+**Library side — `sw/lib/c/shared/hw/<Module>/<target>/`** (one subdir
+per target: `stm32g4/`, `sim/`, ...):
+- `HW_<Module>.h` defines `HW_<Module>_channelConfig_S` (or `_config_S`)
+  with target-specific fields, plus `bool HW_<Module>_init(...)`.
+- `HW_<Module>.c` implements `HW_<Module>_init` against the target.
+- The header `#include "HW_<Module>_<channels|config>.h"` — the
+  consumer-extension seam.
+- All target subdirs define a library named `hw_<Module>` (lowercase
+  `hw_`, original module-case name); `<Module>/CMakeLists.txt` does the
+  conditional `add_subdirectory(stm32g4|sim)`.
+
+**Project side — `sw/fw/src/hw/<Module>/`**:
+- `HW_<Module>_channels.h` (multi-instance, e.g. ADC) or
+  `HW_<Module>_config.h` (single-instance, e.g. systemClock) — the
+  extension header. Holds the channel enum or project-level macros.
+- `HW_<Module>_channels.c` (or `_config.c`) — defines the const
+  `HW_<Module>_channelConfig[]` array (or single config struct) using
+  `#if BUILD_TARGET == BUILD_TARGET_STM32G4 / BUILD_TARGET_SIM` to
+  populate target-specific struct shapes from one source file.
+- `CMakeLists.txt` defines `pcs_<Module>_channels` (or `_config`)
+  INTERFACE library that just exposes its dir as an include path, then
+  attaches the .c via `target_sources(fw_hw PRIVATE ...)` and pulls in
+  `target_link_libraries(fw_hw PUBLIC hw_<Module> lib_build lib_utils)`.
+
+The `_channels` vs `_config` naming distinguishes multi-instance from
+single-instance modules. See `memory/feedback_module_naming.md`.
+
+**Canonical examples** (copy from these for new modules):
+- Single-instance: `sw/lib/c/shared/hw/systemClock/` +
+  `sw/fw/src/hw/systemClock/`
+- Multi-channel: `sw/lib/c/shared/hw/ADC/` + `sw/fw/src/hw/ADC/`
+
+### Cross-cutting libs
+
+Three foundational header-only/INTERFACE libs in `sw/lib/c/shared/lib/`
+that almost everything depends on:
+
+- **`lib_build`** — `BUILD_TARGET_STM32G4` / `BUILD_TARGET_SIM`
+  constants used in `#if` branching. The active target is set via
+  `add_compile_definitions(BUILD_TARGET=BUILD_TARGET_*)` in the
+  toolchain file.
+- **`lib_types`** — `lib_types.h` with `<stdint.h>`, `<stdbool.h>`,
+  `<stddef.h>` and project-wide typedefs (e.g. `float32_t`).
+- **`lib_utils`** — `lib_utils.h` with cross-cutting macros. Currently:
+  `COUNTOF(arr)` (GCC-checked, errors at compile time on pointer args).
+
+### HW layer & dual-target swap
+
+The HW layer holds the dual-target swap. `fw_hw` is a STATIC library
+defined on both target sides (the native side has a `_placeholder.c` to
+satisfy CMake's "STATIC needs sources" rule); `pcs_bldc_fw` always links
+against `fw_hw`, and the toolchain file picks which side gets added.
+
+- `sw/lib/c/STM32G4xx_HAL_Driver/` — vendored ST HAL driver, top-level,
+  built as `stm32g4_hal` (embedded only).
+- `sw/lib/c/CMSIS/` — vendored ARM CMSIS headers, top-level, exposed
+  via the `cmsis` interface library.
+- `sw/lib/c/shared/hw/stm32g4/` — STM32G4-family support files
+  (`system_stm32g4xx.c`, `syscalls.c`, `sysmem.c`), compiled into
+  `hw_stm32g4` (embedded only).
+- `sw/fw/src/hw/stm32g4/` — pcs_bldc-board-specific HAL glue: HAL MSP,
+  IT, linker script, startup file. No `board.c` — orchestration lives
+  in `main.c`.
+- `sw/fw/src/hw/sim/` — `_placeholder.c` to keep `fw_hw` STATIC on
+  native; will grow real sim infrastructure (motor model, etc.) over time.
+
+### CubeMX-generated code
+
+Auto-generated content from STM32CubeMX is placed flat (no `cubemx/`
+subdir) into the canonical locations:
+
+- `sw/lib/c/CMSIS/` — ARM Cortex-M standard headers (Cortex-M Core +
+  ST's STM32G4 device headers). Top-level vendored package alongside
+  Unity, exposed as a `cmsis` INTERFACE library.
+- `sw/lib/c/STM32G4xx_HAL_Driver/` — ST's STM32G4 HAL driver. Top-level
+  vendored package, exposed as a `stm32g4_hal` STATIC library.
+- `sw/lib/c/shared/hw/stm32g4/` — `system_stm32g4xx.c`, `syscalls.c`,
+  `sysmem.c` (STM32G4-family support glue). This layer is also where our
+  future channelized SPI/UART/ADC/etc. wrappers around the HAL will live.
+- `sw/fw/src/hw/stm32g4/` — `main.h`, `stm32g4xx_hal_conf.h`,
+  `stm32g4xx_it.c`/`.h`, `stm32g4xx_hal_msp.c`, `startup_stm32g431vbtx.s`,
+  `STM32G431VBTX_FLASH.ld` (board-specific).
+
+The CubeMX-generated `main.c` is intentionally **not** copied — its
+untouched original lives in `sw/fw/stm32cube/g4/Core/Src/main.c`. Read it
+there when you need to see what CubeMX generated for `SystemClock_Config`
+/ peripheral inits.
+
+`tools/convert_cubemx_to_canonical.sh` removes only the known fixed list
+of generated filenames and re-copies them; hand-written files
+(`CMakeLists.txt`, `HW_<Module>_channels.c`, `HW_<Module>_config.c`)
+sit in the same directories and are never touched. Naming convention
+tells the two apart at a glance: vendor files are `stm32g4xx_*`,
+`startup_*`, `STM32G431*.ld`, `system_*`, `syscalls.c`, `sysmem.c`, or
+live in the `CMSIS/` and `STM32G4xx_HAL_Driver/` directories.
+
+Workflow when CubeMX needs to regenerate:
+
+1. Edit `sw/fw/stm32cube/g4/pcs_bldc_g4.ioc` in STM32CubeMX, regenerate.
+2. Run `tools/convert_cubemx_to_canonical.sh`.
+3. If the clock tree or any peripheral channel config changed, diff the
+   regenerated `sw/fw/stm32cube/g4/Core/Src/main.c` against the
+   relevant `HW_<Module>_channels.c` / `HW_<Module>_config.c` and
+   hand-merge the new init values.
 
 ### Conventions
 
 - **CMake target naming:** `<layer>_<module>` (e.g. `lib_ringbuf`,
-  `app_mode_fsm`, `dev_kalman_observer`).
+  `hw_systemClock`, `hw_ADC`, `app_mode_fsm`, `dev_kalman_observer`).
+  The `<module>` part keeps original case (so `hw_ADC` not `hw_adc`).
 - **Module layout:** flat — `<module>.h` and `<module>.c` at the module
   root, no `include/` or `src/` subdirs. Tests live in a `test/` subdir.
 - **Public-header naming:** named after the module (`ringbuf.h`); internal
   helpers prefixed (`ringbuf_internal.h`) to avoid include-path collisions
   across libraries.
+- **Init signature:** `bool HW_<Module>_init(const HW_<Module>_config_S * const config)`.
+  Returns `true` on success, `false` on any failure path. Sim impls
+  always return `true` (no real failure mode). Only `main.c` calls
+  `Error_Handler` on failure.
+- **Channel-vs-config naming:** multi-instance modules use
+  `_channels` (e.g. `HW_ADC_channels.h`, `pcs_ADC_channels` interface
+  lib); single-instance modules use `_config` (e.g.
+  `HW_systemClock_config.h`, `pcs_systemClock_config`).
+- **BUILD_TARGET branching:** project channel-config files use
+  `#if (BUILD_TARGET == BUILD_TARGET_STM32G4) ... #elif (BUILD_TARGET ==
+  BUILD_TARGET_SIM) ... #endif` to define per-target struct contents from
+  a single source file. Constants come from `lib_build/lib_build.h`.
 
 ### Test framework
 
@@ -246,14 +410,23 @@ The HW layer holds the dual-target swap:
 `PCS_TARGET=native` in `sw/lib/c/CMakeLists.txt`). Each module has a
 `test/` subdir with `CMakeLists.txt` + `test_<module>.c` using Unity's
 `setUp` / `tearDown` / `RUN_TEST` / `UNITY_END` pattern. See
-`sw/lib/c/lib/ringbuf/test/test_ringbuf.c` for a working example.
+`sw/lib/c/shared/lib/ringbuf/test/test_ringbuf.c` for a working example.
 
 ### Third-party / vendored code
 
-Lives at the top of `sw/lib/c/` (one directory per project), e.g.
-`sw/lib/c/Unity/`, `sw/lib/c/FreeRTOS/` (when added), `sw/lib/c/littlefs/`
-(when added). Processor-specific third-party (CMSIS, ST HAL drivers) is
-the exception — those go under `sw/lib/c/hw/stm32g4/`.
+Lives at the top of `sw/lib/c/` (one directory per project), each with
+its own hand-written `CMakeLists.txt` defining the consumable target:
+`Unity/` (test framework), `CMSIS/` (ARM Cortex-M standard headers, target
+`cmsis`), `STM32G4xx_HAL_Driver/` (ST HAL driver, target `stm32g4_hal`),
+`FreeRTOS/` (when added), `littlefs/` (when added). The conversion
+script's surgical wipe pattern preserves these `CMakeLists.txt` files
+across CubeMX regenerations.
+
+A few small vendor-shipped support files (`system_stm32g4xx.c`,
+`syscalls.c`, `sysmem.c`) live at `sw/lib/c/shared/hw/stm32g4/` rather
+than at the top level, because they're conceptually "STM32G4 family
+glue" and will sit alongside our future channelized peripheral wrappers
+in that layer.
 
 ## PCB Design Rules
 
@@ -366,7 +539,7 @@ For a new agent joining the project, read these in order:
 For firmware / build-system work specifically, the **Build System** section
 of this file is the orientation; `tools/build_native.sh` and
 `tools/build_arm.sh` are the entry points; the demo at
-`sw/lib/c/lib/ringbuf/` is the canonical example of the module/test layout
+`sw/lib/c/shared/lib/ringbuf/` is the canonical example of the module/test layout
 to copy.
 
 For git commit messages, do not include a "Co-Authored-By: ..." line

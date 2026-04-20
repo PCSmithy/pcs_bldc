@@ -1,0 +1,21 @@
+
+/* Includes */
+#include "template.h"
+
+/* Defines */
+
+/* Typedefs */
+typedef struct
+{
+
+} template_data_S;
+
+/* Private Function Declarations */
+
+/* Private Data Definitions */
+static template_data_S template_data;
+static template_data_S * const data = &template_data;
+
+/* Private Function Definitions */
+
+/* Public Function Definitions */
