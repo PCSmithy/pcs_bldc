@@ -80,7 +80,8 @@ The project uses **spec-driven development with end-to-end traceability** via
 ├── docs/                 Project documentation
 │   ├── setup.md           Full first-time-setup guide (Win + macOS)
 │   ├── spec-system.md     Spec convention + OFT integration (source of truth)
-│   └── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
+│   ├── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
+│   └── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
 │
 └── tools/                Project tooling
     ├── oft/              OpenFastTrace JAR (4.2.2) + wrapper scripts
@@ -300,7 +301,7 @@ per target: `stm32g4/`, `sim/`, ...):
   `target_link_libraries(fw_hw PUBLIC hw_<Module> lib_build lib_utils)`.
 
 The `_channels` vs `_config` naming distinguishes multi-instance from
-single-instance modules. See `memory/feedback_module_naming.md`.
+single-instance modules. See [`docs/c-coding-conventions.md`](docs/c-coding-conventions.md).
 
 **Canonical examples** (copy from these for new modules):
 - Single-instance: `sw/lib/c/shared/hw/systemClock/` +
@@ -382,22 +383,30 @@ Workflow when CubeMX needs to regenerate:
 
 ### Conventions
 
+C code style (naming, MISRA-flavored patterns, init contracts, file
+naming) is the source-of-truth doc at
+[`docs/c-coding-conventions.md`](docs/c-coding-conventions.md).
+**Read it before writing or reviewing any C in this project.** It
+covers:
+
+- Function / variable / type / macro / enum naming (`_private_` infix,
+  `_S`/`_E` type suffixes, etc.).
+- Single return per function (MISRA Rule 15.5).
+- Explicit parens on every operand of compound boolean logic.
+- `const` on every local that isn't reassigned (MISRA Rule 8.13).
+- `bool HW_<Module>_init(...)` contract; only `main.c` calls
+  `Error_Handler`.
+- `_channels` (multi-instance) vs `_config` (single-instance) module
+  naming.
+
+Build-system-specific conventions that don't fit the C-style doc:
+
 - **CMake target naming:** `<layer>_<module>` (e.g. `lib_ringbuf`,
   `hw_systemClock`, `hw_ADC`, `app_mode_fsm`, `dev_kalman_observer`).
   The `<module>` part keeps original case (so `hw_ADC` not `hw_adc`).
-- **Module layout:** flat — `<module>.h` and `<module>.c` at the module
-  root, no `include/` or `src/` subdirs. Tests live in a `test/` subdir.
-- **Public-header naming:** named after the module (`ringbuf.h`); internal
-  helpers prefixed (`ringbuf_internal.h`) to avoid include-path collisions
-  across libraries.
-- **Init signature:** `bool HW_<Module>_init(const HW_<Module>_config_S * const config)`.
-  Returns `true` on success, `false` on any failure path. Sim impls
-  always return `true` (no real failure mode). Only `main.c` calls
-  `Error_Handler` on failure.
-- **Channel-vs-config naming:** multi-instance modules use
-  `_channels` (e.g. `HW_ADC_channels.h`, `pcs_ADC_channels` interface
-  lib); single-instance modules use `_config` (e.g.
-  `HW_systemClock_config.h`, `pcs_systemClock_config`).
+- **Module file layout:** flat — `<module>.h` and `<module>.c` at the
+  module root, no `include/` or `src/` subdirs. Tests live in a
+  `test/` subdir.
 - **BUILD_TARGET branching:** project channel-config files use
   `#if (BUILD_TARGET == BUILD_TARGET_STM32G4) ... #elif (BUILD_TARGET ==
   BUILD_TARGET_SIM) ... #endif` to define per-target struct contents from
@@ -541,6 +550,13 @@ of this file is the orientation; `tools/build_native.sh` and
 `tools/build_arm.sh` are the entry points; the demo at
 `sw/lib/c/shared/lib/ringbuf/` is the canonical example of the module/test layout
 to copy.
+
+For writing or reviewing C code, [`docs/c-coding-conventions.md`](docs/c-coding-conventions.md)
+is required reading — it's the source of truth for naming,
+MISRA-flavored patterns, init contracts, and module-naming rules.
+Canonical worked examples for those conventions are
+`sw/lib/c/shared/hw/ADC/` (multi-channel) and
+`sw/lib/c/shared/hw/systemClock/` (single-instance).
 
 For git commit messages, do not include a "Co-Authored-By: ..." line
 
