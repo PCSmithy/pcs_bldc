@@ -105,11 +105,26 @@ cp "${SRC}/STM32G431VBTX_FLASH.ld"                "${FW_HW}/"
 # in the reference tree at sw/fw/stm32cube/g4/Core/Src/main.c when you
 # need to see SystemClock_Config / MX_*_Init bodies.
 
+# ---------------------------------------------------------------------------
+# Channelized HW_*_channels.cubemx.h headers — auto-generated macros
+# extracted from CubeMX main.c's MX_GPIO_Init / MX_ADC*_Init function
+# bodies. Keeps the CubeMX-derived field values for HW_GPIO_channels.c
+# and HW_ADC_channels.c in sync with the .ioc without hand-porting.
+# ---------------------------------------------------------------------------
+echo
+echo "==> Regenerating HW_*_channels.cubemx.h from CubeMX main.c"
+PYTHON=$(command -v python3 || command -v python || true)
+if [ -z "${PYTHON}" ]; then
+  echo "  WARN: python3/python not on PATH; skipping channels.cubemx.h generation." >&2
+  echo "        Run tools/cubemx_to_channels.py manually after installing Python 3.10+." >&2
+else
+  "${PYTHON}" "${REPO_ROOT}/tools/cubemx_to_channels.py"
+fi
+
 echo
 echo "==> Done."
 echo
-echo "If the clock tree or peripheral list changed in CubeMX, diff"
+echo "If SystemClock_Config changed in CubeMX, diff"
 echo "  ${SRC}/Core/Src/main.c"
-echo "against the SystemClock_Config / clock_init() in"
-echo "  ${FW_HW}/board.c"
-echo "and hand-merge."
+echo "against HW_systemClock_init / clock_init() and hand-merge."
+echo "(GPIO / ADC channel configs auto-update via the .cubemx.h headers.)"
