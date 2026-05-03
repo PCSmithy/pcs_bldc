@@ -235,6 +235,31 @@ The library-side header (under
 extension header by the matching name —
 `#include "HW_<Module>_channels.h"` or `#include "HW_<Module>_config.h"`.
 
+### Where the channels enum lives: library-side vs project-side
+
+The project-side `_channels.h` extension header (and matching
+`pcs_<Module>_channels` INTERFACE lib) only exists when there's
+something project-specific to declare. The deciding question is whether
+the channels enum is **HW-fixed across the entire MCU family** or
+**varies per chip variant**:
+
+- **Library-side** (in `HW_<Module>.h`): when the enum is HW-fixed for
+  the whole family. Example: `HW_GPIO_port_E` — every STM32G4 variant
+  has GPIOA..GPIOG. No reason to make each project re-declare it.
+- **Project-side** (in `HW_<Module>_channels.h`): when the enum varies
+  per chip variant. Example: `HW_ADC_channels_E` — STM32G431/G441 have
+  2 ADCs, G473/G474/G483/G484 have 5 ADCs, so the enum body genuinely
+  differs across projects targeting different G4 variants.
+
+When the enum is library-side, the project-side `_channels.h` and
+`pcs_<Module>_channels` INTERFACE lib aren't needed and shouldn't be
+created — leaving empty placeholder files counts as ceremony. The
+`HW_<Module>_channels.c` file (config instance) stays regardless;
+that's always project-specific.
+
+Canonical examples in tree: `HW_GPIO` (library-side enum, no
+`channels.h`) vs `HW_ADC` (project-side enum in `HW_ADC_channels.h`).
+
 ## See also
 
 - The **channelization pattern** itself (where files live, how library
