@@ -44,7 +44,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .vref                = 3.3f,
 
         .inputs         = { HW_ADC_CUBEMX_INPUTS_ADC1 },
-        .injectedInputs = { 0 },  // No injected inputs configured yet.
+        .injectedInputs = { { 0 } },  // No injected inputs configured yet.
                                   // FOC current sensing will put phase U on
                                   // this channel's slot 0, with ADC2's slot 0
                                   // = phase V, both triggered simultaneously
@@ -74,7 +74,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .vref                = 3.3f,
 
         .inputs         = { HW_ADC_CUBEMX_INPUTS_ADC2 },
-        .injectedInputs = { 0 },
+        .injectedInputs = { { 0 } },
     },
 
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
@@ -88,7 +88,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              = { HW_ADC_CUBEMX_SIM_INPUTS_ADC1 },
-        .injectedInputs      = { 0 },
+        .injectedInputs      = { { 0 } },
     },
 
     [HW_ADC_CHANNEL_2] =
@@ -101,7 +101,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              = { HW_ADC_CUBEMX_SIM_INPUTS_ADC2 },
-        .injectedInputs      = { 0 },
+        .injectedInputs      = { { 0 } },
     },
 #else
 #error "ERROR! HW_ADC_channelConfig not defined for build target!"
