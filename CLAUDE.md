@@ -146,14 +146,17 @@ file organization, OFT integration, and anti-bloat rules all live there.
 
 ### ID convention (project policy)
 
-`<type>~<topic>_<NNN>~1` where:
+`<type>~<topic>[_<subtopic>]_<NNN>~1` where:
 
 - `type` ∈ `{sys, fw, app}`.
 - `topic` is from the canonical table in `docs/spec-system.md` (current
-  topics: `arch`, `mc`, `est`, `obs`, `ops`, `safety`, `pd`, `persist`,
-  `conn`, `views`).
-- `NNN` is sequential within `(type, topic)`, zero-padded to 3 digits,
-  never reused.
+  topics: `arch`, `hal`, `mc`, `est`, `obs`, `ops`, `safety`, `pd`,
+  `persist`, `conn`, `views`).
+- `subtopic` is an optional per-area number space under a topic. Used by
+  `hal` (one per peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, ...); most
+  topics omit it.
+- `NNN` is sequential within `(type, topic, subtopic)`, zero-padded to 3
+  digits, never reused.
 - Version is **always `~1`** — never bumped. Specs are edited in place.
 
 The smoketest under `tools/oft/_smoketest/` is a documented exception and

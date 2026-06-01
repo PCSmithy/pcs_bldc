@@ -161,6 +161,35 @@ if ((out != NULL) &&
 Ternary conditions get the same treatment:
 `((numEnabled > 1U)) ? A : B`.
 
+### Comments explain non-obvious context only
+
+A comment exists for exactly one reason: to explain something the code
+cannot say for itself — a *why*, a constraint, a non-obvious gotcha. If
+a comment restates what the code already shows, delete it.
+
+Three hard rules:
+
+- **Only non-obvious context.** Comment the reason, not the mechanics.
+  `i++` does not need `// increment i`; a `& (x - 1)` power-of-two check
+  does benefit from a note on what it rejects.
+- **Never reference past implementations.** No "was X, now Y", no
+  "previously", no "changed from", no commented-out old code. Source
+  control is the record of history; a comment describes the code as it
+  is now, for someone reading it cold.
+- **1–2 lines, hard limit.** If the explanation needs more, the code is
+  too complex — split or rename until a line or two suffices.
+
+```c
+// WRONG — restates the code / references history
+// loop over the buses (used to be channels before the bus/channel split)
+for (HW_SPI_bus_E bus = 0U; bus < HW_SPI_BUS_COUNT; bus++)
+
+// RIGHT — explains the non-obvious why, in one line
+// Validate every channel before touching hardware so a bad config
+// fails init cleanly rather than half-configuring the peripheral.
+for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+```
+
 ### const where possible (MISRA Rule 8.13)
 
 Every variable that is not reassigned after initialization is declared

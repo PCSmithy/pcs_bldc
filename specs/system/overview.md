@@ -348,3 +348,34 @@ Covers:
   enables comparative experiments across identical hardware.)
 
 Needs: app, test
+
+### Hardware abstraction layer for representative simulation
+`sys~arch_005~1`
+
+The firmware shall isolate all MCU-peripheral access behind a hardware-
+abstraction (HW) layer whose modules present an identical, target-independent
+API across the embedded (STM32G4) and simulation (SIM) build targets, so that
+IO-, device-, and application-layer code can be exercised unchanged in a
+high-fidelity SIL environment. Each HW module shall be self-contained and
+reusable across projects without modification, with only its channel/bus
+configuration and target-specific implementation supplied per project.
+
+Acceptance:
+
+- Every HW-layer module compiles and links for both STM32G4 and SIM behind
+  a single consumer-facing header API.
+- IO/dev/app code built against the HW API requires no source changes to
+  move between targets; only the channel/bus configuration and the
+  target-specific HW implementation differ.
+- A HW module can be dropped into a separate project and built for both
+  targets with only its channel/bus configuration supplied by the new
+  project.
+
+Covers:
+
+- (project goal: README.md, "Reference-quality embedded software
+  development" + "Modeling, simulation, and observability infrastructure" —
+  SIL is the primary validation surface, which requires well-contained,
+  reusable hardware abstractions with target-swappable implementations.)
+
+Needs: fw, test

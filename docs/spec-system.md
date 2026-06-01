@@ -185,15 +185,22 @@ as plain Markdown on GitHub.
 
 ## ID conventions
 
-OFT spec IDs follow the syntax `<type>~<topic>_<NNN>~<version>`. The body
-is intentionally short — the spec heading and content in the spec file is
-the real description; the ID is just a stable index.
+OFT spec IDs follow the syntax `<type>~<topic>[_<subtopic>]_<NNN>~<version>`.
+The body is intentionally short — the spec heading and content in the spec
+file is the real description; the ID is just a stable index.
 
 - **Type** marks the artifact type: `sys`, `fw`, or `app`.
 - **Topic** is a short canonical abbreviation drawn from the table below.
+- **Subtopic** is an *optional* second-level abbreviation used to give a
+  busy topic per-area number spaces instead of one flat pool. It is
+  currently used by the `hal` topic, which carries one sub-topic per
+  peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, `hal_dma`, `hal_tim`, ...
+  Most topics omit the sub-topic entirely. Sub-topics are lowercase
+  abbreviations; they are not separately enumerated in the topic table.
 - **NNN** is a zero-padded 3-digit sequential number, scoped to the
-  `(type, topic)` tuple. `sys~mc_001`, `sys~mc_002`, ..., `sys~mc_999`.
-  `fw~mc_001` is a separate number space from `sys~mc_001`.
+  `(type, topic, subtopic)` tuple. `sys~mc_001`, `sys~mc_002`, ...,
+  `sys~mc_999`. `fw~mc_001` is a separate number space from `sys~mc_001`,
+  and `fw~hal_spi_001` is a separate number space from `fw~hal_adc_001`.
 - **Version** is **always `~1`** by project policy. We do not use OFT's
   version-bumping mechanism; specs are edited in place. The trailing `~1`
   is mandatory OFT syntax we cannot elide. **Do not bump** unless you have
@@ -207,6 +214,7 @@ numbering at `_001`.
 | Abbrev    | Topic                                            | Used by         |
 |-----------|--------------------------------------------------|-----------------|
 | `arch`    | Architecture (cross-cutting / overview)          | sys, fw, app    |
+| `hal`     | Hardware abstraction layer (hw-layer peripheral drivers: SPI, ADC, GPIO, DMA, timers); uses per-peripheral sub-topics, e.g. `hal_spi`, `hal_adc` | sys, fw |
 | `mc`      | Motor control (FOC, motion, trajectory tracking) | sys, fw         |
 | `est`     | Estimation (Kalman, sensorless, parameter ID)    | sys, fw         |
 | `obs`     | Observability (telemetry, logging, plotting)     | sys, fw, app    |
@@ -224,8 +232,8 @@ short form.
 
 ### Numbering rules
 
-- Sequential within a `(type, topic)` tuple. To assign a new number, find
-  the highest existing one and add 1.
+- Sequential within a `(type, topic, subtopic)` tuple. To assign a new
+  number, find the highest existing one in that same tuple and add 1.
 - **Never reuse numbers.** If a spec is deleted or superseded, leave the
   gap. Numbers are stable identifiers; reused numbers cause silent trace
   breakage.
@@ -238,6 +246,7 @@ short form.
   ```bash
   tools/next-spec-id.py sys mc          # -> sys~mc_001~1
   tools/next-spec-id.py fw mc           # -> fw~mc_007~1 (independent number space)
+  tools/next-spec-id.py fw hal spi      # -> fw~hal_spi_001~1 (sub-topic space)
   tools/next-spec-id.py --list sys arch # list all existing + show next
   ```
 
@@ -260,6 +269,7 @@ the scripts recognize the new topic.
 ```
 sys~mc_001~1        sys~ops_001~1        sys~persist_001~1    sys~arch_001~1
 fw~mc_001~1         fw~est_001~1         fw~obs_001~1         fw~persist_001~1
+fw~hal_spi_001~1    fw~hal_adc_001~1     fw~hal_gpio_001~1    (sub-topic IDs)
 app~conn_001~1      app~views_001~1      app~obs_001~1
 ```
 
@@ -279,6 +289,11 @@ heading, a one-paragraph "shall" statement, a testable `Acceptance:`
 block, an explicit `Covers:` link to a parent spec (or a project-goal
 reference for top-level `sys~` specs), and a `Needs:` declaration. No
 boilerplate metadata blocks beyond that.
+
+One **optional** block is allowed: a `Rationale:` section, placed after
+the "shall" and before `Acceptance:`. It carries no OFT trace. When to use
+it (rarely) and how to word it are governed by
+[`spec-style.md`](spec-style.md).
 
 Smallest possible spec:
 
@@ -304,6 +319,12 @@ For full worked examples covering `fw~`, `app~`, and cross-component
 `sys~` patterns plus the C / Rust / Python tag syntax, see
 [`spec-template.md`](spec-template.md). If a spec needs more structure
 than the smallest form, it is probably two specs.
+
+**How the "shall" statement and acceptance bullets are *worded*** —
+conciseness, stateless/end-state language, testable acceptance — is the
+domain of [`spec-style.md`](spec-style.md). This document owns the
+mechanics (IDs, trace, file layout); that one owns the prose. Read it
+before writing spec language.
 
 ## Tooling: OpenFastTrace
 

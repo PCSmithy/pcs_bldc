@@ -61,3 +61,6 @@ fp-info-cache
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Claude Code runtime artifacts (committed config like skills/ stays tracked)
+.claude/scheduled_tasks.lock

@@ -130,6 +130,9 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
 
 const HW_SPI_config_S HW_SPI_config =
 {
+    .buses = HW_SPI_busConfig,
+    .numBuses = COUNTOF(HW_SPI_busConfig),
+
     .channels = HW_SPI_channelConfig,
     .numChannels = COUNTOF(HW_SPI_channelConfig),
 };

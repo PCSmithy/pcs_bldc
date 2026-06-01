@@ -128,20 +128,20 @@ def test_settings_round_trip_across_power_cycle(): ...
 
 ## What stays out
 
-- No five-section IEEE template, no rationale-and-justification blocks.
+- No five-section IEEE template. (Rationale belongs in the requirement only
+  via the rare optional `Rationale:` section — see
+  [`spec-style.md`](spec-style.md).)
 - No `Author:` / `Date:` metadata — git tracks that.
 - No "this spec covers itself" recursive `Covers:` — OFT will reject it.
-- No multiple "shall" statements per spec — split into multiple specs.
+
+The prose rules themselves (one shall per spec, conciseness, stateless
+language, testable acceptance, …) live in [`spec-style.md`](spec-style.md);
+this file only shows the format.
 
 ## OFT gotchas
 
-- **Always include a language hint on opening code fences.** Use `` ```text ``
-  for ASCII / box-drawing diagrams; use `` ```c `` / `` ```rust `` /
-  `` ```python `` for example code. A bare opening `` ``` `` (no language)
-  confuses OFT's markdown parser and can prevent it from detecting any specs
-  in the rest of the file. The closing fence stays plain `` ``` ``.
-- **Avoid `---` thematic breaks in spec body text.** They can be misread as
-  another frontmatter delimiter. Use a heading (`## Section`) for visual
-  separation instead.
-- **Keep the spec ID line directly under its heading**, with no blank line
-  between them: `### Heading` then on the next line `` `type~name~version` ``.
+Format mechanics that trip up OFT's parser — language-hinted code fences,
+no `---` thematic breaks in spec bodies, the ID line directly under its
+heading — are defined in [`spec-style.md`](spec-style.md) (rule 14, with
+full detail in [`spec-system.md`](spec-system.md)). Follow them; the worked
+examples above already do.

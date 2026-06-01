@@ -8,12 +8,13 @@ docs/spec-system.md (parsed via spec_convention.py) so typos surface
 immediately.
 
 Usage:
-  tools/next-spec-id.py <type> <topic>
-  tools/next-spec-id.py --list <type> <topic>
+  tools/next-spec-id.py <type> <topic> [subtopic]
+  tools/next-spec-id.py --list <type> <topic> [subtopic]
 
 Examples:
   tools/next-spec-id.py sys mc        # -> sys~mc_001~1
   tools/next-spec-id.py fw mc         # -> fw~mc_007~1 (if 001-006 are taken)
+  tools/next-spec-id.py fw hal spi    # -> fw~hal_spi_001~1 (own number space)
   tools/next-spec-id.py --list sys arch
 """
 
@@ -37,6 +38,11 @@ def main():
     parser.add_argument(
         "topic", help="Topic abbreviation (see docs/spec-system.md)"
     )
+    parser.add_argument(
+        "subtopic", nargs="?", default=None,
+        help="Optional sub-topic for its own number space (e.g. 'spi' under "
+             "'hal' -> fw~hal_spi_NNN~1).",
+    )
     args = parser.parse_args()
 
     valid_topics = sc.parse_topic_table()
@@ -58,18 +64,24 @@ def main():
     definitions, _ = sc.find_spec_id_lines()
     existing = sorted(
         int(d.number) for d in definitions
-        if d.type == args.type and d.topic == args.topic
+        if d.type == args.type
+        and d.topic == args.topic
+        and d.subtopic == args.subtopic
     )
     next_n = (existing[-1] + 1) if existing else 1
-    next_id = f"{args.type}~{args.topic}_{next_n:03d}~1"
+
+    base = f"{args.type}~{args.topic}"
+    if args.subtopic:
+        base = f"{base}_{args.subtopic}"
+    next_id = f"{base}_{next_n:03d}~1"
 
     if args.show_list:
         if existing:
-            print(f"Existing {args.type}~{args.topic}_NNN~1 specs:")
+            print(f"Existing {base}_NNN~1 specs:")
             for n in existing:
-                print(f"  {args.type}~{args.topic}_{n:03d}~1")
+                print(f"  {base}_{n:03d}~1")
         else:
-            print(f"No existing {args.type}~{args.topic}_NNN~1 specs.")
+            print(f"No existing {base}_NNN~1 specs.")
         print()
         print(f"Next: {next_id}")
     else:

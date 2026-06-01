@@ -23,9 +23,12 @@ SPEC_SYSTEM_MD = REPO_ROOT / "docs" / "spec-system.md"
 VALID_TYPES = ("sys", "fw", "app")
 REQUIRED_VERSION = "1"  # project policy: always ~1
 
-# Strict spec ID format on its own line: `<type>~<topic>_<NNN>~<version>`
+# Strict spec ID format on its own line:
+#   `<type>~<topic>[_<subtopic>]_<NNN>~<version>`
+# The sub-topic is optional (e.g. `hal` uses `hal_spi`, `hal_adc` to keep a
+# separate number space per peripheral); most topics omit it.
 STRICT_ID_LINE = re.compile(
-    r"^`([a-z]+)~([a-z]+)_(\d+)~(\d+)`\s*$"
+    r"^`([a-z]+)~([a-z]+)(?:_([a-z]+))?_(\d+)~(\d+)`\s*$"
 )
 # Loose: any backticked thing on its own line that has the shape word~word~word.
 # Used to flag near-misses (typos, wrong format) as violations rather than
@@ -42,6 +45,7 @@ class SpecDef:
     raw_id: str
     type: str
     topic: str
+    subtopic: str | None  # e.g. "spi" in fw~hal_spi_001~1; None when absent
     number: str   # zero-padded, e.g. "001"
     version: str
 
@@ -104,10 +108,11 @@ def find_spec_id_lines(
                 continue
             strict = STRICT_ID_LINE.match(line)
             if strict:
-                t, topic, number, version = strict.groups()
+                t, topic, subtopic, number, version = strict.groups()
                 definitions.append(SpecDef(
                     file=md_file, line=lineno, raw_id=loose.group(1),
-                    type=t, topic=topic, number=number, version=version,
+                    type=t, topic=topic, subtopic=subtopic,
+                    number=number, version=version,
                 ))
             else:
                 violations.append(Violation(
