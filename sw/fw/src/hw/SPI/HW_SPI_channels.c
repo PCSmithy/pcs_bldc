@@ -46,6 +46,7 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         },
         .transferMode = HW_SPI_TRANSFERMODE_SW,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .transferMode    = HW_SPI_TRANSFERMODE_SW,
         .busNameStr      = "SPI1",
 #else
 # error "ERROR! HW_SPI_config not defined for build target!"
@@ -81,6 +82,7 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         },
         .transferMode = HW_SPI_TRANSFERMODE_DMA,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .transferMode    = HW_SPI_TRANSFERMODE_DMA,
         .busNameStr      = "SPI3",
 #endif
     },
@@ -97,8 +99,16 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
         {
             .port = HW_GPIO_PORT_C,
             .pin = 0x04,
+            .activeLevel = HW_GPIO_LEVEL_LOW,
         },
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .csMode = HW_SPI_CS_MODE_GPIO,
+        .csGpioConfig =
+        {
+            .port = HW_GPIO_PORT_C,
+            .pin = 0x04,
+            .activeLevel = HW_GPIO_LEVEL_LOW,
+        },
         .channelNameStr      = "AS5048_1",
 #endif
     },
@@ -111,8 +121,16 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
         {
             .port = HW_GPIO_PORT_B,
             .pin = 0x02,
+            .activeLevel = HW_GPIO_LEVEL_LOW,
         },
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .csMode = HW_SPI_CS_MODE_GPIO,
+        .csGpioConfig =
+        {
+            .port = HW_GPIO_PORT_B,
+            .pin = 0x02,
+            .activeLevel = HW_GPIO_LEVEL_LOW,
+        },
         .channelNameStr      = "AS5048_2",
 #endif
     },
@@ -122,6 +140,7 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
         .csMode = HW_SPI_CS_MODE_NONE,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .csMode = HW_SPI_CS_MODE_NONE,
         .channelNameStr      = "SK6805_STRING",
 #endif
     },

@@ -21,6 +21,12 @@ typedef enum
     HW_GPIO_PORT_COUNT,
 } HW_GPIO_port_E;
 
+typedef enum
+{
+    HW_GPIO_LEVEL_LOW,
+    HW_GPIO_LEVEL_HIGH,
+} HW_GPIO_level_E;
+
 typedef struct
 {
     const GPIO_InitTypeDef * pins;
@@ -43,5 +49,10 @@ typedef struct
 // reset state to output mode), and calls HAL_GPIO_Init. Returns false
 // on NULL config or any HAL_GPIO_Init failure.
 bool HW_GPIO_init(const HW_GPIO_config_S * const config);
+
+// Drive a single configured output pin to `level`. `pin` is a HAL pin
+// mask (GPIO_PIN_x). No-op if `port` is out of range.
+// TODO: needs an fw~hal_gpio spec; add when the GPIO HAL specs are written.
+void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 #endif // HW_GPIO_H

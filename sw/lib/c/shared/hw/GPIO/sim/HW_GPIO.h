@@ -20,6 +20,12 @@ typedef enum
     HW_GPIO_PORT_COUNT,
 } HW_GPIO_port_E;
 
+typedef enum
+{
+    HW_GPIO_LEVEL_LOW,
+    HW_GPIO_LEVEL_HIGH,
+} HW_GPIO_level_E;
+
 // Mirror of the stm32g4 struct shape, but with no HAL types — pin
 // configs are just human-readable names for trace logs. SIL doesn't
 // have real pins to configure; this layer exists to keep the API
@@ -44,5 +50,10 @@ typedef struct
 
 /* Public Function Declarations */
 bool HW_GPIO_init(const HW_GPIO_config_S * const config);
+
+// Records the write for SIL inspection (see HW_GPIO_sim.h). `pin` is a
+// single-bit mask matching the stm32g4 GPIO_PIN_x encoding.
+// TODO: needs an fw~hal_gpio spec; add when the GPIO HAL specs are written.
+void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 #endif // HW_GPIO_H

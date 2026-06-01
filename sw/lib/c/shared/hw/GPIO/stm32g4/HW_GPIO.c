@@ -93,3 +93,12 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
     }
     return ret;
 }
+
+void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
+{
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        const GPIO_PinState pinState = (level == HW_GPIO_LEVEL_HIGH) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+        HAL_GPIO_WritePin(HW_GPIO_portHandleMapping[port], (uint16_t)pin, pinState);
+    }
+}
