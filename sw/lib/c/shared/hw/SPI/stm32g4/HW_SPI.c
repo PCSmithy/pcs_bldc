@@ -8,13 +8,13 @@
 typedef struct
 {
     SPI_HandleTypeDef hspi;
-} HW_SPI_channelData_S;
+} HW_SPI_busData_S;
 
 typedef struct
 {
     const HW_SPI_config_S * config;
 
-    HW_SPI_channelData_S channels[HW_SPI_CHANNEL_COUNT];
+    HW_SPI_busData_S buses[HW_SPI_BUS_COUNT];
 } HW_SPI_data_S;
 
 /* Private Function Declarations */
@@ -37,18 +37,26 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
         if (success)
         {
             ret = true;
-            data->config = config;
 
-            for (HW_SPI_channels_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+            for (HW_SPI_bus_E bus = 0U; bus < HW_SPI_BUS_COUNT; bus++)
             {
-                if (config->channels[channel].enabled)
+                if (config->buses[bus].enabled)
                 {
-                    data->channels[channel].hspi = config->channels[channel].hspi;
+                    data->buses[bus].hspi = config->buses[bus].hspi;
 
-                    ret &= HAL_SPI_Init(&data->channels[channel].hspi) == HAL_OK;
+                    ret &= HAL_SPI_Init(&data->buses[bus].hspi) == HAL_OK;
                 }
             }
+
+            // TODO - add cs config validation
+
+            data->config = config;
         }
     }
     return ret;
 }
+
+
+bool HW_SPI_transmit(HW_SPI_channel_E channel, uint8_t * txData, size_t length);
+bool HW_SPI_receive(HW_SPI_channel_E channel, uint8_t * rxData, size_t length);
+bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t * rxData, size_t length);

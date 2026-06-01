@@ -25,14 +25,20 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
     if (config != NULL)
     {
         bool success = true;
-        for (HW_SPI_channels_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+        for (HW_SPI_bus_E bus = 0U; bus < HW_SPI_BUS_COUNT; bus++)
         {
-            if (config->channels[channel].enabled)
+            if (config->buses[bus].enabled)
             {
-                const HW_SPI_channelConfig_S * const channelConfig = &config->channels[channel];
+                const HW_SPI_busConfig_S * const busConfig = &config->buses[bus];
 
-                success &= channelConfig->channelNameStr != NULL;
+                success &= busConfig->busNameStr != NULL;
             }
+        }
+
+        for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+        {
+            success &= (config->channels[channel].bus < HW_SPI_BUS_COUNT);
+            success &= (config->channels[channel].channelNameStr != NULL);
         }
 
         if (success)
@@ -43,3 +49,7 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
     }
     return ret;
 }
+
+bool HW_SPI_transmit(HW_SPI_channel_E channel, uint8_t * txData, size_t length);
+bool HW_SPI_receive(HW_SPI_channel_E channel, uint8_t * rxData, size_t length);
+bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t * rxData, size_t length);

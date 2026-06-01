@@ -5,4 +5,5 @@ target_link_libraries(hw_SPI
     lib_types
     stm32g4_hal             # for SPI_HandleTypeDef + HAL_SPI_* prototypes
     pcs_SPI_channels        # consumer-provided HW_SPI_channels.h path
+    hw_GPIO
 )

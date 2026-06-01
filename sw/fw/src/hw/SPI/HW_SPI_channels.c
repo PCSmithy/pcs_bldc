@@ -18,9 +18,9 @@
 /* Private Data Definitions */
 
 
-const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
+const HW_SPI_busConfig_S HW_SPI_busConfig[] =
 {
-    [HW_SPI_CHANNEL_1] =
+    [HW_SPI_BUS_1] =
     {
         .enabled = true,
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -44,17 +44,18 @@ const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
                 .NSSPMode = SPI_NSS_PULSE_ENABLE,
             },
         },
+        .transferMode = HW_SPI_TRANSFERMODE_SW,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
-        .channelNameStr      = "SPI1",
+        .busNameStr      = "SPI1",
 #else
 # error "ERROR! HW_SPI_config not defined for build target!"
 #endif
     },
-    [HW_SPI_CHANNEL_2] =
+    [HW_SPI_BUS_2] =
     {
         .enabled = false,
     },
-    [HW_SPI_CHANNEL_3] =
+    [HW_SPI_BUS_3] =
     {
         .enabled = true,
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -77,9 +78,51 @@ const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
                 .CRCLength = SPI_CRC_LENGTH_DATASIZE,
                 .NSSPMode = SPI_NSS_PULSE_ENABLE,
             },
-        }
+        },
+        .transferMode = HW_SPI_TRANSFERMODE_DMA,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
-        .channelNameStr      = "SPI3",
+        .busNameStr      = "SPI3",
+#endif
+    },
+};
+
+static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
+{
+    [HW_SPI_CHANNEL_AS5048_1] =
+    {
+        .bus = HW_SPI_BUS_1,
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+        .csMode = HW_SPI_CS_MODE_GPIO,
+        .csGpioConfig =
+        {
+            .port = HW_GPIO_PORT_C,
+            .pin = 0x04,
+        },
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr      = "AS5048_1",
+#endif
+    },
+    [HW_SPI_CHANNEL_AS5048_2] =
+    {
+        .bus = HW_SPI_BUS_1,
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+        .csMode = HW_SPI_CS_MODE_GPIO,
+        .csGpioConfig =
+        {
+            .port = HW_GPIO_PORT_B,
+            .pin = 0x02,
+        },
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr      = "AS5048_2",
+#endif
+    },
+    [HW_SPI_CHANNEL_SK6805_STRING] =
+    {
+        .bus = HW_SPI_BUS_3,
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+        .csMode = HW_SPI_CS_MODE_NONE,
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr      = "SK6805_STRING",
 #endif
     },
 };
