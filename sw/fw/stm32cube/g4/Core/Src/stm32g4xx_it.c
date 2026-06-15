@@ -214,4 +214,26 @@ void USB_LP_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+/**
+  * @brief This function handles EXTI lines 5..9 interrupt.
+  */
+void EXTI9_5_IRQHandler(void)
+{
+  for (uint16_t line = 5U; line <= 9U; line++)
+  {
+    HAL_GPIO_EXTI_IRQHandler((uint16_t)(1U << line));
+  }
+}
+
+/**
+  * @brief This function handles EXTI lines 10..15 interrupt.
+  */
+void EXTI15_10_IRQHandler(void)
+{
+  for (uint16_t line = 10U; line <= 15U; line++)
+  {
+    HAL_GPIO_EXTI_IRQHandler((uint16_t)(1U << line));
+  }
+}
+
 /* USER CODE END 1 */

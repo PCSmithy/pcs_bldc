@@ -4,6 +4,11 @@
 
 /* Defines */
 
+// Preemption priority for GPIO EXTI lines. Kept numerically high enough to
+// sit below the FreeRTOS syscall ceiling, so the ISR stays RTOS-safe once
+// FreeRTOS is wired up.
+#define HW_GPIO_EXTI_IRQ_PRIORITY    (5U)
+
 /* Typedefs */
 // One entry per EXTI line (0..15). HAL_GPIO_EXTI_Callback dispatches the
 // pending line here, so registration and dispatch share this table.
@@ -24,6 +29,7 @@ typedef struct
 
 static void HW_GPIO_private_enablePortClock(HW_GPIO_port_E port);
 static bool HW_GPIO_private_pinConfigValid(const GPIO_InitTypeDef * const pinConfig);
+static void HW_GPIO_private_enableExtiNvic(uint32_t pin);
 
 /* Private Data Definitions */
 
@@ -79,6 +85,26 @@ static bool HW_GPIO_private_pinConfigValid(const GPIO_InitTypeDef * const pinCon
     return ((pinValid) && (modeValid));
 }
 
+// Unmask the NVIC EXTI interrupt(s) for the line(s) in `pin` so a configured
+// interrupt pin actually reaches HAL_GPIO_EXTI_IRQHandler. On STM32G4 lines
+// 0..4 have dedicated IRQs, lines 5..9 share EXTI9_5, and 10..15 share
+// EXTI15_10.
+// [impl->fw~hal_gpio_005~1]
+static void HW_GPIO_private_enableExtiNvic(uint32_t pin)
+{
+    for (uint32_t bit = 0U; bit < 16U; bit++)
+    {
+        if ((pin & (1UL << bit)) != 0U)
+        {
+            const IRQn_Type irq = (bit <= 4U) ? (IRQn_Type)((uint32_t)EXTI0_IRQn + bit) :
+                                  (bit <= 9U) ? EXTI9_5_IRQn :
+                                                EXTI15_10_IRQn;
+            HAL_NVIC_SetPriority(irq, HW_GPIO_EXTI_IRQ_PRIORITY, 0U);
+            HAL_NVIC_EnableIRQ(irq);
+        }
+    }
+}
+
 /* Public Function Definitions */
 // [impl->fw~hal_gpio_001~1]
 bool HW_GPIO_init(const HW_GPIO_config_S * const config)
@@ -127,6 +153,15 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
                     }
 
                     HAL_GPIO_Init(HW_GPIO_portHandleMapping[port], pinConfig);
+
+                    // Interrupt-mode pins also need their EXTI line unmasked
+                    // in the NVIC to actually fire.
+                    if ((pinConfig->Mode == GPIO_MODE_IT_RISING) ||
+                        (pinConfig->Mode == GPIO_MODE_IT_FALLING) ||
+                        (pinConfig->Mode == GPIO_MODE_IT_RISING_FALLING))
+                    {
+                        HW_GPIO_private_enableExtiNvic(pinConfig->Pin);
+                    }
                 }
             }
 
