@@ -16,9 +16,14 @@
 add_library(pcs_stm32g4_hal_conf INTERFACE)
 target_include_directories(pcs_stm32g4_hal_conf INTERFACE .)
 
+# FreeRTOSConfig.h lives here too; expose it to the vendored freertos kernel.
+add_library(pcs_freertos_config INTERFACE)
+target_include_directories(pcs_freertos_config INTERFACE .)
+
 add_library(fw_hw STATIC
   stm32g4xx_hal_msp.c
   stm32g4xx_it.c
+  stm32g4xx_hal_timebase_tim.c   # HAL tick on TIM6 (FreeRTOS owns SysTick)
   startup_stm32g431vbtx.s
 )
 
@@ -27,7 +32,7 @@ target_include_directories(fw_hw
     .   # for "main.h" (peripheral handles, used by hal_msp.c / it.c)
 )
 
-target_link_libraries(fw_hw PUBLIC hw_stm32g4)
+target_link_libraries(fw_hw PUBLIC hw_stm32g4 freertos)
 
 # Linker setup propagated to the executable target.
 #

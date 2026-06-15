@@ -39,5 +39,11 @@ if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
   add_subdirectory(STM32G4xx_HAL_Driver)
 endif()
 
+if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
+  # FreeRTOS kernel (Cortex-M4F port) — embedded only. Needs the
+  # consumer-provided pcs_freertos_config interface lib for FreeRTOSConfig.h.
+  add_subdirectory(FreeRTOS)
+endif()
+
 # Our own library code (layered).
 add_subdirectory(shared)

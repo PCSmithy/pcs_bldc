@@ -5,6 +5,8 @@
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
+  #include "FreeRTOS.h"
+  #include "task.h"
 #endif
 
 extern const HW_systemClock_config_S HW_systemClock_config;
@@ -17,6 +19,10 @@ extern const HW_ADC_config_S HW_ADC_config;
 // definition; until USB is initialized its interrupt never fires, so this
 // zeroed handle is never actually used. TODO: remove when the USB stack lands.
 __attribute__((weak)) PCD_HandleTypeDef hpcd_USB_FS;
+// stm32g4xx_it.c's TIM6_DAC_IRQHandler references hdac1; the DAC isn't
+// integrated, so a zeroed weak handle lets it.o link (the DAC interrupt never
+// fires). TODO: remove when a DAC driver lands.
+__attribute__((weak)) DAC_HandleTypeDef hdac1;
 #endif
 
 
@@ -26,6 +32,44 @@ void Error_Handler(void)
     {
     }
 }
+
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+// FreeRTOS static-allocation memory (configSUPPORT_STATIC_ALLOCATION=1).
+// cmsis_os2.c normally provides these; we supply them since we use the native
+// FreeRTOS API without the CMSIS-RTOS wrapper.
+static StaticTask_t idleTaskTcb;
+static StackType_t  idleTaskStack[configMINIMAL_STACK_SIZE];
+void vApplicationGetIdleTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxStack, uint32_t * pulSize)
+{
+    *ppxTcb   = &idleTaskTcb;
+    *ppxStack = idleTaskStack;
+    *pulSize  = configMINIMAL_STACK_SIZE;
+}
+
+static StaticTask_t timerTaskTcb;
+static StackType_t  timerTaskStack[configTIMER_TASK_STACK_DEPTH];
+void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxStack, uint32_t * pulSize)
+{
+    *ppxTcb   = &timerTaskTcb;
+    *ppxStack = timerTaskStack;
+    *pulSize  = configTIMER_TASK_STACK_DEPTH;
+}
+
+// TEMPORARY bring-up heartbeat task: toggle ENC_SPI_CS0 (PC4) at ~1 Hz so a
+// scope/debugger confirms the scheduler is running. Throwaway smoke test —
+// delete once USB serial is up.
+static void heartbeatTask(void * params)
+{
+    (void)params;
+    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
+    for (;;)
+    {
+        HW_GPIO_writePin(HW_GPIO_PORT_C, GPIO_PIN_4, level);
+        level = (level == HW_GPIO_LEVEL_LOW) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
+        vTaskDelay(pdMS_TO_TICKS(500U));
+    }
+}
+#endif
 
 int main(void)
 {
@@ -47,18 +91,11 @@ int main(void)
     }
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-    // TEMPORARY bring-up heartbeat: toggle ENC_SPI_CS0 (PC4) at ~1 Hz so a
-    // scope/meter on connector J2 pin 3 confirms the board is flashed and
-    // running. SPI is not yet initialized, so this CS line is inert and safe
-    // to wiggle. Throwaway smoke test — delete once USB serial is up. To use
-    // the TP22 test point instead, swap to GPIO_PIN_15 (DISABLE_VDS_PROT).
-    HW_GPIO_level_E heartbeat = HW_GPIO_LEVEL_LOW;
-    while (1)
-    {
-        HW_GPIO_writePin(HW_GPIO_PORT_C, GPIO_PIN_4, heartbeat);
-        heartbeat = (heartbeat == HW_GPIO_LEVEL_LOW) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
-        HAL_Delay(500U);
-    }
+    // Spawn the bring-up heartbeat task and hand control to the scheduler.
+    // vTaskStartScheduler() does not return.
+    (void)xTaskCreate(heartbeatTask, "heartbeat", configMINIMAL_STACK_SIZE,
+                      NULL, tskIDLE_PRIORITY + 1U, NULL);
+    vTaskStartScheduler();
 #endif
 
     return 0;
