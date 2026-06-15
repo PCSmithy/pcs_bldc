@@ -5,14 +5,25 @@
 /* Defines */
 
 /* Typedefs */
+// One entry per EXTI line (0..15). HAL_GPIO_EXTI_Callback dispatches the
+// pending line here, so registration and dispatch share this table.
+typedef struct
+{
+    HW_GPIO_port_E port;
+    HW_GPIO_extiCallback_F callback;
+    void * context;
+} HW_GPIO_extiEntry_S;
+
 typedef struct
 {
     const HW_GPIO_config_S * config;
+    HW_GPIO_extiEntry_S extiTable[16U];
 } HW_GPIO_data_S;
 
 /* Private Function Declarations */
 
 static void HW_GPIO_private_enablePortClock(HW_GPIO_port_E port);
+static bool HW_GPIO_private_pinConfigValid(const GPIO_InitTypeDef * const pinConfig);
 
 /* Private Data Definitions */
 
@@ -51,42 +62,74 @@ static void HW_GPIO_private_enablePortClock(HW_GPIO_port_E port)
     }
 }
 
+// [impl->fw~hal_gpio_002~1]
+static bool HW_GPIO_private_pinConfigValid(const GPIO_InitTypeDef * const pinConfig)
+{
+    // Non-empty selection (at least one line) with no bits above line 15;
+    // multi-bit masks are allowed.
+    const bool pinValid = ((pinConfig->Pin != 0U) && ((pinConfig->Pin & ~0xFFFFUL) == 0U));
+
+    const bool modeValid = ((pinConfig->Mode == GPIO_MODE_INPUT) ||
+                            (pinConfig->Mode == GPIO_MODE_OUTPUT_PP) ||
+                            (pinConfig->Mode == GPIO_MODE_OUTPUT_OD) ||
+                            (pinConfig->Mode == GPIO_MODE_IT_RISING) ||
+                            (pinConfig->Mode == GPIO_MODE_IT_FALLING) ||
+                            (pinConfig->Mode == GPIO_MODE_IT_RISING_FALLING));
+
+    return ((pinValid) && (modeValid));
+}
+
 /* Public Function Definitions */
+// [impl->fw~hal_gpio_001~1]
 bool HW_GPIO_init(const HW_GPIO_config_S * const config)
 {
     bool ret = false;
     if (config != NULL)
     {
-        bool success = true;
-        for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
+        // Validate every declared pin before touching hardware so a bad
+        // config fails init cleanly rather than half-configuring ports.
+        bool allValid = true;
+        for (HW_GPIO_port_E port = 0U; ((port < HW_GPIO_PORT_COUNT) && (allValid)); port++)
         {
             const HW_GPIO_portConfig_S * const portConfig = &config->ports[port];
-            if (portConfig->numPins == 0U)
+            for (size_t i = 0U; ((i < portConfig->numPins) && (allValid)); i++)
             {
-                continue;
-            }
-
-            HW_GPIO_private_enablePortClock(port);
-
-            for (size_t i = 0U; i < portConfig->numPins; i++)
-            {
-                // HAL takes non-const but doesn't mutate; const-cast.
-                GPIO_InitTypeDef * const pinConfig = (GPIO_InitTypeDef *)&portConfig->pins[i];
-
-                // For output pins, set the initial level BEFORE init so
-                // the pin doesn't glitch when switched out of reset state.
-                if ((pinConfig->Mode == GPIO_MODE_OUTPUT_PP) ||
-                    (pinConfig->Mode == GPIO_MODE_OUTPUT_OD))
+                if (!HW_GPIO_private_pinConfigValid(&portConfig->pins[i]))
                 {
-                    HAL_GPIO_WritePin(HW_GPIO_portHandleMapping[port], pinConfig->Pin, GPIO_PIN_RESET);
+                    allValid = false;
                 }
-
-                HAL_GPIO_Init(HW_GPIO_portHandleMapping[port], pinConfig);
             }
         }
 
-        if (success)
+        if (allValid)
         {
+            for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
+            {
+                const HW_GPIO_portConfig_S * const portConfig = &config->ports[port];
+                if (portConfig->numPins == 0U)
+                {
+                    continue;
+                }
+
+                HW_GPIO_private_enablePortClock(port);
+
+                for (size_t i = 0U; i < portConfig->numPins; i++)
+                {
+                    // HAL takes non-const but doesn't mutate; const-cast.
+                    GPIO_InitTypeDef * const pinConfig = (GPIO_InitTypeDef *)&portConfig->pins[i];
+
+                    // For output pins, set the initial level BEFORE init so
+                    // the pin doesn't glitch when switched out of reset state.
+                    if ((pinConfig->Mode == GPIO_MODE_OUTPUT_PP) ||
+                        (pinConfig->Mode == GPIO_MODE_OUTPUT_OD))
+                    {
+                        HAL_GPIO_WritePin(HW_GPIO_portHandleMapping[port], pinConfig->Pin, GPIO_PIN_RESET);
+                    }
+
+                    HAL_GPIO_Init(HW_GPIO_portHandleMapping[port], pinConfig);
+                }
+            }
+
             data->config = config;
             ret = true;
         }
@@ -94,11 +137,63 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
     return ret;
 }
 
+// [impl->fw~hal_gpio_003~1]
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
 {
     if (port < HW_GPIO_PORT_COUNT)
     {
         const GPIO_PinState pinState = (level == HW_GPIO_LEVEL_HIGH) ? GPIO_PIN_SET : GPIO_PIN_RESET;
         HAL_GPIO_WritePin(HW_GPIO_portHandleMapping[port], (uint16_t)pin, pinState);
+    }
+}
+
+// [impl->fw~hal_gpio_004~1]
+HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin)
+{
+    HW_GPIO_level_E ret = HW_GPIO_LEVEL_LOW;
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        const GPIO_PinState s = HAL_GPIO_ReadPin(HW_GPIO_portHandleMapping[port], (uint16_t)pin);
+        ret = (s == GPIO_PIN_SET) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_gpio_005~1]
+bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context)
+{
+    bool ret = false;
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        for (uint32_t bit = 0U; bit < 16U; bit++)
+        {
+            if ((pin & (1UL << bit)) != 0U)
+            {
+                data->extiTable[bit].port = port;
+                data->extiTable[bit].callback = callback;
+                data->extiTable[bit].context = context;
+            }
+        }
+        ret = true;
+    }
+    return ret;
+}
+
+// Overrides the HAL's weak HAL_GPIO_EXTI_Callback; the HAL IRQ handler
+// dispatches the pending line(s) here, and we fan out to the registered
+// per-line callback.
+// [impl->fw~hal_gpio_005~1]
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    for (uint32_t bit = 0U; bit < 16U; bit++)
+    {
+        if ((GPIO_Pin & (1U << bit)) != 0U)
+        {
+            const HW_GPIO_extiEntry_S * const entry = &data->extiTable[bit];
+            if (entry->callback != NULL)
+            {
+                entry->callback(entry->port, (1UL << bit), entry->context);
+            }
+        }
     }
 }

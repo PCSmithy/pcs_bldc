@@ -44,22 +44,20 @@ Needs: impl, test
 ### Pin configuration validity
 `fw~hal_gpio_002~1`
 
-A pin's configuration shall be valid only when its port, pin selection, and
-mode are each well-formed:
+A pin's configuration shall be valid only when its pin selection and mode are
+each well-formed:
 
 | Field | Valid when |
 |-------|-----------|
-| Port | Is a defined GPIO port. |
 | Pins | Selects at least one GPIO line and no undefined lines. |
 | Mode | Is input, output, or interrupt input. |
 
 Acceptance:
-- A config with an out-of-range port is invalid.
 - A config whose pin selection includes an undefined line is invalid.
 - A config with an empty pin selection is invalid.
 - A config with an unsupported mode is invalid.
-- A config with a defined port, a non-empty selection of defined lines, and a
-  supported mode is valid.
+- A config with a non-empty selection of defined lines and a supported mode is
+  valid.
 
 Covers:
 - sys~arch_005~1

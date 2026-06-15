@@ -4,3 +4,8 @@ target_link_libraries(hw_GPIO
   PUBLIC
     lib_types
 )
+
+# Unit tests run only on the native target.
+if(PCS_TARGET STREQUAL "native")
+  add_subdirectory(test)
+endif()

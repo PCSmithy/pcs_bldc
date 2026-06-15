@@ -148,6 +148,26 @@ def pin_name_str(port: str, pin_expr: str) -> str:
     return "+".join(f"P{port}{n}" for n in nums)
 
 
+def pin_mask_hex(pin_expr: str) -> str:
+    """`GPIO_PIN_15|GPIO_PIN_4` -> `0x8010U` (OR of each line's bit)."""
+    nums = re.findall(r'GPIO_PIN_(\d+)', pin_expr)
+    mask = 0
+    for n in nums:
+        mask |= (1 << int(n))
+    return f"0x{mask:04X}U"
+
+
+def sim_mode_enum(hal_mode: str) -> str:
+    """Map a HAL GPIO_MODE_* constant to the target-independent
+    HW_GPIO_MODE_* enum used by the SIM config."""
+    if hal_mode.startswith("GPIO_MODE_IT_"):
+        return "HW_GPIO_MODE_INTERRUPT"
+    if hal_mode in ("GPIO_MODE_OUTPUT_PP", "GPIO_MODE_OUTPUT_OD"):
+        return "HW_GPIO_MODE_OUTPUT"
+    # GPIO_MODE_INPUT (and anything else) maps to input.
+    return "HW_GPIO_MODE_INPUT"
+
+
 def gen_gpio_macros(pins_by_port: dict[str, list[GPIOPinConfig]]) -> str:
     parts: list[str] = []
     for port in sorted(pins_by_port):
@@ -171,11 +191,22 @@ def gen_gpio_macros(pins_by_port: dict[str, list[GPIOPinConfig]]) -> str:
         parts.append(emit_macro(f"HW_GPIO_CUBEMX_PINS_PORT_{port}", body))
         parts.append("")
 
-        # --- sim mirror: just human-readable name strings ---
-        sim_body: list[str] = []
+        # --- sim mirror: pin mask, mode enum, and human-readable name ---
+        sim_entries: list[tuple[str, str, str]] = []
         for p in pins:
-            name = pin_name_str(port, p.pin)
-            sim_body.append(f'    {{ .pinNameStr = "{name}" }},')
+            sim_entries.append((
+                pin_mask_hex(p.pin),
+                sim_mode_enum(p.mode),
+                pin_name_str(port, p.pin),
+            ))
+        # Align the mode column so the trailing name strings line up.
+        mode_width = max((len(m) for _, m, _ in sim_entries), default=0)
+        sim_body: list[str] = []
+        for mask, mode, name in sim_entries:
+            sim_body.append(
+                f'    {{ .pin = {mask}, .mode = {(mode + ",").ljust(mode_width + 1)} '
+                f'.pinNameStr = "{name}" }},'
+            )
         parts.append(emit_macro(
             f"HW_GPIO_CUBEMX_SIM_PINS_PORT_{port}", sim_body))
         parts.append("")

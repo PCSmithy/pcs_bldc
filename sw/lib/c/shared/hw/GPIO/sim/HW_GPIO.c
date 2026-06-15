@@ -16,6 +16,11 @@ typedef struct
     // then by bit position (0..15) within the pin mask.
     HW_GPIO_level_E level[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
     uint32_t        writeCount[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
+
+    // Per-pin injected input level and EXTI registration for SIL tests.
+    HW_GPIO_level_E        inputLevel[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
+    HW_GPIO_extiCallback_F extiCallback[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
+    void *                 extiContext[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
 } HW_GPIO_data_S;
 
 /* Private Function Declarations */
@@ -27,23 +32,47 @@ static HW_GPIO_data_S * const data = &HW_GPIO_data;
 
 /* Private Function Definitions */
 
+// [impl->fw~hal_gpio_002~1]
+static bool HW_GPIO_private_pinConfigValid(const HW_GPIO_pinConfig_S * const pinConfig)
+{
+    const bool pinValid  = ((pinConfig->pin != 0U) && ((pinConfig->pin & ~0xFFFFUL) == 0U));
+    const bool modeValid = (pinConfig->mode <= HW_GPIO_MODE_INTERRUPT);
+    return ((pinValid) && (modeValid));
+}
+
 /* Public Function Definitions */
+// [impl->fw~hal_gpio_001~1]
 bool HW_GPIO_init(const HW_GPIO_config_S * const config)
 {
     bool ret = false;
     if (config != NULL)
     {
-        // Sim has no real pins to configure — accept the config,
-        // remember it (future SIL tests may want to query pin states),
-        // and report success. Project policy: init returns bool so
-        // main.c handles failure uniformly across targets.
-        data->config      = config;
-        data->initialized = true;
-        ret = true;
+        // Validate every declared pin before applying anything so a bad
+        // config fails init cleanly rather than half-configuring.
+        bool allValid = true;
+        for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
+        {
+            const HW_GPIO_portConfig_S * const portConfig = &config->ports[port];
+            for (size_t pin = 0U; pin < portConfig->numPins; pin++)
+            {
+                if (!HW_GPIO_private_pinConfigValid(&portConfig->pins[pin]))
+                {
+                    allValid = false;
+                }
+            }
+        }
+
+        if (allValid)
+        {
+            data->config      = config;
+            data->initialized = true;
+            ret = true;
+        }
     }
     return ret;
 }
 
+// [impl->fw~hal_gpio_003~1]
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
 {
     if (port < HW_GPIO_PORT_COUNT)
@@ -59,6 +88,43 @@ void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
             }
         }
     }
+}
+
+// [impl->fw~hal_gpio_004~1]
+HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin)
+{
+    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
+        {
+            if ((pin & (1UL << bit)) != 0U)
+            {
+                level = data->inputLevel[port][bit];
+                break;
+            }
+        }
+    }
+    return level;
+}
+
+// [impl->fw~hal_gpio_005~1]
+bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context)
+{
+    bool ret = false;
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
+        {
+            if ((pin & (1UL << bit)) != 0U)
+            {
+                data->extiCallback[port][bit] = callback;
+                data->extiContext[port][bit]  = context;
+            }
+        }
+        ret = true;
+    }
+    return ret;
 }
 
 HW_GPIO_level_E HW_GPIO_sim_getLevel(HW_GPIO_port_E port, uint32_t pin)
@@ -101,8 +167,42 @@ void HW_GPIO_sim_reset(void)
     {
         for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
         {
-            data->level[port][bit]      = HW_GPIO_LEVEL_LOW;
-            data->writeCount[port][bit] = 0U;
+            data->level[port][bit]        = HW_GPIO_LEVEL_LOW;
+            data->writeCount[port][bit]   = 0U;
+            data->inputLevel[port][bit]   = HW_GPIO_LEVEL_LOW;
+            data->extiCallback[port][bit] = NULL;
+            data->extiContext[port][bit]  = NULL;
+        }
+    }
+}
+
+void HW_GPIO_sim_setInputLevel(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
+{
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
+        {
+            if ((pin & (1UL << bit)) != 0U)
+            {
+                data->inputLevel[port][bit] = level;
+            }
+        }
+    }
+}
+
+void HW_GPIO_sim_triggerExti(HW_GPIO_port_E port, uint32_t pin)
+{
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
+        {
+            if ((pin & (1UL << bit)) != 0U)
+            {
+                if (data->extiCallback[port][bit] != NULL)
+                {
+                    data->extiCallback[port][bit](port, (1UL << bit), data->extiContext[port][bit]);
+                }
+            }
         }
     }
 }

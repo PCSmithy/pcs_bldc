@@ -27,6 +27,8 @@ typedef enum
     HW_GPIO_LEVEL_HIGH,
 } HW_GPIO_level_E;
 
+typedef void (*HW_GPIO_extiCallback_F)(HW_GPIO_port_E port, uint32_t pin, void * context);
+
 typedef struct
 {
     const GPIO_InitTypeDef * pins;
@@ -52,7 +54,15 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 
 // Drive a single configured output pin to `level`. `pin` is a HAL pin
 // mask (GPIO_PIN_x). No-op if `port` is out of range.
-// TODO: needs an fw~hal_gpio spec; add when the GPIO HAL specs are written.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
+
+// Read the present logical level of a configured input pin. `pin` is a
+// single-bit GPIO_PIN_x mask. Returns HW_GPIO_LEVEL_LOW for an out-of-range port.
+HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin);
+
+// Register `callback` to fire once per configured signal edge on the
+// interrupt-input `pin` (single-bit GPIO_PIN_x mask). `context` is passed
+// back to the callback. Returns false on an out-of-range port.
+bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context);
 
 #endif // HW_GPIO_H
