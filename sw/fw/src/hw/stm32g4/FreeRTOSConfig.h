@@ -168,7 +168,7 @@ standard names. */
 
 /* We use native FreeRTOS (no cmsis_os2.c), and the HAL timebase is on TIM6, so
  * SysTick is free for the kernel. cmsis_os2.c normally bridges
- * SysTick_Handler -> xPortSysTick_Handler; without it we map the port's
+ * SysTick_Handler -> xPortSysTickHandler; without it we map the port's
  * handler directly onto the CMSIS vector-table name. */
 #define xPortSysTickHandler SysTick_Handler
 /* USER CODE END Defines */

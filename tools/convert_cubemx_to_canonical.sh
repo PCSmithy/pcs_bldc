@@ -63,6 +63,33 @@ cp -r "${SRC}/Drivers/STM32G4xx_HAL_Driver/Src"         "${LIB_C}/STM32G4xx_HAL_
 cp    "${SRC}/Drivers/STM32G4xx_HAL_Driver/LICENSE.txt" "${LIB_C}/STM32G4xx_HAL_Driver/"
 
 # ---------------------------------------------------------------------------
+# FreeRTOS kernel (vendor, third-party) -> sw/lib/c/FreeRTOS/
+# Native-API subset: kernel sources + Cortex-M4F port + heap_4 + headers.
+# The CMSIS-RTOS2 wrapper (CMSIS_RTOS_V2/) is intentionally NOT vendored —
+# application code uses the native FreeRTOS API. The hand-written
+# CMakeLists.txt at the package root is preserved. Present only when FreeRTOS
+# is enabled in the .ioc, so the whole block is guarded.
+# ---------------------------------------------------------------------------
+FREERTOS_SRC="${SRC}/Middlewares/Third_Party/FreeRTOS/Source"
+FREERTOS_DST="${LIB_C}/FreeRTOS"
+if [ -d "${FREERTOS_SRC}" ]; then
+  echo "==> Refreshing ${FREERTOS_DST}/ (vendor content only — CMakeLists.txt left alone)"
+  rm -f  "${FREERTOS_DST}"/*.c
+  rm -rf "${FREERTOS_DST}/include"
+  rm -rf "${FREERTOS_DST}/portable"
+
+  mkdir -p "${FREERTOS_DST}/portable/GCC/ARM_CM4F" "${FREERTOS_DST}/portable/MemMang"
+  cp "${FREERTOS_SRC}"/tasks.c "${FREERTOS_SRC}"/queue.c "${FREERTOS_SRC}"/list.c \
+     "${FREERTOS_SRC}"/timers.c "${FREERTOS_SRC}"/event_groups.c \
+     "${FREERTOS_SRC}"/stream_buffer.c "${FREERTOS_SRC}"/croutine.c "${FREERTOS_DST}/"
+  cp -r "${FREERTOS_SRC}/include" "${FREERTOS_DST}/"
+  cp "${FREERTOS_SRC}/portable/GCC/ARM_CM4F/port.c" \
+     "${FREERTOS_SRC}/portable/GCC/ARM_CM4F/portmacro.h" \
+     "${FREERTOS_DST}/portable/GCC/ARM_CM4F/"
+  cp "${FREERTOS_SRC}/portable/MemMang/heap_4.c" "${FREERTOS_DST}/portable/MemMang/"
+fi
+
+# ---------------------------------------------------------------------------
 # STM32G4-family support files (system init + newlib syscall stubs)
 # -> sw/lib/c/hw/stm32g4/
 # These sit in the layer dir because they're family-specific glue, not
@@ -90,6 +117,8 @@ rm -f "${FW_HW}/stm32g4xx_it.c"
 rm -f "${FW_HW}/stm32g4xx_it.h"
 rm -f "${FW_HW}/STM32G431VBTX_FLASH.ld"
 rm -f "${FW_HW}/startup_stm32g431vbtx.s"
+rm -f "${FW_HW}/FreeRTOSConfig.h"
+rm -f "${FW_HW}/stm32g4xx_hal_timebase_tim.c"
 
 mkdir -p "${FW_HW}"
 cp "${SRC}/Core/Src/stm32g4xx_hal_msp.c"          "${FW_HW}/"
@@ -99,6 +128,18 @@ cp "${SRC}/Core/Inc/stm32g4xx_hal_conf.h"         "${FW_HW}/"
 cp "${SRC}/Core/Inc/stm32g4xx_it.h"               "${FW_HW}/"
 cp "${SRC}/Core/Startup/startup_stm32g431vbtx.s"  "${FW_HW}/"
 cp "${SRC}/STM32G431VBTX_FLASH.ld"                "${FW_HW}/"
+
+# FreeRTOS board config + HAL TIM6 timebase. Present only when FreeRTOS is
+# enabled in the .ioc (which moves the HAL timebase off SysTick onto TIM6), so
+# guard the copies. FreeRTOSConfig.h carries a USER CODE edit
+# (xPortSysTickHandler -> SysTick_Handler) that CubeMX preserves in the
+# reference tree.
+if [ -f "${SRC}/Core/Inc/FreeRTOSConfig.h" ]; then
+  cp "${SRC}/Core/Inc/FreeRTOSConfig.h"             "${FW_HW}/"
+fi
+if [ -f "${SRC}/Core/Src/stm32g4xx_hal_timebase_tim.c" ]; then
+  cp "${SRC}/Core/Src/stm32g4xx_hal_timebase_tim.c" "${FW_HW}/"
+fi
 
 # Note: the CubeMX-generated main.c is intentionally NOT copied — it would
 # add visual noise next to our real main.c at sw/fw/src/main.c. Read it
