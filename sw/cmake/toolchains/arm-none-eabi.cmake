@@ -58,6 +58,10 @@ add_compile_options(
   -Wall -Wextra -Wpedantic
   -ffunction-sections -fdata-sections
   -fno-common
+  # Debug symbols for live (OpenOCD/GDB) debugging. No -O flag is set, so the
+  # build is -O0 — source-faithful stepping. Debug info lands in the .elf only,
+  # not in flashed sections, so flash size is unaffected.
+  -g3
 )
 add_link_options(
   ${_mcu_flags}

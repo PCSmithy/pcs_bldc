@@ -11,6 +11,14 @@ extern const HW_systemClock_config_S HW_systemClock_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
 
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+// Weak placeholder so stm32g4xx_it.c's USB_LP_IRQHandler links before the USB
+// CDC stack is integrated. usbd_conf.c will provide the real (strong)
+// definition; until USB is initialized its interrupt never fires, so this
+// zeroed handle is never actually used. TODO: remove when the USB stack lands.
+__attribute__((weak)) PCD_HandleTypeDef hpcd_USB_FS;
+#endif
+
 
 void Error_Handler(void)
 {
@@ -37,5 +45,21 @@ int main(void)
     {
         Error_Handler();
     }
+
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+    // TEMPORARY bring-up heartbeat: toggle ENC_SPI_CS0 (PC4) at ~1 Hz so a
+    // scope/meter on connector J2 pin 3 confirms the board is flashed and
+    // running. SPI is not yet initialized, so this CS line is inert and safe
+    // to wiggle. Throwaway smoke test — delete once USB serial is up. To use
+    // the TP22 test point instead, swap to GPIO_PIN_15 (DISABLE_VDS_PROT).
+    HW_GPIO_level_E heartbeat = HW_GPIO_LEVEL_LOW;
+    while (1)
+    {
+        HW_GPIO_writePin(HW_GPIO_PORT_C, GPIO_PIN_4, heartbeat);
+        heartbeat = (heartbeat == HW_GPIO_LEVEL_LOW) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
+        HAL_Delay(500U);
+    }
+#endif
+
     return 0;
 }

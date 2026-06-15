@@ -58,6 +58,10 @@ fp-info-cache
 # Obsidian per-user vault state (workspace layout, last-open files, etc.)
 .obsidian/
 
+# VSCode workspace config — machine-specific debug paths (CubeIDE plugin
+# locations, ST-Link/OpenOCD/GDB absolute paths). Kept local per-machine.
+.vscode/
+
 # Python bytecode cache
 __pycache__/
 *.pyc
