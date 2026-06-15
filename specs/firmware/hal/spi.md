@@ -69,7 +69,7 @@ the fields that mode requires are well-formed:
 
 | CS mode | Valid when |
 |---------|-----------|
-| **GPIO** | The port is in range and the pin is a single valid GPIO line. |
+| **GPIO** | The port is in range and the pin is a single valid GPIO line (per `fw~hal_gpio_002~1`). |
 | **Hardware** | Always (no additional fields). |
 | **None** | Always (no additional fields). |
 
