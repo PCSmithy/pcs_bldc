@@ -94,8 +94,14 @@ void IO_AS5048_run1ms(void)
 
             if (frame1Ok && frame2Ok && ((response & AS5048_RESP_ERROR_FLAG) == 0U))
             {
-                channelData->raw = (uint16_t)(response & AS5048_RESP_ANGLE_MASK);
-                channelData->angle_deg = ((float32_t)channelData->raw * 360.0f) / AS5048_COUNTS_PER_REV;
+                uint16_t raw = (uint16_t)(response & AS5048_RESP_ANGLE_MASK);
+                if (data->config->channels[channel].reverse)
+                {
+                    // Complement the count (wrapping 0 -> 0) so out = 360 - angle.
+                    raw = (uint16_t)((AS5048_COUNTS_PER_REV - raw) % AS5048_COUNTS_PER_REV);
+                }
+                channelData->raw = raw;
+                channelData->angle_deg = ((float32_t)raw * 360.0f) / AS5048_COUNTS_PER_REV;
             }
 
         }

@@ -11,6 +11,10 @@
 typedef struct
 {
     HW_SPI_channel_E spiChannel;
+    // When true, output the complement (out = 360 - angle), reversing the
+    // channel's apparent rotation direction. Use to match an encoder whose
+    // mounting/sense runs opposite the desired convention.
+    bool reverse;
 } IO_AS5048_channelConfig_S;
 
 typedef struct
