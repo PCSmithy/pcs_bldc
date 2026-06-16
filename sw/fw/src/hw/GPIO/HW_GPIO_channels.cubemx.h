@@ -22,7 +22,7 @@
     { \
         .Pin  = GPIO_PIN_10, \
         .Mode = GPIO_MODE_INPUT, \
-        .Pull = GPIO_NOPULL, \
+        .Pull = GPIO_PULLUP, \
     }, \
     { \
         .Pin  = GPIO_PIN_6, \

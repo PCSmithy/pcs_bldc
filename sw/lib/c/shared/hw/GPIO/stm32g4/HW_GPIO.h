@@ -60,6 +60,16 @@ void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 // single-bit GPIO_PIN_x mask. Returns HW_GPIO_LEVEL_LOW for an out-of-range port.
 HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin);
 
+// Sample and cache every configured input pin's level. Call periodically
+// (the 1 ms task) so consumers can fetch a recent, coherent snapshot via
+// HW_GPIO_readCached without each one touching the hardware.
+void HW_GPIO_run1ms(void);
+
+// Return the cached level of input `pin` (single-bit GPIO_PIN_x mask) from
+// the last HW_GPIO_run1ms() sample. HW_GPIO_LEVEL_LOW for an out-of-range
+// port or a pin that isn't a configured input.
+HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
+
 // Register `callback` to fire once per configured signal edge on the
 // interrupt-input `pin` (single-bit GPIO_PIN_x mask). `context` is passed
 // back to the callback. Returns false on an out-of-range port.

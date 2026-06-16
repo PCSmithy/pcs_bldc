@@ -16,9 +16,14 @@ if(PCS_BUILDING_FW)
   # so the project channel configs only exist for the embedded target — gate
   # the shared io/ tree to match, otherwise a native build references an
   # undefined pcs_*_channels target.
+  # dev/ likewise consumes project-provided pcs_*_channels seams from
+  # sw/fw/src/dev/. dev_switch itself is target-independent (only needs
+  # HW_GPIO), but its project config tree is currently wired embedded-only, so
+  # gate the shared dev/ tree to match. Promote both to dual-target when adding
+  # SIL unit tests for the debounce logic.
   if(PCS_TARGET STREQUAL "embedded")
     add_subdirectory(io)
+    add_subdirectory(dev)
   endif()
 endif()
 # add_subdirectory(app)
-# add_subdirectory(dev)

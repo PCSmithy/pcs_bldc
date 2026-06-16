@@ -23,6 +23,11 @@ typedef struct
 {
     const HW_GPIO_config_S * config;
     HW_GPIO_extiEntry_S extiTable[16U];
+
+    // Polled-input cache. inputMask[port] has a 1 for each pin configured as
+    // GPIO_MODE_INPUT; cachedInput[port] holds their last-sampled levels.
+    uint16_t inputMask[HW_GPIO_PORT_COUNT];
+    uint16_t cachedInput[HW_GPIO_PORT_COUNT];
 } HW_GPIO_data_S;
 
 /* Private Function Declarations */
@@ -162,6 +167,12 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
                     {
                         HW_GPIO_private_enableExtiNvic(pinConfig->Pin);
                     }
+
+                    // Record input pins so HW_GPIO_run1ms() knows what to poll.
+                    if (pinConfig->Mode == GPIO_MODE_INPUT)
+                    {
+                        data->inputMask[port] |= (uint16_t)pinConfig->Pin;
+                    }
                 }
             }
 
@@ -190,6 +201,32 @@ HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin)
     {
         const GPIO_PinState s = HAL_GPIO_ReadPin(HW_GPIO_portHandleMapping[port], (uint16_t)pin);
         ret = (s == GPIO_PIN_SET) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
+    }
+    return ret;
+}
+
+void HW_GPIO_run1ms(void)
+{
+    // One IDR read per port that has input pins; mask down to the inputs.
+    for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
+    {
+        if (data->inputMask[port] != 0U)
+        {
+            const uint16_t idr = (uint16_t)HW_GPIO_portHandleMapping[port]->IDR;
+            data->cachedInput[port] = (uint16_t)(idr & data->inputMask[port]);
+        }
+    }
+}
+
+HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin)
+{
+    HW_GPIO_level_E ret = HW_GPIO_LEVEL_LOW;
+    if (port < HW_GPIO_PORT_COUNT)
+    {
+        if ((data->cachedInput[port] & (uint16_t)pin) != 0U)
+        {
+            ret = HW_GPIO_LEVEL_HIGH;
+        }
     }
     return ret;
 }

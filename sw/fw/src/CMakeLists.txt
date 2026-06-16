@@ -5,8 +5,10 @@ add_subdirectory(hw)
 # their add_subdirectory() lines when their first code lands.
 
 # io/ (USB CDC, TinyUSB) is embedded-only; native builds must stay USB-free.
+# dev/ (switch debounce, ...) is gated to match the shared dev/ tree for now.
 if(PCS_TARGET STREQUAL "embedded")
   add_subdirectory(io)
+  add_subdirectory(dev)
 endif()
 
 add_executable(pcs_bldc_fw main.c)
@@ -74,6 +76,12 @@ endif()
 # (io_SK6805_config pulls in io_SK6805), same linking story as io_AS5048.
 if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE io_SK6805_config)
+endif()
+
+# dev_switch (embedded only): debounced switch driver + its project config
+# (dev_switch_channels pulls in dev_switch). HW_GPIO_* resolve via fw_hw.
+if(PCS_TARGET STREQUAL "embedded")
+  target_link_libraries(pcs_bldc_fw PRIVATE dev_switch_channels)
 endif()
 
 # Embedded-target post-build: emit .bin and .hex artifacts and print the
