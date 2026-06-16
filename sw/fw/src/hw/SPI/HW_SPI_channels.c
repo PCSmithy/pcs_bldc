@@ -56,9 +56,29 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
             // data line. Each color bit -> 6 SPI bits at /32 (4.5 MHz, bit =
             // 0.222us): '0' = 0b110000 (T0H 0.44 / T0L 0.89us), '1' = 0b111000
             // (T1H 0.67 / T1L 0.67us) — all in spec. 8-bit frames; SCK/MISO
-            // unused. Blocking (SW) transfer; no HW_DMA yet. Set in the .ioc;
-            // pulled in from there via the cubemx-generated macro.
-            .Init = { HW_SPI_CUBEMX_INIT_SPI3 },
+            // unused. Blocking (SW) transfer; no HW_DMA yet.
+            //
+            // Intentionally hand-written, NOT HW_SPI_CUBEMX_INIT_SPI3: CubeMX
+            // forces NSSPMode on for CPHA=0 buses, which makes the SPI insert a
+            // 1-SCK gap between every byte and shred the continuous LED stream
+            // (the string latches garbage / max-white). NSSP must stay off, and
+            // CubeMX won't emit that, so this bit-bang bus is maintained here.
+            .Init =
+            {
+                .Mode = SPI_MODE_MASTER,
+                .Direction = SPI_DIRECTION_2LINES,
+                .DataSize = SPI_DATASIZE_8BIT,
+                .CLKPolarity = SPI_POLARITY_LOW,
+                .CLKPhase = SPI_PHASE_1EDGE,
+                .NSS = SPI_NSS_SOFT,
+                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32,
+                .FirstBit = SPI_FIRSTBIT_MSB,
+                .TIMode = SPI_TIMODE_DISABLE,
+                .CRCCalculation = SPI_CRCCALCULATION_DISABLE,
+                .CRCPolynomial = 7,
+                .CRCLength = SPI_CRC_LENGTH_DATASIZE,
+                .NSSPMode = SPI_NSS_PULSE_DISABLE,
+            },
         },
         .transferMode = HW_SPI_TRANSFERMODE_SW,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
