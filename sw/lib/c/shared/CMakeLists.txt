@@ -10,7 +10,15 @@ add_subdirectory(lib)
 # libs (ringbuf etc.) can still run on their own.
 if(PCS_BUILDING_FW)
   add_subdirectory(hw)
+
+  # io/ modules consume project-provided pcs_*_channels interface libs from
+  # sw/fw/src/io/<module>/. That tree (io/usb -> tinyusb) is embedded-only,
+  # so the project channel configs only exist for the embedded target — gate
+  # the shared io/ tree to match, otherwise a native build references an
+  # undefined pcs_*_channels target.
+  if(PCS_TARGET STREQUAL "embedded")
+    add_subdirectory(io)
+  endif()
 endif()
 # add_subdirectory(app)
 # add_subdirectory(dev)
-# add_subdirectory(io)

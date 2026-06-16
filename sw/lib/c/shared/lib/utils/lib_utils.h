@@ -25,4 +25,13 @@
          __typeof__(arr), __typeof__(&(arr)[0]))])) * 0)
 
 
+
+
+static inline void floatToFixed(float32_t value, uint32_t scale,
+                                uint32_t * whole, uint32_t * frac)
+{
+    const uint32_t scaled = (uint32_t)(value * (float32_t)scale + 0.5f);
+    *whole = scaled / scale;
+    *frac  = scaled % scale;
+}
 #endif /* LIB_UTILS_H */

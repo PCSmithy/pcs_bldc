@@ -62,6 +62,14 @@ if(PCS_TARGET STREQUAL "embedded")
   )
 endif()
 
+# io_AS5048 (embedded only): the AS5048 encoder driver + its project channel
+# config (io_AS5048_channels pulls in io_AS5048). Their HW_SPI_* references
+# resolve against fw_hw (whole-archived above), so a plain PRIVATE link after
+# fw_hw is sufficient.
+if(PCS_TARGET STREQUAL "embedded")
+  target_link_libraries(pcs_bldc_fw PRIVATE io_AS5048_channels)
+endif()
+
 # Embedded-target post-build: emit .bin and .hex artifacts and print the
 # memory section sizes (text/data/bss + flash/RAM percentages from the
 # linker's --print-memory-usage in fw_hw's link options).

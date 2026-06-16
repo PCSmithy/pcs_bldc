@@ -2,17 +2,26 @@
 #include "HW_systemClock.h"
 #include "HW_GPIO.h"
 #include "HW_ADC.h"
+#include "HW_SPI.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
   #include "FreeRTOS.h"
   #include "task.h"
   #include "usb.h"
+  // io/ is embedded-only (the tree pulls in tinyusb), so the encoder driver
+  // is only available on this target.
+  #include "IO_AS5048.h"
 #endif
 
 extern const HW_systemClock_config_S HW_systemClock_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
+extern const HW_SPI_config_S HW_SPI_config;
+
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+extern const IO_AS5048_config_S IO_AS5048_config;
+#endif
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 // stm32g4xx_it.c's TIM6_DAC_IRQHandler references hdac1; the DAC isn't
@@ -51,18 +60,26 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
     *pulSize  = configTIMER_TASK_STACK_DEPTH;
 }
 
-// TEMPORARY bring-up heartbeat task: toggle ENC_SPI_CS0 (PC4) at ~1 Hz so a
-// scope/debugger confirms the scheduler is running. Throwaway smoke test —
-// delete once USB serial is up.
-static void heartbeatTask(void * params)
+// Fixed-rate 1 ms IO task. Home for periodic sensor/actuator run functions
+// (encoder sampling now; the control loop will likely move to its own faster
+// task later). vTaskDelayUntil gives a drift-free 1 ms cadence regardless of
+// how long the body takes. High priority so sampling preempts USB servicing.
+static void task_1ms(void * params)
 {
     (void)params;
-    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
+    TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
-        HW_GPIO_writePin(HW_GPIO_PORT_C, GPIO_PIN_4, level);
-        level = (level == HW_GPIO_LEVEL_LOW) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
-        vTaskDelay(pdMS_TO_TICKS(500U));
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
+
+        // hw
+
+        // io
+        IO_AS5048_run1ms();
+
+        // dev
+
+        // app
     }
 }
 #endif
@@ -80,6 +97,10 @@ int main(void)
     initSuccess &= HW_systemClock_init(&HW_systemClock_config);
     initSuccess &= HW_GPIO_init(&HW_GPIO_config);
     initSuccess &= HW_ADC_init(&HW_ADC_config);
+    initSuccess &= HW_SPI_init(&HW_SPI_config);
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+    initSuccess &= IO_AS5048_init(&IO_AS5048_config);
+#endif
 
     if (!initSuccess)
     {
@@ -87,11 +108,21 @@ int main(void)
     }
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-    // Spawn the bring-up heartbeat task and hand control to the scheduler.
-    // vTaskStartScheduler() does not return.
-    (void)xTaskCreate(heartbeatTask, "heartbeat", configMINIMAL_STACK_SIZE,
-                      NULL, tskIDLE_PRIORITY + 1U, NULL);
-    USB_init();   // task creation disabled inside (bisection test)
+    // Spawn the 1 ms IO task (drives IO_AS5048_run1ms) and bring up USB CDC
+    // (spawns the device task, which reads the latest cached angle and prints
+    // it), then hand control to the scheduler. Both allocate their task from
+    // the FreeRTOS heap; a failure here (e.g. heap exhaustion) must halt loudly
+    // rather than silently drop a task. vTaskStartScheduler() does not return.
+    bool tasksCreated = true;
+    tasksCreated &= (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
+                                 NULL, configMAX_PRIORITIES - 1U, NULL) == pdPASS);
+    tasksCreated &= USB_init();
+
+    if (!tasksCreated)
+    {
+        Error_Handler();
+    }
+
     vTaskStartScheduler();
 #endif
 

@@ -14,12 +14,19 @@
 
 #define HW_GPIO_CUBEMX_PINS_PORT_B \
     { \
+        .Pin   = GPIO_PIN_2, \
+        .Mode  = GPIO_MODE_OUTPUT_PP, \
+        .Pull  = GPIO_NOPULL, \
+        .Speed = GPIO_SPEED_FREQ_LOW, \
+    }, \
+    { \
         .Pin  = GPIO_PIN_6, \
         .Mode = GPIO_MODE_IT_RISING, \
         .Pull = GPIO_NOPULL, \
     },
 
 #define HW_GPIO_CUBEMX_SIM_PINS_PORT_B \
+    { .pin = 0x0004U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PB2" }, \
     { .pin = 0x0040U, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "PB6" },
 
 #define HW_GPIO_CUBEMX_PINS_PORT_C \

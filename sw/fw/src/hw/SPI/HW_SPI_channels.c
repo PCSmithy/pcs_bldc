@@ -31,11 +31,16 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
             {
                 .Mode = SPI_MODE_MASTER,
                 .Direction = SPI_DIRECTION_2LINES,
-                .DataSize = SPI_DATASIZE_4BIT,
+                // AS5048 encoder: 16-bit frames sent as 8-bit byte pairs;
+                // SPI mode 1 (CPOL=0/CPHA=1 — samples MOSI on the falling
+                // edge, updates MISO on the rising edge, datasheet p.10);
+                // TCLK >= 100ns (10 MHz max), so /32 of PCLK2 (144 MHz) =
+                // 4.5 MHz keeps a comfortable margin.
+                .DataSize = SPI_DATASIZE_8BIT,
                 .CLKPolarity = SPI_POLARITY_LOW,
-                .CLKPhase = SPI_PHASE_1EDGE,
+                .CLKPhase = SPI_PHASE_2EDGE,
                 .NSS = SPI_NSS_SOFT,
-                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2,
+                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32,
                 .FirstBit = SPI_FIRSTBIT_MSB,
                 .TIMode = SPI_TIMODE_DISABLE,
                 .CRCCalculation = SPI_CRCCALCULATION_DISABLE,
@@ -97,16 +102,18 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
         .csMode = HW_SPI_CS_MODE_GPIO,
         .csGpioConfig =
         {
+            // ENC_SPI_CS0 = PC4 (GPIO_PIN_4 = 0x10), per micro.kicad_sch U8.21.
             .port = HW_GPIO_PORT_C,
-            .pin = 0x04,
+            .pin = GPIO_PIN_4,
             .activeLevel = HW_GPIO_LEVEL_LOW,
         },
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
         .csMode = HW_SPI_CS_MODE_GPIO,
         .csGpioConfig =
         {
+            // GPIO_PIN_4 (0x10); the HAL pin macros don't exist on native.
             .port = HW_GPIO_PORT_C,
-            .pin = 0x04,
+            .pin = 0x10U,
             .activeLevel = HW_GPIO_LEVEL_LOW,
         },
         .channelNameStr      = "AS5048_1",
@@ -119,16 +126,18 @@ static const HW_SPI_channelConfig_S HW_SPI_channelConfig[] =
         .csMode = HW_SPI_CS_MODE_GPIO,
         .csGpioConfig =
         {
+            // ENC_SPI_CS1 = PB2 (GPIO_PIN_2 = 0x04), per micro.kicad_sch U8.25.
             .port = HW_GPIO_PORT_B,
-            .pin = 0x02,
+            .pin = GPIO_PIN_2,
             .activeLevel = HW_GPIO_LEVEL_LOW,
         },
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
         .csMode = HW_SPI_CS_MODE_GPIO,
         .csGpioConfig =
         {
+            // GPIO_PIN_2 (0x04); the HAL pin macros don't exist on native.
             .port = HW_GPIO_PORT_B,
-            .pin = 0x02,
+            .pin = 0x04U,
             .activeLevel = HW_GPIO_LEVEL_LOW,
         },
         .channelNameStr      = "AS5048_2",

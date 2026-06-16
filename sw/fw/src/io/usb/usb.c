@@ -3,6 +3,8 @@
 #include "stm32g4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "IO_AS5048.h"
+#include "lib_utils.h"
 #include <stdio.h>
 
 // TEMPORARY bring-up: this task inits the TinyUSB device stack, services it
@@ -21,14 +23,46 @@ static void usbDeviceTask(void * params)
     {
         tud_task_ext(100, false);   // service USB, ~100ms timeout so the loop also prints
         ticks++;
-        if (tud_cdc_connected() && ((ticks % 10U) == 0U))
+        // M2 bring-up: read encoder 1 and print its angle ~every 200ms. The
+        // read happens on this task so all CDC printf stays single-threaded.
+        if (tud_cdc_connected() && ((ticks % 2U) == 0U))
         {
-            printf("pcs_bldc alive: %lu\r\n", (unsigned long)(ticks / 10U));
+            uint16_t motorAngleRaw = 0U;
+            float32_t motorAngle_deg = 0.0f;
+            if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, &motorAngleRaw, &motorAngle_deg))
+            {
+                motorAngleRaw = 0U;
+                motorAngle_deg = 0.0f;
+            }
+
+            uint32_t motorAngleScaled = 0U;
+            uint32_t motorAngleDecimalScaled = 0U;
+            floatToFixed(motorAngle_deg, 100U, &motorAngleScaled, &motorAngleDecimalScaled);
+
+            uint16_t dialAngleRaw = 0U;
+            float32_t dialAngle_deg = 0.0f;
+            if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, &dialAngleRaw, &dialAngle_deg))
+            {
+                dialAngleRaw = 0U;
+                dialAngle_deg = 0.0f;
+            }
+
+            uint32_t dialAngleScaled = 0U;
+            uint32_t dialAngleDecimalScaled = 0U;
+            floatToFixed(dialAngle_deg, 100U, &dialAngleScaled, &dialAngleDecimalScaled);
+
+            printf("Motor: raw=%5u  angle=%3lu.%02lu deg\r\tDial: raw=%5u  angle=%3lu.%02lu deg\r\n",
+                    (unsigned)motorAngleRaw,
+                    (unsigned long)motorAngleScaled,
+                    (unsigned long)motorAngleDecimalScaled,
+                    (unsigned)dialAngleRaw,
+                    (unsigned long)dialAngleScaled,
+                    (unsigned long)dialAngleDecimalScaled);
         }
     }
 }
 
-void USB_init(void)
+bool USB_init(void)
 {
     // Route the USB clock: PLL-Q = 48 MHz (matches ST usbd_conf.c MspInit).
     RCC_PeriphCLKInitTypeDef p = {0};
@@ -43,7 +77,9 @@ void USB_init(void)
     HAL_NVIC_EnableIRQ(USB_LP_IRQn);
 
     // USB needs a deeper stack than the heartbeat task; run it high-ish.
-    (void) xTaskCreate(usbDeviceTask, "usb", 512, NULL, configMAX_PRIORITIES - 2, NULL);
+    // Surface a creation failure (e.g. heap exhaustion) to the caller rather
+    // than silently leaving the device stack uninitialized.
+    return (xTaskCreate(usbDeviceTask, "usb", 512, NULL, configMAX_PRIORITIES - 2, NULL) == pdPASS);
 }
 
 // Retarget printf to CDC. syscalls.c's weak _write already calls __io_putchar.
