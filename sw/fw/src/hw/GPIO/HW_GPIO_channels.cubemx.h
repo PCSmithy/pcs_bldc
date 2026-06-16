@@ -20,6 +20,11 @@
         .Speed = GPIO_SPEED_FREQ_LOW, \
     }, \
     { \
+        .Pin  = GPIO_PIN_10, \
+        .Mode = GPIO_MODE_INPUT, \
+        .Pull = GPIO_NOPULL, \
+    }, \
+    { \
         .Pin  = GPIO_PIN_6, \
         .Mode = GPIO_MODE_IT_RISING, \
         .Pull = GPIO_NOPULL, \
@@ -27,6 +32,7 @@
 
 #define HW_GPIO_CUBEMX_SIM_PINS_PORT_B \
     { .pin = 0x0004U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PB2" }, \
+    { .pin = 0x0400U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PB10" }, \
     { .pin = 0x0040U, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "PB6" },
 
 #define HW_GPIO_CUBEMX_PINS_PORT_C \

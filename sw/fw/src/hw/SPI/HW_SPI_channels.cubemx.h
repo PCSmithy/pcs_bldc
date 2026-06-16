@@ -34,11 +34,11 @@
 #define HW_SPI_CUBEMX_INIT_SPI3 \
     .Mode              = SPI_MODE_MASTER, \
     .Direction         = SPI_DIRECTION_2LINES, \
-    .DataSize          = SPI_DATASIZE_4BIT, \
+    .DataSize          = SPI_DATASIZE_8BIT, \
     .CLKPolarity       = SPI_POLARITY_LOW, \
     .CLKPhase          = SPI_PHASE_1EDGE, \
     .NSS               = SPI_NSS_SOFT, \
-    .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2, \
+    .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32, \
     .FirstBit          = SPI_FIRSTBIT_MSB, \
     .TIMode            = SPI_TIMODE_DISABLE, \
     .CRCCalculation    = SPI_CRCCALCULATION_DISABLE, \
