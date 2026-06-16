@@ -70,24 +70,29 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
             .Instance = SPI3,
             .Init =
             {
+                // SK6805 LED string: MOSI (PB5) is bit-banged as the 1-wire
+                // LED data line. Each color bit -> 6 SPI bits at /32 (4.5 MHz,
+                // bit = 0.222us): '0' = 0b110000 (T0H 0.44 / T0L 0.89us),
+                // '1' = 0b111000 (T1H 0.67 / T1L 0.67us) — all in spec.
+                // SCK/MISO are unused. Blocking (SW) transfer; no HW_DMA yet.
                 .Mode = SPI_MODE_MASTER,
                 .Direction = SPI_DIRECTION_2LINES,
-                .DataSize = SPI_DATASIZE_4BIT,
+                .DataSize = SPI_DATASIZE_8BIT,
                 .CLKPolarity = SPI_POLARITY_LOW,
                 .CLKPhase = SPI_PHASE_1EDGE,
                 .NSS = SPI_NSS_SOFT,
-                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2,
+                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32,
                 .FirstBit = SPI_FIRSTBIT_MSB,
                 .TIMode = SPI_TIMODE_DISABLE,
                 .CRCCalculation = SPI_CRCCALCULATION_DISABLE,
                 .CRCPolynomial = 7,
                 .CRCLength = SPI_CRC_LENGTH_DATASIZE,
-                .NSSPMode = SPI_NSS_PULSE_ENABLE,
+                .NSSPMode = SPI_NSS_PULSE_DISABLE,
             },
         },
-        .transferMode = HW_SPI_TRANSFERMODE_DMA,
+        .transferMode = HW_SPI_TRANSFERMODE_SW,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
-        .transferMode    = HW_SPI_TRANSFERMODE_DMA,
+        .transferMode    = HW_SPI_TRANSFERMODE_SW,
         .busNameStr      = "SPI3",
 #endif
     },

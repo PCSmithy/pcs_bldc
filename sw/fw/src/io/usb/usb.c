@@ -62,7 +62,7 @@ static void usbDeviceTask(void * params)
     }
 }
 
-bool USB_init(void)
+bool USB_init(uint32_t taskPriority)
 {
     // Route the USB clock: PLL-Q = 48 MHz (matches ST usbd_conf.c MspInit).
     RCC_PeriphCLKInitTypeDef p = {0};
@@ -76,10 +76,10 @@ bool USB_init(void)
     HAL_NVIC_SetPriority(USB_LP_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USB_LP_IRQn);
 
-    // USB needs a deeper stack than the heartbeat task; run it high-ish.
-    // Surface a creation failure (e.g. heap exhaustion) to the caller rather
-    // than silently leaving the device stack uninitialized.
-    return (xTaskCreate(usbDeviceTask, "usb", 512, NULL, configMAX_PRIORITIES - 2, NULL) == pdPASS);
+    // The caller owns the task-priority hierarchy (see main.c). Surface a
+    // creation failure (e.g. heap exhaustion) rather than silently leaving the
+    // device stack uninitialized.
+    return (xTaskCreate(usbDeviceTask, "usb", 512, NULL, (UBaseType_t)taskPriority, NULL) == pdPASS);
 }
 
 // Retarget printf to CDC. syscalls.c's weak _write already calls __io_putchar.

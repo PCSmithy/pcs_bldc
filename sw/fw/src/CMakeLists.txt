@@ -70,6 +70,12 @@ if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE io_AS5048_channels)
 endif()
 
+# io_SK6805 (embedded only): the SK6805 LED-string driver + its project config
+# (io_SK6805_config pulls in io_SK6805), same linking story as io_AS5048.
+if(PCS_TARGET STREQUAL "embedded")
+  target_link_libraries(pcs_bldc_fw PRIVATE io_SK6805_config)
+endif()
+
 # Embedded-target post-build: emit .bin and .hex artifacts and print the
 # memory section sizes (text/data/bss + flash/RAM percentages from the
 # linker's --print-memory-usage in fw_hw's link options).
