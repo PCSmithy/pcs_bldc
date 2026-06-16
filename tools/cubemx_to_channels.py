@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CUBEMX_MAIN = REPO_ROOT / "sw/fw/stm32cube/g4/Core/Src/main.c"
 GPIO_OUT = REPO_ROOT / "sw/fw/src/hw/GPIO/HW_GPIO_channels.cubemx.h"
 ADC_OUT = REPO_ROOT / "sw/fw/src/hw/ADC/HW_ADC_channels.cubemx.h"
+SPI_OUT = REPO_ROOT / "sw/fw/src/hw/SPI/HW_SPI_channels.cubemx.h"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,65 @@ def write_adc_header(adcs: list[ADCConfig]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# SPI
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SPIConfig:
+    instance: str                      # e.g. "SPI1"
+    init: list[tuple[str, str]]        # [(field, value), ...] from hspiN.Init.*
+
+
+def parse_mx_spi_init(body: str, hspi_var: str) -> SPIConfig | None:
+    """Parse one `MX_SPI*_Init` body. `hspi_var` is CubeMX's handle name,
+    e.g. `hspi1` for SPI1."""
+    instance_match = re.search(
+        rf'\b{re.escape(hspi_var)}\.Instance\s*=\s*(SPI\d+)\s*;', body)
+    if not instance_match:
+        return None
+    instance = instance_match.group(1)
+
+    # hspiN.Init.X = Y;  -- preserve declaration order so the generated macro
+    # reads the same as CubeMX's struct.
+    init_pairs: list[tuple[str, str]] = []
+    for m in re.finditer(
+            rf'\b{re.escape(hspi_var)}\.Init\.(\w+)\s*=\s*([^;]+);', body):
+        init_pairs.append((m.group(1), m.group(2).strip()))
+
+    return SPIConfig(instance=instance, init=init_pairs)
+
+
+def gen_spi_macros(spis: list[SPIConfig]) -> str:
+    parts: list[str] = []
+    for spi in spis:
+        name = spi.instance
+        parts.append(f"// ----- {name} -----")
+        parts.append("")
+        # The whole SPI_InitTypeDef body, used inside `.hspi = { .Init = { ... } }`.
+        # No sim mirror: the SIM branch of HW_SPI_channels.c has no hspi.
+        if spi.init:
+            init_lines = aligned_assignments(spi.init, indent="    ")
+            parts.append(emit_macro(f"HW_SPI_CUBEMX_INIT_{name}", init_lines))
+            parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def write_spi_header(spis: list[SPIConfig]) -> None:
+    macros = gen_spi_macros(spis)
+    content = (
+        f"{file_header('cubemx_to_channels.py')}"
+        f"\n"
+        f"#ifndef HW_SPI_CHANNELS_CUBEMX_H\n"
+        f"#define HW_SPI_CHANNELS_CUBEMX_H\n"
+        f"\n"
+        f"{macros}\n"
+        f"#endif // HW_SPI_CHANNELS_CUBEMX_H\n"
+    )
+    SPI_OUT.write_text(content, encoding="utf-8")
+    print(f"  wrote {SPI_OUT.relative_to(REPO_ROOT)} ({len(spis)} SPIs)")
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -425,6 +485,27 @@ def main() -> int:
         print("  WARN: no MX_ADC*_Init functions found; "
               "writing empty ADC header.", file=sys.stderr)
     write_adc_header(adcs)
+
+    # SPI -------------------------------------------------------------
+    # Find every MX_SPIN_Init function and parse its hspiN.Init.* block.
+    spi_funcs_raw = re.findall(
+        r'\bvoid\s+(MX_SPI(\d+)_Init)\s*\(\s*void\s*\)', source)
+    spi_funcs = sorted(set(spi_funcs_raw), key=lambda x: int(x[1]))
+    spis: list[SPIConfig] = []
+    for func_name, n in spi_funcs:
+        body = extract_function_body(source, func_name)
+        if body is None:
+            continue
+        cfg = parse_mx_spi_init(body, hspi_var=f"hspi{n}")
+        if cfg is None:
+            print(f"  WARN: couldn't parse {func_name}; skipping.",
+                  file=sys.stderr)
+            continue
+        spis.append(cfg)
+    if not spis:
+        print("  WARN: no MX_SPI*_Init functions found; "
+              "writing empty SPI header.", file=sys.stderr)
+    write_spi_header(spis)
 
     return 0
 

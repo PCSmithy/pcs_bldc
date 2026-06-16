@@ -27,27 +27,11 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         .hspi =
         {
             .Instance = SPI1,
-            .Init =
-            {
-                .Mode = SPI_MODE_MASTER,
-                .Direction = SPI_DIRECTION_2LINES,
-                // AS5048 encoder: 16-bit frames sent as 8-bit byte pairs;
-                // SPI mode 1 (CPOL=0/CPHA=1 — samples MOSI on the falling
-                // edge, updates MISO on the rising edge, datasheet p.10);
-                // TCLK >= 100ns (10 MHz max), so /32 of PCLK2 (144 MHz) =
-                // 4.5 MHz keeps a comfortable margin.
-                .DataSize = SPI_DATASIZE_8BIT,
-                .CLKPolarity = SPI_POLARITY_LOW,
-                .CLKPhase = SPI_PHASE_2EDGE,
-                .NSS = SPI_NSS_SOFT,
-                .BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32,
-                .FirstBit = SPI_FIRSTBIT_MSB,
-                .TIMode = SPI_TIMODE_DISABLE,
-                .CRCCalculation = SPI_CRCCALCULATION_DISABLE,
-                .CRCPolynomial = 7,
-                .CRCLength = SPI_CRC_LENGTH_DATASIZE,
-                .NSSPMode = SPI_NSS_PULSE_ENABLE,
-            },
+            // AS5048 encoder: 16-bit frames as 8-bit byte pairs, SPI mode 1
+            // (CPOL=0/CPHA=1, datasheet p.10), /32 of PCLK2 (144 MHz) = 4.5 MHz
+            // (< the 10 MHz TCLK limit). Set in the .ioc; pulled in from there
+            // via the cubemx-generated macro.
+            .Init = { HW_SPI_CUBEMX_INIT_SPI1 },
         },
         .transferMode = HW_SPI_TRANSFERMODE_SW,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
@@ -68,6 +52,10 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         .hspi =
         {
             .Instance = SPI3,
+            // NOTE: still hand-written, NOT HW_SPI_CUBEMX_INIT_SPI3. The .ioc
+            // SPI3 is still the placeholder (4-bit / div2); these are the real
+            // SK6805 values. Set SPI3 in CubeMX to DataSize 8-bit, prescaler
+            // /32, then switch this to `.Init = { HW_SPI_CUBEMX_INIT_SPI3 }`.
             .Init =
             {
                 // SK6805 LED string: MOSI (PB5) is bit-banged as the 1-wire

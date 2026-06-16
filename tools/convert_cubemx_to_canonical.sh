@@ -148,9 +148,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # Channelized HW_*_channels.cubemx.h headers — auto-generated macros
-# extracted from CubeMX main.c's MX_GPIO_Init / MX_ADC*_Init function
-# bodies. Keeps the CubeMX-derived field values for HW_GPIO_channels.c
-# and HW_ADC_channels.c in sync with the .ioc without hand-porting.
+# extracted from CubeMX main.c's MX_GPIO_Init / MX_ADC*_Init / MX_SPI*_Init
+# function bodies. Keeps the CubeMX-derived field values for
+# HW_GPIO_channels.c, HW_ADC_channels.c and HW_SPI_channels.c in sync with
+# the .ioc without hand-porting.
 # ---------------------------------------------------------------------------
 echo
 echo "==> Regenerating HW_*_channels.cubemx.h from CubeMX main.c"
@@ -168,4 +169,4 @@ echo
 echo "If SystemClock_Config changed in CubeMX, diff"
 echo "  ${SRC}/Core/Src/main.c"
 echo "against HW_systemClock_init / clock_init() and hand-merge."
-echo "(GPIO / ADC channel configs auto-update via the .cubemx.h headers.)"
+echo "(GPIO / ADC / SPI channel configs auto-update via the .cubemx.h headers.)"
