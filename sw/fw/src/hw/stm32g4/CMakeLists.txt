@@ -20,6 +20,10 @@ target_include_directories(pcs_stm32g4_hal_conf INTERFACE .)
 add_library(pcs_freertos_config INTERFACE)
 target_include_directories(pcs_freertos_config INTERFACE .)
 
+# tusb_config.h lives here too; expose it to the vendored tinyusb stack.
+add_library(pcs_tinyusb_config INTERFACE)
+target_include_directories(pcs_tinyusb_config INTERFACE .)
+
 add_library(fw_hw STATIC
   stm32g4xx_hal_msp.c
   stm32g4xx_it.c

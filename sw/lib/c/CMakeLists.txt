@@ -45,5 +45,11 @@ if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
   add_subdirectory(FreeRTOS)
 endif()
 
+if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
+  # TinyUSB USB device stack (stm32_fsdev) — embedded only. Needs the
+  # consumer-provided pcs_tinyusb_config interface lib for tusb_config.h.
+  add_subdirectory(tinyusb)
+endif()
+
 # Our own library code (layered).
 add_subdirectory(shared)

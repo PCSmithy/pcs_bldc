@@ -7,6 +7,7 @@
   #include "stm32g4xx_hal.h"  // HAL_Init
   #include "FreeRTOS.h"
   #include "task.h"
+  #include "usb.h"
 #endif
 
 extern const HW_systemClock_config_S HW_systemClock_config;
@@ -14,11 +15,6 @@ extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-// Weak placeholder so stm32g4xx_it.c's USB_LP_IRQHandler links before the USB
-// CDC stack is integrated. usbd_conf.c will provide the real (strong)
-// definition; until USB is initialized its interrupt never fires, so this
-// zeroed handle is never actually used. TODO: remove when the USB stack lands.
-__attribute__((weak)) PCD_HandleTypeDef hpcd_USB_FS;
 // stm32g4xx_it.c's TIM6_DAC_IRQHandler references hdac1; the DAC isn't
 // integrated, so a zeroed weak handle lets it.o link (the DAC interrupt never
 // fires). TODO: remove when a DAC driver lands.
@@ -95,6 +91,7 @@ int main(void)
     // vTaskStartScheduler() does not return.
     (void)xTaskCreate(heartbeatTask, "heartbeat", configMINIMAL_STACK_SIZE,
                       NULL, tskIDLE_PRIORITY + 1U, NULL);
+    USB_init();   // task creation disabled inside (bisection test)
     vTaskStartScheduler();
 #endif
 

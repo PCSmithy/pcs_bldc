@@ -55,7 +55,6 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern PCD_HandleTypeDef hpcd_USB_FS;
 extern DAC_HandleTypeDef hdac1;
 extern TIM_HandleTypeDef htim6;
 
@@ -162,20 +161,6 @@ void DebugMon_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles USB low priority interrupt remap.
-  */
-void USB_LP_IRQHandler(void)
-{
-  /* USER CODE BEGIN USB_LP_IRQn 0 */
-
-  /* USER CODE END USB_LP_IRQn 0 */
-  HAL_PCD_IRQHandler(&hpcd_USB_FS);
-  /* USER CODE BEGIN USB_LP_IRQn 1 */
-
-  /* USER CODE END USB_LP_IRQn 1 */
-}
-
-/**
   * @brief This function handles TIM6 global interrupt, DAC1 and DAC3 channel underrun error interrupts.
   */
 void TIM6_DAC_IRQHandler(void)
@@ -212,6 +197,34 @@ void EXTI15_10_IRQHandler(void)
   {
     HAL_GPIO_EXTI_IRQHandler((uint16_t)(1U << line));
   }
+}
+
+/**
+  * @brief This function handles USB low priority interrupt (services TinyUSB).
+  *
+  * Must live here (force-linked via --whole-archive on fw_hw). A handler placed
+  * in io_usb would be dropped by the linker and the weak Default_Handler would
+  * win. Forward-declared to avoid pulling tusb.h into this glue file. Note:
+  * tusb.h's tud_int_handler is only a macro alias for the real exported symbol
+  * dcd_int_handler, so we call dcd_int_handler directly here.
+  */
+extern void dcd_int_handler(unsigned char rhport);
+void USB_LP_IRQHandler(void)
+{
+  dcd_int_handler(0);
+}
+
+/**
+  * @brief This function handles the USB wakeup interrupt (EXTI line 18).
+  *
+  * The USB peripheral pulses this EXTI line during the host's reset/resume
+  * signalling. Without a handler the vector falls through to the infinite-loop
+  * Default_Handler and wedges the CPU (starving SysTick). We only clear the
+  * EXTI pending bit here — the USB resume itself is serviced via USB_LP.
+  */
+void USBWakeUp_IRQHandler(void)
+{
+  EXTI->PR1 = (0x1UL << 18);   /* USB_WAKEUP_EXTI_LINE */
 }
 
 /* USER CODE END 1 */
