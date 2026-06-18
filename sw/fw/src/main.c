@@ -115,8 +115,9 @@ static void task_1ms(void * params)
 // restructured into a dedicated app module later.
 typedef enum
 {
-    LED_MODE_WALK,     // colour pip walking the ring; dial sets signed speed
+    LED_MODE_WALK,     // two colour pips walking the ring; dial speeds one, motor the other
     LED_MODE_SOLID,    // two-encoder HSV colour picker (motor=hue, dial=sat)
+    LED_MODE_SOLID2,   // second colour picker, same controls, saved separately
     LED_MODE_ENCODER,  // red pip tracks the motor angle, blue pip the dial
     LED_MODE_OFF,      // all off
     LED_MODE_COUNT,
@@ -129,26 +130,34 @@ typedef enum
 #define PIP_HALF_WIDTH_DEG   18.0f
 #define PIP_MAX_BRIGHTNESS   50U
 
-// WALK-mode speed control. The dial sets a SIGNED walk-head speed through a
-// sticky, clamped accumulator of dial *movement* (not absolute angle), centred
-// on zero: at centre the walk slows to a stop, winding one way runs it forward
-// and the other way reverses it, up to +/-WALK_SPEED_MAX_DPS. Winding past a
-// bound saturates and discards the excess, so reversing the dial responds
-// immediately instead of unwinding. ~DIAL_ACCUM_RANGE_DEG of travel each side
-// sweeps stop -> full speed.
+// WALK-mode speed control. Each walk-head's speed comes from a SIGNED, sticky,
+// clamped accumulator of encoder *movement* (not absolute angle), centred on
+// zero: at centre the head slows to a stop, winding one way runs it forward and
+// the other reverses it, up to +/-WALK_SPEED_MAX_DPS. Winding past a bound
+// saturates and discards the excess, so reversing the encoder responds
+// immediately instead of unwinding. ~WALK_ACCUM_RANGE_DEG of travel each side
+// sweeps stop -> full speed. The dial drives one head, the motor encoder the
+// other.
 #define WALK_SPEED_MAX_DPS    720.0f   // peak speed magnitude, either direction
-#define DIAL_ACCUM_RANGE_DEG  340.0f   // dial travel from stop to full speed (per direction)
+#define WALK_ACCUM_RANGE_DEG  340.0f   // encoder travel from stop to full speed (per direction)
 
-// Colour-picker saturation. Like the walk speed, the dial drives a bounded
-// accumulator of *movement* (not absolute angle), so saturation sweeps
-// white<->full smoothly with no harsh jump at the encoder's 0/360 seam.
-// ~SAT_ACCUM_RANGE_DEG of dial travel sweeps white -> full saturation.
+// Colour-picker controls. Both axes track encoder *movement* (not absolute
+// angle), so a picked colour persists across mode switches: re-entering a
+// picker resumes the colour you left rather than snapping to a function of the
+// encoders' current position. Motor movement winds the hue 1:1 (wrapping at the
+// 0/360 colour-wheel seam); dial movement drives saturation through a bounded
+// accumulator (~SAT_ACCUM_RANGE_DEG of travel sweeps white -> full).
 #define SAT_ACCUM_RANGE_DEG   180.0f
 
 // LED task cadence. The frame dt is derived from the period so the two can't
 // drift apart (the walk speed depends on it).
 #define LED_FRAME_PERIOD_MS   10U
 #define LED_FRAME_DT_S        ((float32_t)LED_FRAME_PERIOD_MS / 1000.0f)
+
+// On a mode change the ring flashes white twice as confirmation (some adjacent
+// modes, e.g. the two colour pickers, look identical until dialled). Each
+// on/off half is MODE_BLINK_MS.
+#define MODE_BLINK_MS         50U
 
 // Brightness (0..1) a pip centred at angle_deg contributes to ledIndex, by
 // circular angular distance with a linear falloff out to the pip half-width.
@@ -203,24 +212,78 @@ static void ledHsvToRgb(float32_t h, float32_t s, float32_t v, uint8_t maxLevel,
     *b = (uint8_t)((bp + base) * scale);
 }
 
+// Advance one signed walk-head: fold this frame's encoder movement into a
+// sticky, clamped speed accumulator (centred on zero) and integrate the
+// resulting signed speed into a ring position, wrapped into [0, PIXEL_COUNT).
+static void ledWalkAdvance(float32_t * accum, float32_t * pos, float32_t delta)
+{
+    *accum += delta;
+    if (*accum >  WALK_ACCUM_RANGE_DEG) { *accum =  WALK_ACCUM_RANGE_DEG; }
+    if (*accum < -WALK_ACCUM_RANGE_DEG) { *accum = -WALK_ACCUM_RANGE_DEG; }
+
+    const float32_t frac      = *accum / WALK_ACCUM_RANGE_DEG;          // -1..+1
+    const float32_t speedDps  = frac * WALK_SPEED_MAX_DPS;             // signed
+    const float32_t degPerLed = 360.0f / (float32_t)IO_SK6805_PIXEL_COUNT;
+
+    *pos += (speedDps / degPerLed) * LED_FRAME_DT_S;                   // signed LED units
+    while (*pos >= (float32_t)IO_SK6805_PIXEL_COUNT) { *pos -= (float32_t)IO_SK6805_PIXEL_COUNT; }
+    while (*pos < 0.0f)                              { *pos += (float32_t)IO_SK6805_PIXEL_COUNT; }
+}
+
+// Flash the whole ring white twice (MODE_BLINK_MS on/off) as a mode-change
+// confirmation. Blocks the LED task for the flash; other tasks keep running.
+// Each push is wrapped in vTaskSuspendAll() like the main loop, so the SK6805
+// stream isn't preempted mid-transfer.
+static void ledBlinkModeChange(void)
+{
+    const uint8_t white = (uint8_t)PIP_MAX_BRIGHTNESS/10U;
+    for (uint8_t flash = 0U; flash < 1U; flash++)
+    {
+        IO_SK6805_setAll(white, white, white);
+        vTaskSuspendAll();
+        (void)IO_SK6805_update();
+        (void)xTaskResumeAll();
+        vTaskDelay(pdMS_TO_TICKS(MODE_BLINK_MS));
+
+        IO_SK6805_clear();
+        vTaskSuspendAll();
+        (void)IO_SK6805_update();
+        (void)xTaskResumeAll();
+        vTaskDelay(pdMS_TO_TICKS(MODE_BLINK_MS));
+    }
+}
+
 static void ledTask(void * params)
 {
     (void)params;
     ledMode_E mode       = LED_MODE_WALK;
     bool      prevButton = false;
-    float32_t walkPos    = 0.0f;   // walk-head position, LED units
-    float32_t dialAccum  = 0.0f;   // signed sticky speed accumulator; 0 = stopped
-    float32_t satAccum   = SAT_ACCUM_RANGE_DEG;  // colour-picker saturation; starts full
+    float32_t walkPos    = 0.0f;   // dial-driven walk-head position, LED units
+    float32_t walkPos2   = 0.0f;   // motor-driven walk-head position, LED units
+    float32_t dialAccum  = 0.0f;   // signed sticky speed accumulator (dial); 0 = stopped
+    float32_t motorAccum = 0.0f;   // signed sticky speed accumulator (motor); 0 = stopped
+    float32_t satAccum   = SAT_ACCUM_RANGE_DEG;  // SOLID colour-picker saturation; starts full
+    float32_t satAccum2  = SAT_ACCUM_RANGE_DEG;  // SOLID2 colour-picker saturation; starts full
+    float32_t hueAccum   = 0.0f;                 // SOLID colour-picker hue (deg); starts red
+    float32_t hueAccum2  = 240.0f;               // SOLID2 colour-picker hue (deg); starts blue
 
     // Colour picked in SOLID mode (motor=hue, dial=saturation), reused by the
-    // walk pip. Defaults to the brightest red until a colour is dialled in.
+    // first walk pip. Defaults to the brightest red until a colour is dialled in.
     uint8_t pickR = (uint8_t)PIP_MAX_BRIGHTNESS;
     uint8_t pickG = 0U;
     uint8_t pickB = 0U;
 
-    // Seed the dial reference so the first frame's delta is ~0.
+    // Colour picked in SOLID2 mode (same controls), reused by the second walk
+    // pip. Defaults to the brightest blue until a colour is dialled in.
+    uint8_t pick2R = 0U;
+    uint8_t pick2G = 0U;
+    uint8_t pick2B = (uint8_t)PIP_MAX_BRIGHTNESS;
+
+    // Seed the encoder references so the first frame's deltas are ~0.
     float32_t prevDial = 0.0f;
     (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, NULL, &prevDial);
+    float32_t prevMotor = 0.0f;
+    (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &prevMotor);
 
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
@@ -231,11 +294,16 @@ static void ledTask(void * params)
         if (button && (!prevButton))
         {
             mode = (ledMode_E)((mode + 1U) % (uint32_t)LED_MODE_COUNT);
+            ledBlinkModeChange();
+            // Re-anchor the cadence: the blink blocked past several frames, so
+            // resume from now rather than letting vTaskDelayUntil burst to catch up.
+            lastWake = xTaskGetTickCount();
         }
         prevButton = button;
 
-        // Track dial movement every frame (wrapped to +/-180 deg) so the value
-        // is always current and switching modes never injects a jump.
+        // Track dial and motor movement every frame (wrapped to +/-180 deg) so
+        // the values are always current and switching modes never injects a
+        // jump. Both absolute angles are reused by the modes below.
         float32_t dialDeg = 0.0f;
         (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, NULL, &dialDeg);
         float32_t dialDelta = dialDeg - prevDial;
@@ -243,78 +311,108 @@ static void ledTask(void * params)
         else if (dialDelta < -180.0f) { dialDelta += 360.0f; }
         prevDial = dialDeg;
 
+        float32_t motorDeg = 0.0f;
+        (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &motorDeg);
+        float32_t motorDelta = motorDeg - prevMotor;
+        if (motorDelta > 180.0f)       { motorDelta -= 360.0f; }
+        else if (motorDelta < -180.0f) { motorDelta += 360.0f; }
+        prevMotor = motorDeg;
+
         switch (mode)
         {
             case LED_MODE_WALK:
             {
-                // Signed, sticky-clamped accumulator of dial travel, centred on
-                // zero: at centre the walk slows to a stop, one way runs it
-                // forward and the other reverses. At a bound the excess movement
-                // is discarded, so reversing the dial responds immediately
-                // without unwinding.
-                dialAccum += dialDelta;
-                if (dialAccum >  DIAL_ACCUM_RANGE_DEG) { dialAccum =  DIAL_ACCUM_RANGE_DEG; }
-                if (dialAccum < -DIAL_ACCUM_RANGE_DEG) { dialAccum = -DIAL_ACCUM_RANGE_DEG; }
+                // Two signed walk-heads: the dial drives the first, the motor
+                // encoder the second. Each is a sticky-clamped speed accumulator
+                // centred on zero, so centre = stopped, one way = forward, the
+                // other = reverse, and reversing responds immediately without
+                // unwinding.
+                ledWalkAdvance(&dialAccum,  &walkPos,  dialDelta);
+                ledWalkAdvance(&motorAccum, &walkPos2, motorDelta);
 
-                const float32_t frac      = dialAccum / DIAL_ACCUM_RANGE_DEG;   // -1..+1
-                const float32_t speedDps  = frac * WALK_SPEED_MAX_DPS;          // signed
-                const float32_t degPerLed = 360.0f / (float32_t)IO_SK6805_PIXEL_COUNT;
+                const float32_t degPerLed  = 360.0f / (float32_t)IO_SK6805_PIXEL_COUNT;
+                const float32_t walkAngle  = walkPos  * degPerLed;   // LED units -> deg
+                const float32_t walkAngle2 = walkPos2 * degPerLed;
 
-                walkPos += (speedDps / degPerLed) * LED_FRAME_DT_S;            // signed LED units
-                while (walkPos >= (float32_t)IO_SK6805_PIXEL_COUNT)
-                {
-                    walkPos -= (float32_t)IO_SK6805_PIXEL_COUNT;
-                }
-                while (walkPos < 0.0f)
-                {
-                    walkPos += (float32_t)IO_SK6805_PIXEL_COUNT;
-                }
-
-                // Render the head as a wide pip (same falloff as encoder mode),
-                // in the SOLID-picked colour, centred on the fractional walkPos
-                // for smooth sub-LED motion.
-                const float32_t walkAngle = walkPos * degPerLed;              // LED units -> deg
-                IO_SK6805_clear();
+                // Render each head as a wide pip (same falloff as encoder mode),
+                // the first in the SOLID colour and the second in the SOLID2
+                // colour, centred on the fractional position for smooth sub-LED
+                // motion. Where the pips overlap their channels add (clamped).
                 for (uint16_t i = 0U; i < IO_SK6805_PIXEL_COUNT; i++)
                 {
-                    const float32_t bright = ledPipBrightness(walkAngle, i);
-                    IO_SK6805_setPixel(i, (uint8_t)(bright * (float32_t)pickR),
-                                          (uint8_t)(bright * (float32_t)pickG),
-                                          (uint8_t)(bright * (float32_t)pickB));
+                    const float32_t bright1 = ledPipBrightness(walkAngle,  i);
+                    const float32_t bright2 = ledPipBrightness(walkAngle2, i);
+
+                    uint16_t r = (uint16_t)(bright1 * (float32_t)pickR) + (uint16_t)(bright2 * (float32_t)pick2R);
+                    uint16_t g = (uint16_t)(bright1 * (float32_t)pickG) + (uint16_t)(bright2 * (float32_t)pick2G);
+                    uint16_t b = (uint16_t)(bright1 * (float32_t)pickB) + (uint16_t)(bright2 * (float32_t)pick2B);
+                    if (r > 255U) { r = 255U; }
+                    if (g > 255U) { g = 255U; }
+                    if (b > 255U) { b = 255U; }
+
+                    IO_SK6805_setPixel(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
                 break;
             }
 
             case LED_MODE_SOLID:
             {
-                // Two-encoder colour picker: motor = hue (absolute, circular),
-                // dial = saturation via a bounded movement accumulator so it
-                // sweeps white<->full smoothly with no 0/360 seam jump.
+                // Two-encoder colour picker, both axes movement-driven so the
+                // colour persists across mode switches: motor winds hue 1:1
+                // (wrapping the 0/360 seam), dial drives saturation via a
+                // bounded accumulator (white<->full, no seam jump).
+                hueAccum += motorDelta;
+                while (hueAccum >= 360.0f) { hueAccum -= 360.0f; }
+                while (hueAccum < 0.0f)    { hueAccum += 360.0f; }
+
                 satAccum += dialDelta;
                 if (satAccum < 0.0f)                { satAccum = 0.0f; }
                 if (satAccum > SAT_ACCUM_RANGE_DEG) { satAccum = SAT_ACCUM_RANGE_DEG; }
                 const float32_t saturation = satAccum / SAT_ACCUM_RANGE_DEG;   // 0..1
 
-                float32_t motorDeg = 0.0f;
-                (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &motorDeg);
-                ledHsvToRgb(motorDeg, saturation, 1.0f, (uint8_t)(PIP_MAX_BRIGHTNESS/2U), &pickR, &pickG, &pickB);
+                ledHsvToRgb(hueAccum, saturation, 1.0f, (uint8_t)(PIP_MAX_BRIGHTNESS/2U), &pickR, &pickG, &pickB);
                 IO_SK6805_setAll(pickR, pickG, pickB);
+                break;
+            }
+
+            case LED_MODE_SOLID2:
+            {
+                // Second colour picker, identical movement-driven controls to
+                // SOLID but saved to a separate colour (used by the second walk
+                // pip): motor winds hue, dial drives saturation.
+                hueAccum2 += motorDelta;
+                while (hueAccum2 >= 360.0f) { hueAccum2 -= 360.0f; }
+                while (hueAccum2 < 0.0f)    { hueAccum2 += 360.0f; }
+
+                satAccum2 += dialDelta;
+                if (satAccum2 < 0.0f)                { satAccum2 = 0.0f; }
+                if (satAccum2 > SAT_ACCUM_RANGE_DEG) { satAccum2 = SAT_ACCUM_RANGE_DEG; }
+                const float32_t saturation = satAccum2 / SAT_ACCUM_RANGE_DEG;   // 0..1
+
+                ledHsvToRgb(hueAccum2, saturation, 1.0f, (uint8_t)(PIP_MAX_BRIGHTNESS/2U), &pick2R, &pick2G, &pick2B);
+                IO_SK6805_setAll(pick2R, pick2G, pick2B);
                 break;
             }
 
             case LED_MODE_ENCODER:
             {
-                // Red pip follows the motor encoder, blue pip the dial (read
-                // above). Each LED takes red from the motor pip and blue from
-                // the dial pip, so where they overlap the colours blend.
-                float32_t motorDeg = 0.0f;
-                (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &motorDeg);
-
+                // One pip per encoder, in the same picked colours as WALK: the
+                // dial pip in the SOLID colour, the motor pip in the SOLID2
+                // colour (both angles read above). Where they overlap the
+                // channels add (clamped).
                 for (uint16_t i = 0U; i < IO_SK6805_PIXEL_COUNT; i++)
                 {
-                    const uint8_t red  = (uint8_t)(ledPipBrightness(motorDeg, i) * (float32_t)PIP_MAX_BRIGHTNESS);
-                    const uint8_t blue = (uint8_t)(ledPipBrightness(dialDeg, i)  * (float32_t)PIP_MAX_BRIGHTNESS);
-                    IO_SK6805_setPixel(i, red, 0U, blue);
+                    const float32_t brightDial  = ledPipBrightness(dialDeg,  i);
+                    const float32_t brightMotor = ledPipBrightness(motorDeg, i);
+
+                    uint16_t r = (uint16_t)(brightDial * (float32_t)pickR) + (uint16_t)(brightMotor * (float32_t)pick2R);
+                    uint16_t g = (uint16_t)(brightDial * (float32_t)pickG) + (uint16_t)(brightMotor * (float32_t)pick2G);
+                    uint16_t b = (uint16_t)(brightDial * (float32_t)pickB) + (uint16_t)(brightMotor * (float32_t)pick2B);
+                    if (r > 255U) { r = 255U; }
+                    if (g > 255U) { g = 255U; }
+                    if (b > 255U) { b = 255U; }
+
+                    IO_SK6805_setPixel(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
                 break;
             }
