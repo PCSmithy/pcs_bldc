@@ -17,7 +17,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ **D2** resolved — Rust↔C FFI boundary ([`ffi-boundary.md`](ffi-boundary.md))
 - ☑ **D8** resolved — simulated interrupt model ([`sim-interrupts.md`](sim-interrupts.md))
 - ☑ **D6** resolved (contract) — inverter fidelity + base `dt` ([`inverter-timestep.md`](inverter-timestep.md))
-- ☐ Close out remaining open decisions D3–D5, D7, D9–D12
+- ☑ **D9** resolved — firmware time virtualization ([`time-virtualization.md`](time-virtualization.md))
+- ☐ Close out remaining open decisions D3–D5, D7, D10–D12
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
@@ -33,6 +34,8 @@ synthetic ADC ramp advances under the scheduler.
 - ☐ Ungate FreeRTOS bring-up + io/dev/app in `main.c` for `BUILD_TARGET_SIM`
 - ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
+- ☐ `HW_time` module (stm32g4 + sim) + audit drivers for direct
+  `HAL_Delay`/`DWT`/timer-`CNT` use (D9)
 - ☐ Native build is green (`tools/build_native.sh sw/fw`)
 
 ## Phase 2 — Rust sim core + FFI backend

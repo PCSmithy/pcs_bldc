@@ -23,6 +23,7 @@ Two run modes share one core engine:
 | [`freertos-tick.md`](freertos-tick.md) | D1 — pluggable FreeRTOS tick source (realtime vs framework-driven) sharing one control loop. |
 | [`sim-interrupts.md`](sim-interrupts.md) | D8 — framework-owned interrupt table (periodic + one-shot, config + runtime); dispatched through the port in the firmware thread. |
 | [`inverter-timestep.md`](inverter-timestep.md) | D6 — inverter fidelity (averaged-duty default, switching-resolved opt-in), the abc model↔firmware contract, and base `dt`. |
+| [`time-virtualization.md`](time-virtualization.md) | D9 — firmware time sources backed by the sim clock; every wait is a yield (busy-waits would deadlock). |
 | [`roadmap.md`](roadmap.md) | Phased milestones + status tracking for building it out. |
 
 ## Worktree / branch workflow
