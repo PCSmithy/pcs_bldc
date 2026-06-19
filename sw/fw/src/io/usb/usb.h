@@ -4,10 +4,11 @@
 #include "lib_types.h"
 
 // Bring up the USB device stack (TinyUSB CDC / virtual COM port): routes the
-// 48 MHz USB clock, enables the USB_LP interrupt, and spawns the FreeRTOS task
-// that services the device stack at taskPriority. Call once from main() before
-// the scheduler starts. STM32G4 (embedded) target only. Returns false if the
-// device task could not be created (e.g. FreeRTOS heap exhaustion).
+// 48 MHz USB clock, enables the USB_LP interrupt, and spawns two FreeRTOS tasks
+// — a device-stack service task at taskPriority and a telemetry producer task
+// one priority lower. Call once from main() before the scheduler starts.
+// STM32G4 (embedded) target only. Returns false if either task could not be
+// created (e.g. FreeRTOS heap exhaustion).
 bool USB_init(uint32_t taskPriority);
 
 #endif // IO_USB_H
