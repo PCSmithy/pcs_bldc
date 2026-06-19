@@ -32,7 +32,8 @@ Sub-folders are created when a topic gets its first spec. The topics below
 are the anticipated structure; folders that are not yet present have no
 specs in them yet.
 
-- `motor-control/` — torque, velocity, position, trajectory tracking
+- `mc/` — sensored & sensorless motor control (anchor `sys~mc_001`), torque,
+  velocity, position, trajectory tracking
 - `estimation/` — state estimation, sensorless operation
 - `observability/` — telemetry stream, diagnostics, logging
 - `operating-modes/` — system mode state machine (idle / calibrate / run /

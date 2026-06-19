@@ -8,3 +8,7 @@ target_link_libraries(io_AS5048
     hw_SPI                  # HW_SPI.h: HW_SPI_channel_E + HW_SPI_transmitReceive
     pcs_AS5048_channels     # consumer-provided IO_AS5048_channels.h path
 )
+
+if(PCS_TARGET STREQUAL "native")
+  add_subdirectory(test)
+endif()

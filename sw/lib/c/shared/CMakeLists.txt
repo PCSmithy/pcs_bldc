@@ -12,17 +12,17 @@ if(PCS_BUILDING_FW)
   add_subdirectory(hw)
 
   # io/ modules consume project-provided pcs_*_channels interface libs from
-  # sw/fw/src/io/<module>/. That tree (io/usb -> tinyusb) is embedded-only,
-  # so the project channel configs only exist for the embedded target — gate
-  # the shared io/ tree to match, otherwise a native build references an
-  # undefined pcs_*_channels target.
+  # sw/fw/src/io/<module>/. Modules with only dual-target HW deps (io_AS5048
+  # -> hw_SPI) build for both targets; the per-module gating lives in
+  # io/CMakeLists.txt (only io/usb -> tinyusb stays embedded-only).
+  add_subdirectory(io)
+
   # dev/ likewise consumes project-provided pcs_*_channels seams from
   # sw/fw/src/dev/. dev_switch itself is target-independent (only needs
   # HW_GPIO), but its project config tree is currently wired embedded-only, so
-  # gate the shared dev/ tree to match. Promote both to dual-target when adding
+  # gate the shared dev/ tree to match. Promote to dual-target when adding
   # SIL unit tests for the debounce logic.
   if(PCS_TARGET STREQUAL "embedded")
-    add_subdirectory(io)
     add_subdirectory(dev)
   endif()
 endif()

@@ -15,8 +15,9 @@ Sub-folders are created when a topic gets its first spec.
   `fw~hal_spi_001~1`, `fw~hal_adc_001~1`
 - `foc/` — Park / Clarke transforms, PWM modulation strategies
   (SVPWM/SPWM), inner current control loop
-- `estimation/` — Kalman observer, sensorless observer, parameter
-  identification
+- `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
+  (AS5048 magnetic encoder driver); also the Kalman observer, sensorless
+  observer, and parameter identification
 - `motion/` — velocity loop, position loop, trajectory generator
 - `drivers/` — STSPIN32G4 gate driver, AS5048 encoder, ADC current
   sensing, USB CDC stack

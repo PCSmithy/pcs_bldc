@@ -4,10 +4,11 @@ add_subdirectory(hw)
 # Layer subdirs (app/, dev/, io/, lib/) are not yet populated; uncomment
 # their add_subdirectory() lines when their first code lands.
 
-# io/ (USB CDC, TinyUSB) is embedded-only; native builds must stay USB-free.
-# dev/ (switch debounce, ...) is gated to match the shared dev/ tree for now.
+# io/ has dual-target modules (io_AS5048) and embedded-only ones (usb, SK6805);
+# the per-module gating lives in io/CMakeLists.txt. dev/ (switch debounce) is
+# gated to match the shared dev/ tree for now.
+add_subdirectory(io)
 if(PCS_TARGET STREQUAL "embedded")
-  add_subdirectory(io)
   add_subdirectory(dev)
 endif()
 
