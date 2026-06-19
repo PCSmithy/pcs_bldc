@@ -15,7 +15,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ README / architecture / roadmap drafts
 - ☑ **D1** resolved — FreeRTOS tick source ([`freertos-tick.md`](freertos-tick.md))
 - ☑ **D2** resolved — Rust↔C FFI boundary ([`ffi-boundary.md`](ffi-boundary.md))
-- ☐ Close out remaining open decisions D3–D7
+- ☑ **D8** resolved — simulated interrupt model ([`sim-interrupts.md`](sim-interrupts.md))
+- ☐ Close out remaining open decisions D3–D7, D9–D12
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
@@ -44,8 +45,10 @@ writes a global and sees the firmware react. (proof of white-box loop)
 - ☐ `FwBackend` trait + `NativeFreeRtos` impl (dlopen the fw lib, per D2)
 - ☐ DWARF symbol map (`object`+`gimli`) + ASLR-slide read/write of globals
 - ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
-- ☐ **Route Table**: `source → destination` per-tick transport + phase
-  inference around the firmware step
+- ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick
+- ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
+  config-time registration by name; C→Rust upcall vtable for runtime
+  registration; port dispatch shim (ISR entry/exit, FromISR/yield)
 - ☐ Sim clock + step loop + signal ring buffers
 
 ## Phase 3 — Plant models + closed loop

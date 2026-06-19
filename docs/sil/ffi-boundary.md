@@ -10,8 +10,9 @@ introspection** — there are **no sim-specific getter/setter functions in the
 firmware**. That introspection is the substrate for the framework's **State
 Table**; data movement between firmware and models is expressed as routes over
 that table (see [`state-route-tables.md`](state-route-tables.md)). The only
-hand-written C surface is a tiny **control ABI** (lifecycle + tick advance).
-Fast-mode parallelism is process-level (`pytest -n`).
+hand-written C surface is a tiny **control ABI** (lifecycle + tick advance),
+plus a small set of **C→Rust upcalls** the sim HW layer uses to register
+interrupts (D8, §6). Fast-mode parallelism is process-level (`pytest -n`).
 
 ---
 
@@ -95,7 +96,27 @@ parked at the idle-hook** (quiescent, between ticks). The firmware runs only
 between an `advance` signal and the next quiescence. So firmware-memory access
 is never concurrent — **no locking, no races** on firmware statics, for free.
 
-## 6. Safety & calling convention
+## 6. C→Rust upcalls (framework callbacks)
+
+The boundary is mostly Rust→C (the control ABI, §3) plus direct memory access
+(§4). One direction goes the other way: **C→Rust upcalls**, used by the
+simulated-interrupt model (D8, [`sim-interrupts.md`](sim-interrupts.md)) so the
+sim HW-layer drivers can register interrupts with the framework
+(`sil_irq_register_oneshot(&handler, delay, prio)`, etc.).
+
+- **Mechanism:** at init, Rust passes C a struct of `extern "C"` function
+  pointers; the sim drivers call through it. (No global function-pointer
+  hunting; the vtable is handed in once.)
+- **Control, not data** — scheduling/registration, not value transport — so it
+  does not reintroduce the getter/setter pattern §4 removes.
+- **Caller discipline:** invoked **only** from sim-target HW-layer code
+  (`hw/<X>/sim/` + sim port glue), never from portable app/io/dev firmware, so
+  the "firmware is sim-unaware" property holds.
+- **Concurrency-safe for free:** these run on the firmware thread *during* a
+  tick while the framework thread waits at quiescence (§5) — same handshake,
+  other direction.
+
+## 7. Safety & calling convention
 
 - `extern "C"`, `#[repr(C)]` **only** where a struct is genuinely shared;
   prefer scalars / opaque handles across the boundary.
@@ -105,7 +126,7 @@ is never concurrent — **no locking, no races** on firmware statics, for free.
 - The DWARF type map lets the safe layer reject a read/write whose Rust type
   doesn't match the entry's C type.
 
-## 7. Build integration
+## 8. Build integration
 
 - CMake gains a native **SHARED** firmware target (`-fPIC`, default-hidden
   visibility with the ~3 `sil_*` ABI functions exported). Globals need no
@@ -116,7 +137,7 @@ is never concurrent — **no locking, no races** on firmware statics, for free.
 - Binding generation: the ~3 ABI functions are hand-declared (trivial). No
   data API to bind — data is all DWARF-driven.
 
-## 8. Portability
+## 9. Portability
 
 - **Windows:** PE + DWARF (MinGW gcc). `LoadLibrary` / `GetProcAddress`;
   `object`/`gimli` parse PE+DWARF.
@@ -124,7 +145,7 @@ is never concurrent — **no locking, no races** on firmware statics, for free.
   `dlsym`. The dSYM lookup + debug-map handling is the fiddly part to validate
   on a spike.
 
-## 9. Open implementation choices (not blocking)
+## 10. Open implementation choices (not blocking)
 
 - Exact crate layout: `sil-sys` (raw FFI + DWARF), `sil-core` (State/Route
   tables, engine, safe wrapper).

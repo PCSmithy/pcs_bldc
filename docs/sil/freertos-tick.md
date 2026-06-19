@@ -107,7 +107,8 @@ scheduler**:
 
 D1 delivers the **systick source** first, but the seam is designed as
 "register a periodic sim interrupt source" so the control ISR and friends slot
-into the same mechanism later. This ties into D6 (base dt / inverter
+into the same mechanism. That mechanism is now specified as **D8** — see
+[`sim-interrupts.md`](sim-interrupts.md). This ties into D6 (base dt / inverter
 sampling).
 
 ## 5. Portability

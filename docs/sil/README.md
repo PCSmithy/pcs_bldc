@@ -19,8 +19,9 @@ Two run modes share one core engine:
 |-----|---------|
 | [`architecture.md`](architecture.md) | The technical architecture: execution model, sim boundary, time/scheduler core, plant models, Rust↔C boundary, the two run modes, and the open decisions. **Read this first.** |
 | [`state-route-tables.md`](state-route-tables.md) | The two core framework data structures: the **State Table** (every firmware static + model states) and the **Route Table** (declarative per-tick transport). |
-| [`ffi-boundary.md`](ffi-boundary.md) | D2 — Rust↔C boundary: in-process, dynamically-loaded firmware, DWARF memory introspection, tiny control ABI. |
+| [`ffi-boundary.md`](ffi-boundary.md) | D2 — Rust↔C boundary: in-process, dynamically-loaded firmware, DWARF memory introspection, tiny control ABI + C→Rust upcalls. |
 | [`freertos-tick.md`](freertos-tick.md) | D1 — pluggable FreeRTOS tick source (realtime vs framework-driven) sharing one control loop. |
+| [`sim-interrupts.md`](sim-interrupts.md) | D8 — framework-owned interrupt table (periodic + one-shot, config + runtime); dispatched through the port in the firmware thread. |
 | [`roadmap.md`](roadmap.md) | Phased milestones + status tracking for building it out. |
 
 ## Worktree / branch workflow
