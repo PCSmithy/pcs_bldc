@@ -18,6 +18,9 @@ Two run modes share one core engine:
 | Doc | Purpose |
 |-----|---------|
 | [`architecture.md`](architecture.md) | The technical architecture: execution model, sim boundary, time/scheduler core, plant models, Rust↔C boundary, the two run modes, and the open decisions. **Read this first.** |
+| [`state-route-tables.md`](state-route-tables.md) | The two core framework data structures: the **State Table** (every firmware static + model states) and the **Route Table** (declarative per-tick transport). |
+| [`ffi-boundary.md`](ffi-boundary.md) | D2 — Rust↔C boundary: in-process, dynamically-loaded firmware, DWARF memory introspection, tiny control ABI. |
+| [`freertos-tick.md`](freertos-tick.md) | D1 — pluggable FreeRTOS tick source (realtime vs framework-driven) sharing one control loop. |
 | [`roadmap.md`](roadmap.md) | Phased milestones + status tracking for building it out. |
 
 ## Worktree / branch workflow
@@ -57,7 +60,12 @@ C:/code/pcs_bldc-sil   sil    (this SIL effort)
    the logic. (Today they're gated `BUILD_TARGET_STM32G4`-only; making them
    build + run on SIM is the bulk of the firmware-side work.)
 5. White-box inspection is via the **native `.elf`/shared-lib symbol table
-   (+ DWARF)** — read/write firmware globals by name during execution.
+   (+ DWARF)** — read/write firmware globals by name during execution. **No
+   sim-specific getter/setter functions in the firmware.**
+6. The framework's two core data structures are the **State Table** (one
+   namespace over every firmware static + all model states) and the **Route
+   Table** (per-tick `source → destination` transport). See
+   [`state-route-tables.md`](state-route-tables.md).
 
 See [`architecture.md`](architecture.md) for the reasoning and the decisions
 still open.

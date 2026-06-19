@@ -19,24 +19,25 @@ white-box access to firmware state, in two modes:
 ```
             ┌─────────────────────────── Rust SIL framework ──────────────────────────┐
             │                                                                          │
-  pytest ───┤  ┌────────────┐   ┌──────────────┐   ┌───────────────────────────────┐  │
-  (fast)    │  │  scripting │   │   sim core    │   │  plant models (Rust)          │  │
-            │  │  / py bind │──▶│  - sim clock  │◀─▶│  - motor (elec + mech)        │  │
-  web UI ───┤  └────────────┘   │  - scheduler  │   │  - encoder (AS5048)           │  │
-  (realtime)│  ┌────────────┐   │  - signal log │   │  - current/voltage/temp sense │  │
-            │  │ dashboard  │──▶│  - run modes  │   │  - power / USB-PD             │  │
-            │  │ (ws + plot)│   └──────┬────────┘   └───────────────┬───────────────┘  │
-            │  └────────────┘          │  FFI / sim ABI             │                  │
-            └─────────────────────────┼────────────────────────────┼──────────────────┘
-                                       ▼                            ▲
-            ┌──────────────────── native firmware (BUILD_TARGET_SIM) ──────────────────┐
-            │  app  ── mode FSM, control loop, estimator        (runs in SIM)          │
-            │  dev  ── DEV_switch, ...                            (runs in SIM)         │
-            │  io   ── IO_AS5048, IO_SK6805, USB CDC              (runs in SIM)         │
-            │  ─────────────────── FreeRTOS scheduler (host port) ─────────────────────│
-            │  hw   ── HW_ADC/SPI/GPIO/systemClock  ◀── sim/ swap drives + reads here   │
-            └──────────────────────────────────────────────────────────────────────────┘
-                         ▲ register/HAL-specific code is the ONLY thing swapped
+  pytest ──┐  ┌───────────┐   ┌────────────────────────┐   ┌────────────────────────┐
+  (fast)   ├──┤ scripting │──▶│        sim core         │◀─▶│  plant models (Rust)   │
+           │  │ / py bind │   │  sim clock · run modes  │   │  motor · encoder ·     │
+  web UI ──┘  └───────────┘   │  ┌───────────────────┐  │   │  sensors · power       │
+ (realtime)  ┌───────────┐    │  │    STATE TABLE    │  │   └───────────┬────────────┘
+             │ dashboard │──▶ │  │ every fw static + │  │   model state │ register
+             │ (ws+plot) │    │  │   model states    │  │◀──────────────┘
+             └───────────┘    │  └───────────────────┘  │
+                              │  ┌───────────────────┐  │
+                              │  │    ROUTE TABLE    │  │  src→dst transport each tick
+                              │  └───────────────────┘  │
+                              └────────────┬────────────┘
+        control ABI (start / advance_tick) │  direct memory R/W via DWARF + ASLR slide
+                                           ▼  (NO sim getters/setters in firmware)
+           ┌─────────────── native firmware (BUILD_TARGET_SIM) ──────────────────┐
+           │  app · dev · io   (mode FSM, control, estimator, IO, USB)   in SIM   │
+           │  ───────────────── FreeRTOS scheduler (host port) ──────────────────│
+           │  hw   HW_ADC/SPI/GPIO/systemClock  — only HAL/register code swapped  │
+           └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 3. Decisions
@@ -51,20 +52,26 @@ white-box access to firmware state, in two modes:
   Its one advantage — running the bit-exact shipping binary to catch
   32-bit-ARM-vs-host bugs — is not worth the cost now. Kept as a *future
   backend* behind the execution-backend seam (§3.2).
-- **Interception at the HAL/channel boundary.** The existing
-  `sw/lib/c/shared/hw/<Module>/sim/` drivers are the seam. The framework
-  feeds them (e.g. ADC counts from the current-sense model) and reads their
-  outputs (e.g. PWM duty the firmware commanded). Confirmed compatible with
-  the current shape: `HW_ADC_init` + `HW_ADC_run1ms` + getters is exactly
-  the pattern.
+- **Interception at the HAL/channel boundary.** The bottom, register-specific
+  layer (`sw/lib/c/shared/hw/<Module>/sim/`) is what's swapped. But the
+  framework does **not** call sim getters/setters — it reads/writes the sim
+  drivers' (and any other) firmware state directly in memory via the State
+  Table (below).
 - **FreeRTOS + io/dev/app run in SIM.** We run the *real* scheduler and the
   *real* task code on the native target. Only the bottom, register-specific
   layer is replaced. This is the high-fidelity-where-it's-cheap choice: all
   the control / FSM / estimator / UI logic and its concurrency structure are
   exercised exactly as they ship.
-- **White-box via symbols.** Read/write firmware globals by name through the
-  native shared-lib symbol table (+ DWARF for types/addresses). No need to
-  hand-write an accessor for every signal.
+- **State Table + Route Table are the framework's core data structures**
+  (see [`state-route-tables.md`](state-route-tables.md)). The **State Table**
+  is one namespace over *every* firmware static (auto-derived from DWARF) plus
+  all model states; the **Route Table** declaratively transports
+  source→destination each tick. This replaces any sim-specific data API in the
+  firmware entirely.
+- **White-box via symbols, no firmware instrumentation.** Read/write any
+  firmware global by name through the native shared-lib symbol table + DWARF
+  (types/addresses), dereferenced in-process. No hand-written accessor per
+  signal; the firmware doesn't know it's being simulated.
 
 ### 3.2 The execution-backend seam
 
@@ -90,7 +97,7 @@ trait FwBackend {
 | # | Decision | Options | Leaning |
 |---|----------|---------|---------|
 | D1 | **FreeRTOS port / time source** — how the scheduler tick and context switches relate to sim time | — | **RESOLVED:** pluggable tick source at the port layer (realtime-paced vs framework-driven); retrofit existing host ports, escalate to a custom port only if needed. See [`freertos-tick.md`](freertos-tick.md). |
-| D2 | **Rust↔C boundary** | in-process FFI (link/dlopen the native firmware as a shared lib) vs subprocess + IPC | **in-process FFI** — needed for cheap white-box + determinism |
+| D2 | **Rust↔C boundary** | — | **RESOLVED:** in-process, one fw instance/process, firmware as a dynamically-loaded shared lib; tiny control ABI only; all data via direct DWARF-located memory R/W (no sim getters/setters), surfaced as the State Table + Route Table. See [`ffi-boundary.md`](ffi-boundary.md) + [`state-route-tables.md`](state-route-tables.md). |
 | D3 | **Python binding** | `pyo3` native extension vs C-ABI + `cffi`/`ctypes` | TBD (pyo3 likely) |
 | D4 | **Dashboard stack** | Rust web framework (axum/...) + frontend plotting lib | TBD |
 | D5 | **Sim USB-CDC transport** | virtual COM port (Win + macOS) vs TCP socket the app opts into | TBD; ties to the deferred CDC framing decision in `specs/system/overview.md` |
@@ -132,16 +139,17 @@ timing of the shipping firmware are all under test — not a reimplementation.
 ## 5. Sim core (Rust)
 
 One **sim clock** drives a discrete time-step engine at a fixed base `dt`
-(D6; aligned to the fastest control/PWM rate). Each step:
+(D6; aligned to the fastest control/PWM rate). State flows through the State
+Table; the Route Table moves it (see
+[`state-route-tables.md`](state-route-tables.md)). Each step:
 
-1. Advance plant models by `dt`.
-2. Push model outputs into the sim HW drivers (ADC counts, encoder SPI
-   response, GPIO levels).
-3. Let the firmware run for `dt` (`FwBackend::advance`) — scheduler ticks,
-   due tasks run.
-4. Pull firmware outputs from the sim drivers (commanded PWM/phase voltages,
-   LED frame, SPI tx) back into the plant.
-5. Record signals (ring buffers) for plotting / assertions.
+1. Advance plant models by `dt` (updates their State Table entries).
+2. **Propagate routes** in one uniform pass — snapshot all sources, then write
+   all destinations (sensors into fw-input statics, fw-output statics back to
+   models, together). Race-free: the firmware is quiescent here (D1).
+3. `sil_fw_advance_tick()` — firmware runs to quiescence (D1).
+4. Record signals (ring buffers) for plotting / assertions; run test
+   asserts/injection (ad-hoc State Table reads/writes).
 
 The two run modes are thin wrappers over this loop:
 
@@ -171,13 +179,14 @@ switching-resolved) is set by D6.
 
 ```
 sw/sil/                 Rust cargo workspace (the framework) — additive, new
-  core/                   sim clock, scheduler, signal log, run modes
+  sil-sys/                raw FFI (control ABI) + DWARF/symbol reader
+  sil-core/               State Table, Route Table, sim clock, run modes, log
   backend/                FwBackend impls (native-freertos; arm-emu later)
   models/                 motor / encoder / sensor / power plant models
   dashboard/              realtime web UI (server + frontend)
   pybind/                 Python bindings for fast mode
-sw/fw/src/                firmware sim ABI + native entry (touches shared files)
-sw/lib/c/shared/hw/*/sim/ existing + new bottom-layer sim drivers
+sw/fw/src/                firmware control ABI + native entry / host-port wiring
+sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs
 ```
 

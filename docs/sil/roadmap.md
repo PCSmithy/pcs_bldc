@@ -14,7 +14,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ `sil` branch + worktree at `C:/code/pcs_bldc-sil`
 - ☑ README / architecture / roadmap drafts
 - ☑ **D1** resolved — FreeRTOS tick source ([`freertos-tick.md`](freertos-tick.md))
-- ☐ Close out remaining open decisions D2–D7 (at least D2 before Phase 2)
+- ☑ **D2** resolved — Rust↔C FFI boundary ([`ffi-boundary.md`](ffi-boundary.md))
+- ☐ Close out remaining open decisions D3–D7
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
@@ -38,11 +39,14 @@ scheduler, signal log working.
 **Exit:** Rust steps the firmware in sim time, reads the ADC ramp by symbol,
 writes a global and sees the firmware react. (proof of white-box loop)
 
-- ☐ Cargo workspace `sw/sil/` (core, backend)
-- ☐ `FwBackend` trait + `NativeFreeRtos` impl (D2: in-process FFI)
-- ☐ Symbol/DWARF read+write of firmware globals
+- ☐ Cargo workspace `sw/sil/` (`sil-sys` raw FFI+DWARF, `sil-core` engine)
+- ☐ Native **SHARED** firmware target + `sil_*` ABI (start/advance/shutdown)
+- ☐ `FwBackend` trait + `NativeFreeRtos` impl (dlopen the fw lib, per D2)
+- ☐ DWARF symbol map (`object`+`gimli`) + ASLR-slide read/write of globals
+- ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
+- ☐ **Route Table**: `source → destination` per-tick transport + phase
+  inference around the firmware step
 - ☐ Sim clock + step loop + signal ring buffers
-- ☐ Sim ABI / native entry point on the firmware side
 
 ## Phase 3 — Plant models + closed loop
 **Goal:** motor + encoder + sensor models close the loop with firmware.
@@ -50,9 +54,9 @@ writes a global and sees the firmware react. (proof of white-box loop)
 a basic control action is observable end-to-end.
 
 - ☐ Motor model (electrical + mechanical)
-- ☐ Encoder (AS5048) model → SPI sim driver
-- ☐ Current / voltage / temp sensor models → ADC sim driver
-- ☐ Inverter command path firmware → model (settle D6)
+- ☐ Encoder (AS5048) model → routed into fw SPI-rx state
+- ☐ Current / voltage / temp sensor models → routed into fw ADC counts
+- ☐ Inverter command (fw PWM state) → routed into motor model (settle D6)
 
 ## Phase 4 — Fast mode + Python/pytest
 **Goal:** scripted, deterministic, parallel regression.
