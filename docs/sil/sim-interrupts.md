@@ -86,14 +86,17 @@ functions. We don't model memory protection, so this is a non-issue.
 
 ## 5. Timeline — fixed base-`dt` grid
 
-- **Base `dt` = max(fastest ISR rate, model-stability rate)** — almost
-  certainly the control ISR (~1/20 kHz = 50 µs). Other periodic sources are
-  integer multiples (systick fires every 20 steps at 1 kHz).
-- **One-shots are quantized to the grid** (fire at the next step boundary).
-- **Model accuracy is decoupled from interrupt resolution:** if the motor
-  model needs a finer integration step than the grid, it **sub-steps within a
-  tick** (K integrator steps per base tick) rather than dropping the whole grid.
-  (Ties to D6.)
+- **Base `dt` = the finest step needed = max(fastest-ISR rate, model-stability
+  rate).** In practice the **model-stability step usually dominates** (a few µs,
+  finer than the ~50 µs PWM period), so it sets the grid and the control ISR /
+  systick fire on **integer multiples**. (Ties to D6,
+  [`inverter-timestep.md`](inverter-timestep.md) §3.)
+- **One model advance per tick** in the common case (grid = model step); most
+  base ticks fire no interrupt and just advance the model + routes with the
+  firmware parked. A model stiffer than the shared grid may sub-step internally
+  — the exception.
+- **One-shots are quantized to the grid** (fire at the next step boundary); a
+  fine base `dt` keeps that quantization tight.
 - **Event-driven timeline** (a next-fire-time queue, exact aperiodic latency,
   variable model step) is the future upgrade if grid quantization of aperiodic
   interrupts ever distorts timing that matters. Fixed-grid is the start.

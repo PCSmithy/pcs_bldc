@@ -16,7 +16,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ **D1** resolved — FreeRTOS tick source ([`freertos-tick.md`](freertos-tick.md))
 - ☑ **D2** resolved — Rust↔C FFI boundary ([`ffi-boundary.md`](ffi-boundary.md))
 - ☑ **D8** resolved — simulated interrupt model ([`sim-interrupts.md`](sim-interrupts.md))
-- ☐ Close out remaining open decisions D3–D7, D9–D12
+- ☑ **D6** resolved (contract) — inverter fidelity + base `dt` ([`inverter-timestep.md`](inverter-timestep.md))
+- ☐ Close out remaining open decisions D3–D5, D7, D9–D12
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
@@ -56,10 +57,10 @@ writes a global and sees the firmware react. (proof of white-box loop)
 **Exit:** firmware commands PWM → motor model spins → encoder/ADC feed back →
 a basic control action is observable end-to-end.
 
-- ☐ Motor model (electrical + mechanical)
+- ☐ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
+- ☐ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
 - ☐ Encoder (AS5048) model → routed into fw SPI-rx state
 - ☐ Current / voltage / temp sensor models → routed into fw ADC counts
-- ☐ Inverter command (fw PWM state) → routed into motor model (settle D6)
 
 ## Phase 4 — Fast mode + Python/pytest
 **Goal:** scripted, deterministic, parallel regression.

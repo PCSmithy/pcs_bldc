@@ -101,7 +101,7 @@ trait FwBackend {
 | D3 | **Python binding** | `pyo3` native extension vs C-ABI + `cffi`/`ctypes` | TBD (pyo3 likely) |
 | D4 | **Dashboard stack** | Rust web framework (axum/...) + frontend plotting lib | TBD |
 | D5 | **Sim USB-CDC transport** | virtual COM port (Win + macOS) vs TCP socket the app opts into | TBD; ties to the deferred CDC framing decision in `specs/system/overview.md` |
-| D6 | **Inverter fidelity / base dt** | averaged-duty model vs switching-resolved; base time-step | TBD; sets the model<->firmware sample contract. Base `dt` = max(fastest ISR rate, model-stability rate); model may sub-step within a tick. |
+| D6 | **Inverter fidelity / base dt** | — | **RESOLVED (contract):** averaged-duty default, switching-resolved swappable; abc contract (normalized leg duty in, currents+angle out) routed via sim HW-driver state; base `dt` set by model stability (finer than PWM), control ISR fires on a multiple, model advances one `dt`/tick. Two values finalize with the firmware. See [`inverter-timestep.md`](inverter-timestep.md). |
 | D7 | **Cross-platform float determinism** | accept host-FP variance vs pin it (compiler flags, soft-float, fixed reductions) | TBD; matters for byte-exact regression baselines |
 | D8 | **Simulated interrupt model** | — | **RESOLVED:** framework-owned interrupt table (periodic + one-shot; registered at config by name and at runtime by the sim HW layer via a C→Rust upcall); dispatched through the port in the firmware thread; fixed base-`dt` grid; priority-ordered, no nesting. See [`sim-interrupts.md`](sim-interrupts.md). |
 | D9 | **Firmware time virtualization** | which fw time sources are allowed + how each is backed by sim time | TBD; FreeRTOS tick covered (D1); `HAL_GetTick`/DWT/busy-wait delays still need backing |
@@ -144,7 +144,8 @@ timing of the shipping firmware are all under test — not a reimplementation.
 ## 5. Sim core (Rust)
 
 One **sim clock** drives a discrete time-step engine at a fixed base `dt`
-(D6; aligned to the fastest control/PWM rate). State flows through the State
+(D6; set by model numerical stability, typically finer than the PWM rate, with
+ISRs firing on integer multiples). State flows through the State
 Table; the Route Table moves it (see
 [`state-route-tables.md`](state-route-tables.md)). Each step:
 
