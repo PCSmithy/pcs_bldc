@@ -40,6 +40,17 @@ typedef enum
     HW_ADC_XFER_DMA,             // not yet implemented; init() will reject
 } HW_ADC_xferMode_E;
 
+// Per-channel outcome of the most recent _run1ms sampling pass.
+// IDLE  = no pass has serviced this channel (e.g. not polled / no inputs).
+// OK    = the last pass stored every enabled input's conversion.
+// FAULT = a conversion timed out; some counts are stale.
+typedef enum
+{
+    HW_ADC_CONVERSION_STATUS_IDLE,
+    HW_ADC_CONVERSION_STATUS_OK,
+    HW_ADC_CONVERSION_STATUS_FAULT,
+} HW_ADC_conversionStatus_E;
+
 // One input pin on the regular conversion sequence. inputs[] in the
 // channel config is indexed by physical IN# (0..HW_ADC_INPUTS_PER_CHANNEL-1)
 // — set .enabled=true and fill .sConfig for each input that should
@@ -157,5 +168,9 @@ bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, u
 // Volts version of HW_ADC_getInjectedCount. Uses the same vref + numBits
 // conversion as HW_ADC_getVolts.
 bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, float32_t * const out);
+
+// Read the conversion status of a channel's most recent _run1ms pass.
+// Returns false if not initialized, channel out of range, or out is NULL.
+bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
 
 #endif // HW_ADC_H

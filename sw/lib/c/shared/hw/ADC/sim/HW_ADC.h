@@ -29,6 +29,16 @@ typedef enum
     HW_ADC_XFER_DMA,             // not yet implemented; init() will reject
 } HW_ADC_xferMode_E;
 
+// Per-channel outcome of the most recent _run1ms sampling pass. Mirror of
+// the stm32g4 enum (same names + values). On the sim, FAULT is produced by
+// HW_ADC_sim_setConversionStall (no real conversion to time out).
+typedef enum
+{
+    HW_ADC_CONVERSION_STATUS_IDLE,
+    HW_ADC_CONVERSION_STATUS_OK,
+    HW_ADC_CONVERSION_STATUS_FAULT,
+} HW_ADC_conversionStatus_E;
+
 typedef struct
 {
     bool   enabled;
@@ -56,6 +66,8 @@ typedef struct
     float32_t vref;
     uint8_t   numBits;           // counts -> volts conversion uses (1 << numBits) - 1
 
+    bool configureMultimode;     // master ADC of a pair applies multimode at init
+
     HW_ADC_inputConfig_S         inputs[HW_ADC_INPUTS_PER_CHANNEL];
     HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
 } HW_ADC_channelConfig_S;
@@ -76,5 +88,7 @@ bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * 
 
 bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, uint32_t * const out);
 bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, float32_t * const out);
+
+bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
 
 #endif // HW_ADC_H

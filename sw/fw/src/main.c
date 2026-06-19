@@ -88,6 +88,7 @@ static void task_1ms(void * params)
 
         // hw
         HW_GPIO_run1ms();   // cache input-pin levels before anything reads them
+        HW_ADC_run1ms();    // sample enabled ADC inputs (software-triggered, polled)
 
         // io
         IO_AS5048_run1ms();
@@ -138,7 +139,7 @@ typedef enum
 // immediately instead of unwinding. ~WALK_ACCUM_RANGE_DEG of travel each side
 // sweeps stop -> full speed. The dial drives one head, the motor encoder the
 // other.
-#define WALK_SPEED_MAX_DPS    720.0f   // peak speed magnitude, either direction
+#define WALK_SPEED_MAX_DPS    2880.0f   // peak speed magnitude, either direction
 #define WALK_ACCUM_RANGE_DEG  340.0f   // encoder travel from stop to full speed (per direction)
 
 // Colour-picker controls. Both axes track encoder *movement* (not absolute

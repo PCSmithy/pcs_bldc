@@ -3,6 +3,7 @@
 #include "lib_types.h"
 
 #include "HW_ADC.h"
+#include "HW_ADC_sim.h"
 
 /* Defines */
 
@@ -18,6 +19,13 @@ typedef struct
 {
     const HW_ADC_config_S * config;
     HW_ADC_channelData_S channelData[HW_ADC_CHANNEL_COUNT];
+    bool multimodeApplied[HW_ADC_CHANNEL_COUNT];
+
+    // Per-channel outcome of the last _run1ms pass, and the SIL injection
+    // hook that forces a pass to fault (HW_ADC_sim_setConversionStall).
+    HW_ADC_conversionStatus_E status[HW_ADC_CHANNEL_COUNT];
+    bool conversionStall[HW_ADC_CHANNEL_COUNT];
+
     uint32_t tickCounter;
     bool initialized;
 } HW_ADC_data_S;
@@ -33,6 +41,8 @@ static HW_ADC_data_S * const data = &HW_ADC_data;
 
 /* Public Function Definitions */
 
+// [impl->fw~hal_adc_001~1]
+// [impl->fw~hal_adc_007~1]
 bool HW_ADC_init(const HW_ADC_config_S * const config)
 {
     bool ret = false;
@@ -88,12 +98,18 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
             data->config       = config;
             data->tickCounter  = 0U;
             data->initialized  = true;
+            for (size_t ch = 0U; ch < config->numChannels; ch++)
+            {
+                data->multimodeApplied[ch] = config->channels[ch].configureMultimode;
+            }
             ret = true;
         }
     }
     return ret;
 }
 
+// [impl->fw~hal_adc_004~1]
+// [impl->fw~hal_adc_006~1]
 void HW_ADC_run1ms(void)
 {
     if (data->initialized)
@@ -113,12 +129,22 @@ void HW_ADC_run1ms(void)
             const uint32_t maxCounts = (1UL << channelConfig->numBits) - 1UL;
             const uint32_t modulo    = maxCounts + 1UL;
 
+            // A stalled channel models a poll timeout: leave its counts
+            // untouched and report the pass as a fault.
+            if (data->conversionStall[ch])
+            {
+                data->status[ch] = HW_ADC_CONVERSION_STATUS_FAULT;
+                continue;
+            }
+
+            bool sampled = false;
             for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)
             {
                 if (channelConfig->inputs[input].enabled)
                 {
                     const uint32_t offset = ((uint32_t)ch * 256U) + ((uint32_t)input * 16U);
                     data->channelData[ch].counts[input] = (offset + data->tickCounter) % modulo;
+                    sampled = true;
                 }
             }
             for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
@@ -129,12 +155,17 @@ void HW_ADC_run1ms(void)
                     // logs can tell them apart.
                     const uint32_t offset = ((uint32_t)ch * 256U) + 0x8000U + ((uint32_t)i * 16U);
                     data->channelData[ch].injectedCounts[i] = (offset + data->tickCounter) % modulo;
+                    sampled = true;
                 }
             }
+
+            data->status[ch] = (sampled) ? HW_ADC_CONVERSION_STATUS_OK : HW_ADC_CONVERSION_STATUS_IDLE;
         }
     }
 }
 
+// [impl->fw~hal_adc_002~1]
+// [impl->fw~hal_adc_005~1]
 bool HW_ADC_getCount(HW_ADC_channels_E channel, uint8_t inputIndex, uint32_t * const out)
 {
     bool ret = false;
@@ -150,6 +181,7 @@ bool HW_ADC_getCount(HW_ADC_channels_E channel, uint8_t inputIndex, uint32_t * c
     return ret;
 }
 
+// [impl->fw~hal_adc_005~1]
 bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * const out)
 {
     bool ret = false;
@@ -168,6 +200,7 @@ bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * 
     return ret;
 }
 
+// [impl->fw~hal_adc_006~1]
 bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, uint32_t * const out)
 {
     bool ret = false;
@@ -183,6 +216,7 @@ bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, u
     return ret;
 }
 
+// [impl->fw~hal_adc_006~1]
 bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, float32_t * const out)
 {
     bool ret = false;
@@ -199,4 +233,42 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
         }
     }
     return ret;
+}
+
+// [impl->fw~hal_adc_004~1]
+bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out)
+{
+    bool ret = false;
+    if ((out != NULL) &&
+        (data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT))
+    {
+        *out = data->status[channel];
+        ret = true;
+    }
+    return ret;
+}
+
+void HW_ADC_sim_reset(void)
+{
+    *data = (HW_ADC_data_S){ 0 };
+}
+
+void HW_ADC_sim_setConversionStall(HW_ADC_channels_E channel, bool stall)
+{
+    if (channel < HW_ADC_CHANNEL_COUNT)
+    {
+        data->conversionStall[channel] = stall;
+    }
+}
+
+// SIL inspection: was multimode applied for this channel at init?
+bool HW_ADC_sim_getMultimodeApplied(HW_ADC_channels_E channel)
+{
+    bool applied = false;
+    if (channel < HW_ADC_CHANNEL_COUNT)
+    {
+        applied = data->multimodeApplied[channel];
+    }
+    return applied;
 }
