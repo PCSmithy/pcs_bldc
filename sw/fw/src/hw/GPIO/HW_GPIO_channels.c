@@ -22,28 +22,15 @@
 static const GPIO_InitTypeDef HW_GPIO_portBPinConfigs[] = { HW_GPIO_CUBEMX_PINS_PORT_B };
 static const GPIO_InitTypeDef HW_GPIO_portCPinConfigs[] = { HW_GPIO_CUBEMX_PINS_PORT_C };
 
-const HW_GPIO_config_S HW_GPIO_config =
-{
-    .ports =
-    {
-        [HW_GPIO_PORT_B] =
-        {
-            .pins    = HW_GPIO_portBPinConfigs,
-            .numPins = COUNTOF(HW_GPIO_portBPinConfigs),
-        },
-        [HW_GPIO_PORT_C] =
-        {
-            .pins    = HW_GPIO_portCPinConfigs,
-            .numPins = COUNTOF(HW_GPIO_portCPinConfigs),
-        },
-    },
-};
-
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
 
 static const HW_GPIO_pinConfig_S HW_GPIO_portBPinConfigs[] = { HW_GPIO_CUBEMX_SIM_PINS_PORT_B };
 static const HW_GPIO_pinConfig_S HW_GPIO_portCPinConfigs[] = { HW_GPIO_CUBEMX_SIM_PINS_PORT_C };
 
+#else
+#error "ERROR! HW_GPIO_config not defined for build target!"
+#endif
+
 const HW_GPIO_config_S HW_GPIO_config =
 {
     .ports =
@@ -60,10 +47,6 @@ const HW_GPIO_config_S HW_GPIO_config =
         },
     },
 };
-
-#else
-#error "ERROR! HW_GPIO_config not defined for build target!"
-#endif
 
 /* Private Function Definitions */
 
