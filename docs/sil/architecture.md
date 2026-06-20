@@ -107,7 +107,7 @@ trait FwBackend {
 | D9 | **Firmware time virtualization** | — | **RESOLVED:** sim time advances only at yields — every wait is a yield, every time read reflects the sim clock. Reads (`HAL_GetTick`/DWT/timer CNT) are sim-clock-derived; delays become cooperative sim-time advances; portable code uses FreeRTOS delays or a `HW_time` shim. See [`time-virtualization.md`](time-virtualization.md). |
 | D10 | **Scenario / config representation** | how a test declares routes + model params + injection (config file? Python API? both) | TBD; the day-to-day test-authoring surface |
 | D11 | **State Table binding stability** | symbol-path keys across fw rebuilds — fail-loud at load vs lazy | TBD; small convention |
-| D12 | **Signal trace format** | what's recorded, rate, retention, export (shared by pytest asserts + dashboard) | TBD |
+| D12 | **Signal trace format** | — | **RESOLVED:** the State Table *is* the historian — each traced entry is a change-logged, timestamped time series (ZOH, lossless default), dumped per-signal for Python tests; on-disk encoding is JIT. See [`signal-trace.md`](signal-trace.md). |
 
 ## 4. Execution model (the crux)
 
@@ -154,8 +154,9 @@ Table; the Route Table moves it (see
    all destinations (sensors into fw-input statics, fw-output statics back to
    models, together). Race-free: the firmware is quiescent here (D1).
 3. `sil_fw_advance_tick()` — firmware runs to quiescence (D1).
-4. Record signals (ring buffers) for plotting / assertions; run test
-   asserts/injection (ad-hoc State Table reads/writes).
+4. Append changed signals to the State Table historian (change-logged,
+   per-signal timeseries — D12); run test asserts/injection (ad-hoc State
+   Table reads/writes).
 
 The two run modes are thin wrappers over this loop:
 

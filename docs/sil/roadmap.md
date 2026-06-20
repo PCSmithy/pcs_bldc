@@ -19,7 +19,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ **D6** resolved (contract) — inverter fidelity + base `dt` ([`inverter-timestep.md`](inverter-timestep.md))
 - ☑ **D9** resolved — firmware time virtualization ([`time-virtualization.md`](time-virtualization.md))
 - ☑ **D7** resolved — determinism & float tolerance ([`determinism.md`](determinism.md))
-- ☐ Close out remaining open decisions D3–D5, D10–D12
+- ☑ **D12** resolved — signal trace = State Table historian ([`signal-trace.md`](signal-trace.md))
+- ☐ Close out remaining open decisions D3–D5, D10–D11
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
@@ -54,7 +55,8 @@ writes a global and sees the firmware react. (proof of white-box loop)
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)
-- ☐ Sim clock + step loop + signal ring buffers
+- ☐ Sim clock + step loop + **State Table historian** (change-logged,
+  timestamped per-signal series; dump at end-of-run — D12)
 
 ## Phase 3 — Plant models + closed loop
 **Goal:** motor + encoder + sensor models close the loop with firmware.
