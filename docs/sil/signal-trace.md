@@ -71,9 +71,12 @@ from the start.
   later addition; the built-in stack/large-array exclusion is the only one
   needed up front.
 - **Cost note:** with everything traced, the per-tick cost is dominated by
-  *scanning* every firmware static (read + threshold) each tick — the deadband
-  cuts *storage*, not *scan*. Fine on a desktop for fast mode; a future
-  dirty-page-tracking optimization could reduce the scan.
+  *scanning* every firmware static (read + threshold) — the deadband cuts
+  *storage*, not *scan*. Two mitigations (both in [`performance.md`](performance.md)
+  Lever 4): **gate the scan on "firmware ran this tick"** (free), and a
+  **pluggable change-detector** that swaps naive-scan for **dirty-page tracking**
+  (protect `.data`/`.bss`, fault-mark dirty pages, scan only those). Bake the
+  seam in now; add dirty-tracking when it profiles hot.
 
 ## 5. Deadband ↔ assertion tolerance (couples to D7)
 
@@ -122,6 +125,7 @@ signals are exact-logged, so this only concerns floats.
   sub-tick gap, §3).
 - **User trace filter** (exclude by symbol/pattern) beyond the built-in
   stack/large-array exclusion.
-- **Dirty-page tracking** to cut the per-tick scan cost of tracing everything.
+- **Dirty-page tracking** to cut the per-tick scan cost of tracing everything
+  (the pluggable change-detector seam — [`performance.md`](performance.md) Lever 4).
 - **Relative (per-mille) deadband** option for wide-dynamic-range signals.
 - **Assert-tighter-than-deadband warning** in the test layer.

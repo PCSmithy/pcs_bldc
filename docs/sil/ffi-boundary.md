@@ -22,9 +22,10 @@ The firmware is a large bag of C global state — the FreeRTOS kernel, task
 stacks, `static HW_ADC_data`, etc. Two independent firmware instances cannot
 coexist in one OS process. That single constraint settles the model:
 
-- **In-process:** Rust framework + plant models + firmware share one process.
-  The D1 firmware-thread ↔ framework-thread handshake is in-process thread
-  sync — cheap, no IPC.
+- **In-process:** Rust framework + plant models + firmware share one process
+  **and one thread** — the D1 fiber model runs the firmware as fibers in the
+  framework's thread; "advance" is a fiber swap, not cross-thread sync
+  ([`freertos-tick.md`](freertos-tick.md), [`performance.md`](performance.md)).
 - **Parallelism is process-level:** `pytest -n` / xdist spawns N worker
   processes, each loading its own firmware copy. Free crash isolation (one
   worker segfaults, the rest survive).
@@ -51,10 +52,11 @@ carry the decision.
 
 ## 3. The control ABI (the only hand-written C surface)
 
-Lifecycle + the D1 advance handshake. This is **control, not data** — you
-cannot "advance the scheduler" by poking a variable, so these stay functions.
-The firmware thread is created C-side, so Rust sees synchronous calls and the
-threading stays hidden in the port layer.
+Lifecycle + the D1 advance. This is **control, not data** — you cannot "advance
+the scheduler" by poking a variable, so these stay functions. `advance_tick`
+internally swaps into the firmware fibers and returns when the firmware yields to
+quiescence (D1), so Rust sees a plain synchronous call and the fiber machinery
+stays hidden in the port layer.
 
 ```c
 // sil_abi.h — the entire stable Rust<->C surface
@@ -91,10 +93,11 @@ wrapper that checks the requested Rust type against the entry's DWARF type.
 
 ## 5. Mutual exclusion falls out of D1
 
-The framework touches firmware memory **only while the firmware thread is
-parked at the idle-hook** (quiescent, between ticks). The firmware runs only
-between an `advance` signal and the next quiescence. So firmware-memory access
-is never concurrent — **no locking, no races** on firmware statics, for free.
+Single thread (D1 fibers): the framework and the firmware **never run
+concurrently.** The framework touches firmware memory only when the firmware has
+yielded to quiescence (it's swapped out); the firmware runs only between an
+`advance` and the next quiescence. So firmware-memory access is never concurrent
+— **no locking, no races** on firmware statics, for free.
 
 ## 6. C→Rust upcalls (framework callbacks)
 
@@ -112,9 +115,9 @@ sim HW-layer drivers can register interrupts with the framework
 - **Caller discipline:** invoked **only** from sim-target HW-layer code
   (`hw/<X>/sim/` + sim port glue), never from portable app/io/dev firmware, so
   the "firmware is sim-unaware" property holds.
-- **Concurrency-safe for free:** these run on the firmware thread *during* a
-  tick while the framework thread waits at quiescence (§5) — same handshake,
-  other direction.
+- **Concurrency-safe for free:** single thread (§5) — an upcall is a plain
+  synchronous call from the firmware fiber into framework code while the
+  framework's main context is swapped out; nothing runs concurrently.
 
 ## 7. Safety & calling convention
 
@@ -149,6 +152,6 @@ sim HW-layer drivers can register interrupts with the framework
 
 - Exact crate layout: `sil-sys` (raw FFI + DWARF), `sil-core` (State/Route
   tables, engine, safe wrapper).
-- Whether the firmware thread + handshake primitives live entirely in the C
-  port (likely) or are partly Rust-owned.
+- Whether the fiber/context-switch primitives live entirely in the C port
+  (likely) or are partly Rust-owned.
 - Caching strategy for the DWARF symbol map (parse once at load, memoize).

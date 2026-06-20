@@ -28,11 +28,14 @@ hardware-specific bottom layer is swapped.
 **Exit:** a native binary boots FreeRTOS, spawns the real tasks, and the
 synthetic ADC ramp advances under the scheduler.
 
-- ☐ **D1 spike:** deterministic, framework-driven FreeRTOS tick on the host
-  (two-task toy program) — highest-risk item, do first. Spec + pass criterion
-  in [`freertos-tick.md`](freertos-tick.md) §6
-- ☐ Retrofit the host ports with the pluggable tick source (MSVC-MingW +
-  POSIX) per the resolved D1 design
+- ☐ **D1 spike (fiber-based):** author a single-threaded cooperative **fiber**
+  FreeRTOS port; two-task toy program, framework-driven tick, idle-fiber
+  quiescence — highest-risk item, do first. Pass = bit-identical per-tick logs
+  across runs **and** throughput confirming many×-realtime
+  ([`freertos-tick.md`](freertos-tick.md) §8, [`performance.md`](performance.md))
+- ☐ Cross-platform context-switch primitive (Windows fibers / macOS ucontext or
+  a small hand-rolled asm switch)
+- ☐ Pluggable tick source (realtime-paced vs framework-driven) on the fiber port
 - ☐ Ungate FreeRTOS bring-up + io/dev/app in `main.c` for `BUILD_TARGET_SIM`
 - ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
@@ -57,6 +60,10 @@ writes a global and sees the firmware react. (proof of white-box loop)
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)
 - ☐ Sim clock + step loop + **State Table historian** (change-logged,
   timestamped per-signal series; dump at end-of-run — D12)
+- ☐ **Perf seams from the start** (performance.md): zero-alloc hot loop +
+  columnar historian buffers; gated discrete work (continuous-integration every
+  tick, firmware/routes/algebraic-models/historian-scan gated); pluggable
+  change-detector (naive-scan now, dirty-page later)
 
 ## Phase 3 — Plant models + closed loop
 **Goal:** motor + encoder + sensor models close the loop with firmware.

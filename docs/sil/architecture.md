@@ -35,7 +35,7 @@ white-box access to firmware state, in two modes:
                                            ▼  (NO sim getters/setters in firmware)
            ┌─────────────── native firmware (BUILD_TARGET_SIM) ──────────────────┐
            │  app · dev · io   (mode FSM, control, estimator, IO, USB)   in SIM   │
-           │  ───────────────── FreeRTOS scheduler (host port) ──────────────────│
+           │  ────────── FreeRTOS scheduler (cooperative fiber port · 1 thread) ──│
            │  hw   HW_ADC/SPI/GPIO/systemClock  — only HAL/register code swapped  │
            └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -62,6 +62,11 @@ white-box access to firmware state, in two modes:
   layer is replaced. This is the high-fidelity-where-it's-cheap choice: all
   the control / FSM / estimator / UI logic and its concurrency structure are
   exercised exactly as they ship.
+- **Single-threaded cooperative fibers, performance-first.** The whole sim
+  (framework + firmware tasks-as-fibers) runs in one OS thread (D1). This is the
+  foundation of both determinism and the many×-realtime performance target;
+  the hot loop is built around it (gated discrete work, zero-alloc, a pluggable
+  historian change-detector). See [`performance.md`](performance.md).
 - **State Table + Route Table are the framework's core data structures**
   (see [`state-route-tables.md`](state-route-tables.md)). The **State Table**
   is one namespace over *every* firmware static (auto-derived from DWARF) plus
@@ -96,14 +101,14 @@ trait FwBackend {
 
 | # | Decision | Options | Leaning |
 |---|----------|---------|---------|
-| D1 | **FreeRTOS port / time source** — how the scheduler tick and context switches relate to sim time | — | **RESOLVED:** pluggable tick source at the port layer (realtime-paced vs framework-driven); retrofit existing host ports, escalate to a custom port only if needed. See [`freertos-tick.md`](freertos-tick.md). |
+| D1 | **FreeRTOS execution / time source** | — | **RESOLVED:** single-threaded **cooperative fiber port** (tasks = fibers, framework = main context, one OS thread) + pluggable tick source (realtime-paced vs framework-driven). Chosen for determinism *and* performance over OS-thread host ports. See [`freertos-tick.md`](freertos-tick.md) + [`performance.md`](performance.md). |
 | D2 | **Rust↔C boundary** | — | **RESOLVED:** in-process, one fw instance/process, firmware as a dynamically-loaded shared lib; tiny control ABI only; all data via direct DWARF-located memory R/W (no sim getters/setters), surfaced as the State Table + Route Table. See [`ffi-boundary.md`](ffi-boundary.md) + [`state-route-tables.md`](state-route-tables.md). |
 | D3 | **Python binding** | `pyo3` native extension vs C-ABI + `cffi`/`ctypes` | TBD (pyo3 likely) |
 | D4 | **Dashboard stack** | Rust web framework (axum/...) + frontend plotting lib | TBD |
 | D5 | **Sim USB-CDC transport** | virtual COM port (Win + macOS) vs TCP socket the app opts into | TBD; ties to the deferred CDC framing decision in `specs/system/overview.md` |
 | D6 | **Inverter fidelity / base dt** | — | **RESOLVED (contract):** averaged-duty default, switching-resolved swappable; abc contract (normalized leg duty in, currents+angle out) routed via sim HW-driver state; base `dt` set by model stability (finer than PWM), control ISR fires on a multiple, model advances one `dt`/tick. Two values finalize with the firmware. See [`inverter-timestep.md`](inverter-timestep.md). |
 | D7 | **Determinism & float tolerance** | — | **RESOLVED:** tolerance-based float assertions everywhere (default ε≈1e-6, per-signal override), no bit-exact contract; engine stays reproducible (deterministic scheduling + one seeded PRNG) so ε-tests don't flake; mind discrete threshold-divergence; behavioral-within-tolerance vs hardware. See [`determinism.md`](determinism.md). |
-| D8 | **Simulated interrupt model** | — | **RESOLVED:** framework-owned interrupt table (periodic + one-shot; registered at config by name and at runtime by the sim HW layer via a C→Rust upcall); dispatched through the port in the firmware thread; fixed base-`dt` grid; priority-ordered, no nesting. See [`sim-interrupts.md`](sim-interrupts.md). |
+| D8 | **Simulated interrupt model** | — | **RESOLVED:** framework-owned interrupt table (periodic + one-shot; registered at config by name and at runtime by the sim HW layer via a C→Rust upcall); dispatched through the port in the firmware fiber context; fixed base-`dt` grid; priority-ordered, no nesting. See [`sim-interrupts.md`](sim-interrupts.md). |
 | D9 | **Firmware time virtualization** | — | **RESOLVED:** sim time advances only at yields — every wait is a yield, every time read reflects the sim clock. Reads (`HAL_GetTick`/DWT/timer CNT) are sim-clock-derived; delays become cooperative sim-time advances; portable code uses FreeRTOS delays or a `HW_time` shim. See [`time-virtualization.md`](time-virtualization.md). |
 | D10 | **Scenario / config representation** | how a test declares routes + model params + injection (config file? Python API? both) | TBD; the day-to-day test-authoring surface |
 | D11 | **State Table binding stability** | symbol-path keys across fw rebuilds — fail-loud at load vs lazy | TBD; small convention |
@@ -127,19 +132,23 @@ the upper layers in SIM**, which means:
    else that pokes hardware directly. IO modules (AS5048, SK6805) ride on
    `HW_SPI`, so they should build for SIM once SPI's sim behavior carries the
    encoder/LED model data.
-3. **A FreeRTOS host port with a pluggable tick source** (decision D1,
-   resolved — see [`freertos-tick.md`](freertos-tick.md)). The scheduler runs
-   on the host; the tick comes from a swappable source — wall-clock-paced
-   (realtime) or framework-driven (deterministic). Both modes then share one
-   control loop, differing only in pacing. Approach: retrofit the existing
-   MSVC-MingW (Windows) and POSIX (macOS) host ports; escalate to a custom
-   cooperative port only if the determinism spike demands it.
+3. **A single-threaded cooperative FreeRTOS fiber port + pluggable tick source**
+   (decision D1, resolved — see [`freertos-tick.md`](freertos-tick.md) +
+   [`performance.md`](performance.md)). Tasks are fibers, the framework is the
+   main context, all in one OS thread; the tick comes from a swappable source —
+   wall-clock-paced (realtime) or framework-driven (deterministic). Chosen over
+   the OS-thread host ports for determinism *and* performance (fiber swaps
+   ~30–100 ns vs ~1–5 µs OS-thread switches, no cross-thread signaling). We
+   author the fiber port rather than vendoring a host port.
 4. **A sim ABI / native entry point** so the `FwBackend` can `init()` and
    `advance()` the firmware and the framework owns the outer loop (rather
    than `vTaskStartScheduler()` never returning).
 
-**What this buys:** the real task priorities, preemption, blocking, and
-timing of the shipping firmware are all under test — not a reimplementation.
+**What this buys:** the real task priorities, blocking, scheduling order, and
+sim-time timing of the shipping firmware are all under test — not a
+reimplementation. (Preemption is *cooperative* — faithful in sim-time because
+firmware bursts are instantaneous, with one fidelity trade noted in
+[`freertos-tick.md`](freertos-tick.md) §5.)
 
 ## 5. Sim core (Rust)
 
@@ -192,7 +201,7 @@ sw/sil/                 Rust cargo workspace (the framework) — additive, new
   models/                 motor / encoder / sensor / power plant models
   dashboard/              realtime web UI (server + frontend)
   pybind/                 Python bindings for fast mode
-sw/fw/src/                firmware control ABI + native entry / host-port wiring
+sw/fw/src/                firmware control ABI + native entry / fiber-port wiring
 sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs
 ```

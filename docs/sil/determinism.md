@@ -44,8 +44,13 @@ reliable (§3–4).
 - **One seeded PRNG** for everything stochastic (sensor noise, fault timing,
   jitter): seed set per scenario, **recorded in the trace**, fully replayable.
 - **No entropy in models** — no wall-clock reads, no unseeded random, no
-  dependence on host thread ordering (the firmware is serialized by the port +
-  the D1 handshake).
+  dependence on OS thread ordering: the D1 fiber model is **single-threaded and
+  cooperative**, so task/ISR interleavings are fixed by the schedule, not the OS.
+
+> Aside: because interleavings are deterministic, an ISR-vs-task data race that
+> needs mid-instruction preemption is *not* surfaced (it behaves consistently per
+> the cooperative schedule). That's a deliberate fidelity trade — see
+> [`freertos-tick.md`](freertos-tick.md) §5 — not a determinism flaw.
 
 Result: run-to-run variance within a platform is ≈ 0, so tolerance tests don't
 flake and reruns reproduce failures exactly.

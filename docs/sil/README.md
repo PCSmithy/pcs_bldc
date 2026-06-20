@@ -21,8 +21,9 @@ Two run modes share one core engine:
 | [`state-route-tables.md`](state-route-tables.md) | The two core framework data structures: the **State Table** (every firmware static + model states; traced entries are change-logged historians) and the **Route Table** (declarative per-tick transport). |
 | [`signal-trace.md`](signal-trace.md) | D12 — the State Table as historian: change-logged, timestamped per-signal timeseries that Python tests evaluate against. |
 | [`ffi-boundary.md`](ffi-boundary.md) | D2 — Rust↔C boundary: in-process, dynamically-loaded firmware, DWARF memory introspection, tiny control ABI + C→Rust upcalls. |
-| [`freertos-tick.md`](freertos-tick.md) | D1 — pluggable FreeRTOS tick source (realtime vs framework-driven) sharing one control loop. |
-| [`sim-interrupts.md`](sim-interrupts.md) | D8 — framework-owned interrupt table (periodic + one-shot, config + runtime); dispatched through the port in the firmware thread. |
+| [`freertos-tick.md`](freertos-tick.md) | D1 — single-threaded cooperative FreeRTOS **fiber** port + pluggable tick source (realtime vs framework-driven). |
+| [`performance.md`](performance.md) | The performance architecture: cost model + levers (fibers, gated discrete work, better integrators, dirty-page historian, zero-alloc) + the seams baked in from the start. |
+| [`sim-interrupts.md`](sim-interrupts.md) | D8 — framework-owned interrupt table (periodic + one-shot, config + runtime); dispatched through the port in the firmware fiber context. |
 | [`inverter-timestep.md`](inverter-timestep.md) | D6 — inverter fidelity (averaged-duty default, switching-resolved opt-in), the abc model↔firmware contract, and base `dt`. |
 | [`time-virtualization.md`](time-virtualization.md) | D9 — firmware time sources backed by the sim clock; every wait is a yield (busy-waits would deadlock). |
 | [`determinism.md`](determinism.md) | D7 — tolerance-based float assertions (ε≈1e-6) over a reproducible engine; the discrete threshold-divergence caveat. |
@@ -71,6 +72,9 @@ C:/code/pcs_bldc-sil   sil    (this SIL effort)
    namespace over every firmware static + all model states) and the **Route
    Table** (per-tick `source → destination` transport). See
    [`state-route-tables.md`](state-route-tables.md).
+7. **Single-threaded cooperative fibers, performance-first.** The whole sim runs
+   in one OS thread (tasks = fibers); the hot loop is engineered for many×
+   realtime on a normal desktop. See [`performance.md`](performance.md).
 
 See [`architecture.md`](architecture.md) for the reasoning and the decisions
 still open.

@@ -9,7 +9,7 @@ owned **interrupt controller**.
 Sources are **periodic or one-shot**, registered either **at config time**
 (framework-side, by handler name) or **at runtime** (by the sim HW-layer code,
 by handler pointer, via a C→Rust upcall). The framework schedules; the firmware-
-side **port dispatches** each due handler in the firmware thread so FreeRTOS
+side **port dispatches** each due handler in the firmware fiber context so FreeRTOS
 `...FromISR` semantics hold. Fixed base-`dt` grid, priority-ordered, no nesting.
 
 ---
@@ -74,12 +74,12 @@ init; the sim drivers call through them. See
 
 The framework owns *scheduling* (when a source is due); the firmware-side
 **port owns dispatch** (the context the handler runs in). At a due time the
-framework signals the port to run pending handlers **in the firmware thread**,
-through a thin shim that brackets each call with the host port's ISR
-entry/exit. This makes `x...FromISR` wakeups and `portYIELD_FROM_ISR` behave
-exactly as on hardware — a handler can unblock a high-priority task and that
-task runs before the firmware returns to quiescence. (Bare-calling the C
-handler from the framework thread would break the port's bookkeeping.)
+framework, having swapped into the firmware (D1 fibers), runs pending handlers
+**in the firmware context** through a thin shim that brackets each call with the
+port's ISR entry/exit. This makes `x...FromISR` wakeups and `portYIELD_FROM_ISR`
+behave exactly as on hardware — a handler can unblock a high-priority task and
+that task (its fiber) runs before the firmware returns to quiescence. (Bare-
+calling the handler outside the port's ISR bracket would break its bookkeeping.)
 
 Handler-mode / MSP / privilege are **not** modeled — handlers are ordinary C
 functions. We don't model memory protection, so this is a non-issue.
@@ -105,8 +105,8 @@ functions. We don't model memory protection, so this is a non-issue.
 
 - **Masking + pending:** `__disable_irq` / `portENTER_CRITICAL` must hold a due
   interrupt **pending**, not drop it. The controller keeps a pending state and
-  honors a simulated interrupt-enable/mask, piggybacking on the host port's
-  existing interrupt emulation.
+  honors a simulated interrupt-enable/mask held in the fiber port (a cooperative
+  flag — D1; no real preemption to gate).
 - **Per-IRQ enable** is modeled (native has no NVIC, so `HAL_NVIC_EnableIRQ`
   would otherwise be a no-op, and firmware relies on "disabled until
   configured"). `enabled` on the entry + register/cancel covers it.
@@ -140,12 +140,12 @@ scheduled relative to the current sim-time, also deterministic.
 
 ## 9. Concurrency safety
 
-Runtime registration upcalls happen on the **firmware thread during a step**,
-while the framework thread is blocked waiting for quiescence (D1). So the
-interrupt table is only mutated by the firmware thread mid-step and only read by
-the framework thread between steps — the same handshake that protects firmware
-memory in [`ffi-boundary.md`](ffi-boundary.md) §5 protects the table from the
-other direction. No locking.
+Single thread (D1 fibers): runtime registration upcalls are plain synchronous
+calls from the firmware fiber *during* a step, while the framework's main context
+is swapped out. The interrupt table is mutated only mid-step (firmware) and read
+only between steps (framework) — never concurrently. The same single-thread
+property that protects firmware memory ([`ffi-boundary.md`](ffi-boundary.md) §5)
+protects the table. No locking.
 
 ## 10. Open / future
 

@@ -26,10 +26,10 @@ while (HAL_GetTick() < t) { }   // spins until the tick counter reaches t
 delay_us_via_DWT(50);           // spins until CYCCNT advances
 ```
 
-The firmware thread spins without yielding → never reaches quiescence → the
-framework never advances sim time → the counter never moves → **infinite spin.**
-By contrast `vTaskDelay()` yields: firmware goes idle → sim advances → the tick
-wakes it. The rule that falls out:
+The firmware spins without yielding (its fiber never swaps back) → never reaches
+quiescence → the framework never advances sim time → the counter never moves →
+**infinite spin.** By contrast `vTaskDelay()` yields: firmware goes idle → sim
+advances → the tick wakes it. The rule that falls out:
 
 > **Every wait is a yield; every time read reflects the sim clock.**
 
@@ -53,9 +53,9 @@ consistent.
 ## 3. Blocking delays → cooperative sim-time advances
 
 The sim layer's delay implementations don't spin — they **yield and advance**:
-block the firmware thread, signal the framework to advance sim by the requested
-interval (firing any due interrupts along the way, D8), then resume. Semantically
-a sim-time sleep:
+yield the firmware fiber back to the framework, which advances sim by the
+requested interval (firing any due interrupts along the way, D8), then swaps back
+in. Semantically a sim-time sleep:
 
 - `HAL_Delay(ms)` → advance sim by `ms`.
 - `delay_us(n)` → advance sim by `n` µs.
