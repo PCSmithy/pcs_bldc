@@ -32,9 +32,10 @@ Notes:
 - **The full namespace is cheap.** Entries are metadata (name → addr/type);
   values are read on demand. Holding an entry per static costs nothing until
   something routes or reads it.
-- **Traced entries are also historians.** Beyond the current value, each entry
-  selected for tracing accumulates a **change-logged, timestamped time series**
-  — appended only when the value changes. The dumped table is the full
+- **Entries are also historians.** Beyond the current value, each entry
+  accumulates a **change-logged, timestamped time series** (discretes on exact
+  change, floats on an ε-deadband) — **the whole namespace is traced by
+  default** (stacks/large arrays excluded). The dumped table is the full
   timeseries history that Python SIL tests evaluate against. See
   [`signal-trace.md`](signal-trace.md) (D12).
 - **Model entries are registered** by the models (the only "registration" step

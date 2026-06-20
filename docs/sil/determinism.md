@@ -30,6 +30,11 @@ reliable (§3–4).
   signal needs looser/tighter.
 - Applies the same way **within** and **across** platforms — no special
   bit-exact mode, no per-platform golden baselines for float values.
+- **Bounded below by the trace deadband.** The historian stores float signals
+  with an ε-deadband (default `1e-3`, [`signal-trace.md`](signal-trace.md) §5),
+  so a signal's trace can't support an assertion tighter than its deadband:
+  **assert-tolerance ≥ signal-deadband.** To assert tightly, tighten that
+  signal's deadband too.
 
 ## 3. The engine stays reproducible (cheap — mostly already done)
 
