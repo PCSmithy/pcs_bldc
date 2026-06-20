@@ -18,7 +18,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 - ☑ **D8** resolved — simulated interrupt model ([`sim-interrupts.md`](sim-interrupts.md))
 - ☑ **D6** resolved (contract) — inverter fidelity + base `dt` ([`inverter-timestep.md`](inverter-timestep.md))
 - ☑ **D9** resolved — firmware time virtualization ([`time-virtualization.md`](time-virtualization.md))
-- ☐ Close out remaining open decisions D3–D5, D7, D10–D12
+- ☑ **D7** resolved — determinism & float tolerance ([`determinism.md`](determinism.md))
+- ☐ Close out remaining open decisions D3–D5, D10–D12
 
 ## Phase 1 — Firmware runs on the SIM target
 **Goal:** FreeRTOS + io/dev/app build and run natively; only the
