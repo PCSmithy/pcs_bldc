@@ -39,9 +39,13 @@ synthetic ADC ramp advances under the scheduler.
   `HW_GPIO_run1ms`/`HW_ADC_run1ms`, temporary in-process tick loop. **Native
   binary boots FreeRTOS, the task runs each tick, the ADC ramp advances**
   (Phase-1 exit met); embedded ARM `.elf` unaffected.
+- ☑ **Control ABI seam** (`sw/fw/src/sil_fw.h`): `sil_fw_start` /
+  `sil_fw_advance_tick` / `sil_fw_shutdown` (D2). `main.c` is now a thin driver
+  over it (embedded entry / SIM smoke driver); Phase-2 Rust drives the same
+  three calls. Pacing (fast vs realtime) is the driver's choice.
 - ☐ Ungate the rest of io/dev/app in `main.c` for SIM (the real tasks)
 - ☐ Cross-platform context-switch primitive (macOS ucontext / small asm)
-- ☐ Pluggable tick source (realtime-paced vs framework-driven) on the fiber port
+- ☐ Realtime-paced driver (wall-clock pacing of `sil_fw_advance_tick`)
 - ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
 - ☐ `HW_time` module (stm32g4 + sim) + audit drivers for direct

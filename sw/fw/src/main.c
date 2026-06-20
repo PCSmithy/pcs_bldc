@@ -578,23 +578,36 @@ int __io_putchar(int ch)
 }
 #endif
 
+// HW-layer init, shared by both targets' entry paths.
+static bool prvHwInit(void)
+{
+    bool ok = true;
+    ok &= HW_systemClock_init(&HW_systemClock_config);
+    ok &= HW_GPIO_init(&HW_GPIO_config);
+    ok &= HW_ADC_init(&HW_ADC_config);
+    ok &= HW_SPI_init(&HW_SPI_config);
+    ok &= HW_TIM_init(&HW_TIM_config);
+    return ok;
+}
+
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-// Native fiber-port entry points: the temporary in-process tick driver and the
-// idle-hook quiescence handoff. Declared here until the Phase-2 sim ABI header
-// exists.
+#include "sil_fw.h"
+
+// Native fiber-port primitives (provided by the cooperative fiber port).
 extern void vSilAdvanceTick(void);
 extern void vPortYieldToScheduler(void);
 
 // Quiescence handoff: when every task is blocked the idle task runs and hands
-// control back to the driver (main) fiber.
+// control back to the driver (framework) fiber.
 void vApplicationIdleHook(void)
 {
     vPortYieldToScheduler();
 }
 
-// Minimal SIL 1 ms task: drives the HW-layer periodic sampling. Proves the
-// scheduler runs a real task and the sim drivers advance under it.
-static volatile uint32_t sim_task1msRuns = 0U;
+// Minimal SIL 1 ms task: drives the HW-layer periodic sampling. Stands in for
+// the real io/dev/app tasks until they're ungated for SIM. sim_task1msRuns is
+// observable from the framework via the State Table.
+volatile uint32_t sim_task1msRuns = 0U;
 static void sim_task_1ms(void * params)
 {
     (void)params;
@@ -607,35 +620,50 @@ static void sim_task_1ms(void * params)
         sim_task1msRuns++;
     }
 }
+
+// --- SIL control ABI (D2) --------------------------------------------------
+// The framework drives these; pacing (fast vs realtime) is the driver's choice.
+
+bool sil_fw_start(void)
+{
+    bool ok = prvHwInit();
+    ok = ok && ( xTaskCreate(sim_task_1ms, "sim_1ms", configMINIMAL_STACK_SIZE,
+                             NULL, 3, NULL) == pdPASS );
+    if (ok)
+    {
+        // Fiber port: runs to first quiescence (all tasks blocked) and returns.
+        vTaskStartScheduler();
+    }
+    return ok;
+}
+
+void sil_fw_advance_tick(void)
+{
+    vSilAdvanceTick();
+}
+
+void sil_fw_shutdown(void)
+{
+    vPortEndScheduler();
+}
 #endif
 
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 int main(void)
 {
-    // TODO: channelize this into an HW_halCore module (stm32g4 + sim
-    // impls) so main.c doesn't need a target-specific include or
-    // BUILD_TARGET branch. For now, gate it.
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+    // TODO: channelize HAL_Init into an HW_halCore module so main.c doesn't
+    // need a target-specific include. For now, gate it.
     HAL_Init();
-#endif
 
-    bool initSuccess = true;
-    initSuccess &= HW_systemClock_init(&HW_systemClock_config);
-    initSuccess &= HW_GPIO_init(&HW_GPIO_config);
-    initSuccess &= HW_ADC_init(&HW_ADC_config);
-    initSuccess &= HW_SPI_init(&HW_SPI_config);
-    initSuccess &= HW_TIM_init(&HW_TIM_config);
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+    bool initSuccess = prvHwInit();
     initSuccess &= IO_AS5048_init(&IO_AS5048_config);
     initSuccess &= IO_SK6805_init(&IO_SK6805_config);
     initSuccess &= DEV_switch_init(&DEV_switch_config);
-#endif
-
     if (!initSuccess)
     {
         Error_Handler();
     }
 
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
     // Bring up USB (HW_USB spawns the device-service task) and the serial
     // transport, then spawn the periodic IO, LED, and telemetry tasks and hand
     // control to the scheduler. Each task allocates from the FreeRTOS heap; a
@@ -656,20 +684,21 @@ int main(void)
     }
 
     vTaskStartScheduler();
+    return 0;
+}
 #endif
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-    // SIL smoke: spawn the 1 ms task and run FreeRTOS under the fiber port,
-    // driven by a temporary in-process tick loop (Phase 2 hands this to the
-    // Rust framework). Confirms the scheduler runs the task and the ADC sim
-    // ramp advances tick-over-tick.
-    if (xTaskCreate(sim_task_1ms, "sim_1ms", configMINIMAL_STACK_SIZE,
-                    NULL, 3, NULL) != pdPASS)
+// Standalone SIL smoke driver over the control ABI (sil_fw.h). In Phase 2 the
+// Rust framework drives the same three calls (and owns pacing); this loop is a
+// temporary stand-in driver. Confirms the scheduler runs the task and the ADC
+// sim ramp advances tick-over-tick.
+int main(void)
+{
+    if (!sil_fw_start())
     {
-        Error_Handler();
+        return 1;
     }
-
-    vTaskStartScheduler();   // fiber port returns at first quiescence
 
     // Find the first enabled ADC (channel, input) to watch the sim ramp on.
     HW_ADC_channels_E watchCh = (HW_ADC_channels_E)0;
@@ -696,14 +725,15 @@ int main(void)
 
     for (uint32_t tick = 1U; tick <= 20U; tick++)
     {
-        vSilAdvanceTick();
+        sil_fw_advance_tick();
 
         uint32_t counts = 0U;
         (void)HW_ADC_getCount(watchCh, watchIn, &counts);
         printf("tick %2u  task_runs=%u  adc[ch%u,in%u]=%u\n",
                tick, sim_task1msRuns, (unsigned)watchCh, watchIn, counts);
     }
-#endif
 
+    sil_fw_shutdown();
     return 0;
 }
+#endif

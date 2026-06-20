@@ -59,14 +59,20 @@ quiescence (D1), so Rust sees a plain synchronous call and the fiber machinery
 stays hidden in the port layer.
 
 ```c
-// sil_abi.h — the entire stable Rust<->C surface
-void sil_fw_start(void);        // spawn fw thread: HW_*_init + create tasks + run scheduler
-void sil_fw_advance_tick(void); // signal "advance one tick"; return when quiescent (D1)
+// sil_fw.h — the entire stable Rust<->C surface
+bool sil_fw_start(void);        // HW init + create tasks + run scheduler to first quiescence
+void sil_fw_advance_tick(void); // advance one tick; return at quiescence (D1)
 void sil_fw_shutdown(void);
 ```
 
-There are **no sim-specific data functions** beyond this. The firmware is
-otherwise unaware it is being simulated.
+`sil_fw_start` returns `false` on init/task-creation failure (the framework
+reports it — the firmware never calls `Error_Handler` in SIL). **Pacing is the
+driver's choice:** because the driver *calls* `sil_fw_advance_tick` (rather than
+the port running its own tick loop), realtime-vs-fast is just whether the caller
+paces to wall-clock or runs flat out — the firmware exposes only the per-tick
+primitive. There are **no sim-specific data functions** beyond this; the firmware
+is otherwise unaware it is being simulated. (Implemented + driven by a stand-in C
+loop today in `sw/fw/src/main.c`; Phase 2 has Rust drive the same three calls.)
 
 ## 4. DWARF introspection — the State Table substrate
 

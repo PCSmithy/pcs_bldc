@@ -51,6 +51,14 @@ two pacing impls share one loop:
 Only the pacing differs; the firmware path is identical, so a scenario debugged
 in fast mode behaves the same in realtime.
 
+**Pacing lives in the driver, not the port.** Because control is inverted — the
+driver *calls* `sil_fw_advance_tick` ([`ffi-boundary.md`](ffi-boundary.md)) — the
+realtime/fast distinction is simply whether the caller sleeps between advances.
+The firmware exposes one per-tick primitive; there is no port-level
+`portGetNextTick()` to swap. This is simpler than the original framing and is
+what the working integration does (a stand-in C driver today, the Rust framework
+in Phase 2).
+
 ## 4. Determinism — by construction, and why cooperative is enough
 
 - Switches happen **only at defined points** (`portYIELD`, tick/ISR dispatch), so
