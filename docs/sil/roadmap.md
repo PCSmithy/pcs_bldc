@@ -28,11 +28,10 @@ hardware-specific bottom layer is swapped.
 **Exit:** a native binary boots FreeRTOS, spawns the real tasks, and the
 synthetic ADC ramp advances under the scheduler.
 
-- ☐ **D1 spike (fiber-based):** author a single-threaded cooperative **fiber**
-  FreeRTOS port; two-task toy program, framework-driven tick, idle-fiber
-  quiescence — highest-risk item, do first. Pass = bit-identical per-tick logs
-  across runs **and** throughput confirming many×-realtime
-  ([`freertos-tick.md`](freertos-tick.md) §8, [`performance.md`](performance.md))
+- ☑ **D1 spike (fiber-based):** cooperative fiber FreeRTOS port, two-task
+  program, framework-driven tick, idle-fiber quiescence — `sw/sil/spike/d1-tick/`.
+  **PASS:** 30 serial + 16 parallel runs bit-identical; ~5.0 Mticks/s (~5000×
+  realtime at 1 kHz) on one core, near-linear parallel scaling.
 - ☐ Cross-platform context-switch primitive (Windows fibers / macOS ucontext or
   a small hand-rolled asm switch)
 - ☐ Pluggable tick source (realtime-paced vs framework-driven) on the fiber port
