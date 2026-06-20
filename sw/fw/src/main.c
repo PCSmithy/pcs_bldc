@@ -3,6 +3,7 @@
 #include "HW_GPIO.h"
 #include "HW_ADC.h"
 #include "HW_SPI.h"
+#include "HW_TIM.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
@@ -20,6 +21,7 @@ extern const HW_systemClock_config_S HW_systemClock_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
 extern const HW_SPI_config_S HW_SPI_config;
+extern const HW_TIM_config_S HW_TIM_config;
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 extern const IO_AS5048_config_S IO_AS5048_config;
@@ -447,6 +449,7 @@ int main(void)
     initSuccess &= HW_GPIO_init(&HW_GPIO_config);
     initSuccess &= HW_ADC_init(&HW_ADC_config);
     initSuccess &= HW_SPI_init(&HW_SPI_config);
+    initSuccess &= HW_TIM_init(&HW_TIM_config);
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
     initSuccess &= IO_AS5048_init(&IO_AS5048_config);
     initSuccess &= IO_SK6805_init(&IO_SK6805_config);

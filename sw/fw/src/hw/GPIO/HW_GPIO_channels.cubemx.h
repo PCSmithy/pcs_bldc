@@ -58,4 +58,21 @@
     { .pin = 0x4000U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PC14" }, \
     { .pin = 0x8010U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PC15+PC4" },
 
+#define HW_GPIO_CUBEMX_PINS_PORT_E \
+    { \
+        .Pin   = GPIO_PIN_7, \
+        .Mode  = GPIO_MODE_OUTPUT_PP, \
+        .Pull  = GPIO_NOPULL, \
+        .Speed = GPIO_SPEED_FREQ_LOW, \
+    }, \
+    { \
+        .Pin  = GPIO_PIN_14, \
+        .Mode = GPIO_MODE_INPUT, \
+        .Pull = GPIO_NOPULL, \
+    },
+
+#define HW_GPIO_CUBEMX_SIM_PINS_PORT_E \
+    { .pin = 0x0080U, .mode = HW_GPIO_MODE_OUTPUT, .pinNameStr = "PE7" }, \
+    { .pin = 0x4000U, .mode = HW_GPIO_MODE_INPUT,  .pinNameStr = "PE14" },
+
 #endif // HW_GPIO_CHANNELS_CUBEMX_H

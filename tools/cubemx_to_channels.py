@@ -26,9 +26,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CUBEMX_MAIN = REPO_ROOT / "sw/fw/stm32cube/g4/Core/Src/main.c"
+CUBEMX_MSP = REPO_ROOT / "sw/fw/stm32cube/g4/Core/Src/stm32g4xx_hal_msp.c"
 GPIO_OUT = REPO_ROOT / "sw/fw/src/hw/GPIO/HW_GPIO_channels.cubemx.h"
 ADC_OUT = REPO_ROOT / "sw/fw/src/hw/ADC/HW_ADC_channels.cubemx.h"
 SPI_OUT = REPO_ROOT / "sw/fw/src/hw/SPI/HW_SPI_channels.cubemx.h"
+TIM_OUT = REPO_ROOT / "sw/fw/src/hw/TIM/HW_TIM_channels.cubemx.h"
+
+# STM32G4 timers with a 32-bit counter; the rest are 16-bit. Used to fill
+# the SIM config's counterWidthBits (the stm32g4 side never needs it).
+TIM_32BIT_INSTANCES = {2, 5}
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +448,319 @@ def write_spi_header(spis: list[SPIConfig]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# TIM
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TIMOcConfig:
+    channel: str                       # e.g. "TIM_CHANNEL_1"
+    is_pwm: bool                       # PWM_ConfigChannel vs OC_ConfigChannel
+    fields: dict[str, str]             # snapshot of sConfigOC at the call
+
+
+@dataclass
+class TIMConfig:
+    instance: str                              # e.g. "TIM1"
+    init: list[tuple[str, str]]                # htimN.Init.* pairs
+    oc_units: list[TIMOcConfig]                # one per (PWM|OC)_ConfigChannel call
+    bdt: list[tuple[str, str]] | None          # break/dead-time block, if configured
+    master: list[tuple[str, str]] | None       # master/TRGO block, if configured
+    break_inputs: list[tuple[str, dict[str, str]]]  # (break id, sBreakInputConfig) per ConfigBreakInput
+
+
+def parse_complementary_channels(msp_source: str) -> set[tuple[int, int]]:
+    """Find (timer, channel) pairs whose CHxN line is routed to a pin, from
+    the `PEx ------> TIMy_CHzN` comments CubeMX leaves in HAL_TIM_MspPostInit.
+    These are the complementary outputs."""
+    comp: set[tuple[int, int]] = set()
+    for m in re.finditer(r'\bTIM(\d+)_CH(\d+)N\b', msp_source):
+        comp.add((int(m.group(1)), int(m.group(2))))
+    return comp
+
+
+def parse_mx_tim_init(body: str, htim_var: str) -> TIMConfig | None:
+    """Parse one `MX_TIM*_Init` body. `htim_var` is CubeMX's handle name,
+    e.g. `htim1` for TIM1."""
+    instance_match = re.search(
+        rf'\b{re.escape(htim_var)}\.Instance\s*=\s*(TIM\d+)\s*;', body)
+    if not instance_match:
+        return None
+    instance = instance_match.group(1)
+
+    init_pairs: list[tuple[str, str]] = []
+    for m in re.finditer(
+            rf'\b{re.escape(htim_var)}\.Init\.(\w+)\s*=\s*([^;]+);', body):
+        init_pairs.append((m.group(1), m.group(2).strip()))
+
+    # Output-compare units: walk sConfigOC assignments and (PWM|OC)
+    # ConfigChannel calls in source order. CubeMX sets the common fields
+    # once, then mutates only what differs before each call, so a running
+    # snapshot reproduces each channel's effective config.
+    oc_units: list[TIMOcConfig] = []
+    running: dict[str, str] = {}
+    token = re.compile(
+        r'sConfigOC\.(\w+)\s*=\s*([^;]+);'
+        r'|HAL_TIM_(PWM|OC)_ConfigChannel\s*\(\s*&' + re.escape(htim_var)
+        + r'\s*,\s*&sConfigOC\s*,\s*(TIM_CHANNEL_\d+)\s*\)')
+    for m in token.finditer(body):
+        if m.group(1) is not None:
+            running[m.group(1)] = m.group(2).strip()
+        else:
+            oc_units.append(TIMOcConfig(
+                channel=m.group(4), is_pwm=(m.group(3) == "PWM"),
+                fields=dict(running)))
+
+    bdt: list[tuple[str, str]] | None = None
+    if re.search(r'\bHAL_TIMEx_ConfigBreakDeadTime\s*\(', body):
+        bdt = [(m.group(1), m.group(2).strip()) for m in re.finditer(
+            r'\bsBreakDeadTimeConfig\.(\w+)\s*=\s*([^;]+);', body)]
+
+    master: list[tuple[str, str]] | None = None
+    if re.search(r'\bHAL_TIMEx_MasterConfigSynchronization\s*\(', body):
+        master = [(m.group(1), m.group(2).strip()) for m in re.finditer(
+            r'\bsMasterConfig\.(\w+)\s*=\s*([^;]+);', body)]
+
+    # Break-input sources (BRK / BRK2): snapshot sBreakInputConfig at each
+    # HAL_TIMEx_ConfigBreakInput call (the config struct is reused across
+    # calls, mutated only where it differs), same as the OC-channel walk.
+    break_inputs: list[tuple[str, dict[str, str]]] = []
+    running_bi: dict[str, str] = {}
+    bi_token = re.compile(
+        r'sBreakInputConfig\.(\w+)\s*=\s*([^;]+);'
+        r'|HAL_TIMEx_ConfigBreakInput\s*\(\s*&' + re.escape(htim_var)
+        + r'\s*,\s*(TIM_BREAKINPUT_\w+)\s*,\s*&sBreakInputConfig\s*\)')
+    for m in bi_token.finditer(body):
+        if m.group(1) is not None:
+            running_bi[m.group(1)] = m.group(2).strip()
+        else:
+            break_inputs.append((m.group(3), dict(running_bi)))
+
+    return TIMConfig(instance=instance, init=init_pairs,
+                     oc_units=oc_units, bdt=bdt, master=master,
+                     break_inputs=break_inputs)
+
+
+def tim_instance_num(instance: str) -> int:
+    return int(re.search(r'(\d+)', instance).group(1))
+
+
+def tim_channel_num(channel: str) -> int:
+    return int(re.search(r'(\d+)', channel).group(1))
+
+
+def sim_count_dir(counter_mode: str) -> str:
+    if counter_mode == "TIM_COUNTERMODE_DOWN":
+        return "HW_TIM_COUNT_DOWN"
+    if counter_mode.startswith("TIM_COUNTERMODE_CENTERALIGNED"):
+        return "HW_TIM_COUNT_CENTER"
+    return "HW_TIM_COUNT_UP"
+
+
+def sim_trgo_source(trgo: str) -> str:
+    if trgo == "TIM_TRGO_UPDATE":
+        return "HW_TIM_TRGO_UPDATE"
+    if trgo == "TIM_TRGO_RESET":
+        return "HW_TIM_TRGO_NONE"
+    return "HW_TIM_TRGO_OC_MATCH"      # OC1REF / OC2REF / ...
+
+
+def tim_trgo_constant(tim: TIMConfig) -> str:
+    if tim.master is None:
+        return "TIM_TRGO_RESET"
+    return dict(tim.master).get("MasterOutputTrigger", "TIM_TRGO_RESET")
+
+
+def gen_tim_oc_macro(name: str, tim: TIMConfig,
+                     complementary: set[tuple[int, int]]) -> str:
+    inum = tim_instance_num(tim.instance)
+    lines: list[str] = []
+    for oc in tim.oc_units:
+        chnum = tim_channel_num(oc.channel)
+        is_comp = (inum, chnum) in complementary
+        lines.append(f"    [{chnum - 1}] =")
+        lines.append("    {")
+        lines.append("        .enabled       = true,")
+        lines.append(f"        .channel       = {oc.channel},")
+        lines.append(f"        .complementary = {'true' if is_comp else 'false'},")
+        lines.append("        .oc =")
+        lines.append("        {")
+        lines.extend(aligned_assignments(list(oc.fields.items()),
+                                         indent="            "))
+        lines.append("        },")
+        lines.append("    },")
+    return emit_macro(f"HW_TIM_CUBEMX_OC_{name}", lines)
+
+
+def gen_tim_sim_oc_macro(name: str, tim: TIMConfig,
+                         complementary: set[tuple[int, int]]) -> str:
+    inum = tim_instance_num(tim.instance)
+    lines: list[str] = []
+    for oc in tim.oc_units:
+        chnum = tim_channel_num(oc.channel)
+        is_comp = (inum, chnum) in complementary
+        pulse = oc.fields.get("Pulse", "0")
+        idle = oc.fields.get("OCIdleState", "TIM_OCIDLESTATE_RESET")
+        inactive = "1U" if idle.endswith("_SET") else "0U"
+        lines.append(
+            f"    [{chnum - 1}] = {{ .enabled = true, "
+            f".complementary = {'true' if is_comp else 'false'}, "
+            f".compare = {pulse}U, .inactiveLevel = {inactive} }},")
+    return emit_macro(f"HW_TIM_CUBEMX_SIM_OC_{name}", lines)
+
+
+def gen_tim_break_input_macro(name: str, tim: TIMConfig) -> str:
+    lines: list[str] = []
+    for idx, (break_id, fields) in enumerate(tim.break_inputs):
+        lines.append(f"    [{idx}] =")
+        lines.append("    {")
+        lines.append("        .enabled    = true,")
+        lines.append(f"        .breakInput = {break_id},")
+        lines.append("        .config =")
+        lines.append("        {")
+        lines.extend(aligned_assignments(list(fields.items()),
+                                         indent="            "))
+        lines.append("        },")
+        lines.append("    },")
+    return emit_macro(f"HW_TIM_CUBEMX_BRKIN_{name}", lines)
+
+
+def gen_tim_channel_macro(name: str, tim: TIMConfig, has_oc: bool,
+                          has_bdt: bool, has_brkin: bool, has_trgo: bool) -> str:
+    body: list[str] = [
+        "    .htim =",
+        "    {",
+        f"        .Instance = {tim.instance},",
+        f"        .Init = {{ HW_TIM_CUBEMX_INIT_{name} }},",
+        "    },",
+    ]
+    if has_oc:
+        body.append(f"    .outputCompare = {{ HW_TIM_CUBEMX_OC_{name} }},")
+    body.append(f"    .configureBreakDeadTime = {'true' if has_bdt else 'false'},")
+    if has_bdt:
+        body.append(f"    .breakDeadTime = {{ HW_TIM_CUBEMX_BDT_{name} }},")
+    if has_brkin:
+        body.append(f"    .breakInputs = {{ HW_TIM_CUBEMX_BRKIN_{name} }},")
+    body.append(f"    .configureTrgo = {'true' if has_trgo else 'false'},")
+    if has_trgo:
+        body.append(f"    .master = {{ HW_TIM_CUBEMX_MASTER_{name} }},")
+    return emit_macro(f"HW_TIM_CUBEMX_G4_{name}", body)
+
+
+def gen_tim_sim_channel_macro(name: str, tim: TIMConfig,
+                              has_oc: bool, has_bdt: bool) -> str:
+    init = dict(tim.init)
+    inum = tim_instance_num(tim.instance)
+    width = 32 if inum in TIM_32BIT_INSTANCES else 16
+    body: list[str] = [
+        f'    .channelNameStr   = "{tim.instance}",',
+        f"    .prescaler        = {init.get('Prescaler', '0')}U,",
+        f"    .period           = {init.get('Period', '0')}U,",
+        f"    .counterWidthBits = {width}U,",
+        f"    .countDir         = {sim_count_dir(init.get('CounterMode', ''))},",
+    ]
+    if has_oc:
+        body.append(f"    .outputCompare    = {{ HW_TIM_CUBEMX_SIM_OC_{name} }},")
+    if has_bdt:
+        bdt = dict(tim.bdt)
+        break_on = bdt.get("BreakState", "") == "TIM_BREAK_ENABLE"
+        body.append("    .configureBreakDeadTime = true,")
+        body.append(f"    .deadTime               = {bdt.get('DeadTime', '0')}U,")
+        body.append(f"    .hasBreakInput          = {'true' if break_on else 'false'},")
+    trgo = tim_trgo_constant(tim)
+    has_trgo = trgo != "TIM_TRGO_RESET"
+    body.append(f"    .configureTrgo          = {'true' if has_trgo else 'false'},")
+    if has_trgo:
+        body.append(f"    .trgoSource             = {sim_trgo_source(trgo)},")
+    return emit_macro(f"HW_TIM_CUBEMX_SIM_{name}", body)
+
+
+def gen_tim_macros(tims: list[TIMConfig],
+                   complementary: set[tuple[int, int]]) -> str:
+    parts: list[str] = []
+    for tim in tims:
+        name = tim.instance
+        has_oc = bool(tim.oc_units)
+        has_bdt = tim.bdt is not None
+        has_brkin = bool(tim.break_inputs)
+        has_trgo = tim_trgo_constant(tim) != "TIM_TRGO_RESET"
+
+        parts.append(f"// ----- {name} -----")
+        parts.append("")
+        parts.append(emit_macro(f"HW_TIM_CUBEMX_INIT_{name}",
+                                aligned_assignments(tim.init, indent="    ")))
+        parts.append("")
+        if has_oc:
+            parts.append(gen_tim_oc_macro(name, tim, complementary))
+            parts.append("")
+        if has_bdt:
+            parts.append(emit_macro(f"HW_TIM_CUBEMX_BDT_{name}",
+                                    aligned_assignments(tim.bdt, indent="    ")))
+            parts.append("")
+        if has_brkin:
+            parts.append(gen_tim_break_input_macro(name, tim))
+            parts.append("")
+        if has_trgo:
+            parts.append(emit_macro(f"HW_TIM_CUBEMX_MASTER_{name}",
+                                    aligned_assignments(tim.master, indent="    ")))
+            parts.append("")
+        # Composing macros: one full channel body per target, referencing the
+        # field macros above. HW_TIM_channels.c just maps each logical channel
+        # to one of these.
+        parts.append(gen_tim_channel_macro(name, tim, has_oc, has_bdt,
+                                           has_brkin, has_trgo))
+        parts.append("")
+        if has_oc:
+            parts.append(gen_tim_sim_oc_macro(name, tim, complementary))
+            parts.append("")
+        parts.append(gen_tim_sim_channel_macro(name, tim, has_oc, has_bdt))
+        parts.append("")
+
+    # Target selection: map each timer's neutral name to its per-target body
+    # so HW_TIM_channels.c maps every channel uniformly, with no BUILD_TARGET
+    # branching of its own. (TIM has no hand-set per-project fields, so the
+    # whole channel body is CubeMX-derived — unlike ADC/SPI.)
+    names = [tim.instance for tim in tims]
+    parts.append("// ----- target selection -----")
+    parts.append("")
+    parts.append("#if (BUILD_TARGET == BUILD_TARGET_STM32G4)")
+    for name in names:
+        parts.append(f"#define HW_TIM_CUBEMX_{name}  HW_TIM_CUBEMX_G4_{name}")
+    parts.append("#elif (BUILD_TARGET == BUILD_TARGET_SIM)")
+    for name in names:
+        parts.append(f"#define HW_TIM_CUBEMX_{name}  HW_TIM_CUBEMX_SIM_{name}")
+    parts.append("#else")
+    parts.append('#error "BUILD_TARGET must be BUILD_TARGET_STM32G4 or BUILD_TARGET_SIM"')
+    parts.append("#endif")
+    parts.append("")
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def write_tim_header(tims: list[TIMConfig],
+                     complementary: set[tuple[int, int]]) -> None:
+    macros = gen_tim_macros(tims, complementary)
+    content = (
+        f"{file_header('cubemx_to_channels.py')}"
+        f"\n"
+        f"#ifndef HW_TIM_CHANNELS_CUBEMX_H\n"
+        f"#define HW_TIM_CHANNELS_CUBEMX_H\n"
+        f"\n"
+        f"// Each timer exposes a per-target body (HW_TIM_CUBEMX_G4_TIMn /\n"
+        f"// HW_TIM_CUBEMX_SIM_TIMn) and a BUILD_TARGET-selected alias\n"
+        f"// (HW_TIM_CUBEMX_TIMn) used by HW_TIM_channels.c. lib_build.h\n"
+        f"// supplies the BUILD_TARGET_* constants the selection compares.\n"
+        f'#include "lib_build.h"\n'
+        f"\n"
+        f"{macros}\n"
+        f"#endif // HW_TIM_CHANNELS_CUBEMX_H\n"
+    )
+    TIM_OUT.write_text(content, encoding="utf-8")
+    total_oc = sum(len(t.oc_units) for t in tims)
+    print(f"  wrote {TIM_OUT.relative_to(REPO_ROOT)} "
+          f"({len(tims)} TIMs, {total_oc} output-compare units)")
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -506,6 +825,36 @@ def main() -> int:
         print("  WARN: no MX_SPI*_Init functions found; "
               "writing empty SPI header.", file=sys.stderr)
     write_spi_header(spis)
+
+    # TIM -------------------------------------------------------------
+    # Complementary (CHxN) outputs are detectable only from the GPIO AF
+    # routing in HAL_TIM_MspPostInit (in hal_msp.c), not from MX_TIM*_Init.
+    msp_source = ""
+    if CUBEMX_MSP.is_file():
+        msp_source = CUBEMX_MSP.read_text(encoding="utf-8", errors="replace")
+    else:
+        print(f"  WARN: {CUBEMX_MSP.name} not found; complementary outputs "
+              "will all read false.", file=sys.stderr)
+    complementary = parse_complementary_channels(msp_source)
+
+    tim_funcs_raw = re.findall(
+        r'\bvoid\s+(MX_TIM(\d+)_Init)\s*\(\s*void\s*\)', source)
+    tim_funcs = sorted(set(tim_funcs_raw), key=lambda x: int(x[1]))
+    tims: list[TIMConfig] = []
+    for func_name, n in tim_funcs:
+        body = extract_function_body(source, func_name)
+        if body is None:
+            continue
+        cfg = parse_mx_tim_init(body, htim_var=f"htim{n}")
+        if cfg is None:
+            print(f"  WARN: couldn't parse {func_name}; skipping.",
+                  file=sys.stderr)
+            continue
+        tims.append(cfg)
+    if not tims:
+        print("  WARN: no MX_TIM*_Init functions found; "
+              "writing empty TIM header.", file=sys.stderr)
+    write_tim_header(tims, complementary)
 
     return 0
 
