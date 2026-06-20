@@ -16,10 +16,15 @@
 
 typedef struct
 {
-    const IO_SK6805_config_S * config;
-
     uint8_t frame[IO_SK6805_PIXEL_COUNT][SK6805_COLORS_PER_PIXEL]; // GRB
     uint8_t txBuf[IO_SK6805_TXBUF_BYTES];
+} IO_SK6805_channelData_S;
+
+typedef struct
+{
+    const IO_SK6805_config_S * config;
+
+    IO_SK6805_channelData_S channels[IO_SK6805_CHANNEL_COUNT];
 } IO_SK6805_data_S;
 
 /* Private Data Definitions */
@@ -53,74 +58,98 @@ static void IO_SK6805_private_expandByte(uint8_t value, uint8_t * out)
 
 /* Public Function Definitions */
 
+// [impl->fw~obs_led_001~1]
 bool IO_SK6805_init(const IO_SK6805_config_S * const config)
 {
-    bool ret = false;
-    if (config != NULL)
+    bool success = false;
+    if ((config != NULL) &&
+        (config->channels != NULL) &&
+        (config->numChannels <= IO_SK6805_CHANNEL_COUNT))
     {
-        // Framebuffer and the trailing reset region start zeroed (.bss), so
-        // the string defaults to off and the reset gap is always low.
-        data->config = config;
-        ret = (config->spiChannel < HW_SPI_CHANNEL_COUNT);
+        success = true;
+        for (size_t channel = 0U; channel < config->numChannels; channel++)
+        {
+            if (config->channels[channel].spiChannel >= HW_SPI_CHANNEL_COUNT)
+            {
+                success = false;
+                break;
+            }
+        }
+
+        if (success)
+        {
+            // Framebuffers and reset regions start zeroed (.bss), so every
+            // string defaults to off and its reset gap is low.
+            data->config = config;
+        }
     }
-    return ret;
+    return success;
 }
 
-void IO_SK6805_setPixel(uint16_t index, uint8_t red, uint8_t green, uint8_t blue)
+// [impl->fw~obs_led_003~1]
+void IO_SK6805_setPixel(IO_SK6805_channel_E channel, uint16_t index, uint8_t red, uint8_t green, uint8_t blue)
 {
-    if (index < IO_SK6805_PIXEL_COUNT)
+    if ((channel < IO_SK6805_CHANNEL_COUNT) && (index < IO_SK6805_PIXEL_COUNT))
     {
-        data->frame[index][0] = green; // SK6805 wire order is GRB
-        data->frame[index][1] = red;
-        data->frame[index][2] = blue;
+        data->channels[channel].frame[index][0] = green; // SK6805 wire order is GRB
+        data->channels[channel].frame[index][1] = red;
+        data->channels[channel].frame[index][2] = blue;
     }
 }
 
-void IO_SK6805_setAll(uint8_t red, uint8_t green, uint8_t blue)
+// [impl->fw~obs_led_003~1]
+void IO_SK6805_setAll(IO_SK6805_channel_E channel, uint8_t red, uint8_t green, uint8_t blue)
 {
     for (uint16_t index = 0U; index < IO_SK6805_PIXEL_COUNT; index++)
     {
-        IO_SK6805_setPixel(index, red, green, blue);
+        IO_SK6805_setPixel(channel, index, red, green, blue);
     }
 }
 
-void IO_SK6805_clear(void)
+// [impl->fw~obs_led_003~1]
+void IO_SK6805_clear(IO_SK6805_channel_E channel)
 {
-    IO_SK6805_setAll(0U, 0U, 0U);
+    IO_SK6805_setAll(channel, 0U, 0U, 0U);
 }
 
-bool IO_SK6805_update(void)
+// [impl->fw~obs_led_002~1]
+// [impl->fw~obs_led_004~1]
+bool IO_SK6805_update(IO_SK6805_channel_E channel)
 {
     bool ret = false;
-    if (data->config != NULL)
+    if ((data->config != NULL) && (channel < IO_SK6805_CHANNEL_COUNT))
     {
+        IO_SK6805_channelData_S * const channelData = &data->channels[channel];
+        const IO_SK6805_channelConfig_S * const channelConfig = &data->config->channels[channel];
+
         size_t outIdx = 0U;
         for (uint16_t px = 0U; px < IO_SK6805_PIXEL_COUNT; px++)
         {
             for (uint8_t colour = 0U; colour < SK6805_COLORS_PER_PIXEL; colour++)
             {
-                IO_SK6805_private_expandByte(data->frame[px][colour], &data->txBuf[outIdx]);
+                IO_SK6805_private_expandByte(channelData->frame[px][colour], &channelData->txBuf[outIdx]);
                 outIdx += SK6805_SPI_BYTES_PER_COLOR;
             }
         }
 
+        // [impl->fw~obs_led_005~1]
         // On boards with an inverting level shifter, complement the data so the
         // wire sees the correct codes. Either way drive the trailing reset gap
         // to the wire-low level (MOSI high when inverting) to latch the frame.
-        if (data->config->invert)
+        if (channelConfig->invert)
         {
             for (size_t i = 0U; i < outIdx; i++)
             {
-                data->txBuf[i] = (uint8_t)(~data->txBuf[i]);
+                channelData->txBuf[i] = (uint8_t)(~channelData->txBuf[i]);
             }
         }
-        const uint8_t resetByte = (data->config->invert) ? 0xFFU : 0x00U;
-        for (size_t i = outIdx; i < sizeof(data->txBuf); i++)
+        const uint8_t resetByte = (channelConfig->invert) ? 0xFFU : 0x00U;
+        for (size_t i = outIdx; i < sizeof(channelData->txBuf); i++)
         {
-            data->txBuf[i] = resetByte;
+            channelData->txBuf[i] = resetByte;
         }
 
-        ret = HW_SPI_transmit(data->config->spiChannel, data->txBuf, sizeof(data->txBuf));
+        ret = HW_SPI_transmit(channelConfig->spiChannel, channelData->txBuf, sizeof(channelData->txBuf));
     }
     return ret;
 }

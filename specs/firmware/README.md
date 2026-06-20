@@ -18,6 +18,9 @@ Sub-folders are created when a topic gets its first spec.
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver); also the Kalman observer, sensorless
   observer, and parameter identification
+- `obs/` — observability and on-device status indication. Per-area sub-topic
+  IDs, e.g. `fw~obs_led_001~1` (SK6805 RGB LED string driver); also telemetry
+  and logging
 - `motion/` — velocity loop, position loop, trajectory generator
 - `drivers/` — STSPIN32G4 gate driver, AS5048 encoder, ADC current
   sensing, USB CDC stack

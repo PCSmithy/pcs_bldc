@@ -242,15 +242,15 @@ static void ledBlinkModeChange(void)
     const uint8_t white = (uint8_t)PIP_MAX_BRIGHTNESS/10U;
     for (uint8_t flash = 0U; flash < 1U; flash++)
     {
-        IO_SK6805_setAll(white, white, white);
+        IO_SK6805_setAll(IO_SK6805_CHANNEL_RING, white, white, white);
         vTaskSuspendAll();
-        (void)IO_SK6805_update();
+        (void)IO_SK6805_update(IO_SK6805_CHANNEL_RING);
         (void)xTaskResumeAll();
         vTaskDelay(pdMS_TO_TICKS(MODE_BLINK_MS));
 
-        IO_SK6805_clear();
+        IO_SK6805_clear(IO_SK6805_CHANNEL_RING);
         vTaskSuspendAll();
-        (void)IO_SK6805_update();
+        (void)IO_SK6805_update(IO_SK6805_CHANNEL_RING);
         (void)xTaskResumeAll();
         vTaskDelay(pdMS_TO_TICKS(MODE_BLINK_MS));
     }
@@ -353,7 +353,7 @@ static void ledTask(void * params)
                     if (g > 255U) { g = 255U; }
                     if (b > 255U) { b = 255U; }
 
-                    IO_SK6805_setPixel(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+                    IO_SK6805_setPixel(IO_SK6805_CHANNEL_RING, i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
                 break;
             }
@@ -374,7 +374,7 @@ static void ledTask(void * params)
                 const float32_t saturation = satAccum / SAT_ACCUM_RANGE_DEG;   // 0..1
 
                 ledHsvToRgb(hueAccum, saturation, 1.0f, (uint8_t)(PIP_MAX_BRIGHTNESS/2U), &pickR, &pickG, &pickB);
-                IO_SK6805_setAll(pickR, pickG, pickB);
+                IO_SK6805_setAll(IO_SK6805_CHANNEL_RING, pickR, pickG, pickB);
                 break;
             }
 
@@ -393,7 +393,7 @@ static void ledTask(void * params)
                 const float32_t saturation = satAccum2 / SAT_ACCUM_RANGE_DEG;   // 0..1
 
                 ledHsvToRgb(hueAccum2, saturation, 1.0f, (uint8_t)(PIP_MAX_BRIGHTNESS/2U), &pick2R, &pick2G, &pick2B);
-                IO_SK6805_setAll(pick2R, pick2G, pick2B);
+                IO_SK6805_setAll(IO_SK6805_CHANNEL_RING, pick2R, pick2G, pick2B);
                 break;
             }
 
@@ -415,19 +415,19 @@ static void ledTask(void * params)
                     if (g > 255U) { g = 255U; }
                     if (b > 255U) { b = 255U; }
 
-                    IO_SK6805_setPixel(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+                    IO_SK6805_setPixel(IO_SK6805_CHANNEL_RING, i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
                 break;
             }
 
             case LED_MODE_OFF:
             default:
-                IO_SK6805_clear();
+                IO_SK6805_clear(IO_SK6805_CHANNEL_RING);
                 break;
         }
 
         vTaskSuspendAll();
-        (void)IO_SK6805_update();
+        (void)IO_SK6805_update(IO_SK6805_CHANNEL_RING);
         (void)xTaskResumeAll();
 
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(LED_FRAME_PERIOD_MS));

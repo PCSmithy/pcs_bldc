@@ -3,8 +3,8 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "HW_SPI_channels.h"   // HW_SPI_channel_E
-#include "IO_SK6805_config.h"  // project-provided IO_SK6805_PIXEL_COUNT
+#include "HW_SPI_channels.h"      // HW_SPI_channel_E
+#include "IO_SK6805_channels.h"   // IO_SK6805_channel_E + IO_SK6805_PIXEL_COUNT
 
 /* Defines */
 
@@ -28,20 +28,27 @@ typedef struct
     // driver then complements MOSI so the SK6805 wire sees the correct
     // waveform (and the reset gap is driven low on the wire).
     bool invert;
+} IO_SK6805_channelConfig_S;
+
+typedef struct
+{
+    const IO_SK6805_channelConfig_S * channels;
+    size_t numChannels;
 } IO_SK6805_config_S;
 
 /* Public Function Declarations */
 
 bool IO_SK6805_init(const IO_SK6805_config_S * const config);
 
-// Stage a pixel colour in the framebuffer (0-based). Out-of-range index is a
-// no-op. Not sent to the string until IO_SK6805_update().
-void IO_SK6805_setPixel(uint16_t index, uint8_t red, uint8_t green, uint8_t blue);
-void IO_SK6805_setAll(uint8_t red, uint8_t green, uint8_t blue);
-void IO_SK6805_clear(void);
+// Stage a pixel colour in a channel's framebuffer (0-based). Out-of-range
+// channel or index is a no-op. Not sent to the string until IO_SK6805_update().
+void IO_SK6805_setPixel(IO_SK6805_channel_E channel, uint16_t index, uint8_t red, uint8_t green, uint8_t blue);
+void IO_SK6805_setAll(IO_SK6805_channel_E channel, uint8_t red, uint8_t green, uint8_t blue);
+void IO_SK6805_clear(IO_SK6805_channel_E channel);
 
-// Expand the framebuffer into the SPI bit pattern and blast it out (blocking).
-// Returns false if not initialized or the SPI transfer fails.
-bool IO_SK6805_update(void);
+// Expand a channel's framebuffer into the SPI bit pattern and blast it out
+// (blocking). Returns false if not initialized, the channel is out of range,
+// or the SPI transfer fails.
+bool IO_SK6805_update(IO_SK6805_channel_E channel);
 
 #endif // IO_SK6805_H
