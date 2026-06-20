@@ -8,3 +8,12 @@
 # infrastructure lands here, delete _placeholder.c.
 
 add_library(fw_hw STATIC _placeholder.c)
+
+# FreeRTOSConfig.h for the native fiber port lives here; expose it to the
+# vendored freertos kernel (consumer-provided config, mirrors the embedded
+# pcs_freertos_config in hw/stm32g4).
+add_library(pcs_freertos_config INTERFACE)
+target_include_directories(pcs_freertos_config INTERFACE .)
+
+# Native FreeRTOS (cooperative fiber port) is available to the firmware in SIL.
+target_link_libraries(fw_hw PUBLIC freertos)

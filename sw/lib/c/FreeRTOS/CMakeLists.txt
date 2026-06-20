@@ -1,16 +1,30 @@
 # FreeRTOS Kernel V10.3.1 (vendor, third-party).
 #
-# Native FreeRTOS kernel for the STM32G431 (Cortex-M4F). The CMSIS-RTOS2
-# wrapper (cmsis_os2.c) is intentionally NOT vendored — application code uses
-# the native FreeRTOS API (xTaskCreate / vTaskDelay / queues) directly.
+# Dual-target:
+#   - embedded: the Cortex-M4F port (GCC/ARM_CM4F) + cmsis.
+#   - native:   our cooperative single-threaded FIBER port (Native-Fiber),
+#               validated by the D1 spike. No cmsis. See
+#               docs/sil/freertos-tick.md / performance.md.
 #
-# Compiles only on the embedded target. Needs a consumer-provided
-# `pcs_freertos_config` interface library that points at the
-# pcs_bldc-board-specific FreeRTOSConfig.h.
+# The CMSIS-RTOS2 wrapper (cmsis_os2.c) is intentionally NOT vendored —
+# application code uses the native FreeRTOS API directly.
 #
-# Kernel sources are a vendored snapshot managed by
-# tools/convert_cubemx_to_canonical.sh; this CMakeLists.txt is hand-written
-# and the script preserves it.
+# Both sides need a consumer-provided `pcs_freertos_config` interface library
+# that points at the target-appropriate FreeRTOSConfig.h (board file on
+# embedded, sim file on native).
+#
+# Kernel sources are a vendored snapshot; this CMakeLists.txt is hand-written
+# and preserved across regenerations.
+
+if(PCS_TARGET STREQUAL "embedded")
+  set(FREERTOS_PORT_SRC  portable/GCC/ARM_CM4F/port.c)
+  set(FREERTOS_PORT_INC  portable/GCC/ARM_CM4F)
+  set(FREERTOS_PORT_DEPS cmsis)
+else()
+  set(FREERTOS_PORT_SRC  portable/Native-Fiber/port.c)
+  set(FREERTOS_PORT_INC  portable/Native-Fiber)
+  set(FREERTOS_PORT_DEPS )
+endif()
 
 add_library(freertos STATIC
   tasks.c
@@ -20,19 +34,18 @@ add_library(freertos STATIC
   event_groups.c
   stream_buffer.c
   croutine.c
-  portable/GCC/ARM_CM4F/port.c
+  ${FREERTOS_PORT_SRC}
   portable/MemMang/heap_4.c
 )
 
 target_include_directories(freertos PUBLIC
   include
-  portable/GCC/ARM_CM4F
+  ${FREERTOS_PORT_INC}
 )
 
 # Vendor code: suppress our project-wide -Wall/-Wextra/-Wpedantic.
 target_compile_options(freertos PRIVATE -w)
 
-# `cmsis` provides the Cortex-M core headers (NVIC priorities, intrinsics) +
-# the STM32G4 device header referenced by FreeRTOSConfig.h. `pcs_freertos_config`
-# (consumer-provided) supplies the project's FreeRTOSConfig.h.
-target_link_libraries(freertos PUBLIC cmsis pcs_freertos_config)
+# `pcs_freertos_config` (consumer-provided) supplies FreeRTOSConfig.h.
+# Embedded additionally needs `cmsis` (Cortex-M core headers + device header).
+target_link_libraries(freertos PUBLIC ${FREERTOS_PORT_DEPS} pcs_freertos_config)

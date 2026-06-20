@@ -20,6 +20,15 @@
   #include "DEV_switch.h"
 #endif
 
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+  // SIL bring-up: run FreeRTOS under the cooperative fiber port. Phase 2 will
+  // hand tick-driving to the Rust framework via the control ABI; for now a
+  // temporary in-process loop in main() advances the scheduler as a smoke test.
+  #include <stdio.h>
+  #include "FreeRTOS.h"
+  #include "task.h"
+#endif
+
 extern const HW_systemClock_config_S HW_systemClock_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
@@ -569,6 +578,37 @@ int __io_putchar(int ch)
 }
 #endif
 
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+// Native fiber-port entry points: the temporary in-process tick driver and the
+// idle-hook quiescence handoff. Declared here until the Phase-2 sim ABI header
+// exists.
+extern void vSilAdvanceTick(void);
+extern void vPortYieldToScheduler(void);
+
+// Quiescence handoff: when every task is blocked the idle task runs and hands
+// control back to the driver (main) fiber.
+void vApplicationIdleHook(void)
+{
+    vPortYieldToScheduler();
+}
+
+// Minimal SIL 1 ms task: drives the HW-layer periodic sampling. Proves the
+// scheduler runs a real task and the sim drivers advance under it.
+static volatile uint32_t sim_task1msRuns = 0U;
+static void sim_task_1ms(void * params)
+{
+    (void)params;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
+        HW_GPIO_run1ms();
+        HW_ADC_run1ms();
+        sim_task1msRuns++;
+    }
+}
+#endif
+
 int main(void)
 {
     // TODO: channelize this into an HW_halCore module (stm32g4 + sim
@@ -616,6 +656,53 @@ int main(void)
     }
 
     vTaskStartScheduler();
+#endif
+
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+    // SIL smoke: spawn the 1 ms task and run FreeRTOS under the fiber port,
+    // driven by a temporary in-process tick loop (Phase 2 hands this to the
+    // Rust framework). Confirms the scheduler runs the task and the ADC sim
+    // ramp advances tick-over-tick.
+    if (xTaskCreate(sim_task_1ms, "sim_1ms", configMINIMAL_STACK_SIZE,
+                    NULL, 3, NULL) != pdPASS)
+    {
+        Error_Handler();
+    }
+
+    vTaskStartScheduler();   // fiber port returns at first quiescence
+
+    // Find the first enabled ADC (channel, input) to watch the sim ramp on.
+    HW_ADC_channels_E watchCh = (HW_ADC_channels_E)0;
+    uint8_t watchIn = 0U;
+    for (uint32_t ch = 0U; ch < (uint32_t)HW_ADC_CHANNEL_COUNT; ch++)
+    {
+        bool found = false;
+        for (uint8_t in = 0U; in < HW_ADC_INPUTS_PER_CHANNEL; in++)
+        {
+            uint32_t tmp = 0U;
+            if (HW_ADC_getCount((HW_ADC_channels_E)ch, in, &tmp))
+            {
+                watchCh = (HW_ADC_channels_E)ch;
+                watchIn = in;
+                found = true;
+                break;
+            }
+        }
+        if (found)
+        {
+            break;
+        }
+    }
+
+    for (uint32_t tick = 1U; tick <= 20U; tick++)
+    {
+        vSilAdvanceTick();
+
+        uint32_t counts = 0U;
+        (void)HW_ADC_getCount(watchCh, watchIn, &counts);
+        printf("tick %2u  task_runs=%u  adc[ch%u,in%u]=%u\n",
+               tick, sim_task1msRuns, (unsigned)watchCh, watchIn, counts);
+    }
 #endif
 
     return 0;

@@ -32,15 +32,21 @@ synthetic ADC ramp advances under the scheduler.
   program, framework-driven tick, idle-fiber quiescence — `sw/sil/spike/d1-tick/`.
   **PASS:** 30 serial + 16 parallel runs bit-identical; ~5.0 Mticks/s (~5000×
   realtime at 1 kHz) on one core, near-linear parallel scaling.
-- ☐ Cross-platform context-switch primitive (Windows fibers / macOS ucontext or
-  a small hand-rolled asm switch)
+- ☑ **Fiber port promoted** to canonical `sw/lib/c/FreeRTOS/portable/Native-Fiber/`;
+  FreeRTOS CMake is dual-target (ARM_CM4F embedded / fiber native); native
+  FreeRTOSConfig + `pcs_freertos_config` in `hw/sim/`.
+- ☑ **FreeRTOS bring-up ungated in `main.c` (SIM)** — minimal 1 ms task drives
+  `HW_GPIO_run1ms`/`HW_ADC_run1ms`, temporary in-process tick loop. **Native
+  binary boots FreeRTOS, the task runs each tick, the ADC ramp advances**
+  (Phase-1 exit met); embedded ARM `.elf` unaffected.
+- ☐ Ungate the rest of io/dev/app in `main.c` for SIM (the real tasks)
+- ☐ Cross-platform context-switch primitive (macOS ucontext / small asm)
 - ☐ Pluggable tick source (realtime-paced vs framework-driven) on the fiber port
-- ☐ Ungate FreeRTOS bring-up + io/dev/app in `main.c` for `BUILD_TARGET_SIM`
 - ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
 - ☐ `HW_time` module (stm32g4 + sim) + audit drivers for direct
   `HAL_Delay`/`DWT`/timer-`CNT` use (D9)
-- ☐ Native build is green (`tools/build_native.sh sw/fw`)
+- ☑ Native build is green (`tools/build_native.sh`) — both targets build
 
 ## Phase 2 — Rust sim core + FFI backend
 **Goal:** the `NativeFreeRtos` `FwBackend` drives the firmware; sim clock,

@@ -39,9 +39,11 @@ if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
   add_subdirectory(STM32G4xx_HAL_Driver)
 endif()
 
-if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
-  # FreeRTOS kernel (Cortex-M4F port) — embedded only. Needs the
-  # consumer-provided pcs_freertos_config interface lib for FreeRTOSConfig.h.
+if(PCS_BUILDING_FW)
+  # FreeRTOS kernel — dual-target: Cortex-M4F port on embedded, the
+  # cooperative fiber port on native (SIL). Needs the consumer-provided
+  # pcs_freertos_config interface lib for the target-appropriate
+  # FreeRTOSConfig.h. (See FreeRTOS/CMakeLists.txt.)
   add_subdirectory(FreeRTOS)
 endif()
 
