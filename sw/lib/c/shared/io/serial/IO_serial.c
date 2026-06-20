@@ -47,29 +47,45 @@ bool IO_serial_init(const IO_serial_config_S * const config)
     return success;
 }
 
+// Each public operation dispatches on the channel's configured transport. Only
+// USB CDC is wired up today; a new transport (e.g. IO_SERIAL_TRANSPORT_UART)
+// adds one case to each switch below — its HW_UART-backed implementation — and
+// nothing else changes.
+
 // [impl->fw~conn_serial_002~1]
 // [impl->fw~conn_serial_003~1]
 void IO_serial_write(IO_serial_channel_E channel, const uint8_t * bytes, uint32_t len)
 {
     if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT) && (bytes != NULL))
     {
-        for (uint32_t i = 0U; i < len; i++)
+        switch (data->config->channels[channel].transport)
         {
-            uint32_t retries = 0U;
-            while (HW_USB_write(&bytes[i], 1U) == 0U)
-            {
-                // Transport full: flush what is buffered, yield so the device
-                // service drains it, and retry. Give up before blocking forever.
-                HW_USB_writeFlush();
-                HW_USB_serviceYield();
-                retries++;
-                if (retries >= IO_SERIAL_TX_RETRY_LIMIT)
+            case IO_SERIAL_TRANSPORT_USB_CDC:
+                for (uint32_t i = 0U; i < len; i++)
                 {
-                    return;
+                    uint32_t retries = 0U;
+                    while (HW_USB_write(&bytes[i], 1U) == 0U)
+                    {
+                        // Transport full: flush what is buffered, yield so the
+                        // device service drains it, and retry. Give up before
+                        // blocking forever.
+                        HW_USB_writeFlush();
+                        HW_USB_serviceYield();
+                        retries++;
+                        if (retries >= IO_SERIAL_TX_RETRY_LIMIT)
+                        {
+                            return;
+                        }
+                    }
                 }
-            }
+                HW_USB_writeFlush();
+                break;
+
+            // case IO_SERIAL_TRANSPORT_UART: transmit over the HW_UART channel.
+
+            default:
+                break;
         }
-        HW_USB_writeFlush();
     }
 }
 
@@ -79,7 +95,17 @@ uint32_t IO_serial_available(IO_serial_channel_E channel)
     uint32_t count = 0U;
     if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT))
     {
-        count = HW_USB_available();
+        switch (data->config->channels[channel].transport)
+        {
+            case IO_SERIAL_TRANSPORT_USB_CDC:
+                count = HW_USB_available();
+                break;
+
+            // case IO_SERIAL_TRANSPORT_UART: count = HW_UART available bytes.
+
+            default:
+                break;
+        }
     }
     return count;
 }
@@ -89,7 +115,17 @@ uint32_t IO_serial_read(IO_serial_channel_E channel, uint8_t * buffer, uint32_t 
     uint32_t count = 0U;
     if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT) && (buffer != NULL))
     {
-        count = HW_USB_read(buffer, len);
+        switch (data->config->channels[channel].transport)
+        {
+            case IO_SERIAL_TRANSPORT_USB_CDC:
+                count = HW_USB_read(buffer, len);
+                break;
+
+            // case IO_SERIAL_TRANSPORT_UART: read from the HW_UART channel.
+
+            default:
+                break;
+        }
     }
     return count;
 }
@@ -100,7 +136,17 @@ bool IO_serial_connected(IO_serial_channel_E channel)
     bool connected = false;
     if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT))
     {
-        connected = HW_USB_connected();
+        switch (data->config->channels[channel].transport)
+        {
+            case IO_SERIAL_TRANSPORT_USB_CDC:
+                connected = HW_USB_connected();
+                break;
+
+            // case IO_SERIAL_TRANSPORT_UART: query the HW_UART connection.
+
+            default:
+                break;
+        }
     }
     return connected;
 }
