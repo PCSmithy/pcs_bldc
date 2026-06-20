@@ -1,3 +1,6 @@
+// TinyUSB device/configuration/string descriptor callbacks. The device stack
+// (usbd.c) calls these tud_descriptor_*_cb hooks during enumeration; they are
+// part of HW_USB's device-stack integration.
 #include "tusb.h"
 #include <string.h>
 

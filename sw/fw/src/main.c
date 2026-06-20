@@ -9,9 +9,12 @@
   #include "stm32g4xx_hal.h"  // HAL_Init
   #include "FreeRTOS.h"
   #include "task.h"
-  #include "usb.h"
-  // io/ and dev/ are embedded-only (the io tree pulls in tinyusb), so the
-  // encoder, LED and switch drivers are only available on this target.
+  #include <stdio.h>
+  #include "lib_utils.h"
+  #include "HW_USB.h"
+  #include "IO_serial.h"
+  // The tasks below need FreeRTOS, so the encoder, LED, switch, serial, and
+  // telemetry wiring is only built for this target.
   #include "IO_AS5048.h"
   #include "IO_SK6805.h"
   #include "DEV_switch.h"
@@ -27,6 +30,7 @@ extern const HW_TIM_config_S HW_TIM_config;
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
 extern const DEV_switch_config_S DEV_switch_config;
+extern const IO_serial_config_S IO_serial_config;
 #endif
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -433,6 +437,136 @@ static void ledTask(void * params)
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(LED_FRAME_PERIOD_MS));
     }
 }
+
+// Teleplot wire format (beacon): one packet per "name:timestamp_ms:value[§unit]",
+// packets separated by ';' or '\n'. The unit separator is the section sign
+// U+00A7, encoded UTF-8 as 0xC2 0xA7. Kept as its own string literal so the
+// adjacent unit text isn't swallowed into the \x hex escape — adjacent string
+// literals concatenate at compile time.
+#define TP_UNIT "\xC2\xA7"
+
+// Telemetry emit period (ms).
+#define TELEMETRY_PERIOD_MS 25
+
+// Telemetry producer: a consumer of IO_serial. On a fixed cadence it reads the
+// current sensor values and streams them over the CDC serial channel in Teleplot
+// text format for live plotting. Throwaway bring-up scaffolding — to be
+// restructured into a dedicated obs module later.
+static void telemetryTask(void * params)
+{
+    (void) params;
+
+    // Unbuffered stdout so each printf reaches the serial channel immediately —
+    // newlib would otherwise block-buffer (stdout isn't a tty) and not flush.
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
+
+        // Nothing is listening until a host opens the port — skip the work.
+        if (!IO_serial_connected(IO_SERIAL_CHANNEL_CDC))
+        {
+            continue;
+        }
+
+        // Source timestamp (ms) shared by every signal in this pass. FreeRTOS
+        // owns SysTick, so HAL_GetTick() stays 0 — use the RTOS tick (1 ms).
+        const uint32_t nowMs = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        uint16_t motorAngleRaw = 0U;
+        float32_t motorAngle_deg = 0.0f;
+        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, &motorAngleRaw, &motorAngle_deg))
+        {
+            motorAngleRaw = 0U;
+            motorAngle_deg = 0.0f;
+        }
+
+        uint32_t motorAngleScaled = 0U;
+        uint32_t motorAngleDecimalScaled = 0U;
+        floatToFixed(motorAngle_deg, 100U, &motorAngleScaled, &motorAngleDecimalScaled);
+
+        uint16_t dialAngleRaw = 0U;
+        float32_t dialAngle_deg = 0.0f;
+        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, &dialAngleRaw, &dialAngle_deg))
+        {
+            dialAngleRaw = 0U;
+            dialAngle_deg = 0.0f;
+        }
+
+        uint32_t dialAngleScaled = 0U;
+        uint32_t dialAngleDecimalScaled = 0U;
+        floatToFixed(dialAngle_deg, 100U, &dialAngleScaled, &dialAngleDecimalScaled);
+
+        printf("motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
+               "motor_raw:%lu:%u;"
+               "dial_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
+               "dial_raw:%lu:%u\n",
+                (unsigned long)nowMs,
+                (unsigned long)motorAngleScaled,
+                (unsigned long)motorAngleDecimalScaled,
+                (unsigned long)nowMs,
+                (unsigned)motorAngleRaw,
+                (unsigned long)nowMs,
+                (unsigned long)dialAngleScaled,
+                (unsigned long)dialAngleDecimalScaled,
+                (unsigned long)nowMs,
+                (unsigned)dialAngleRaw);
+
+        uint32_t  adc1Count = 0U;
+        float32_t adc1Volts = 0.0f;
+        (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
+
+        uint32_t  adc2Count = 0U;
+        float32_t adc2Volts = 0.0f;
+        (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
+
+        uint32_t adc1Whole = 0U;
+        uint32_t adc1Frac  = 0U;
+        floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
+        uint32_t adc2Whole = 0U;
+        uint32_t adc2Frac  = 0U;
+        floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
+
+        HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
+        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
+
+        printf("adc1_cnt:%lu:%lu;"
+               "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
+               "adc1_status:%lu:%u\n",
+                (unsigned long)nowMs,
+                (unsigned long)adc1Count,
+                (unsigned long)nowMs,
+                (unsigned long)adc1Whole,
+                (unsigned long)adc1Frac,
+                (unsigned long)nowMs,
+                (unsigned)adc1Status);
+        printf("adc2_cnt:%lu:%lu;"
+               "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
+               "adc2_status:%lu:%u\n",
+                (unsigned long)nowMs,
+                (unsigned long)adc2Count,
+                (unsigned long)nowMs,
+                (unsigned long)adc2Whole,
+                (unsigned long)adc2Frac,
+                (unsigned long)nowMs,
+                (unsigned)adc2Status);
+    }
+}
+
+// Retarget printf to the CDC serial channel. syscalls.c's weak _write calls
+// __io_putchar; IO_serial_write applies the backpressure/yield.
+int __io_putchar(int ch)
+{
+    const uint8_t c = (uint8_t) ch;
+    IO_serial_write(IO_SERIAL_CHANNEL_CDC, &c, 1U);
+    return ch;
+}
 #endif
 
 int main(void)
@@ -462,17 +596,19 @@ int main(void)
     }
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-    // Spawn the 1 ms IO task (drives IO_AS5048_run1ms) and bring up USB CDC
-    // (spawns the device task, which reads the latest cached angle and prints
-    // it), then hand control to the scheduler. Both allocate their task from
-    // the FreeRTOS heap; a failure here (e.g. heap exhaustion) must halt loudly
-    // rather than silently drop a task. vTaskStartScheduler() does not return.
-    bool tasksCreated = true;
+    // Bring up USB (HW_USB spawns the device-service task) and the serial
+    // transport, then spawn the periodic IO, LED, and telemetry tasks and hand
+    // control to the scheduler. Each task allocates from the FreeRTOS heap; a
+    // failure here (e.g. heap exhaustion) must halt loudly rather than silently
+    // drop a task. vTaskStartScheduler() does not return.
+    bool tasksCreated = HW_USB_init(TASK_PRIO_USB);
+    tasksCreated &= IO_serial_init(&IO_serial_config);
     tasksCreated &= (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
                                  NULL, TASK_PRIO_ENCODER, NULL) == pdPASS);
     tasksCreated &= (xTaskCreate(ledTask, "led", configMINIMAL_STACK_SIZE * 2U,
                                  NULL, TASK_PRIO_LED, NULL) == pdPASS);
-    tasksCreated &= USB_init(TASK_PRIO_USB);
+    tasksCreated &= (xTaskCreate(telemetryTask, "telem", 512U,
+                                 NULL, TASK_PRIO_USB, NULL) == pdPASS);
 
     if (!tasksCreated)
     {

@@ -46,20 +46,20 @@ if(PCS_TARGET STREQUAL "embedded")
   )
 endif()
 
-# io_usb (embedded only). io_usb and tinyusb have a genuine cyclic dependency:
-# tinyusb's usbd.c calls our tud_descriptor_*_cb (in io_usb), while io_usb's
-# usb.c calls tinyusb's tud_* API. A single-pass static link can't satisfy a
-# cycle (whichever archive is scanned first leaves the other's references
-# dangling), so wrap them in an ld --start-group/--end-group that re-scans the
-# pair until no new references resolve. This avoids forcing --whole-archive on
-# io_usb (we don't want every member unconditionally; --gc-sections still drops
-# the unused ones). fw_hw's USB_LP_IRQHandler also references dcd_int_handler
-# (tinyusb); fw_hw is scanned before the group, and the group resolves that
-# pending reference when tinyusb is pulled.
+# hw_USB (embedded) + io_serial. hw_USB and tinyusb have a genuine cyclic
+# dependency: tinyusb's usbd.c calls our tud_descriptor_*_cb (in hw_USB's
+# descriptor unit), while hw_USB calls tinyusb's tud_* API. A single-pass static
+# link can't satisfy a cycle, so wrap them in an ld --start-group/--end-group
+# that re-scans the pair until no new references resolve. io_serial (pulled in by
+# io_serial_channels) layers the byte stream on hw_USB; link it before the group
+# so its HW_USB_* references resolve when hw_USB is pulled. fw_hw's
+# USB_LP_IRQHandler also references dcd_int_handler (tinyusb); fw_hw is scanned
+# before the group, and the group resolves that pending reference too.
 if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE
+    io_serial_channels
     -Wl,--start-group
-    io_usb
+    hw_USB
     tinyusb
     -Wl,--end-group
   )

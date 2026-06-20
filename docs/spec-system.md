@@ -222,7 +222,7 @@ numbering at `_001`.
 | `safety`  | Safety / fault handling                          | sys, fw         |
 | `pd`      | Power delivery / startup                         | sys, fw         |
 | `persist` | NVRAM / persistence                              | sys, fw         |
-| `conn`    | Device discovery, connection, data handling      | sys, app        |
+| `conn`    | Device discovery, connection, data handling      | sys, fw, app    |
 | `views`   | UI views (live plot, controls, config, diags)    | app             |
 
 Sub-folders inside a topic folder (e.g. `firmware/mc/foc/` and
