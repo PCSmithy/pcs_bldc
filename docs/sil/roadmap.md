@@ -58,8 +58,11 @@ scheduler, signal log working.
 **Exit:** Rust steps the firmware in sim time, reads the ADC ramp by symbol,
 writes a global and sees the firmware react. (proof of white-box loop)
 
+- ☑ Native **SHARED** firmware target (`libpcs_bldc_fw.dll`) exporting the
+  `sil_*` ABI + globals. Validated with a C `LoadLibrary` harness: load → drive
+  ticks → read `sim_task1msRuns` live from DLL memory (the white-box loop).
 - ☐ Cargo workspace `sw/sil/` (`sil-sys` raw FFI+DWARF, `sil-core` engine)
-- ☐ Native **SHARED** firmware target + `sil_*` ABI (start/advance/shutdown)
+  — **blocked: Rust toolchain not installed** (recommend rustup `*-windows-gnu`)
 - ☐ `FwBackend` trait + `NativeFreeRtos` impl (dlopen the fw lib, per D2)
 - ☐ DWARF symbol map (`object`+`gimli`) + ASLR-slide read/write of globals
 - ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries

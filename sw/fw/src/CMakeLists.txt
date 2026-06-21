@@ -1,4 +1,5 @@
-# pcs_bldc firmware executable.
+# pcs_bldc firmware: an executable (.elf) on embedded, a shared library (.dll)
+# on native (SIL) that the Rust framework loads and drives.
 
 add_subdirectory(hw)
 # lib/ holds project-side configs for cross-cutting lib modules (e.g.
@@ -12,7 +13,15 @@ add_subdirectory(io)
 add_subdirectory(dev)
 add_subdirectory(app)
 
-add_executable(pcs_bldc_fw main.c)
+# Native (SIL): a SHARED library the Rust framework dlopen's and drives via the
+# control ABI (D2). --export-all-symbols exposes sil_fw_* (and globals, for
+# white-box symbol access). main()'s SIM smoke driver is unused inside the DLL.
+if(PCS_TARGET STREQUAL "native")
+  add_library(pcs_bldc_fw SHARED main.c)
+  target_link_options(pcs_bldc_fw PRIVATE -Wl,--export-all-symbols)
+else()
+  add_executable(pcs_bldc_fw main.c)
+endif()
 
 target_include_directories(pcs_bldc_fw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
