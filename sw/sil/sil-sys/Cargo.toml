@@ -1,0 +1,8 @@
+[package]
+name = "sil-sys"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libloading = "0.8"

@@ -1,0 +1,9 @@
+# SIL framework — Rust workspace (Phase 2+).
+#
+# sil-sys  — raw FFI to the firmware shared library (D2 control ABI) + symbol
+#            access (DWARF reader lands here later).
+# sil-core — the engine (State Table, Route Table, sim clock, run modes); for
+#            now a driver binary that proves the white-box loop from Rust.
+[workspace]
+resolver = "2"
+members = ["sil-sys", "sil-core"]

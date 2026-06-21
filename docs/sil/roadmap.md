@@ -61,10 +61,15 @@ writes a global and sees the firmware react. (proof of white-box loop)
 - ☑ Native **SHARED** firmware target (`libpcs_bldc_fw.dll`) exporting the
   `sil_*` ABI + globals. Validated with a C `LoadLibrary` harness: load → drive
   ticks → read `sim_task1msRuns` live from DLL memory (the white-box loop).
-- ☐ Cargo workspace `sw/sil/` (`sil-sys` raw FFI+DWARF, `sil-core` engine)
-  — **blocked: Rust toolchain not installed** (recommend rustup `*-windows-gnu`)
-- ☐ `FwBackend` trait + `NativeFreeRtos` impl (dlopen the fw lib, per D2)
+- ☑ Cargo workspace `sw/sil/` (`sil-sys` raw FFI, `sil-core` driver) — rustup
+  `*-windows-gnu` toolchain installed.
+- ☑ **Proof-of-life loop in Rust:** `sil-core` loads `libpcs_bldc_fw.dll`, drives
+  it over the control ABI (`start`/`advance_tick`/`shutdown`), and reads
+  `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
+  fiber scheduler → task → white-box read.
+- ☐ `FwBackend` trait + `NativeFreeRtos` impl (formalize over the proof-of-life)
 - ☐ DWARF symbol map (`object`+`gimli`) + ASLR-slide read/write of globals
+  (reach non-exported statics — e.g. the ADC ramp — + types; the State Table)
 - ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
