@@ -1,8 +1,10 @@
 # pcs_bldc firmware executable.
 
 add_subdirectory(hw)
-# Layer subdirs (app/, dev/, io/, lib/) are not yet populated; uncomment
-# their add_subdirectory() lines when their first code lands.
+# lib/ holds project-side configs for cross-cutting lib modules (e.g.
+# lib_timer_config). Added after hw/ so its sources can attach to fw_hw.
+add_subdirectory(lib)
+# Remaining layer subdirs (app/, dev/) populate when their first code lands.
 
 # io/ has dual-target modules (io_AS5048) and embedded-only ones (usb, SK6805);
 # the per-module gating lives in io/CMakeLists.txt. dev/ (switch debounce) is

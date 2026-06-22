@@ -34,4 +34,7 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
     *whole = scaled / scale;
     *frac  = scaled % scale;
 }
+
+#define US_TO_MS(us) ((us) / 1000)
+
 #endif /* LIB_UTILS_H */
