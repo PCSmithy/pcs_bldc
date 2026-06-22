@@ -76,8 +76,17 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   `HW_ADC_data.channelData[0].counts[6]` and **writes** `tickCounter` → the
   firmware recomputes the ramp from it (Phase-2 exit). Next: pointer-chasing +
   qualified paths when the State Table proper lands.
-- ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
-- ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick
+- ☑ **Restructured** into the generic **`voyant`** framework crate + the
+  **`pcs_bldc_sil`** instantiation (open-source-able framework; board code only
+  in the instantiation). DWARF demo runs through it unchanged.
+- ☑ **State Table design locked** (state-route-tables.md): trait-backed entries
+  (`cvar`/`vsig`/comms) over one `Value` enum; naming convention
+  `<sig_type>:<source>:<local>[:<modifier>]`; comms = logical payloads captured
+  via sim-HW upcall; routes first-class + suspendable (injection).
+- ☐ **State Table impl**: `Signal` trait + cvar (DWARF) & vsig (model) backings,
+  `Value`, registry + name parser, get/set by name
+- ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
+  with per-route suspend/resume
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)

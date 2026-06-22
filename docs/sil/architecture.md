@@ -191,20 +191,33 @@ per-test in fast mode):
 The model↔firmware contract (what's sampled, at what rate, averaged vs
 switching-resolved) is set by D6.
 
-## 7. Code layout
+## 7. Code layout — generic framework + instantiation
+
+The framework is a **generic, firmware-agnostic crate** (`voyant`) that could
+stand alone / be open-sourced; this board is just an **instantiation** that
+implements voyant's trait seams. Nothing board-specific lives in `voyant`.
 
 ```
-sw/sil/                 Rust cargo workspace (the framework) — additive, new
-  sil-sys/                raw FFI (control ABI) + DWARF/symbol reader
-  sil-core/               State Table, Route Table, sim clock, run modes, log
-  backend/                FwBackend impls (native-freertos; arm-emu later)
-  models/                 motor / encoder / sensor / power plant models
-  dashboard/              realtime web UI (server + frontend)
-  pybind/                 Python bindings for fast mode
+sw/sil/                 Rust cargo workspace
+  voyant/                THE FRAMEWORK (generic, no pcs_bldc): the native
+                         firmware backend (control ABI + DWARF white-box), and
+                         the State Table, Route Table, sim clock, historian, run
+                         modes, plus the trait seams a project implements:
+                           Backend   — load/drive/introspect a firmware
+                           Model     — a plant/peer model (advance + vsigs)
+                           Transport — a comms bus (tx → rx, completion timing)
+                           Scenario  — the project's wiring (models/routes/trace)
+  pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board
+                         (motor/encoder/sensor models, firmware config, routes);
+                         the binary that runs the sim.
 sw/fw/src/                firmware control ABI + native entry / fiber-port wiring
 sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs
 ```
+
+(Dashboard + Python bindings become further crates/members as they land. The
+framework is developed in-repo now and is extractable to its own repo later —
+the `voyant` ↔ `pcs_bldc_sil` boundary already enforces the no-board-code rule.)
 
 Formal OFT specs for the SIL infra are deferred until the design firms up;
 a new `sil` topic in `docs/spec-system.md`'s canonical table would be the

@@ -14,12 +14,17 @@ A single flat namespace of **every piece of state in the system**, each as an
 addressable, typed **entry**. The framework may read or write any entry on any
 tick.
 
-Two backing kinds, one uniform interface (`read(buf)` / `write(buf)` + type):
+Entries are **trait-backed** (a `Signal` trait), so the backing is pluggable;
+all values flow through one common **`Value`** enum (scalars + `Bytes`/`Record`
+for structured comms payloads), which is what lets a *heterogeneous* registry
+(`Box<dyn Signal>`) stay uniform. Three backings, one `read/write(Value)`
+interface + history:
 
-| Backing | Source | Located via |
-|---|---|---|
-| **Firmware** | every C `static` (incl. function-local statics) and its nested members | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4) |
-| **Model** | plant-model state fields (motor, encoder, sensors, power) | Rust-side storage |
+| `sig_type` | Backing | Source | Accessed via |
+|---|---|---|---|
+| `cvar` | **firmware** | every C `static` (+ nested members, array elements) | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4) |
+| `vsig` | **model** | plant/peer-model state (inputs, outputs, internals) | Rust-side storage |
+| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** | logical packet payloads on a serial bus | a framework queue, fed by a sim-HW-driver C→Rust upcall (*Comms entries* below) |
 
 Notes:
 
@@ -38,13 +43,49 @@ Notes:
   default** (stacks/large arrays excluded). The dumped table is the full
   timeseries history that Python SIL tests evaluate against. See
   [`signal-trace.md`](signal-trace.md) (D12).
-- **Model entries are registered** by the models (the only "registration" step
-  — and it's Rust-side, not firmware).
-- Entries can be marked RO/RW; firmware-output signals are typically RO from
-  the test's perspective, model inputs RW, etc. (advisory, for safety checks).
+- **Model + comms entries are registered** (Rust-side): models register their
+  `vsig`s at construction; sim-HW bus drivers register their comms channels.
+- **Any entry is readable and writable at any tick.** There is *no* clobber
+  protection: if a route drives a `cvar` and a test also writes it, the route
+  wins on its next tick — by design. Targeted injection is done by **suspending
+  the relevant route** (below), an explicit control, not by warnings.
 
-Keying: a stable path string per entry — firmware symbol paths from DWARF
-(`module::var`, member/array suffixes), model paths (`model.motor.i_a`).
+### Naming convention
+
+Every entry has a canonical key: **`<sig_type>:<source>:<local>[:<modifier>]`**.
+`:` is the delimiter (C paths use `.`/`[]`, never `:`).
+
+- **`sig_type`** — `cvar`, `vsig`, or a bus (`usb_cdc`/`spi`/`i2c`/`uart`).
+- **`source`** — the producer namespace: the firmware instance for `cvar`
+  (`pcs_bldc`, future-proofs the multi-device stretch goal), the model for
+  `vsig` (`motor`), the logical channel/peer for comms (`encoder`).
+- **`local`** — the local name: a DWARF path for `cvar`
+  (`HW_ADC_data.channelData[0].counts[6]`), a model signal for `vsig`
+  (`phase_u_voltage`), a packet/stream for comms.
+- **`modifier`** (optional) — direction (`tx`/`rx`, `in`/`out`) or a derived
+  view (`decoded`). Units/role/description live as entry metadata, not in the
+  key.
+
+Examples: `cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]`,
+`vsig:motor:phase_u_voltage`, `spi:encoder:rx:decoded`.
+
+### Comms entries (the framework is the wire)
+
+Because the firmware runs in virtual space, the framework *is* the transport
+for every serial bus. The sim-HW bus driver (e.g. sim `HW_USB`, sim `HW_SPI`)
+calls a **C→Rust upcall** with each payload; the framework (1) records it in the
+comms entry's history and (2) routes it to the destination (a peer model now, an
+external transport — the real desktop app, D5 — later).
+
+- **Logical payloads, not raw bytes.** We own the sim-HW driver code, so a comms
+  entry holds the *logical contents* of the packet (a `Value::Record`/`Bytes`
+  shaped by the transport), not a bitstream — far nicer to assert on and route.
+- **Timing.** A transaction's completion schedules a **one-shot interrupt** (D8)
+  quantized to the base `dt`; rx is delivered then.
+- **History is uniform.** A comms entry is a historian like any other — just a
+  timeseries of `Value`s (here, packets) rather than scalars (D12).
+- Comms is **designed-in now, built after** the model + interrupt (D8) layers,
+  and external-transport routing after that (D5).
 
 ## 2. Route Table
 
@@ -64,6 +105,11 @@ Design rules:
   fw::adc_counts_a`. Routes stay dumb pipes; all computation lives in models.
   This keeps the Route Table a readable wiring diagram.
 - Authoring is one flat list; the framework derives execution order (below).
+- **Routes are first-class and suspendable.** Each route has an `enabled` flag;
+  a control API (`suspend`/`resume`, addressable by source/destination) lets a
+  test cut a route to inject a value at its destination directly — the core
+  **fault-injection** primitive (driven from the Python layer). A suspended
+  route simply isn't propagated that tick.
 
 ## 3. Tick evaluation order
 
