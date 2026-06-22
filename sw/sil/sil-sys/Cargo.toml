@@ -6,3 +6,5 @@ publish = false
 
 [dependencies]
 libloading = "0.8"
+object = "0.36"
+gimli = "0.31"

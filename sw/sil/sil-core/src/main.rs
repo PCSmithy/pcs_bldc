@@ -27,10 +27,13 @@ fn main() {
 
     for tick in 1..=20u32 {
         fw.advance_tick();
+        // Exported global (export table) vs a non-exported static struct member
+        // reached only through DWARF — the white-box read the State Table needs.
         let runs = fw.read_u32(b"sim_task1msRuns\0");
-        println!("tick {tick:2}  sim_task1msRuns = {runs}  (read from firmware memory)");
+        let adc_tick = fw.read_path_u32("HW_ADC_data.tickCounter");
+        println!("tick {tick:2}  sim_task1msRuns = {runs}  HW_ADC_data.tickCounter = {adc_tick}  (DWARF static)");
     }
 
     fw.shutdown();
-    println!("done — Rust drove the firmware over the control ABI and read its state by symbol.");
+    println!("done — Rust drove the firmware and read a non-exported static via DWARF.");
 }

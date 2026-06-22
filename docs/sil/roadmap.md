@@ -68,8 +68,11 @@ writes a global and sees the firmware react. (proof of white-box loop)
   `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
   fiber scheduler → task → white-box read.
 - ☐ `FwBackend` trait + `NativeFreeRtos` impl (formalize over the proof-of-life)
-- ☐ DWARF symbol map (`object`+`gimli`) + ASLR-slide read/write of globals
-  (reach non-exported statics — e.g. the ADC ramp — + types; the State Table)
+- ◐ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap`: resolves
+  `var.member...` paths to link address + leaf size (struct members, typedef/
+  const/volatile pass-through), ASLR slide via the `sim_task1msRuns` anchor.
+  **Proven:** Rust reads the non-exported static `HW_ADC_data.tickCounter`
+  (1→20). Next: array indexing (`counts[6]`), more leaf types, writes.
 - ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
