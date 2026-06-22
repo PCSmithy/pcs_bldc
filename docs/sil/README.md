@@ -13,6 +13,17 @@ Two run modes share one core engine:
 - **Fast mode** — faster-than-realtime, fully scripted via Python/pytest
   bindings. Deterministic, parallelizable, for automated regression.
 
+## Build & run
+
+```bash
+tools/run_sil.sh            # build native firmware (DLL) + SIL framework, run the sim
+tools/run_sil.sh --clean    # wipe the native build dir first
+```
+
+Builds the firmware as a shared library (`build/native-fw/src/libpcs_bldc_fw.dll`),
+builds the `sw/sil/` Rust workspace, and runs `sil-core`, which loads the
+firmware, drives it over the control ABI, and reads its state by symbol.
+
 ## Documents
 
 | Doc | Purpose |
