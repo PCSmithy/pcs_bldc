@@ -4,13 +4,13 @@ add_subdirectory(hw)
 # lib/ holds project-side configs for cross-cutting lib modules (e.g.
 # lib_timer_config). Added after hw/ so its sources can attach to fw_hw.
 add_subdirectory(lib)
-# Remaining layer subdirs (app/, dev/) populate when their first code lands.
-
 # io/ has dual-target modules (io_AS5048) and embedded-only ones (usb, SK6805);
-# the per-module gating lives in io/CMakeLists.txt. dev/ (switch debounce) is
-# target-independent and builds for both targets.
+# the per-module gating lives in io/CMakeLists.txt. dev/ (switch debounce) and
+# app/ (rgbLedRing UI) are target-independent and build for both targets; each
+# provides a project-side channel-config seam consumed by the shared module.
 add_subdirectory(io)
 add_subdirectory(dev)
+add_subdirectory(app)
 
 add_executable(pcs_bldc_fw main.c)
 
@@ -84,6 +84,14 @@ endif()
 # dev_switch_channels pulls in dev_switch; HW_GPIO_* resolve via fw_hw.
 if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE dev_switch_channels)
+endif()
+
+# app_rgbLedRing (embedded only link): the LED-ring UI task + its project channel
+# config (app_rgbLedRing_channels pulls in app_rgbLedRing, which pulls io_SK6805 /
+# io_AS5048 / dev_switch + freertos). HW_* references resolve via fw_hw
+# (whole-archived above). The SIM main() has no UI consumer yet.
+if(PCS_TARGET STREQUAL "embedded")
+  target_link_libraries(pcs_bldc_fw PRIVATE app_rgbLedRing_channels)
 endif()
 
 # Embedded-target post-build: emit .bin and .hex artifacts and print the

@@ -22,5 +22,9 @@ if(PCS_BUILDING_FW)
   # it builds for both targets and carries a native Unity suite for its
   # debounce logic.
   add_subdirectory(dev)
+
+  # app/ modules (device UX) layer on the io + dev drivers. Target-independent;
+  # the SIM executable doesn't link them yet, but their render cores carry
+  # native Unity suites.
+  add_subdirectory(app)
 endif()
-# add_subdirectory(app)
