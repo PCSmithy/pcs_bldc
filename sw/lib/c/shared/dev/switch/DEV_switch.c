@@ -37,6 +37,14 @@ bool DEV_switch_init(const DEV_switch_config_S * const config)
         if (channelsValid)
         {
             data->config = config;
+            // Establish a known runtime state: every channel starts inactive
+            // with a cleared debounce counter, so a re-init can't inherit a
+            // stale debounced state.
+            for (DEV_switch_channel_E channel = (DEV_switch_channel_E)0U; channel < DEV_SWITCH_CHANNEL_COUNT; channel++)
+            {
+                data->channels[channel].active  = false;
+                data->channels[channel].counter = 0U;
+            }
             success = true;
         }
     }

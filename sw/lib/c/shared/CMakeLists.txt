@@ -18,12 +18,9 @@ if(PCS_BUILDING_FW)
   add_subdirectory(io)
 
   # dev/ likewise consumes project-provided pcs_*_channels seams from
-  # sw/fw/src/dev/. dev_switch itself is target-independent (only needs
-  # HW_GPIO), but its project config tree is currently wired embedded-only, so
-  # gate the shared dev/ tree to match. Promote to dual-target when adding
-  # SIL unit tests for the debounce logic.
-  if(PCS_TARGET STREQUAL "embedded")
-    add_subdirectory(dev)
-  endif()
+  # sw/fw/src/dev/. dev_switch is target-independent (only needs HW_GPIO), so
+  # it builds for both targets and carries a native Unity suite for its
+  # debounce logic.
+  add_subdirectory(dev)
 endif()
 # add_subdirectory(app)

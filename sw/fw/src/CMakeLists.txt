@@ -8,11 +8,9 @@ add_subdirectory(lib)
 
 # io/ has dual-target modules (io_AS5048) and embedded-only ones (usb, SK6805);
 # the per-module gating lives in io/CMakeLists.txt. dev/ (switch debounce) is
-# gated to match the shared dev/ tree for now.
+# target-independent and builds for both targets.
 add_subdirectory(io)
-if(PCS_TARGET STREQUAL "embedded")
-  add_subdirectory(dev)
-endif()
+add_subdirectory(dev)
 
 add_executable(pcs_bldc_fw main.c)
 
@@ -81,8 +79,9 @@ if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE io_SK6805_channels)
 endif()
 
-# dev_switch (embedded only): debounced switch driver + its project config
-# (dev_switch_channels pulls in dev_switch). HW_GPIO_* resolve via fw_hw.
+# dev_switch: the driver builds for both targets (native Unity suite included),
+# but only the embedded executable consumes it (the SIM main() has no UI yet).
+# dev_switch_channels pulls in dev_switch; HW_GPIO_* resolve via fw_hw.
 if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE dev_switch_channels)
 endif()

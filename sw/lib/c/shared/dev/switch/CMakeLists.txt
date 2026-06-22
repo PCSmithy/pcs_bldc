@@ -8,3 +8,7 @@ target_link_libraries(dev_switch
     hw_GPIO                 # HW_GPIO_readCached + port/level types
     pcs_switch_channels     # consumer-provided DEV_switch_channels.h path
 )
+
+if(PCS_TARGET STREQUAL "native")
+  add_subdirectory(test)
+endif()
