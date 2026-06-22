@@ -56,10 +56,6 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 // mask (GPIO_PIN_x). No-op if `port` is out of range.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
-// Read the present logical level of a configured input pin. `pin` is a
-// single-bit GPIO_PIN_x mask. Returns HW_GPIO_LEVEL_LOW for an out-of-range port.
-HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin);
-
 // Sample and cache every configured input pin's level. Call periodically
 // (the 1 ms task) so consumers can fetch a recent, coherent snapshot via
 // HW_GPIO_readCached without each one touching the hardware.

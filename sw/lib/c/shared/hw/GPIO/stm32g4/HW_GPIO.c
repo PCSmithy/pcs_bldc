@@ -194,17 +194,6 @@ void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
 }
 
 // [impl->fw~hal_gpio_004~1]
-HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin)
-{
-    HW_GPIO_level_E ret = HW_GPIO_LEVEL_LOW;
-    if (port < HW_GPIO_PORT_COUNT)
-    {
-        const GPIO_PinState s = HAL_GPIO_ReadPin(HW_GPIO_portHandleMapping[port], (uint16_t)pin);
-        ret = (s == GPIO_PIN_SET) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
-    }
-    return ret;
-}
-
 void HW_GPIO_run1ms(void)
 {
     // One IDR read per port that has input pins; mask down to the inputs.
@@ -218,6 +207,7 @@ void HW_GPIO_run1ms(void)
     }
 }
 
+// [impl->fw~hal_gpio_004~1]
 HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin)
 {
     HW_GPIO_level_E ret = HW_GPIO_LEVEL_LOW;

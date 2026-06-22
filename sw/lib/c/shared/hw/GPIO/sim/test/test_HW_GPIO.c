@@ -122,33 +122,46 @@ static void test_output_write_out_of_range_port_is_noop(void)
     TEST_ASSERT_EQUAL_UINT32(0U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_C, OUT_PIN));
 }
 
-/* ---- fw~hal_gpio_004: input pin read ---- */
+/* ---- fw~hal_gpio_004: cached input snapshot ---- */
 // [test->fw~hal_gpio_004~1]
-static void test_input_read_injected_level(void)
+static void test_cached_read_reflects_sampled_level(void)
 {
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
 
     HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_HIGH);
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_GPIO_readPin(HW_GPIO_PORT_C, IN_PIN));
+    HW_GPIO_run1ms();
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
 
     HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_LOW);
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readPin(HW_GPIO_PORT_C, IN_PIN));
+    HW_GPIO_run1ms();
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
 }
 
 // [test->fw~hal_gpio_004~1]
-static void test_input_read_default_low(void)
+static void test_cached_read_before_first_pass_low(void)
 {
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
 
-    // Nothing injected -> defaults to low.
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readPin(HW_GPIO_PORT_C, IN_PIN));
+    // Inject HIGH but never sample: the cache holds nothing yet -> low.
+    HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_HIGH);
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
 }
 
 // [test->fw~hal_gpio_004~1]
-static void test_input_read_out_of_range_port_low(void)
+static void test_cached_read_non_input_pin_low(void)
 {
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readPin(HW_GPIO_PORT_COUNT, IN_PIN));
+    HW_GPIO_run1ms();
+    // OUT_PIN is an output, not a configured input -> never captured.
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_C, OUT_PIN));
+}
+
+// [test->fw~hal_gpio_004~1]
+static void test_cached_read_out_of_range_port_low(void)
+{
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    HW_GPIO_run1ms();
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_COUNT, IN_PIN));
 }
 
 /* ---- fw~hal_gpio_005: pin-change interrupt callbacks ---- */
@@ -199,9 +212,10 @@ int main(void)
     RUN_TEST(test_output_write_high_then_low);
     RUN_TEST(test_output_write_out_of_range_port_is_noop);
 
-    RUN_TEST(test_input_read_injected_level);
-    RUN_TEST(test_input_read_default_low);
-    RUN_TEST(test_input_read_out_of_range_port_low);
+    RUN_TEST(test_cached_read_reflects_sampled_level);
+    RUN_TEST(test_cached_read_before_first_pass_low);
+    RUN_TEST(test_cached_read_non_input_pin_low);
+    RUN_TEST(test_cached_read_out_of_range_port_low);
 
     RUN_TEST(test_exti_callback_fires_once);
     RUN_TEST(test_exti_no_callback_invokes_nothing);

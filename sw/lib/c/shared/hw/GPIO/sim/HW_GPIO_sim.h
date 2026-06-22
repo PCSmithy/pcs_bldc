@@ -27,8 +27,9 @@ uint32_t HW_GPIO_sim_getWriteCount(HW_GPIO_port_E port, uint32_t pin);
 // Clear all recorded levels and write counts (call from test setUp).
 void HW_GPIO_sim_reset(void);
 
-// Inject the logical level seen by HW_GPIO_readPin on `pin` of `port`.
-// `pin` may carry multiple bits; each is set independently.
+// Inject the logical level captured for `pin` of `port` by the next
+// HW_GPIO_run1ms (and read back via HW_GPIO_readCached). `pin` may carry
+// multiple bits; each is set independently.
 void HW_GPIO_sim_setInputLevel(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 // Fire a signal edge on `pin` of `port`, invoking any registered EXTI

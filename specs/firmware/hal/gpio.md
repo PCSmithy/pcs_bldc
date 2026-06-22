@@ -82,16 +82,20 @@ Covers:
 
 Needs: impl, test
 
-### Input pin read
+### Cached input snapshot
 `fw~hal_gpio_004~1`
 
-The driver shall report the present logical level of a pin configured as an
-input.
+The driver shall return, for an addressed input pin, the logical level captured
+for it in the most recent sampling pass, and low for a pin not configured as an
+input or addressed out of range.
 
 Acceptance:
-- Reading an input pin returns its present level, high or low.
-- With a pin's input level injected through the SIL control API, a read
-  returns the injected level.
+- After a sampling pass, a cached read of an input pin returns the level
+  captured for it at that pass.
+- A level injected through the SIL control API is returned by a read after the
+  next sampling pass.
+- A read before the first sampling pass returns low.
+- A read of a non-input pin, or of an out-of-range port or pin, returns low.
 
 Covers:
 - sys~arch_005~1

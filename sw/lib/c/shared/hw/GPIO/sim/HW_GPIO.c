@@ -109,23 +109,6 @@ void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
 }
 
 // [impl->fw~hal_gpio_004~1]
-HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin)
-{
-    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
-    if (port < HW_GPIO_PORT_COUNT)
-    {
-        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
-        {
-            if ((pin & (1UL << bit)) != 0U)
-            {
-                level = data->inputLevel[port][bit];
-                break;
-            }
-        }
-    }
-    return level;
-}
-
 void HW_GPIO_run1ms(void)
 {
     for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
@@ -143,6 +126,7 @@ void HW_GPIO_run1ms(void)
     }
 }
 
+// [impl->fw~hal_gpio_004~1]
 HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin)
 {
     HW_GPIO_level_E ret = HW_GPIO_LEVEL_LOW;

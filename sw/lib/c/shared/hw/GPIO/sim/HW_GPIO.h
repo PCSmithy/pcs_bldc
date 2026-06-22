@@ -66,10 +66,6 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 // single-bit mask matching the stm32g4 GPIO_PIN_x encoding.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
-// Read the present logical level of a configured input pin. `pin` is a
-// single-bit GPIO_PIN_x mask. Returns HW_GPIO_LEVEL_LOW for an out-of-range port.
-HW_GPIO_level_E HW_GPIO_readPin(HW_GPIO_port_E port, uint32_t pin);
-
 // Sample and cache every configured input pin's level (from the injected SIL
 // input state). Call periodically so consumers can fetch a recent snapshot
 // via HW_GPIO_readCached.
