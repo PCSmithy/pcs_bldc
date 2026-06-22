@@ -1,15 +1,18 @@
-//! Raw FFI to the firmware shared library.
+//! # voyant — clairvoyant software-in-the-loop
 //!
-//! Loads `libpcs_bldc_fw.dll` and exposes the D2 control ABI
-//! (`sil_fw_start` / `sil_fw_advance_tick` / `sil_fw_shutdown`) plus white-box
-//! access to firmware state. This is the in-process boundary from
-//! `docs/sil/ffi-boundary.md`: the framework *drives* the firmware through the
-//! three ABI calls and *reads/writes* its state directly in memory.
+//! A generic, firmware-agnostic framework for running cross-compiled embedded
+//! firmware in a deterministic virtual world, with total white-box visibility
+//! into its state. A project (e.g. `pcs_bldc_sil`) instantiates voyant by
+//! implementing its trait seams and supplying its firmware, models, and routes;
+//! nothing here is specific to any one board.
 //!
-//! State access:
-//!   - exported globals via the export table (`read_u32`), and
-//!   - **any** `static` (read + write, typed by DWARF) via `read` / `write` —
-//!     the State Table backing, including array elements and struct members.
+//! Today voyant provides the **native firmware backend** ([`Firmware`]): load
+//! the firmware shared library, drive it over the control ABI
+//! (`sil_fw_start` / `sil_fw_advance_tick` / `sil_fw_shutdown`), and read/write
+//! any of its state — exported globals via the export table, and **any**
+//! `static` (typed, incl. array elements + struct members) via DWARF. This is
+//! the in-process boundary from `docs/sil/ffi-boundary.md`. The State Table,
+//! Route Table, sim clock, historian, and run modes build on it.
 
 mod dwarf;
 pub use dwarf::{DwarfMap, Scalar};

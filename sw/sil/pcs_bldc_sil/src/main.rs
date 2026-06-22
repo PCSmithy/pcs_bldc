@@ -4,9 +4,9 @@
 //! firmware then reacts to (the Phase-2 exit: "step the firmware, read the ADC
 //! ramp by symbol, write a global and see the firmware react").
 //!
-//! Usage: `cargo run -p sil-core -- [path-to-libpcs_bldc_fw.dll]`
+//! Usage: `cargo run -p pcs_bldc_sil -- [path-to-libpcs_bldc_fw.dll]`
 
-use sil_sys::{Firmware, Value};
+use voyant::{Firmware, Value};
 use std::path::PathBuf;
 
 // The ADC sim ramp lives in a non-exported static struct; ch0/in6 is enabled.

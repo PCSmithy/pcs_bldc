@@ -1,0 +1,12 @@
+[package]
+name = "pcs_bldc_sil"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+voyant = { path = "../voyant" }
+
+[[bin]]
+name = "pcs_bldc_sil"
+path = "src/main.rs"

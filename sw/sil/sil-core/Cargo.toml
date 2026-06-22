@@ -1,8 +1,0 @@
-[package]
-name = "sil-core"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-sil-sys = { path = "../sil-sys" }

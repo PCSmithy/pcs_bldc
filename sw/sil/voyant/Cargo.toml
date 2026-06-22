@@ -1,0 +1,11 @@
+[package]
+name = "voyant"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Clairvoyant software-in-the-loop: run embedded firmware in a deterministic virtual world with total white-box state visibility."
+
+[dependencies]
+libloading = "0.8"
+object = "0.36"
+gimli = "0.31"

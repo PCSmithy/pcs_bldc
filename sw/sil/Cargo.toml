@@ -1,9 +1,12 @@
-# SIL framework — Rust workspace (Phase 2+).
+# SIL framework workspace.
 #
-# sil-sys  — raw FFI to the firmware shared library (D2 control ABI) + symbol
-#            access (DWARF reader lands here later).
-# sil-core — the engine (State Table, Route Table, sim clock, run modes); for
-#            now a driver binary that proves the white-box loop from Rust.
+# voyant       — the generic, firmware-agnostic SIL framework (open-source-able
+#                on its own): the native firmware backend (control ABI + DWARF
+#                white-box access), and — as they land — the State Table, Route
+#                Table, sim clock, historian, run modes, and the trait seams a
+#                project implements.
+# pcs_bldc_sil — the pcs_bldc instantiation: implements voyant's traits and
+#                wires up this board's firmware, models, and routes.
 [workspace]
 resolver = "2"
-members = ["sil-sys", "sil-core"]
+members = ["voyant", "pcs_bldc_sil"]

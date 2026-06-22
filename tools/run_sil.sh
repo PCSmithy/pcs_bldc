@@ -46,4 +46,4 @@ cargo build --manifest-path "$SIL_MANIFEST"
 #    needs a Windows-style path (C:/...), not an MSYS path (/c/...).
 DLL_WIN="$(cygpath -m "$DLL" 2>/dev/null || echo "$DLL")"
 echo "==> [3/3] Running sim against $DLL_WIN"
-cargo run --quiet --manifest-path "$SIL_MANIFEST" -p sil-core -- "$DLL_WIN"
+cargo run --quiet --manifest-path "$SIL_MANIFEST" -p pcs_bldc_sil -- "$DLL_WIN"

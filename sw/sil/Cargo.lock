@@ -110,28 +110,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcs_bldc_sil"
+version = "0.0.0"
+dependencies = [
+ "voyant",
+]
+
+[[package]]
 name = "ruzstd"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
 dependencies = [
  "twox-hash",
-]
-
-[[package]]
-name = "sil-core"
-version = "0.0.0"
-dependencies = [
- "sil-sys",
-]
-
-[[package]]
-name = "sil-sys"
-version = "0.0.0"
-dependencies = [
- "gimli",
- "libloading",
- "object",
 ]
 
 [[package]]
@@ -160,6 +151,15 @@ checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
  "cfg-if",
  "static_assertions",
+]
+
+[[package]]
+name = "voyant"
+version = "0.0.0"
+dependencies = [
+ "gimli",
+ "libloading",
+ "object",
 ]
 
 [[package]]
