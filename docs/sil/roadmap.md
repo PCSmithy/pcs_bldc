@@ -83,8 +83,12 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   (`cvar`/`vsig`/comms) over one `Value` enum; naming convention
   `<sig_type>:<source>:<local>[:<modifier>]`; comms = logical payloads captured
   via sim-HW upcall; routes first-class + suspendable (injection).
-- ☐ **State Table impl**: `Signal` trait + cvar (DWARF) & vsig (model) backings,
-  `Value`, registry + name parser, get/set by name
+- ◐ **State Table impl** — `voyant` modularized (`value`/`dwarf`/`backend`/
+  `state`). `Signal` trait + `cvar` backing (DWARF live ptr), `Value`, the
+  `SignalKey` name parser, and the `StateTable` registry: register + get/set
+  **by canonical name** (`cvar:pcs_bldc:<path>`). Demo reads/writes the ADC ramp
+  through the table; parser unit-tested. Next: `vsig` backing (with the `Model`
+  trait), comms backing, the historian.
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
   with per-route suspend/resume
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;

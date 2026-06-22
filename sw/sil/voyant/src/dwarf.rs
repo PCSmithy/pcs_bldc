@@ -12,28 +12,13 @@
 //! Not yet: pointer-chasing. Name collisions (function-local statics) are
 //! last-wins until the State Table adds qualified paths.
 
+use crate::value::Scalar;
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 
 type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
-
-/// A scalar leaf type, derived from a DWARF base/enum type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scalar {
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F32,
-    F64,
-    Bool,
-}
 
 #[derive(Default)]
 struct Maps {
