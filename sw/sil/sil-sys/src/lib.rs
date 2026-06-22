@@ -6,16 +6,70 @@
 //! `docs/sil/ffi-boundary.md`: the framework *drives* the firmware through the
 //! three ABI calls and *reads/writes* its state directly in memory.
 //!
-//! Two layers of state access:
-//!   - exported globals via the DLL export table (`read_u32`), and
-//!   - **any** `static` via DWARF (`read_path_u32`) — the State Table backing.
+//! State access:
+//!   - exported globals via the export table (`read_u32`), and
+//!   - **any** `static` (read + write, typed by DWARF) via `read` / `write` —
+//!     the State Table backing, including array elements and struct members.
 
 mod dwarf;
-pub use dwarf::DwarfMap;
+pub use dwarf::{DwarfMap, Scalar};
 
 use libloading::{Library, Symbol};
 use std::error::Error;
+use std::fmt;
 use std::path::Path;
+
+/// A typed scalar firmware value (variant chosen from the DWARF leaf type).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Value {
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Bool(bool),
+}
+
+impl Value {
+    fn scalar(self) -> Scalar {
+        match self {
+            Value::U8(_) => Scalar::U8,
+            Value::U16(_) => Scalar::U16,
+            Value::U32(_) => Scalar::U32,
+            Value::U64(_) => Scalar::U64,
+            Value::I8(_) => Scalar::I8,
+            Value::I16(_) => Scalar::I16,
+            Value::I32(_) => Scalar::I32,
+            Value::I64(_) => Scalar::I64,
+            Value::F32(_) => Scalar::F32,
+            Value::F64(_) => Scalar::F64,
+            Value::Bool(_) => Scalar::Bool,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::U8(x) => write!(f, "{x}"),
+            Value::U16(x) => write!(f, "{x}"),
+            Value::U32(x) => write!(f, "{x}"),
+            Value::U64(x) => write!(f, "{x}"),
+            Value::I8(x) => write!(f, "{x}"),
+            Value::I16(x) => write!(f, "{x}"),
+            Value::I32(x) => write!(f, "{x}"),
+            Value::I64(x) => write!(f, "{x}"),
+            Value::F32(x) => write!(f, "{x}"),
+            Value::F64(x) => write!(f, "{x}"),
+            Value::Bool(x) => write!(f, "{x}"),
+        }
+    }
+}
 
 /// A loaded firmware instance (one per process — see ffi-boundary.md §1).
 pub struct Firmware {
@@ -25,8 +79,7 @@ pub struct Firmware {
     slide: u64,
 }
 
-/// The exported global used to anchor the ASLR slide: its runtime address
-/// (export table) vs its DWARF link address pins runtime = link + slide.
+/// The exported global used to anchor the ASLR slide.
 const ANCHOR: &str = "sim_task1msRuns";
 
 impl Firmware {
@@ -84,28 +137,78 @@ impl Firmware {
     }
 
     /// White-box read of an **exported** `uint32_t` global by name (export
-    /// table). For non-exported statics use [`read_path_u32`](Self::read_path_u32).
+    /// table). For arbitrary statics use [`read`](Self::read).
     pub fn read_u32(&self, name: &[u8]) -> u32 {
         // SAFETY: a data global is `Symbol<*mut u32>` — `*sym` is its address,
-        // `**sym` reads it. The firmware is quiescent → race-free.
+        // `**sym` reads it. Firmware quiescent → race-free.
         unsafe {
             let sym: Symbol<*mut u32> = self.lib.get(name).expect("global symbol");
             **sym
         }
     }
 
-    /// White-box read of **any** `uint32_t` by DWARF path (`var.member...`),
-    /// including non-exported statics. Resolves the link address via DWARF,
-    /// applies the ASLR slide, and reads in-process. Read between ticks while
-    /// the firmware is quiescent.
-    pub fn read_path_u32(&self, path: &str) -> u32 {
-        let (link_addr, _size) = self
+    /// White-box typed read of **any** firmware value by DWARF path
+    /// (`var.member`, `arr[i]`, nested), including non-exported statics. Read
+    /// between ticks while the firmware is quiescent.
+    pub fn read(&self, path: &str) -> Value {
+        let (p, kind) = self.live_ptr(path);
+        // SAFETY: `p` is a valid firmware address (DWARF + slide); firmware
+        // quiescent. Unaligned read is always sound.
+        unsafe {
+            match kind {
+                Scalar::U8 => Value::U8(p.read_unaligned()),
+                Scalar::U16 => Value::U16((p as *const u16).read_unaligned()),
+                Scalar::U32 => Value::U32((p as *const u32).read_unaligned()),
+                Scalar::U64 => Value::U64((p as *const u64).read_unaligned()),
+                Scalar::I8 => Value::I8((p as *const i8).read_unaligned()),
+                Scalar::I16 => Value::I16((p as *const i16).read_unaligned()),
+                Scalar::I32 => Value::I32((p as *const i32).read_unaligned()),
+                Scalar::I64 => Value::I64((p as *const i64).read_unaligned()),
+                Scalar::F32 => Value::F32((p as *const f32).read_unaligned()),
+                Scalar::F64 => Value::F64((p as *const f64).read_unaligned()),
+                Scalar::Bool => Value::Bool(p.read_unaligned() != 0),
+            }
+        }
+    }
+
+    /// White-box typed write of any firmware value by DWARF path. The value's
+    /// type must match the DWARF leaf type. Write between ticks while the
+    /// firmware is quiescent.
+    pub fn write(&self, path: &str, v: Value) {
+        let (p, kind) = self.live_ptr(path);
+        assert_eq!(
+            v.scalar(),
+            kind,
+            "write type mismatch for {path}: value is {:?}, firmware field is {:?}",
+            v.scalar(),
+            kind
+        );
+        let p = p as *mut u8;
+        // SAFETY: `p` is a valid firmware address of the matching size; firmware
+        // quiescent.
+        unsafe {
+            match v {
+                Value::U8(x) => p.write_unaligned(x),
+                Value::U16(x) => (p as *mut u16).write_unaligned(x),
+                Value::U32(x) => (p as *mut u32).write_unaligned(x),
+                Value::U64(x) => (p as *mut u64).write_unaligned(x),
+                Value::I8(x) => (p as *mut i8).write_unaligned(x),
+                Value::I16(x) => (p as *mut i16).write_unaligned(x),
+                Value::I32(x) => (p as *mut i32).write_unaligned(x),
+                Value::I64(x) => (p as *mut i64).write_unaligned(x),
+                Value::F32(x) => (p as *mut f32).write_unaligned(x),
+                Value::F64(x) => (p as *mut f64).write_unaligned(x),
+                Value::Bool(x) => p.write_unaligned(x as u8),
+            }
+        }
+    }
+
+    /// Resolve a DWARF path to its live in-process address + scalar kind.
+    fn live_ptr(&self, path: &str) -> (*const u8, Scalar) {
+        let (link_addr, kind) = self
             .dwarf
             .resolve(path)
             .unwrap_or_else(|| panic!("DWARF path not found: {path}"));
-        let live = link_addr.wrapping_add(self.slide);
-        // SAFETY: `live` is a valid firmware address (DWARF + slide); the
-        // firmware is quiescent.
-        unsafe { *(live as *const u32) }
+        (link_addr.wrapping_add(self.slide) as *const u8, kind)
     }
 }

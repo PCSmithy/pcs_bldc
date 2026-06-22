@@ -56,7 +56,7 @@ synthetic ADC ramp advances under the scheduler.
 **Goal:** the `NativeFreeRtos` `FwBackend` drives the firmware; sim clock,
 scheduler, signal log working.
 **Exit:** Rust steps the firmware in sim time, reads the ADC ramp by symbol,
-writes a global and sees the firmware react. (proof of white-box loop)
+writes a global and sees the firmware react. (proof of white-box loop) — **MET.**
 
 - ☑ Native **SHARED** firmware target (`libpcs_bldc_fw.dll`) exporting the
   `sil_*` ABI + globals. Validated with a C `LoadLibrary` harness: load → drive
@@ -68,11 +68,14 @@ writes a global and sees the firmware react. (proof of white-box loop)
   `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
   fiber scheduler → task → white-box read.
 - ☐ `FwBackend` trait + `NativeFreeRtos` impl (formalize over the proof-of-life)
-- ◐ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap`: resolves
-  `var.member...` paths to link address + leaf size (struct members, typedef/
-  const/volatile pass-through), ASLR slide via the `sim_task1msRuns` anchor.
-  **Proven:** Rust reads the non-exported static `HW_ADC_data.tickCounter`
-  (1→20). Next: array indexing (`counts[6]`), more leaf types, writes.
+- ☑ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap` resolves
+  `var.member`, `arr[i]`, nested paths → link address + scalar leaf kind
+  (members, array indexing, typedef/const/volatile pass-through, base/enum
+  scalar types); ASLR slide via the `sim_task1msRuns` anchor. `Firmware::read`/
+  `write` give typed `Value` access. **Proven:** Rust reads the real ADC ramp
+  `HW_ADC_data.channelData[0].counts[6]` and **writes** `tickCounter` → the
+  firmware recomputes the ramp from it (Phase-2 exit). Next: pointer-chasing +
+  qualified paths when the State Table proper lands.
 - ☐ **State Table**: firmware entries (auto from DWARF) + model-state entries
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;

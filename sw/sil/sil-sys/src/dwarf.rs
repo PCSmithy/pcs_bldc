@@ -1,17 +1,16 @@
-//! Minimal DWARF reader: resolve a firmware variable (or `var.member.member`
-//! path) to its **link-time address** and leaf size, by parsing the DLL's
-//! `.debug_*` sections.
+//! DWARF reader: resolve a firmware variable path to its **link-time address**
+//! and **scalar leaf type**, by parsing the DLL's `.debug_*` sections.
 //!
-//! This reaches *any* `static` — not just exported symbols — which is what the
-//! State Table needs (ffi-boundary.md §4). Built with `object` (PE + sections)
-//! + `gimli` (DWARF). The native firmware is `-g -O0`, so every static keeps a
-//! real address and structs keep their members.
+//! Reaches *any* `static` (not just exported symbols) — the State Table needs
+//! this (ffi-boundary.md §4). Built with `object` (PE + sections) + `gimli`
+//! (DWARF). The native firmware is `-g -O0`, so every static keeps a real
+//! address and aggregates keep their layout.
 //!
-//! Scope (first cut): top-level/static variables with a `DW_OP_addr` location,
-//! struct/union member offsets, and typedef/const/volatile pass-through to find
-//! the underlying struct (for member lookup) and base-type size. Arrays and
-//! pointer-chasing come later; name collisions (e.g. function-local statics)
-//! are last-wins until the State Table adds qualified paths.
+//! Supports: top-level/static variables (`DW_OP_addr`), struct/union member
+//! offsets, **array indexing** (`a[i].b[j]`), typedef/const/volatile
+//! pass-through, and base/enum scalar kinds (signed/unsigned/float/bool).
+//! Not yet: pointer-chasing. Name collisions (function-local statics) are
+//! last-wins until the State Table adds qualified paths.
 
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -19,6 +18,22 @@ use std::collections::HashMap;
 use std::error::Error;
 
 type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
+
+/// A scalar leaf type, derived from a DWARF base/enum type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scalar {
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    Bool,
+}
 
 #[derive(Default)]
 struct Maps {
@@ -28,8 +43,12 @@ struct Maps {
     members: HashMap<usize, HashMap<String, (u64, usize)>>,
     /// typedef/const/volatile/restrict offset -> the type it wraps
     underlying: HashMap<usize, usize>,
-    /// type offset -> byte size (base/struct/pointer/enum types)
+    /// array type offset -> element type offset
+    arrays: HashMap<usize, usize>,
+    /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
+    /// base/enum type offset -> (DW_ATE encoding, byte size)
+    base: HashMap<usize, (u8, u64)>,
 }
 
 pub struct DwarfMap(Maps);
@@ -45,9 +64,8 @@ impl DwarfMap {
                 None => Cow::Borrowed(&[]),
             })
         };
-        let dwarf_sections = gimli::DwarfSections::load(&load)?;
-        let dwarf =
-            dwarf_sections.borrow(|section| gimli::EndianSlice::new(section, gimli::LittleEndian));
+        let sections = gimli::DwarfSections::load(&load)?;
+        let dwarf = sections.borrow(|s| gimli::EndianSlice::new(s, gimli::LittleEndian));
 
         let mut maps = Maps::default();
         let mut units = dwarf.units();
@@ -63,21 +81,41 @@ impl DwarfMap {
         self.0.vars.get(name).map(|&(addr, _)| addr)
     }
 
-    /// Resolve a `var` or `var.member[.member...]` path to (link address, leaf
-    /// byte size). Struct membership only (no arrays/pointers yet).
-    pub fn resolve(&self, path: &str) -> Option<(u64, u64)> {
-        let mut parts = path.split('.');
-        let (mut addr, ty) = *self.0.vars.get(parts.next()?)?;
+    /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
+    /// kind). Returns None if any segment, member, index type, or leaf kind is
+    /// unknown.
+    pub fn resolve(&self, path: &str) -> Option<(u64, Scalar)> {
+        let mut segs = path.split('.');
+
+        let (name, indices) = split_indices(segs.next()?)?;
+        let (mut addr, ty) = *self.0.vars.get(name)?;
         let mut ty = self.peel(ty);
-        for member in parts {
-            let &(off, mty) = self.0.members.get(&ty)?.get(member)?;
+        ty = self.index(&mut addr, ty, &indices)?;
+
+        for seg in segs {
+            let (name, indices) = split_indices(seg)?;
+            let &(off, mty) = self.0.members.get(&ty)?.get(name)?;
             addr += off;
             ty = self.peel(mty);
+            ty = self.index(&mut addr, ty, &indices)?;
         }
-        Some((addr, self.0.sizes.get(&ty).copied().unwrap_or(0)))
+
+        Some((addr, self.scalar_kind(ty)?))
     }
 
-    /// Strip typedef/const/volatile/restrict to the underlying (struct/base) type.
+    /// Apply `[i][j]...` to an array type, advancing `addr` and returning the
+    /// (peeled) element type.
+    fn index(&self, addr: &mut u64, mut ty: usize, indices: &[usize]) -> Option<usize> {
+        for &i in indices {
+            let elem = self.peel(*self.0.arrays.get(&ty)?);
+            let elem_size = *self.0.sizes.get(&elem)?;
+            *addr += (i as u64) * elem_size;
+            ty = elem;
+        }
+        Some(ty)
+    }
+
+    /// Strip typedef/const/volatile/restrict to the underlying type.
     fn peel(&self, mut ty: usize) -> usize {
         for _ in 0..32 {
             match self.0.underlying.get(&ty) {
@@ -87,6 +125,33 @@ impl DwarfMap {
         }
         ty
     }
+
+    fn scalar_kind(&self, ty: usize) -> Option<Scalar> {
+        let &(enc, size) = self.0.base.get(&ty)?;
+        Some(match enc {
+            e if e == gimli::DW_ATE_float.0 => match size {
+                4 => Scalar::F32,
+                8 => Scalar::F64,
+                _ => return None,
+            },
+            e if e == gimli::DW_ATE_boolean.0 => Scalar::Bool,
+            e if e == gimli::DW_ATE_signed.0 || e == gimli::DW_ATE_signed_char.0 => match size {
+                1 => Scalar::I8,
+                2 => Scalar::I16,
+                4 => Scalar::I32,
+                8 => Scalar::I64,
+                _ => return None,
+            },
+            e if e == gimli::DW_ATE_unsigned.0 || e == gimli::DW_ATE_unsigned_char.0 => match size {
+                1 => Scalar::U8,
+                2 => Scalar::U16,
+                4 => Scalar::U32,
+                8 => Scalar::U64,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
 }
 
 fn collect_unit(
@@ -94,7 +159,7 @@ fn collect_unit(
     unit: &gimli::Unit<Slice>,
     maps: &mut Maps,
 ) -> Result<(), gimli::Error> {
-    // Flat DFS with an ancestor stack so members can find their enclosing struct.
+    // Flat DFS with an ancestor stack so members find their enclosing struct.
     let mut stack: Vec<(isize, usize, gimli::DwTag)> = Vec::new();
     let mut depth = 0isize;
 
@@ -105,10 +170,7 @@ fn collect_unit(
             stack.pop();
         }
 
-        let goff = entry
-            .offset()
-            .to_debug_info_offset(&unit.header)
-            .map(|o| o.0);
+        let goff = entry.offset().to_debug_info_offset(&unit.header).map(|o| o.0);
         let tag = entry.tag();
 
         match tag {
@@ -140,9 +202,26 @@ fn collect_unit(
                     maps.underlying.insert(g, ty);
                 }
             }
-            gimli::DW_TAG_base_type
-            | gimli::DW_TAG_pointer_type
-            | gimli::DW_TAG_enumeration_type
+            gimli::DW_TAG_array_type => {
+                if let (Some(g), Some(elem)) = (goff, type_goff(unit, entry)) {
+                    maps.arrays.insert(g, elem);
+                }
+            }
+            gimli::DW_TAG_base_type => {
+                if let (Some(g), Some(sz)) = (goff, byte_size(entry)) {
+                    maps.sizes.insert(g, sz);
+                    if let Some(enc) = encoding(entry) {
+                        maps.base.insert(g, (enc, sz));
+                    }
+                }
+            }
+            gimli::DW_TAG_enumeration_type => {
+                if let (Some(g), Some(sz)) = (goff, byte_size(entry)) {
+                    maps.sizes.insert(g, sz);
+                    maps.base.insert(g, (gimli::DW_ATE_unsigned.0, sz));
+                }
+            }
+            gimli::DW_TAG_pointer_type
             | gimli::DW_TAG_structure_type
             | gimli::DW_TAG_union_type => {
                 if let (Some(g), Some(sz)) = (goff, byte_size(entry)) {
@@ -205,4 +284,29 @@ fn member_offset(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64>
 
 fn byte_size(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
     entry.attr_value(gimli::DW_AT_byte_size).ok().flatten()?.udata_value()
+}
+
+fn encoding(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u8> {
+    match entry.attr_value(gimli::DW_AT_encoding).ok().flatten()? {
+        gimli::AttributeValue::Encoding(e) => Some(e.0),
+        other => other.udata_value().map(|u| u as u8),
+    }
+}
+
+/// Split a path segment like `counts[6]` into (`"counts"`, `[6]`), or
+/// `tickCounter` into (`"tickCounter"`, `[]`).
+fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
+    match seg.find('[') {
+        None => Some((seg, Vec::new())),
+        Some(b) => {
+            let mut indices = Vec::new();
+            for tok in seg[b..].split(['[', ']']) {
+                let tok = tok.trim();
+                if !tok.is_empty() {
+                    indices.push(tok.parse::<usize>().ok()?);
+                }
+            }
+            Some((&seg[..b], indices))
+        }
+    }
 }
