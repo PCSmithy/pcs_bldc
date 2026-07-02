@@ -526,13 +526,13 @@ browser fallback used by some datasheet sites.
 
 ## Key Components
 
-| Component   | Role                                  | Datasheet in repo |
-|-------------|---------------------------------------|-------------------|
-| STM32G431C6 | MCU (Cortex-M4, 170MHz)               | Yes               |
-| STSPIN32G4  | 3-phase gate driver (integrated)      | Yes               |
-| CYPD3177    | USB-PD sink controller                | Yes               |
-| LMR50410    | 5V buck converter                     | Yes               |
-| AS5048      | Magnetic position encoder (SPI)       | Yes               |
+| Component   | Role                                                    | Datasheet in repo |
+|-------------|---------------------------------------------------------|-------------------|
+| STM32G431VB | MCU (Cortex-M4F @170MHz, 128 KB flash / 32 KB RAM)      | Yes               |
+| STSPIN32G4  | 3-phase gate driver (integrated)                        | Yes               |
+| CYPD3177    | USB-PD sink controller                                  | Yes               |
+| LMR50410    | 5V buck converter                                       | Yes               |
+| AS5048      | Magnetic position encoder (SPI)                         | Yes               |
 
 ## What to read first
 

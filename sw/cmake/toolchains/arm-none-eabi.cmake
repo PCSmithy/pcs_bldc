@@ -53,14 +53,22 @@ set(_mcu_flags
   -mthumb
 )
 
+# Optimization level. -Og optimizes for the debugging experience: it keeps the
+# flashed image roughly 40% smaller than -O0 while preserving sane single-
+# stepping and live variables, so it is the default. Override at configure time
+# without editing this file:
+#   -DPCS_OPT_LEVEL=-O0   source-faithful deep debugging (largest)
+#   -DPCS_OPT_LEVEL=-Os   minimum size (poor debuggability)
+set(PCS_OPT_LEVEL "-Og" CACHE STRING "Optimization level for the embedded build")
+
 add_compile_options(
   ${_mcu_flags}
   -Wall -Wextra -Wpedantic
   -ffunction-sections -fdata-sections
   -fno-common
-  # Debug symbols for live (OpenOCD/GDB) debugging. No -O flag is set, so the
-  # build is -O0 — source-faithful stepping. Debug info lands in the .elf only,
-  # not in flashed sections, so flash size is unaffected.
+  ${PCS_OPT_LEVEL}
+  # Full debug info for live (OpenOCD/GDB) debugging. It lands in the .elf only,
+  # not in flashed sections, so it never costs flash regardless of opt level.
   -g3
 )
 add_link_options(
