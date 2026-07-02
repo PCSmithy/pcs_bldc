@@ -12,6 +12,7 @@
   #include "task.h"
   #include <stdio.h>
   #include "lib_utils.h"
+  #include "lib_timer.h"
   #include "HW_USB.h"
   #include "IO_serial.h"
   // The tasks below need FreeRTOS, so the encoder, LED, switch, serial, and
@@ -88,6 +89,42 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #define TASK_PRIORITY_USB   (configMAX_PRIORITIES - 3U)
 #define TASK_PRIORITY_TELEM (configMAX_PRIORITIES - 4U)
 
+// --- Task profiling (bring-up telemetry) -----------------------------------
+// Each periodic task times its body against the microsecond time base and folds
+// the duration into a per-task worst-case (max), which telemetryTask emits and
+// resets every window. task_usb blocks on the USB event queue (not a periodic
+// body), so it is not profiled.
+typedef enum
+{
+    PROFILE_TASK_1MS,
+    PROFILE_TASK_10MS,
+    PROFILE_TASK_TELEM,
+    PROFILE_TASK_COUNT,
+} profileTask_E;
+
+static volatile uint32_t profileMaxUs[PROFILE_TASK_COUNT];
+
+// Fold one body execution's duration into the task's window max.
+static void profileUpdate(profileTask_E task, uint32_t durationUs)
+{
+    if (durationUs > profileMaxUs[task])
+    {
+        profileMaxUs[task] = durationUs;
+    }
+}
+
+// Snapshot the task's window max and clear it for the next window. The critical
+// section makes the read-and-clear atomic against the (higher-priority)
+// profiled tasks, so no sample is dropped between the read and the reset.
+static uint32_t profileTakeMaxUs(profileTask_E task)
+{
+    taskENTER_CRITICAL();
+    const uint32_t maxUs = profileMaxUs[task];
+    profileMaxUs[task] = 0U;
+    taskEXIT_CRITICAL();
+    return maxUs;
+}
+
 // Fixed-rate 1 ms IO task. Home for periodic sensor/actuator run functions
 // (encoder sampling now; the control loop will likely move to its own faster
 // task later). vTaskDelayUntil gives a drift-free 1 ms cadence regardless of
@@ -99,6 +136,7 @@ static void task_1ms(void * params)
     for (;;)
     {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
+        const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
         // hw
         HW_GPIO_run1ms();   // cache input-pin levels before anything reads them
@@ -111,6 +149,8 @@ static void task_1ms(void * params)
         dev_switch_run1ms();   // debounce switches off the cached GPIO snapshot
 
         // app
+
+        profileUpdate(PROFILE_TASK_1MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
 }
 
@@ -121,6 +161,7 @@ static void task_10ms(void * params)
     for (;;)
     {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10U));
+        const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
         // hw
 
@@ -130,6 +171,8 @@ static void task_10ms(void * params)
 
         // app
         app_rgbLedRing_run10ms();
+
+        profileUpdate(PROFILE_TASK_10MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
 }
 
@@ -170,6 +213,8 @@ static void telemetryTask(void * params)
         {
             continue;
         }
+
+        const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
         // Source timestamp (ms) shared by every signal in this pass. FreeRTOS
         // owns SysTick, so HAL_GetTick() stays 0 — use the RTOS tick (1 ms).
@@ -256,6 +301,23 @@ static void telemetryTask(void * params)
                 (unsigned long)adc2Frac,
                 (unsigned long)nowMs,
                 (unsigned)adc2Status);
+
+        // Per-task worst-case body duration since the last emit (microseconds),
+        // snapshotted and reset each window. task1ms/task10ms are pure CPU time
+        // (their bodies never block); telem is wall-clock and so includes any
+        // CDC backpressure waits.
+        const uint32_t task1msMaxUs  = profileTakeMaxUs(PROFILE_TASK_1MS);
+        const uint32_t task10msMaxUs = profileTakeMaxUs(PROFILE_TASK_10MS);
+        const uint32_t telemMaxUs    = profileTakeMaxUs(PROFILE_TASK_TELEM);
+
+        printf("task1ms_us:%lu:%lu" TP_UNIT "us;"
+               "task10ms_us:%lu:%lu" TP_UNIT "us;"
+               "telem_us:%lu:%lu" TP_UNIT "us\n",
+                (unsigned long)nowMs, (unsigned long)task1msMaxUs,
+                (unsigned long)nowMs, (unsigned long)task10msMaxUs,
+                (unsigned long)nowMs, (unsigned long)telemMaxUs);
+
+        profileUpdate(PROFILE_TASK_TELEM, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
 }
 
