@@ -93,10 +93,13 @@ bool HW_DMA_init(const HW_DMA_config_S * const config)
                 ret &= (HAL_DMA_Init(&cd->hdma) == HAL_OK);
                 ret &= (HAL_DMA_RegisterCallback(&cd->hdma, HAL_DMA_XFER_CPLT_CB_ID, HW_DMA_private_xferCplt) == HAL_OK);
                 ret &= (HAL_DMA_RegisterCallback(&cd->hdma, HAL_DMA_XFER_ERROR_CB_ID, HW_DMA_private_xferError) == HAL_OK);
-            }
 
-            // NVIC enable + the board DMA IRQ handlers land with the SPI-DMA
-            // integration (M4), where completion is bench-verified.
+                // Arm the channel's NVIC line (priority 5 = FreeRTOS-safe, per
+                // the EXTI/USB convention). The board DMA IRQ handlers in
+                // stm32g4xx_it.c forward to HW_DMA_irqHandler.
+                HAL_NVIC_SetPriority(config->channels[channel].irqn, 5, 0);
+                HAL_NVIC_EnableIRQ(config->channels[channel].irqn);
+            }
 
             data->config      = config;
             data->initialized = ret;

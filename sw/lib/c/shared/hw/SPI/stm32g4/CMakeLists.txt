@@ -6,5 +6,6 @@ target_link_libraries(hw_SPI
     stm32g4_hal             # for SPI_HandleTypeDef + HAL_SPI_* prototypes
     pcs_SPI_channels        # consumer-provided HW_SPI_channels.h path
     hw_GPIO
+    hw_DMA                  # DMA-backed transfer mode (HW_DMA_channel_E + API)
     hw_SPI_common           # target-independent timeout formula
 )

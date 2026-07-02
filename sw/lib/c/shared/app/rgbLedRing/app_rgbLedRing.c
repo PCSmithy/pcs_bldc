@@ -1,9 +1,6 @@
 /* Includes */
 #include "app_rgbLedRing.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-
 #include "IO_SK6805.h"
 #include "IO_AS5048.h"
 #include "dev_switch.h"
@@ -287,14 +284,12 @@ static float32_t readAngleDeg(IO_AS5048_channel_E channel)
     return deg;
 }
 
-// Transmit a ring's staged framebuffer. The SK6805 is a continuous timed
-// stream: a preemption mid-transfer underruns the SPI FIFO and corrupts the
-// frame, so task switches are suspended across the transmit (DMA removes this).
+// Transmit a ring's staged framebuffer. The SK6805 stream is DMA-backed (the
+// LED bus runs in DMA transfer mode), so the transmit runs off-CPU and needs no
+// scheduler guard — a task preemption can't underrun the SPI FIFO.
 static void transmit(IO_SK6805_channel_E ledChannel)
 {
-    vTaskSuspendAll();
     (void)IO_SK6805_update(ledChannel);
-    (void)xTaskResumeAll();
 }
 
 /* Public Function Definitions */

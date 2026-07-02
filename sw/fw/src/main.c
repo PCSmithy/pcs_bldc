@@ -4,6 +4,7 @@
 #include "HW_ADC.h"
 #include "HW_SPI.h"
 #include "HW_TIM.h"
+#include "HW_DMA.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
@@ -35,6 +36,7 @@ extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_ADC_config_S HW_ADC_config;
 extern const HW_SPI_config_S HW_SPI_config;
 extern const HW_TIM_config_S HW_TIM_config;
+extern const HW_DMA_config_S HW_DMA_config;
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 extern const IO_AS5048_config_S IO_AS5048_config;
@@ -274,6 +276,7 @@ static bool prvHwInit(void)
     ok &= HW_systemClock_init(&HW_systemClock_config);
     ok &= HW_GPIO_init(&HW_GPIO_config);
     ok &= HW_ADC_init(&HW_ADC_config);
+    ok &= HW_DMA_init(&HW_DMA_config);   // before SPI: SPI registers DMA completion callbacks
     ok &= HW_SPI_init(&HW_SPI_config);
     ok &= HW_TIM_init(&HW_TIM_config);
     return ok;

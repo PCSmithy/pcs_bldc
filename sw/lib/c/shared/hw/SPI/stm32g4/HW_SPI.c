@@ -16,6 +16,7 @@ typedef enum
 typedef struct
 {
     SPI_HandleTypeDef hspi;
+    HW_SPI_channel_E  activeChannel;   // channel whose DMA transfer is in flight
 } HW_SPI_busData_S;
 
 typedef struct
@@ -41,6 +42,7 @@ static uint32_t HW_SPI_private_prescalerToDivisor(uint32_t prescaler);
 static uint32_t HW_SPI_private_busBitRate(const SPI_HandleTypeDef * const hspi);
 static void     HW_SPI_private_assertCs(HW_SPI_channel_E channel);
 static void     HW_SPI_private_deassertCs(HW_SPI_channel_E channel);
+static void     HW_SPI_private_dmaTxComplete(HW_DMA_channel_E dmaChannel, void * context);
 static bool     HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, uint8_t * txData, uint8_t * rxData, size_t length);
 
 /* Private Data Definitions */
@@ -135,8 +137,38 @@ static void HW_SPI_private_deassertCs(HW_SPI_channel_E channel)
     }
 }
 
+// [impl->fw~hal_spi_005~1]
+// DMA transfer-complete for a bus's TX stream (registered with HW_DMA at init).
+// The DMA has moved every byte into the SPI TX FIFO; per RM0440 we wait for the
+// FIFO to drain and the bus to go idle, tear down the DMA request, then settle
+// the channel and fire its completion callback. The FIFO/BSY spins are bounded
+// (a few byte-times) and run in the DMA ISR — kept deliberately short.
+static void HW_SPI_private_dmaTxComplete(HW_DMA_channel_E dmaChannel, void * context)
+{
+    const HW_SPI_bus_E bus = (HW_SPI_bus_E)(uintptr_t)context;
+    SPI_HandleTypeDef * const hspi = &data->buses[bus].hspi;
+
+    while ((hspi->Instance->SR & SPI_SR_FTLVL) != 0U) { }
+    while ((hspi->Instance->SR & SPI_SR_BSY) != 0U)   { }
+
+    CLEAR_BIT(hspi->Instance->CR2, SPI_CR2_TXDMAEN);
+    __HAL_SPI_DISABLE(hspi);
+
+    const HW_SPI_channel_E channel = data->buses[bus].activeChannel;
+    HW_SPI_private_deassertCs(channel);
+
+    const bool ok = (HW_DMA_getStatus(dmaChannel) == HW_DMA_STATUS_COMPLETE);
+    data->channels[channel].status = (ok) ? HW_SPI_STATUS_COMPLETE : HW_SPI_STATUS_ERROR;
+
+    if (data->channels[channel].callback != NULL)
+    {
+        data->channels[channel].callback(channel, data->channels[channel].callbackContext);
+    }
+}
+
 // [impl->fw~hal_spi_002~1]
 // [impl->fw~hal_spi_003~1]
+// [impl->fw~hal_spi_005~1]
 // [impl->fw~hal_spi_006~1]
 static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, uint8_t * txData, uint8_t * rxData, size_t length)
 {
@@ -181,12 +213,38 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
             ret = (halStatus == HAL_OK);
             data->channels[channel].status = (ret) ? HW_SPI_STATUS_COMPLETE : HW_SPI_STATUS_ERROR;
         }
+        else if (busConfig->transferMode == HW_SPI_TRANSFERMODE_DMA)
+        {
+            // DMA-backed transmit: kick the TX DMA stream and return; completion
+            // (FIFO drain, CS deassert, status, callback) runs in
+            // HW_SPI_private_dmaTxComplete off the DMA IRQ. TX-only for now;
+            // RX / full-duplex over DMA (the encoder path) is pending.
+            if (op == HW_SPI_OP_TX)
+            {
+                data->channels[channel].status = HW_SPI_STATUS_BUSY;
+                data->buses[bus].activeChannel = channel;
+
+                HW_SPI_private_assertCs(channel);
+                __HAL_SPI_ENABLE(hspi);
+                SET_BIT(hspi->Instance->CR2, SPI_CR2_TXDMAEN);
+
+                ret = HW_DMA_startTransfer(busConfig->txDmaChannel, txData, (uint32_t)length);
+                if (!ret)
+                {
+                    CLEAR_BIT(hspi->Instance->CR2, SPI_CR2_TXDMAEN);
+                    __HAL_SPI_DISABLE(hspi);
+                    HW_SPI_private_deassertCs(channel);
+                    data->channels[channel].status = HW_SPI_STATUS_ERROR;
+                }
+            }
+            else
+            {
+                ret = false;
+            }
+        }
         else
         {
-            // Interrupt/DMA transfers need an HW_DMA driver that does not
-            // exist yet; reject at transfer time on this target. The bus
-            // still initializes (the G4 hardware supports these modes), so
-            // the board's init stays green until async is wired up.
+            // Interrupt-mode transfers are not implemented.
             ret = false;
         }
     }
@@ -218,8 +276,18 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
                 if (config->buses[bus].enabled)
                 {
                     data->buses[bus].hspi = config->buses[bus].hspi;
+                    data->buses[bus].activeChannel = (HW_SPI_channel_E)0;
 
                     ret &= HAL_SPI_Init(&data->buses[bus].hspi) == HAL_OK;
+
+                    // DMA-backed bus: route its TX DMA channel's completion back
+                    // into this bus. HW_DMA must be initialised before HW_SPI.
+                    if (config->buses[bus].transferMode == HW_SPI_TRANSFERMODE_DMA)
+                    {
+                        ret &= HW_DMA_registerCallback(config->buses[bus].txDmaChannel,
+                                                       HW_SPI_private_dmaTxComplete,
+                                                       (void *)(uintptr_t)bus);
+                    }
                 }
             }
 

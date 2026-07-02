@@ -80,9 +80,12 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
                 .NSSPMode = SPI_NSS_PULSE_DISABLE,
             },
         },
-        .transferMode = HW_SPI_TRANSFERMODE_SW,
+        // DMA-backed: the ~1.25 ms LED frame streams off-CPU via HW_DMA
+        // (SK6805_TX -> SPI3 TX), so the LED task no longer blocks/guards it.
+        .transferMode = HW_SPI_TRANSFERMODE_DMA,
+        .txDmaChannel = HW_DMA_CHANNEL_SK6805_TX,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
-        .transferMode    = HW_SPI_TRANSFERMODE_SW,
+        .transferMode    = HW_SPI_TRANSFERMODE_DMA,
         .busNameStr      = "SPI3",
 #endif
     },

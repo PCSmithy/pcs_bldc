@@ -1,14 +1,9 @@
-// No-op stubs for the FreeRTOS + IO/dev symbols app_rgbLedRing.c's run10ms code
+// No-op stubs for the IO/dev symbols app_rgbLedRing.c's run10ms code
 // references. The render-core tests never call run10ms, but it is compiled into
 // the test executable and must link.
-#include "FreeRTOS.h"
-#include "task.h"
 #include "IO_SK6805.h"
 #include "IO_AS5048.h"
 #include "dev_switch.h"
-
-void       vTaskSuspendAll(void) {}
-BaseType_t xTaskResumeAll(void) { return pdPASS; }
 
 void IO_SK6805_setPixel(IO_SK6805_channel_E channel, uint16_t index, uint8_t red, uint8_t green, uint8_t blue)
 {
