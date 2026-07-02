@@ -5,7 +5,7 @@
 #include "lib_types.h"
 #include "IO_SK6805.h"               // IO_SK6805_channel_E
 #include "IO_AS5048.h"               // IO_AS5048_channel_E
-#include "DEV_switch.h"              // DEV_switch_channel_E
+#include "dev_switch.h"              // dev_switch_channel_E
 #include "app_rgbLedRing_channels.h" // consumer-provided app_rgbLedRing_channel_E
 
 /* Defines */
@@ -88,7 +88,7 @@ typedef struct
     IO_SK6805_channel_E  ledChannel;     // LED string this ring renders to
     IO_AS5048_channel_E  dialChannel;    // dial/knob encoder
     IO_AS5048_channel_E  motorChannel;   // motor encoder
-    DEV_switch_channel_E buttonChannel;  // mode-cycle button
+    dev_switch_channel_E buttonChannel;  // mode-cycle button
     uint16_t             pixelCount;     // LEDs in this ring (1..APP_RGBLEDRING_MAX_PIXELS)
 } app_rgbLedRing_channelConfig_S;
 
@@ -100,16 +100,21 @@ typedef struct
 
 /* Public Function Declarations */
 
-// Validate the config and spawn the ring UI task at taskPriority. The task
-// refreshes every ring every APP_RGBLEDRING_FRAME_PERIOD_MS, reading each ring's
-// dial + motor encoders and button and rendering its active display mode.
-// Returns false if the config is rejected or the task cannot be created. Call
-// once from main() before the scheduler starts; the IO drivers it consumes
-// (IO_SK6805, IO_AS5048, DEV_switch) must be initialised first.
-bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config, uint32_t taskPriority);
+// Validate the config and initialise each configured ring's UI state. Returns
+// false if the config is rejected. Call once from main() before the scheduler
+// starts; the IO drivers it consumes (IO_SK6805, IO_AS5048, dev_switch) must be
+// initialised first. Drive the UI by calling app_rgbLedRing_run10ms() every
+// 10 ms after a successful init.
+bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config);
 
-/* Rendering core — pure logic (no RTOS/IO). Driven by the task above; declared
-   here so the unit test can exercise it directly. Consumers use _init. */
+// Service every configured ring: read its button and encoders, render its
+// active display mode, and transmit the frame. Call every 10 ms (e.g. from the
+// common 10 ms task), matching APP_RGBLEDRING_FRAME_PERIOD_MS. A no-op until a
+// successful app_rgbLedRing_init.
+void app_rgbLedRing_run10ms(void);
+
+/* Rendering core — pure logic (no RTOS/IO). Driven by run10ms; declared here so
+   the unit test can exercise it directly. Consumers use _init + _run10ms. */
 
 // Initialise UI state to the bring-up defaults: mode WALK, SOLID red, SOLID2
 // blue, pickers at full saturation, walk heads stopped. Seed the encoder

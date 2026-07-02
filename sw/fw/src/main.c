@@ -17,7 +17,7 @@
   // telemetry wiring is only built for this target.
   #include "IO_AS5048.h"
   #include "IO_SK6805.h"
-  #include "DEV_switch.h"
+  #include "dev_switch.h"
   #include "app_rgbLedRing.h"
 #endif
 
@@ -39,7 +39,7 @@ extern const HW_TIM_config_S HW_TIM_config;
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
-extern const DEV_switch_config_S DEV_switch_config;
+extern const dev_switch_config_S dev_switch_config;
 extern const IO_serial_config_S IO_serial_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
 #endif
@@ -81,15 +81,10 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
     *pulSize  = configTIMER_TASK_STACK_DEPTH;
 }
 
-// FreeRTOS task priority hierarchy (higher number preempts lower), defined in
-// one place so the ordering is explicit. The encoder sampler is hard
-// real-time. The LED refresh briefly blocks (~1.25 ms every 50 ms) but must
-// hit its cadence regardless of USB load, so it outranks the USB servicer —
-// the added USB latency is negligible. USB is event-driven and blocks when
-// idle, so it sits lowest of the three.
-#define TASK_PRIO_ENCODER  (configMAX_PRIORITIES - 1U)
-#define TASK_PRIO_LED      (configMAX_PRIORITIES - 2U)
-#define TASK_PRIO_USB      (configMAX_PRIORITIES - 3U)
+#define TASK_PRIORITY_1MS   (configMAX_PRIORITIES - 1U)
+#define TASK_PRIORITY_10MS  (configMAX_PRIORITIES - 2U)
+#define TASK_PRIORITY_USB   (configMAX_PRIORITIES - 3U)
+#define TASK_PRIORITY_TELEM (configMAX_PRIORITIES - 4U)
 
 // Fixed-rate 1 ms IO task. Home for periodic sensor/actuator run functions
 // (encoder sampling now; the control loop will likely move to its own faster
@@ -111,26 +106,50 @@ static void task_1ms(void * params)
         IO_AS5048_run1ms();
 
         // dev
-        DEV_switch_run1ms();   // debounce switches off the cached GPIO snapshot
+        dev_switch_run1ms();   // debounce switches off the cached GPIO snapshot
 
         // app
     }
 }
 
-// Teleplot wire format (beacon): one packet per "name:timestamp_ms:value[§unit]",
-// packets separated by ';' or '\n'. The unit separator is the section sign
-// U+00A7, encoded UTF-8 as 0xC2 0xA7. Kept as its own string literal so the
-// adjacent unit text isn't swallowed into the \x hex escape — adjacent string
-// literals concatenate at compile time.
+static void task_10ms(void * params)
+{
+    (void)params;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10U));
+
+        // hw
+
+        // io
+
+        // dev
+
+        // app
+        app_rgbLedRing_run10ms();
+    }
+}
+
+// Dedicated USB device-service task. HW_USB_run() blocks on the TinyUSB event
+// queue and wakes on the USB ISR, so the stack is serviced on demand rather than
+// polled. Sits below the periodic tasks (they preempt it) so its variable,
+// load-dependent work never adds jitter to their cadence.
+static void task_usb(void * params)
+{
+    (void)params;
+    for (;;)
+    {
+        HW_USB_run();
+    }
+}
+
+// Teleplot wire format (beacon):
 #define TP_UNIT "\xC2\xA7"
 
 // Telemetry emit period (ms).
 #define TELEMETRY_PERIOD_MS 25
 
-// Telemetry producer: a consumer of IO_serial. On a fixed cadence it reads the
-// current sensor values and streams them over the CDC serial channel in Teleplot
-// text format for live plotting. Throwaway bring-up scaffolding — to be
-// restructured into a dedicated obs module later.
 static void telemetryTask(void * params)
 {
     (void) params;
@@ -328,24 +347,27 @@ int main(void)
     bool initSuccess = prvHwInit();
     initSuccess &= IO_AS5048_init(&IO_AS5048_config);
     initSuccess &= IO_SK6805_init(&IO_SK6805_config);
-    initSuccess &= DEV_switch_init(&DEV_switch_config);
+    initSuccess &= dev_switch_init(&dev_switch_config);
+    initSuccess &= app_rgbLedRing_init(&app_rgbLedRing_config);
+    initSuccess &= HW_USB_init();   // USB device stack (serviced in task_1ms)
+    initSuccess &= IO_serial_init(&IO_serial_config);
     if (!initSuccess)
     {
         Error_Handler();
     }
 
-    // Bring up USB (HW_USB spawns the device-service task) and the serial
-    // transport, then spawn the periodic IO, LED, and telemetry tasks and hand
-    // control to the scheduler. Each task allocates from the FreeRTOS heap; a
-    // failure here (e.g. heap exhaustion) must halt loudly rather than silently
-    // drop a task. vTaskStartScheduler() does not return.
-    bool tasksCreated = HW_USB_init(TASK_PRIO_USB);
-    tasksCreated &= IO_serial_init(&IO_serial_config);
-    tasksCreated &= (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
-                                 NULL, TASK_PRIO_ENCODER, NULL) == pdPASS);
-    tasksCreated &= app_rgbLedRing_init(&app_rgbLedRing_config, TASK_PRIO_LED);
+    // Spawn the periodic tasks and hand control to the scheduler. Each task
+    // allocates from the FreeRTOS heap; a failure here (e.g. heap exhaustion)
+    // must halt loudly rather than silently drop a task. vTaskStartScheduler()
+    // does not return.
+    bool tasksCreated = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
+                                     NULL, TASK_PRIORITY_1MS, NULL) == pdPASS);
+    tasksCreated &= (xTaskCreate(task_10ms, "task_10ms", configMINIMAL_STACK_SIZE * 2U,
+                                 NULL, TASK_PRIORITY_10MS, NULL) == pdPASS);
+    tasksCreated &= (xTaskCreate(task_usb, "usbd", configMINIMAL_STACK_SIZE * 2U,
+                                 NULL, TASK_PRIORITY_USB, NULL) == pdPASS);
     tasksCreated &= (xTaskCreate(telemetryTask, "telem", 512U,
-                                 NULL, TASK_PRIO_USB, NULL) == pdPASS);
+                                 NULL, TASK_PRIORITY_TELEM, NULL) == pdPASS);
 
     if (!tasksCreated)
     {

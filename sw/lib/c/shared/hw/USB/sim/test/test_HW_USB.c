@@ -5,7 +5,7 @@
 void setUp(void)
 {
     HW_USB_sim_reset();
-    (void)HW_USB_init(0U);
+    (void)HW_USB_init();
 }
 
 void tearDown(void) {}
@@ -14,7 +14,7 @@ void tearDown(void) {}
 static void test_init_returns_true(void)
 {
     HW_USB_sim_reset();
-    TEST_ASSERT_TRUE(HW_USB_init(0U));
+    TEST_ASSERT_TRUE(HW_USB_init());
 }
 
 // [test->fw~hal_usb_002~1]

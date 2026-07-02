@@ -7,10 +7,17 @@
 /* Public Function Declarations */
 
 // Bring up the USB device's CDC virtual-serial interface: route the USB clock,
-// enable the USB interrupt, initialise the TinyUSB device stack, and spawn the
-// single device-service task at taskPriority. Returns false if the service task
-// cannot be created. Call once from main() before the scheduler starts.
-bool HW_USB_init(uint32_t taskPriority);
+// initialise the TinyUSB device stack, and enable the USB interrupt. Returns
+// false if the device stack fails to initialise. Call once from main() before
+// the scheduler starts, then service the stack from a dedicated task whose body
+// calls HW_USB_run().
+bool HW_USB_init(void);
+
+// Service the USB device stack: block on the event queue until a USB event
+// (posted by the USB ISR), process it, and push queued CDC TX toward the host.
+// Intended as the body of a dedicated USB task; runs its own service loop and
+// does not return under normal operation.
+void HW_USB_run(void);
 
 // True iff a host has opened the CDC virtual-serial port.
 bool HW_USB_connected(void);

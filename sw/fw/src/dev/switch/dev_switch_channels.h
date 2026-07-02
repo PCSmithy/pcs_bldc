@@ -7,6 +7,6 @@ typedef enum
 {
     DEV_SWITCH_CHANNEL_USER_BUTTON,
     DEV_SWITCH_CHANNEL_COUNT,
-} DEV_switch_channel_E;
+} dev_switch_channel_E;
 
 #endif // DEV_SWITCH_CHANNELS_H

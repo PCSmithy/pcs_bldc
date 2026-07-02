@@ -1,7 +1,7 @@
 #ifndef HW_GPIO_H
 #define HW_GPIO_H
 
-// Minimal mock of the HW_GPIO public header — only the surface DEV_switch
+// Minimal mock of the HW_GPIO public header — only the surface dev_switch
 // actually uses (port/level types + the cached-input read). The implementation
 // lives in mock_HW_GPIO.c and is driven by the controls in mock_HW_GPIO.h.
 #include "lib_types.h"

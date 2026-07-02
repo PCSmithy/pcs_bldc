@@ -18,7 +18,7 @@ static void buildGoodConfig(void)
 void setUp(void)
 {
     HW_USB_sim_reset();
-    (void)HW_USB_init(0U);
+    (void)HW_USB_init();
     HW_USB_sim_setConnected(true);
     buildGoodConfig();
 }

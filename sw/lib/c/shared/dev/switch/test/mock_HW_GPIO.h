@@ -4,7 +4,7 @@
 #include "lib_types.h"
 #include "HW_GPIO.h"
 
-// Test controls for the mocked HW_GPIO cached-input snapshot. DEV_switch reads
+// Test controls for the mocked HW_GPIO cached-input snapshot. dev_switch reads
 // pin levels through HW_GPIO_readCached; these drive what it sees.
 
 // Clear all injected levels (every pin reads HW_GPIO_LEVEL_LOW).

@@ -7,7 +7,7 @@ tags: [firmware, obs, rgb_led_ring, app]
 
 The app-layer ring UI drives the on-device RGB LED ring. It runs as a periodic
 task that reads the dial and motor encoders (`IO_AS5048`) and the debounced
-user button (`DEV_switch`), and renders to the ring through the `IO_SK6805`
+user button (`dev_switch`), and renders to the ring through the `IO_SK6805`
 string driver.
 
 See also: [[overview]] (sys~arch_001~1), [[rgb_leds]] (IO_SK6805 driver),

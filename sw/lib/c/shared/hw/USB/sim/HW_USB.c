@@ -27,11 +27,16 @@ static HW_USB_sim_data_S * const data = &HW_USB_sim_data;
 /* Public Function Definitions */
 
 // [impl->fw~hal_usb_001~1]
-bool HW_USB_init(uint32_t taskPriority)
+bool HW_USB_init(void)
 {
-    (void) taskPriority;
     data->txAccepting = true;
     return true;
+}
+
+// The loopback sim has no device stack to pump; TX/RX are driven directly by the
+// SIL hooks. Present for API symmetry with the stm32g4 target.
+void HW_USB_run(void)
+{
 }
 
 // [impl->fw~hal_usb_002~1]

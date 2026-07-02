@@ -6,7 +6,15 @@
 
 #include "IO_SK6805.h"
 #include "IO_AS5048.h"
-#include "DEV_switch.h"
+#include "dev_switch.h"
+
+/* Defines */
+
+// Mode-change confirmation flash, spread across 10 ms ticks: white for the
+// first half, off for the second (originally a blocking blink; now cooperative
+// so run10ms never stalls the shared task).
+#define APP_RGBLEDRING_BLINK_HALF_TICKS  (APP_RGBLEDRING_MODE_BLINK_MS / APP_RGBLEDRING_FRAME_PERIOD_MS)
+#define APP_RGBLEDRING_BLINK_TOTAL_TICKS (2U * APP_RGBLEDRING_BLINK_HALF_TICKS)
 
 /* Private Data Definitions */
 
@@ -14,6 +22,13 @@ static const app_rgbLedRing_config_S * appConfig = NULL;
 
 // One UI state per configured ring. Sized to the consumer's channel count.
 static app_rgbLedRing_state_S ringState[APP_RGBLEDRING_CHANNEL_COUNT];
+
+// Ticks left in each ring's mode-change flash (0 = not flashing).
+static uint8_t blinkTicksLeft[APP_RGBLEDRING_CHANNEL_COUNT];
+
+// Encoder references are seeded on the first run10ms, once the 1 ms task has
+// taken at least one AS5048 sample, so the first frame's deltas are ~0.
+static bool encodersSeeded = false;
 
 /* Private Function Definitions — rendering helpers (pure) */
 
@@ -264,29 +279,6 @@ void app_rgbLedRing_renderFrame(app_rgbLedRing_state_S * state, float32_t dialDe
 
 /* Private Function Definitions — RTOS/IO shell */
 
-// Flash a ring white (MODE_BLINK_MS on/off) as a mode-change confirmation.
-// Blocks the task for the flash; other tasks keep running. Each push is wrapped
-// in vTaskSuspendAll() so the SK6805 stream isn't preempted mid-transfer (the
-// real fix is DMA; this is the prototype path).
-static void blinkModeChange(IO_SK6805_channel_E ledChannel)
-{
-    const uint8_t white = (uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS / 10U;
-    for (uint8_t flash = 0U; flash < 1U; flash++)
-    {
-        IO_SK6805_setAll(ledChannel, white, white, white);
-        vTaskSuspendAll();
-        (void)IO_SK6805_update(ledChannel);
-        (void)xTaskResumeAll();
-        vTaskDelay(pdMS_TO_TICKS(APP_RGBLEDRING_MODE_BLINK_MS));
-
-        IO_SK6805_clear(ledChannel);
-        vTaskSuspendAll();
-        (void)IO_SK6805_update(ledChannel);
-        (void)xTaskResumeAll();
-        vTaskDelay(pdMS_TO_TICKS(APP_RGBLEDRING_MODE_BLINK_MS));
-    }
-}
-
 // Read a channel's latest cached angle (degrees); 0 if the read fails.
 static float32_t readAngleDeg(IO_AS5048_channel_E channel)
 {
@@ -295,62 +287,19 @@ static float32_t readAngleDeg(IO_AS5048_channel_E channel)
     return deg;
 }
 
-// [impl->fw~obs_ring_001~1]
-static void app_rgbLedRing_task(void * params)
+// Transmit a ring's staged framebuffer. The SK6805 is a continuous timed
+// stream: a preemption mid-transfer underruns the SPI FIFO and corrupts the
+// frame, so task switches are suspended across the transmit (DMA removes this).
+static void transmit(IO_SK6805_channel_E ledChannel)
 {
-    (void)params;
-
-    // Seed each ring's encoder references so the first frame's deltas are ~0.
-    for (size_t ch = 0U; ch < appConfig->numChannels; ch++)
-    {
-        const app_rgbLedRing_channelConfig_S * const cfg = &appConfig->channels[ch];
-        app_rgbLedRing_seedEncoders(&ringState[ch], readAngleDeg(cfg->dialChannel), readAngleDeg(cfg->motorChannel));
-    }
-
-    app_rgbLedRing_rgb_S pixels[APP_RGBLEDRING_MAX_PIXELS];
-
-    TickType_t lastWake = xTaskGetTickCount();
-    for (;;)
-    {
-        for (size_t ch = 0U; ch < appConfig->numChannels; ch++)
-        {
-            const app_rgbLedRing_channelConfig_S * const cfg = &appConfig->channels[ch];
-
-            // Advance this ring's mode on a button press (rising edge), confirmed
-            // by a white flash.
-            const bool button = DEV_switch_isActive(cfg->buttonChannel);
-            if (app_rgbLedRing_advanceMode(&ringState[ch], button))
-            {
-                blinkModeChange(cfg->ledChannel);
-                // Re-anchor the cadence: the blink blocked past several frames.
-                lastWake = xTaskGetTickCount();
-            }
-
-            const float32_t dialDeg  = readAngleDeg(cfg->dialChannel);
-            const float32_t motorDeg = readAngleDeg(cfg->motorChannel);
-
-            app_rgbLedRing_renderFrame(&ringState[ch], dialDeg, motorDeg, pixels, cfg->pixelCount);
-
-            for (uint16_t i = 0U; i < cfg->pixelCount; i++)
-            {
-                IO_SK6805_setPixel(cfg->ledChannel, i, pixels[i].red, pixels[i].green, pixels[i].blue);
-            }
-
-            // The SK6805 is a continuous timed stream: a preemption mid-transfer
-            // underruns the SPI FIFO and corrupts the frame. Suspend task switches
-            // across the transmit so the stream stays intact (DMA removes this).
-            vTaskSuspendAll();
-            (void)IO_SK6805_update(cfg->ledChannel);
-            (void)xTaskResumeAll();
-        }
-
-        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(APP_RGBLEDRING_FRAME_PERIOD_MS));
-    }
+    vTaskSuspendAll();
+    (void)IO_SK6805_update(ledChannel);
+    (void)xTaskResumeAll();
 }
 
-/* Public Function Definitions — lifecycle */
+/* Public Function Definitions */
 
-bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config, uint32_t taskPriority)
+bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config)
 {
     bool success = false;
     if ((config != NULL) && (config->channels != NULL) && (config->numChannels <= APP_RGBLEDRING_CHANNEL_COUNT))
@@ -370,13 +319,79 @@ bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config, uint32_t 
         if (channelsValid)
         {
             appConfig = config;
+            encodersSeeded = false;
             for (size_t ch = 0U; ch < config->numChannels; ch++)
             {
                 app_rgbLedRing_renderInit(&ringState[ch]);
+                blinkTicksLeft[ch] = 0U;
             }
-            success = (xTaskCreate(app_rgbLedRing_task, "led", configMINIMAL_STACK_SIZE * 2U,
-                                   NULL, (UBaseType_t)taskPriority, NULL) == pdPASS);
+            success = true;
         }
     }
     return success;
+}
+
+// [impl->fw~obs_ring_001~1]
+void app_rgbLedRing_run10ms(void)
+{
+    if (appConfig == NULL)
+    {
+        return;   // not initialised
+    }
+
+    if (!encodersSeeded)
+    {
+        for (size_t ch = 0U; ch < appConfig->numChannels; ch++)
+        {
+            const app_rgbLedRing_channelConfig_S * const cfg = &appConfig->channels[ch];
+            app_rgbLedRing_seedEncoders(&ringState[ch], readAngleDeg(cfg->dialChannel), readAngleDeg(cfg->motorChannel));
+        }
+        encodersSeeded = true;
+    }
+
+    app_rgbLedRing_rgb_S pixels[APP_RGBLEDRING_MAX_PIXELS];
+
+    for (size_t ch = 0U; ch < appConfig->numChannels; ch++)
+    {
+        const app_rgbLedRing_channelConfig_S * const cfg = &appConfig->channels[ch];
+
+        // Advance this ring's mode on a button press (rising edge); a change
+        // starts the confirmation flash.
+        const bool button = dev_switch_isActive(cfg->buttonChannel);
+        if (app_rgbLedRing_advanceMode(&ringState[ch], button))
+        {
+            blinkTicksLeft[ch] = APP_RGBLEDRING_BLINK_TOTAL_TICKS;
+        }
+
+        if (blinkTicksLeft[ch] > 0U)
+        {
+            // Cooperative mode-change flash: white for the first half, off for
+            // the second. Encoder deltas are held (the mode isn't rendered)
+            // until the flash finishes, matching the original blocking blink.
+            const uint8_t white = (uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS / 10U;
+            if (blinkTicksLeft[ch] > APP_RGBLEDRING_BLINK_HALF_TICKS)
+            {
+                IO_SK6805_setAll(cfg->ledChannel, white, white, white);
+            }
+            else
+            {
+                IO_SK6805_clear(cfg->ledChannel);
+            }
+            blinkTicksLeft[ch]--;
+        }
+        else
+        {
+            const float32_t dialDeg  = readAngleDeg(cfg->dialChannel);
+            const float32_t motorDeg = readAngleDeg(cfg->motorChannel);
+
+            app_rgbLedRing_renderFrame(&ringState[ch], dialDeg, motorDeg, pixels, cfg->pixelCount);
+
+            for (uint16_t i = 0U; i < cfg->pixelCount; i++)
+            {
+                IO_SK6805_setPixel(cfg->ledChannel, i, pixels[i].red, pixels[i].green, pixels[i].blue);
+            }
+        }
+
+        transmit(cfg->ledChannel);
+    }
 }

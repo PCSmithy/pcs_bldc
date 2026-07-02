@@ -5,31 +5,10 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-/* Private Function Declarations */
-
-static void HW_USB_serviceTask(void * params);
-
-/* Private Function Definitions */
-
-// USB device-service task: owns the TinyUSB device stack. It does nothing but
-// initialise the stack and then service it forever — tud_task() blocks on the
-// stack's event queue and, among other things, drains the CDC TX FIFO toward
-// the host. This is the only task that calls tud_task(), keeping the stack
-// single-threaded.
-static void HW_USB_serviceTask(void * params)
-{
-    (void) params;
-    tud_init(0);            // init device stack on rhport 0
-    for (;;)
-    {
-        tud_task();         // block until a USB event, then service it
-    }
-}
-
 /* Public Function Definitions */
 
 // [impl->fw~hal_usb_001~1]
-bool HW_USB_init(uint32_t taskPriority)
+bool HW_USB_init(void)
 {
     // Route the USB clock: PLL-Q = 48 MHz (matches ST usbd_conf.c MspInit).
     RCC_PeriphCLKInitTypeDef p = {0};
@@ -38,15 +17,28 @@ bool HW_USB_init(uint32_t taskPriority)
     (void) HAL_RCCEx_PeriphCLKConfig(&p);
     __HAL_RCC_USB_CLK_ENABLE();
 
-    // Priority 5 = FreeRTOS-safe (numerically >= configMAX_SYSCALL_INTERRUPT_PRIORITY),
+    // Set the USB IRQ priority BEFORE initialising the stack. tud_init() enables
+    // USB_LP_IRQn (via dcd_int_enable) and asserts the DP pull-up, after which the
+    // host can begin enumerating and the interrupt can fire immediately — so it
+    // must already sit at a FreeRTOS-safe priority (numerically >=
+    // configMAX_SYSCALL_INTERRUPT_PRIORITY), or its first FromISR call trips
+    // configASSERT in vPortValidateInterruptPriority. Priority 5 = FreeRTOS-safe,
     // matching our EXTI convention.
     HAL_NVIC_SetPriority(USB_LP_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USB_LP_IRQn);
 
-    // Surface a creation failure (e.g. heap exhaustion) rather than silently
-    // leaving the stack uninitialised.
-    return (xTaskCreate(HW_USB_serviceTask, "usbd", configMINIMAL_STACK_SIZE * 2U,
-                        NULL, (UBaseType_t)taskPriority, NULL) == pdPASS);
+    // tud_init creates the event queue before it enables the interrupt, so the
+    // queue exists by the time the first USB IRQ fires.
+    return tud_init(0);
+}
+
+void HW_USB_run(void)
+{
+    // Service the device stack: block on the event queue until the USB ISR posts
+    // an event, process it, and push queued CDC TX toward the host. This is the
+    // body of a dedicated USB task — tud_task() runs its own internal service
+    // loop and does not return under normal operation.
+    tud_task();
 }
 
 // [impl->fw~hal_usb_002~1]
@@ -68,8 +60,8 @@ void HW_USB_writeFlush(void)
 
 void HW_USB_serviceYield(void)
 {
-    // Yield a tick so the (higher-or-equal-priority) service task drains the
-    // TX FIFO before the caller retries.
+    // Yield a tick so the 1 ms task services the USB stack and drains the TX
+    // FIFO before the caller retries.
     vTaskDelay(1U);
 }
 
