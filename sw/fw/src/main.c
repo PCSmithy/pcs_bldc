@@ -195,13 +195,18 @@ static void task_usb(void * params)
 // Telemetry emit period (ms).
 #define TELEMETRY_PERIOD_MS 25
 
+// One window's Teleplot packets are formatted into a buffer this size and pushed
+// with a single IO_serial_write, so the CDC FIFO is flushed once per window
+// rather than once per byte (the per-byte path is far too slow to keep up).
+#define TELEMETRY_TX_BUF_BYTES 512U
+
 static void telemetryTask(void * params)
 {
     (void) params;
 
-    // Unbuffered stdout so each printf reaches the serial channel immediately —
-    // newlib would otherwise block-buffer (stdout isn't a tty) and not flush.
-    setvbuf(stdout, NULL, _IONBF, 0);
+    // One window's packets are batched into txBuf and written once (see
+    // TELEMETRY_TX_BUF_BYTES). Static to keep it off the task's small stack.
+    static char txBuf[TELEMETRY_TX_BUF_BYTES];
 
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
@@ -244,63 +249,69 @@ static void telemetryTask(void * params)
         uint32_t dialAngleDecimalScaled = 0U;
         floatToFixed(dialAngle_deg, 100U, &dialAngleScaled, &dialAngleDecimalScaled);
 
-        printf("motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-               "motor_raw:%lu:%u;"
-               "dial_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-               "dial_raw:%lu:%u\n",
-                (unsigned long)nowMs,
-                (unsigned long)motorAngleScaled,
-                (unsigned long)motorAngleDecimalScaled,
-                (unsigned long)nowMs,
-                (unsigned)motorAngleRaw,
-                (unsigned long)nowMs,
-                (unsigned long)dialAngleScaled,
-                (unsigned long)dialAngleDecimalScaled,
-                (unsigned long)nowMs,
-                (unsigned)dialAngleRaw);
+        // Batch every packet into txBuf, then push it with one write. Each
+        // snprintf only advances the offset if the packet fit (guards against a
+        // truncated write corrupting the length).
+        int off = 0;
+        int n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
+                         "motor_raw:%lu:%u;"
+                         "dial_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
+                         "dial_raw:%lu:%u\n",
+                         (unsigned long)nowMs,
+                         (unsigned long)motorAngleScaled,
+                         (unsigned long)motorAngleDecimalScaled,
+                         (unsigned long)nowMs,
+                         (unsigned)motorAngleRaw,
+                         (unsigned long)nowMs,
+                         (unsigned long)dialAngleScaled,
+                         (unsigned long)dialAngleDecimalScaled,
+                         (unsigned long)nowMs,
+                         (unsigned)dialAngleRaw);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        uint32_t  adc1Count = 0U;
-        float32_t adc1Volts = 0.0f;
-        (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
+        // uint32_t  adc1Count = 0U;
+        // float32_t adc1Volts = 0.0f;
+        // (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
+        // (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
 
-        uint32_t  adc2Count = 0U;
-        float32_t adc2Volts = 0.0f;
-        (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
+        // uint32_t  adc2Count = 0U;
+        // float32_t adc2Volts = 0.0f;
+        // (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
+        // (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
 
-        uint32_t adc1Whole = 0U;
-        uint32_t adc1Frac  = 0U;
-        floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
-        uint32_t adc2Whole = 0U;
-        uint32_t adc2Frac  = 0U;
-        floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
+        // uint32_t adc1Whole = 0U;
+        // uint32_t adc1Frac  = 0U;
+        // floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
+        // uint32_t adc2Whole = 0U;
+        // uint32_t adc2Frac  = 0U;
+        // floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
 
-        HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
-        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
+        // HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        // HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        // (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
+        // (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
 
-        printf("adc1_cnt:%lu:%lu;"
-               "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
-               "adc1_status:%lu:%u\n",
-                (unsigned long)nowMs,
-                (unsigned long)adc1Count,
-                (unsigned long)nowMs,
-                (unsigned long)adc1Whole,
-                (unsigned long)adc1Frac,
-                (unsigned long)nowMs,
-                (unsigned)adc1Status);
-        printf("adc2_cnt:%lu:%lu;"
-               "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
-               "adc2_status:%lu:%u\n",
-                (unsigned long)nowMs,
-                (unsigned long)adc2Count,
-                (unsigned long)nowMs,
-                (unsigned long)adc2Whole,
-                (unsigned long)adc2Frac,
-                (unsigned long)nowMs,
-                (unsigned)adc2Status);
+        // printf("adc1_cnt:%lu:%lu;"
+        //        "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
+        //        "adc1_status:%lu:%u\n",
+        //         (unsigned long)nowMs,
+        //         (unsigned long)adc1Count,
+        //         (unsigned long)nowMs,
+        //         (unsigned long)adc1Whole,
+        //         (unsigned long)adc1Frac,
+        //         (unsigned long)nowMs,
+        //         (unsigned)adc1Status);
+        // printf("adc2_cnt:%lu:%lu;"
+        //        "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
+        //        "adc2_status:%lu:%u\n",
+        //         (unsigned long)nowMs,
+        //         (unsigned long)adc2Count,
+        //         (unsigned long)nowMs,
+        //         (unsigned long)adc2Whole,
+        //         (unsigned long)adc2Frac,
+        //         (unsigned long)nowMs,
+        //         (unsigned)adc2Status);
 
         // Per-task worst-case body duration since the last emit (microseconds),
         // snapshotted and reset each window. task1ms/task10ms are pure CPU time
@@ -310,12 +321,21 @@ static void telemetryTask(void * params)
         const uint32_t task10msMaxUs = profileTakeMaxUs(PROFILE_TASK_10MS);
         const uint32_t telemMaxUs    = profileTakeMaxUs(PROFILE_TASK_TELEM);
 
-        printf("task1ms_us:%lu:%lu" TP_UNIT "us;"
-               "task10ms_us:%lu:%lu" TP_UNIT "us;"
-               "telem_us:%lu:%lu" TP_UNIT "us\n",
-                (unsigned long)nowMs, (unsigned long)task1msMaxUs,
-                (unsigned long)nowMs, (unsigned long)task10msMaxUs,
-                (unsigned long)nowMs, (unsigned long)telemMaxUs);
+        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                     "task1ms_us:%lu:%lu" TP_UNIT "us;"
+                     "task10ms_us:%lu:%lu" TP_UNIT "us;"
+                     "telem_us:%lu:%lu" TP_UNIT "us\n",
+                     (unsigned long)nowMs, (unsigned long)task1msMaxUs,
+                     (unsigned long)nowMs, (unsigned long)task10msMaxUs,
+                     (unsigned long)nowMs, (unsigned long)telemMaxUs);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+        // One write per window: IO_serial_write flushes the CDC FIFO once at the
+        // end, instead of the per-byte flush the printf path incurred.
+        if (off > 0)
+        {
+            IO_serial_write(IO_SERIAL_CHANNEL_CDC, (const uint8_t *)txBuf, (uint32_t)off);
+        }
 
         profileUpdate(PROFILE_TASK_TELEM, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
