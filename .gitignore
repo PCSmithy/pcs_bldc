@@ -68,3 +68,10 @@ __pycache__/
 
 # Claude Code runtime artifacts (committed config like skills/ stays tracked)
 .claude/scheduled_tasks.lock
+
+# Ephemeral session-handoff scratch notes (see the file header — intentionally
+# untracked; refreshed each session).
+docs/handoff.md
+
+# Cygwin/MSYS crash dumps (e.g. left by the CubeMX conversion script)
+*.stackdump
