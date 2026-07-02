@@ -24,6 +24,7 @@ static dev_switch_data_S * const data = &dev_switch_data;
 
 /* Public Function Definitions */
 
+// [impl->fw~ui_switch_001~1]
 bool dev_switch_init(const dev_switch_config_S * const config)
 {
     bool success = false;
@@ -66,6 +67,7 @@ bool dev_switch_init(const dev_switch_config_S * const config)
     return success;
 }
 
+// [impl->fw~ui_switch_002~1]
 void dev_switch_run1ms(void)
 {
     if (data->config != NULL)
@@ -106,6 +108,7 @@ void dev_switch_run1ms(void)
     }
 }
 
+// [impl->fw~ui_switch_002~1]
 dev_switch_state_E dev_switch_getState(dev_switch_channel_E channel)
 {
     dev_switch_state_E state = DEV_SWITCH_STATE_UNKNOWN;
@@ -118,6 +121,7 @@ dev_switch_state_E dev_switch_getState(dev_switch_channel_E channel)
 }
 
 
+// [impl->fw~ui_switch_002~1]
 bool dev_switch_isActive(dev_switch_channel_E channel)
 {
     bool active = false;

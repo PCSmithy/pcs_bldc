@@ -218,6 +218,7 @@ numbering at `_001`.
 | `mc`      | Motor control (FOC, motion, trajectory tracking) | sys, fw         |
 | `est`     | Estimation (Kalman, sensorless, parameter ID)    | sys, fw         |
 | `obs`     | Observability (telemetry, logging, plotting)     | sys, fw, app    |
+| `ui`      | On-device user-interface input drivers (buttons, controls) | sys, fw |
 | `ops`     | Operating modes / mode state machine             | sys, fw         |
 | `safety`  | Safety / fault handling                          | sys, fw         |
 | `pd`      | Power delivery / startup                         | sys, fw         |

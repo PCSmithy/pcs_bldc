@@ -3,9 +3,8 @@
 #include "lib_timer.h"
 #include "unity.h"
 
-// Unit tests for the debounced switch driver. These are untagged: dev_switch
-// has no fw~ spec yet, so there is no requirement ID to trace to. Add
-// [test->...] tags once a dev-switch spec is back-filled.
+// Unit tests for the debounced switch driver (fw~ui_switch_001 config/init,
+// fw~ui_switch_002 debounced state + query).
 
 // ---------------------------------------------------------------------------
 // Fake time source. dev_switch debounces via lib_timer, which binds its time
@@ -99,11 +98,13 @@ void tearDown(void) {}
 /* ---- uninitialized-state checks (must precede any successful init, since the
         driver keeps static config and has no de-init hook) ---- */
 
+// [test->fw~ui_switch_002~1]
 static void test_isActive_before_init_false(void)
 {
     TEST_ASSERT_FALSE(dev_switch_isActive(DEV_SWITCH_CHANNEL_BTN_A));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_run1ms_before_init_is_noop(void)
 {
     // Hold the button active, but with no init the update does nothing and the
@@ -115,30 +116,42 @@ static void test_run1ms_before_init_is_noop(void)
 
 /* ---- init + config validation ---- */
 
+// [test->fw~ui_switch_001~1]
 static void test_init_null_config_false(void)
 {
     TEST_ASSERT_FALSE(dev_switch_init(NULL));
 }
 
+// [test->fw~ui_switch_001~1]
 static void test_init_valid_config_true(void)
 {
     TEST_ASSERT_TRUE(dev_switch_init(&config));
 }
 
+// [test->fw~ui_switch_001~1]
 static void test_init_rejects_out_of_range_port(void)
 {
     channelCfg[DEV_SWITCH_CHANNEL_BTN_A].hwDigIn.port = HW_GPIO_PORT_COUNT;
     TEST_ASSERT_FALSE(dev_switch_init(&config));
 }
 
+// [test->fw~ui_switch_001~1]
 static void test_init_rejects_network_without_getState(void)
 {
     channelCfg[DEV_SWITCH_CHANNEL_BTN_NET].network.getState = NULL;
     TEST_ASSERT_FALSE(dev_switch_init(&config));
 }
 
+// [test->fw~ui_switch_001~1]
+static void test_init_rejects_unsupported_type(void)
+{
+    channelCfg[DEV_SWITCH_CHANNEL_BTN_A].type = DEV_SWITCH_TYPE_COUNT;
+    TEST_ASSERT_FALSE(dev_switch_init(&config));
+}
+
 /* ---- state model ---- */
 
+// [test->fw~ui_switch_001~1]
 static void test_state_unknown_before_settle(void)
 {
     TEST_ASSERT_TRUE(dev_switch_init(&config));
@@ -146,6 +159,7 @@ static void test_state_unknown_before_settle(void)
     TEST_ASSERT_FALSE(dev_switch_isActive(DEV_SWITCH_CHANNEL_BTN_A));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_settles_to_inactive_at_rest(void)
 {
     initAndSettle();
@@ -154,6 +168,7 @@ static void test_settles_to_inactive_at_rest(void)
 
 /* ---- debounce behaviour (HW digital-in) ---- */
 
+// [test->fw~ui_switch_002~1]
 static void test_press_registers_after_debounce(void)
 {
     initAndSettle();
@@ -167,6 +182,7 @@ static void test_press_registers_after_debounce(void)
     TEST_ASSERT_EQUAL_INT(DEV_SWITCH_STATE_ACTIVE, dev_switch_getState(DEV_SWITCH_CHANNEL_BTN_A));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_release_registers_after_debounce(void)
 {
     initAndSettle();
@@ -183,6 +199,7 @@ static void test_release_registers_after_debounce(void)
     TEST_ASSERT_FALSE(dev_switch_isActive(DEV_SWITCH_CHANNEL_BTN_A));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_bounce_shorter_than_debounce_is_rejected(void)
 {
     initAndSettle();
@@ -195,6 +212,7 @@ static void test_bounce_shorter_than_debounce_is_rejected(void)
     TEST_ASSERT_FALSE(dev_switch_isActive(DEV_SWITCH_CHANNEL_BTN_A));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_active_high_polarity(void)
 {
     initAndSettle();
@@ -207,6 +225,7 @@ static void test_active_high_polarity(void)
 
 /* ---- network-backed switch ---- */
 
+// [test->fw~ui_switch_002~1]
 static void test_network_switch_debounces(void)
 {
     initAndSettle();
@@ -221,6 +240,7 @@ static void test_network_switch_debounces(void)
 
 /* ---- addressing ---- */
 
+// [test->fw~ui_switch_002~1]
 static void test_channels_debounce_independently(void)
 {
     initAndSettle();
@@ -233,12 +253,14 @@ static void test_channels_debounce_independently(void)
     TEST_ASSERT_FALSE(dev_switch_isActive(DEV_SWITCH_CHANNEL_BTN_NET));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_getState_out_of_range_channel_unknown(void)
 {
     TEST_ASSERT_TRUE(dev_switch_init(&config));
     TEST_ASSERT_EQUAL_INT(DEV_SWITCH_STATE_UNKNOWN, dev_switch_getState(DEV_SWITCH_CHANNEL_COUNT));
 }
 
+// [test->fw~ui_switch_002~1]
 static void test_isActive_out_of_range_channel_false(void)
 {
     TEST_ASSERT_TRUE(dev_switch_init(&config));
@@ -256,6 +278,7 @@ int main(void)
     RUN_TEST(test_init_valid_config_true);
     RUN_TEST(test_init_rejects_out_of_range_port);
     RUN_TEST(test_init_rejects_network_without_getState);
+    RUN_TEST(test_init_rejects_unsupported_type);
 
     RUN_TEST(test_state_unknown_before_settle);
     RUN_TEST(test_settles_to_inactive_at_rest);
