@@ -76,7 +76,11 @@ if [ -d "${FREERTOS_SRC}" ]; then
   echo "==> Refreshing ${FREERTOS_DST}/ (vendor content only — CMakeLists.txt left alone)"
   rm -f  "${FREERTOS_DST}"/*.c
   rm -rf "${FREERTOS_DST}/include"
-  rm -rf "${FREERTOS_DST}/portable"
+  # Refresh only the vendor-managed portable subdirs. portable/Native-Fiber/ is
+  # our hand-authored cooperative SIL port (not in the CubeMX tree) and must
+  # survive the round-trip, so don't wipe portable/ wholesale.
+  rm -rf "${FREERTOS_DST}/portable/GCC"
+  rm -rf "${FREERTOS_DST}/portable/MemMang"
 
   mkdir -p "${FREERTOS_DST}/portable/GCC/ARM_CM4F" "${FREERTOS_DST}/portable/MemMang"
   cp "${FREERTOS_SRC}"/tasks.c "${FREERTOS_SRC}"/queue.c "${FREERTOS_SRC}"/list.c \

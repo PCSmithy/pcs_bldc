@@ -22,6 +22,7 @@
 #include "stm32g4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "HW_DMA.h"   // HW_DMA_irqHandler + HW_DMA_CHANNEL_* (DMA IRQ dispatch)
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -225,6 +226,22 @@ void USB_LP_IRQHandler(void)
 void USBWakeUp_IRQHandler(void)
 {
   EXTI->PR1 = (0x1UL << 18);   /* USB_WAKEUP_EXTI_LINE */
+}
+
+/**
+  * @brief DMA1 channel 1 (SK6805 LED frame TX) and channel 2 (AS5048 encoder
+  * RX) interrupts. Each forwards to HW_DMA, which drives the transfer's
+  * completion/error callbacks. The NVIC lines are enabled by HW_DMA_init once
+  * the SPI-DMA path is wired (M4); until then these handlers are dormant.
+  */
+void DMA1_Channel1_IRQHandler(void)
+{
+  HW_DMA_irqHandler(HW_DMA_CHANNEL_SK6805_TX);
+}
+
+void DMA1_Channel2_IRQHandler(void)
+{
+  HW_DMA_irqHandler(HW_DMA_CHANNEL_AS5048_RX);
 }
 
 /* USER CODE END 1 */
