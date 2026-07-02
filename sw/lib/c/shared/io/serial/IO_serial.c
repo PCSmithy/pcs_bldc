@@ -61,25 +61,36 @@ void IO_serial_write(IO_serial_channel_E channel, const uint8_t * bytes, uint32_
         switch (data->config->channels[channel].transport)
         {
             case IO_SERIAL_TRANSPORT_USB_CDC:
-                for (uint32_t i = 0U; i < len; i++)
+            {
+                // Push the whole buffer in as few transport calls as possible:
+                // HW_USB_write accepts up to the free FIFO space per call, so a
+                // buffer that fits goes in one call (per-byte calls were the
+                // dominant cost). Only stall+retry when the FIFO is actually
+                // full, and give up before blocking forever.
+                uint32_t sent = 0U;
+                uint32_t retries = 0U;
+                while (sent < len)
                 {
-                    uint32_t retries = 0U;
-                    while (HW_USB_write(&bytes[i], 1U) == 0U)
+                    const uint32_t accepted = HW_USB_write(&bytes[sent], len - sent);
+                    if (accepted > 0U)
                     {
-                        // Transport full: flush what is buffered, yield so the
-                        // device service drains it, and retry. Give up before
-                        // blocking forever.
+                        sent += accepted;
+                        retries = 0U;
+                    }
+                    else
+                    {
                         HW_USB_writeFlush();
                         HW_USB_serviceYield();
                         retries++;
                         if (retries >= IO_SERIAL_TX_RETRY_LIMIT)
                         {
-                            return;
+                            break;
                         }
                     }
                 }
                 HW_USB_writeFlush();
                 break;
+            }
 
             // case IO_SERIAL_TRANSPORT_UART: transmit over the HW_UART channel.
 

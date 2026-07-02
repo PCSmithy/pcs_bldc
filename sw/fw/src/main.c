@@ -270,48 +270,53 @@ static void telemetryTask(void * params)
                          (unsigned)dialAngleRaw);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        // uint32_t  adc1Count = 0U;
-        // float32_t adc1Volts = 0.0f;
-        // (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
-        // (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
+        uint32_t  adc1Count = 0U;
+        float32_t adc1Volts = 0.0f;
+        (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
 
-        // uint32_t  adc2Count = 0U;
-        // float32_t adc2Volts = 0.0f;
-        // (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
-        // (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
+        uint32_t  adc2Count = 0U;
+        float32_t adc2Volts = 0.0f;
+        (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
 
-        // uint32_t adc1Whole = 0U;
-        // uint32_t adc1Frac  = 0U;
-        // floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
-        // uint32_t adc2Whole = 0U;
-        // uint32_t adc2Frac  = 0U;
-        // floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
+        uint32_t adc1Whole = 0U;
+        uint32_t adc1Frac  = 0U;
+        floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
+        uint32_t adc2Whole = 0U;
+        uint32_t adc2Frac  = 0U;
+        floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
 
-        // HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        // HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        // (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
-        // (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
+        HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
+        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
+        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
 
-        // printf("adc1_cnt:%lu:%lu;"
-        //        "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
-        //        "adc1_status:%lu:%u\n",
-        //         (unsigned long)nowMs,
-        //         (unsigned long)adc1Count,
-        //         (unsigned long)nowMs,
-        //         (unsigned long)adc1Whole,
-        //         (unsigned long)adc1Frac,
-        //         (unsigned long)nowMs,
-        //         (unsigned)adc1Status);
-        // printf("adc2_cnt:%lu:%lu;"
-        //        "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
-        //        "adc2_status:%lu:%u\n",
-        //         (unsigned long)nowMs,
-        //         (unsigned long)adc2Count,
-        //         (unsigned long)nowMs,
-        //         (unsigned long)adc2Whole,
-        //         (unsigned long)adc2Frac,
-        //         (unsigned long)nowMs,
-        //         (unsigned)adc2Status);
+        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                     "adc1_cnt:%lu:%lu;"
+                     "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
+                     "adc1_status:%lu:%u\n",
+                     (unsigned long)nowMs,
+                     (unsigned long)adc1Count,
+                     (unsigned long)nowMs,
+                     (unsigned long)adc1Whole,
+                     (unsigned long)adc1Frac,
+                     (unsigned long)nowMs,
+                     (unsigned)adc1Status);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                     "adc2_cnt:%lu:%lu;"
+                     "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
+                     "adc2_status:%lu:%u\n",
+                     (unsigned long)nowMs,
+                     (unsigned long)adc2Count,
+                     (unsigned long)nowMs,
+                     (unsigned long)adc2Whole,
+                     (unsigned long)adc2Frac,
+                     (unsigned long)nowMs,
+                     (unsigned)adc2Status);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         // Per-task worst-case body duration since the last emit (microseconds),
         // snapshotted and reset each window. task1ms/task10ms are pure CPU time
@@ -330,8 +335,8 @@ static void telemetryTask(void * params)
                      (unsigned long)nowMs, (unsigned long)telemMaxUs);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        // One write per window: IO_serial_write flushes the CDC FIFO once at the
-        // end, instead of the per-byte flush the printf path incurred.
+        // One write per window: IO_serial_write batches the whole buffer into the
+        // CDC FIFO in one call and flushes once.
         if (off > 0)
         {
             IO_serial_write(IO_SERIAL_CHANNEL_CDC, (const uint8_t *)txBuf, (uint32_t)off);
