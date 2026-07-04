@@ -16,17 +16,25 @@ Table: models, the Route Table, the sim clock/step loop, comms, run modes, and
 Python bindings.
 
 All work is on branch **`sil`** (worktree `C:/code/pcs_bldc-sil`), pushed to
-`origin/sil`. Latest commit: enum-name resolution (`967d83a`).
+`origin/sil`. The branch was **rebased onto current `main`** (`c9b4238`, the
+complete firmware foundation) on 2026-07-04, and the **firmware/SIL build was
+unified**: the SIM target now runs the SAME four FreeRTOS tasks and real
+io/dev/app modules as embedded (see "What's done").
 
 ## Build & run
 
 ```bash
-tools/run_sil.sh            # build firmware DLL + voyant, run the demo
+tools/run_sil.sh            # build firmware DLL + voyant, run the sanity suite
 tools/run_sil.sh --clean    # wipe the native build dir first
 ```
 
-The demo loads the firmware DLL, drives it over the control ABI, samples state
-into the State Table, and shows the historian + enum reads + inject-and-react.
+The suite loads the firmware DLL, drives it over the control ABI, and runs
+named PASS/FAIL checks (exit nonzero on any failure): boot; all four real
+FreeRTOS tasks advancing; State Table historian/enum/ZOH; and an end-to-end
+path — inject an AS5048 SPI frame via DWARF write, assert the exact angle
+comes out in the telemetry text captured by the sim USB driver. All
+injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
+C APIs — see `backlog.md`).
 
 Rust unit tests: `cd sw/sil && cargo test -p voyant` (10 tests).
 
@@ -83,6 +91,16 @@ docs/sil/*.md            the design (see "Design docs" below)
     change-logged history (dedup + per-signal epsilon, default 1e-3), current
     cache (O(1)), `value_at` ZOH (O(log n)), injection **overrides**, time-based
     retention (`None` = unbounded for fast mode).
+- **Rebased onto current `main` + firmware/SIL build unified (2026-07-04):**
+  the SIM target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`,
+  `task_usb`, `telemetryTask`) and the same io/dev/app init as embedded, via
+  shared `prvHwInit`/`prvAppInit`/`prvCreateTasks` in `main.c`. Target gating
+  survives only at the hw-layer seam plus `HAL_Init`/timebase/`__io_putchar`
+  and the per-target entry points. All io/dev/app modules link on both targets
+  against real sim hw drivers; sim `HW_USB_run()` yields via `vTaskDelay(1)`
+  (interim until D8). Per-task heartbeat counters + the sanity suite (above)
+  prove the real code runs natively. Embedded ELF impact: +~80 B flash,
+  +16 B bss.
 
 ## What's next (prioritized)
 
@@ -106,13 +124,6 @@ docs/sil/*.md            the design (see "Design docs" below)
 
 ## Open threads / pending decisions
 
-- **Rebase `sil` onto fresh `main`.** `sil` is based on a June `main`; `main` has
-  since landed the *complete firmware foundation* (full hw/io/dev/app driver
-  stack — see `CLAUDE.md`). The Rust engine is firmware-agnostic so it doesn't
-  need this, but **Phase 3 (plant models closing the loop with real firmware
-  control code) will** — and there's no motor/control app code yet anyway. Plan:
-  rebase before Phase 3, expecting conflicts in `main.c` (the SIM path) and the
-  HW drivers. Not urgent for engine work (#1–#6 above).
 - **Trait seams not yet formalized.** `Firmware` is a concrete struct; the
   generic-framework vision (D-doc `architecture.md` §7) wants `Backend`/`Model`/
   `Transport`/`Scenario` traits. Do this alongside #1/#4.
