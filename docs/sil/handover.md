@@ -118,6 +118,9 @@ docs/sil/*.md            the design (see "Design docs" below)
   `Transport`/`Scenario` traits. Do this alongside #1/#4.
 - **Coercion follow-ups (low priority, accepted):** `i64` firmware fields narrow
   to `Value::I32` (rare; user OK with it); unknown enumerators read as `<n>`.
+- **Deferred cleanups live in `backlog.md`** — notably: remove the
+  `HW_<Module>_sim.h` inject/inspect layer (redundant once SIL white-box
+  injection is feature-complete) and rework the unit tests that lean on it.
 
 ## Design docs (source of truth)
 
