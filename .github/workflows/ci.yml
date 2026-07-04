@@ -1,0 +1,54 @@
+name: firmware + SIL
+
+# Build the board firmware and run the SIL sanity suite on all three dev
+# platforms. Linux/macOS use the hand-rolled coroutine FreeRTOS port; Windows
+# uses the Win32-fiber port. macOS runners are Apple Silicon (arm64); Linux and
+# Windows are x86-64. Rust/CMake are preinstalled on GitHub runners.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Run the tools/*.sh scripts through bash on every platform (Git Bash on Windows).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- toolchains ------------------------------------------------------
+      - name: Install Ninja
+        run: |
+          case "${{ runner.os }}" in
+            Linux)   sudo apt-get update && sudo apt-get install -y ninja-build ;;
+            macOS)   brew install ninja ;;
+            Windows) choco install ninja -y ;;
+          esac
+
+      - name: Install ARM GCC (embedded firmware)
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+
+      # The native firmware build finds host `gcc`; on Windows that's MinGW, which
+      # also provides the <windows.h> the Win32-fiber port needs.
+      - name: Install MinGW gcc (Windows native build)
+        if: runner.os == 'Windows'
+        run: |
+          C:/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
+          echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
+
+      # --- board firmware (.elf/.bin/.hex) --------------------------------
+      - name: Build firmware (embedded ARM)
+        run: bash tools/build_arm.sh
+
+      # --- native SIL: build the firmware shared lib + drive it white-box --
+      - name: Run SIL sanity suite
+        run: bash tools/run_sil.sh --clean
