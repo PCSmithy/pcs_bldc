@@ -1,9 +1,12 @@
 # SIL (Software-in-the-Loop) testing environment
 
+> **Picking this up fresh? Start with [`handover.md`](handover.md)** — current
+> status, code map, how to run, and the prioritized next steps.
+
 This directory holds the planning + architecture docs for the pcs_bldc SIL
-environment: a Rust framework that runs the **native cross-compiled C
-firmware** against simulated plant models, with white-box inspection of
-firmware state during execution.
+environment: a Rust framework (**`voyant`**) that runs the **native
+cross-compiled C firmware** against simulated plant models, with white-box
+inspection of firmware state during execution.
 
 Two run modes share one core engine:
 
