@@ -36,6 +36,21 @@ pub(crate) enum Scalar {
     Bool,
 }
 
+/// A resolved leaf type: a plain scalar, or an enum (identified by its type
+/// offset, so the cvar resolver can map the raw integer to an enumerator name).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Leaf {
+    Scalar(Scalar),
+    Enum(usize),
+}
+
+/// An enumeration type: its underlying byte size + numeric-value → name map.
+#[derive(Default)]
+struct EnumInfo {
+    size: u64,
+    values: HashMap<i64, String>,
+}
+
 #[derive(Default)]
 struct Maps {
     /// variable name -> (link address, type's global .debug_info offset)
@@ -48,8 +63,10 @@ struct Maps {
     arrays: HashMap<usize, usize>,
     /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
-    /// base/enum type offset -> (DW_ATE encoding, byte size)
+    /// base type offset -> (DW_ATE encoding, byte size)
     base: HashMap<usize, (u8, u64)>,
+    /// enumeration type offset -> its size + value→name map
+    enums: HashMap<usize, EnumInfo>,
 }
 
 pub(crate) struct DwarfMap(Maps);
@@ -85,7 +102,7 @@ impl DwarfMap {
     /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
     /// kind). Returns None if any segment, member, index type, or leaf kind is
     /// unknown.
-    pub(crate) fn resolve(&self, path: &str) -> Option<(u64, Scalar)> {
+    pub(crate) fn resolve(&self, path: &str) -> Option<(u64, Leaf)> {
         let mut segs = path.split('.');
 
         let (name, indices) = split_indices(segs.next()?)?;
@@ -101,7 +118,28 @@ impl DwarfMap {
             ty = self.index(&mut addr, ty, &indices)?;
         }
 
-        Some((addr, self.scalar_kind(ty)?))
+        let leaf = if self.0.enums.contains_key(&ty) {
+            Leaf::Enum(ty)
+        } else {
+            Leaf::Scalar(self.scalar_kind(ty)?)
+        };
+        Some((addr, leaf))
+    }
+
+    /// The byte size of an enum type.
+    pub(crate) fn enum_size(&self, off: usize) -> Option<u64> {
+        self.0.enums.get(&off).map(|e| e.size)
+    }
+
+    /// The enumerator name for a numeric value.
+    pub(crate) fn enum_name(&self, off: usize, value: i64) -> Option<&str> {
+        self.0.enums.get(&off)?.values.get(&value).map(String::as_str)
+    }
+
+    /// The numeric value for an enumerator name (for writes).
+    pub(crate) fn enum_value(&self, off: usize, name: &str) -> Option<i64> {
+        let e = self.0.enums.get(&off)?;
+        e.values.iter().find(|(_, n)| *n == name).map(|(&v, _)| v)
     }
 
     /// Apply `[i][j]...` to an array type, advancing `addr` and returning the
@@ -219,7 +257,19 @@ fn collect_unit(
             gimli::DW_TAG_enumeration_type => {
                 if let (Some(g), Some(sz)) = (goff, byte_size(entry)) {
                     maps.sizes.insert(g, sz);
-                    maps.base.insert(g, (gimli::DW_ATE_unsigned.0, sz));
+                    // Enumerator children (below) fill the value→name map.
+                    maps.enums.entry(g).or_default().size = sz;
+                }
+            }
+            gimli::DW_TAG_enumerator => {
+                if let Some(&(_, parent, ptag)) = stack.last() {
+                    if ptag == gimli::DW_TAG_enumeration_type {
+                        if let (Some(name), Some(val)) =
+                            (die_name(dwarf, unit, entry), const_value(entry))
+                        {
+                            maps.enums.entry(parent).or_default().values.insert(val, name);
+                        }
+                    }
                 }
             }
             gimli::DW_TAG_pointer_type
@@ -292,6 +342,12 @@ fn encoding(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u8> {
         gimli::AttributeValue::Encoding(e) => Some(e.0),
         other => other.udata_value().map(|u| u as u8),
     }
+}
+
+/// An enumerator's `DW_AT_const_value` as an i64 (signed first, else unsigned).
+fn const_value(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<i64> {
+    let v = entry.attr_value(gimli::DW_AT_const_value).ok().flatten()?;
+    v.sdata_value().or_else(|| v.udata_value().map(|u| u as i64))
 }
 
 /// Split a path segment like `counts[6]` into (`"counts"`, `[6]`), or

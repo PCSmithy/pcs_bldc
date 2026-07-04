@@ -75,6 +75,15 @@ fn main() {
         st.value_at(&ramp, mid).unwrap().unwrap()
     );
 
+    // Enum-typed cvars resolve to their symbolic name (DWARF enumerators).
+    println!("\n-- enum cvars read as symbolic names --");
+    for local in [
+        "HW_ADC_channelConfig[0].triggerMode",
+        "HW_ADC_channelConfig[0].xferMode",
+    ] {
+        println!("  {local} = {}", fw.read_cvar(local));
+    }
+
     // White-box write through the resolver; the firmware reacts on next tick.
     println!("\n-- inject: write {tickc} = 1000, one tick --");
     fw.write_cvar(tickc.name(), &Value::U32(1000));

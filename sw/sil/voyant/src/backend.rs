@@ -7,7 +7,7 @@
 //! only firmware-coupled (unsafe / DWARF) part of the framework; the State Table
 //! itself is pure data, fed by this resolver.
 
-use crate::dwarf::{DwarfMap, Scalar};
+use crate::dwarf::{DwarfMap, Leaf, Scalar};
 use crate::signal::Value;
 use libloading::{Library, Symbol};
 use std::error::Error;
@@ -91,27 +91,81 @@ impl Firmware {
     }
 
     /// Sample a firmware `static` by DWARF path into a logical [`Value`]
-    /// (the cvar sample-resolver). Widths are coerced (see `scalar_to_value`).
+    /// (the cvar sample-resolver). Scalar widths are coerced; an enum field
+    /// reads as its symbolic [`Value::Enum`] name (or `<n>` for an unknown
+    /// enumerator, e.g. a bitwise combination).
     pub fn read_cvar(&self, path: &str) -> Value {
-        let (p, kind) = self.resolve(path);
+        let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address (DWARF + slide); firmware quiescent.
-        unsafe { scalar_to_value(p, kind) }
+        unsafe {
+            match leaf {
+                Leaf::Scalar(kind) => scalar_to_value(p, kind),
+                Leaf::Enum(off) => {
+                    let n = read_uint(p, self.dwarf.enum_size(off).unwrap()) as i64;
+                    match self.dwarf.enum_name(off, n) {
+                        Some(name) => Value::Enum(name.to_string()),
+                        None => Value::Enum(format!("<{n}>")),
+                    }
+                }
+            }
+        }
     }
 
-    /// Write a logical [`Value`] into a firmware `static` by DWARF path (coerced
-    /// to the field's width; panics on an incompatible variant).
+    /// Write a logical [`Value`] into a firmware `static` by DWARF path. Scalars
+    /// coerce to the field's width; an enum accepts [`Value::Enum`] (name → its
+    /// value) or a raw `U32`/`I32`. Panics on an incompatible variant.
     pub fn write_cvar(&self, path: &str, v: &Value) {
-        let (p, kind) = self.resolve(path);
+        let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address of the field's size; firmware quiescent.
-        unsafe { value_to_scalar(p, kind, v) }
+        unsafe {
+            match leaf {
+                Leaf::Scalar(kind) => value_to_scalar(p, kind, v),
+                Leaf::Enum(off) => {
+                    let n = match v {
+                        Value::Enum(name) => self
+                            .dwarf
+                            .enum_value(off, name)
+                            .unwrap_or_else(|| panic!("unknown enumerator {name:?} for {path}")),
+                        Value::U32(x) => *x as i64,
+                        Value::I32(x) => *x as i64,
+                        other => panic!("cannot write {other:?} to enum {path}"),
+                    };
+                    write_uint(p, self.dwarf.enum_size(off).unwrap(), n as u64);
+                }
+            }
+        }
     }
 
-    fn resolve(&self, path: &str) -> (*mut u8, Scalar) {
-        let (link, kind) = self
+    fn resolve(&self, path: &str) -> (*mut u8, Leaf) {
+        let (link, leaf) = self
             .dwarf
             .resolve(path)
             .unwrap_or_else(|| panic!("DWARF path not found: {path}"));
-        (link.wrapping_add(self.slide) as *mut u8, kind)
+        (link.wrapping_add(self.slide) as *mut u8, leaf)
+    }
+}
+
+/// Read an unsigned integer of `size` bytes.
+/// SAFETY: `p` points at `size` readable bytes.
+unsafe fn read_uint(p: *const u8, size: u64) -> u64 {
+    match size {
+        1 => p.read_unaligned() as u64,
+        2 => (p as *const u16).read_unaligned() as u64,
+        4 => (p as *const u32).read_unaligned() as u64,
+        8 => (p as *const u64).read_unaligned(),
+        _ => panic!("unsupported enum size {size}"),
+    }
+}
+
+/// Write an integer's low `size` bytes.
+/// SAFETY: `p` points at `size` writable bytes.
+unsafe fn write_uint(p: *mut u8, size: u64, v: u64) {
+    match size {
+        1 => p.write_unaligned(v as u8),
+        2 => (p as *mut u16).write_unaligned(v as u16),
+        4 => (p as *mut u32).write_unaligned(v as u32),
+        8 => (p as *mut u64).write_unaligned(v),
+        _ => panic!("unsupported enum size {size}"),
     }
 }
 
