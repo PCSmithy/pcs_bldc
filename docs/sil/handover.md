@@ -36,7 +36,7 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (18 tests).
+Rust unit tests: `cd sw/sil && cargo test -p voyant` (26 tests).
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
@@ -59,6 +59,9 @@ sw/sil/
     src/model.rs            Model trait + vsig backing: register_model/record_model
                             glue + RampModel reference impl (models sampled into
                             the State Table like cvars; StateTable stays pure data)
+    src/route.rs            RouteTable: source->destination transport, one
+                            snapshot-then-write pass/tick, per-route suspend/resume
+                            (pure data + explicit propagate; cvar dests via Backend)
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
                             (Scalar | Enum), incl. enum value->name
   pcs_bldc_sil/           THE INSTANTIATION (board-specific driver/demo)
@@ -115,9 +118,18 @@ docs/sil/*.md            the design (see "Design docs" below)
    `RampModel` is the reference impl; the sanity suite check 5 demonstrates
    register → advance-with-time → historian record. Plant models come later
    (Phase 3, instantiation-side).
-2. **Route Table** — `source → destination`, snapshot-then-write once per tick,
-   with per-route **suspend/resume** (pairs with the table's `override`) for
-   fault injection.
+2. ~~**Route Table**~~ — **DONE (2026-07-04).** `voyant::route` adds `RouteTable`
+   (`add`/`suspend`/`resume`/`propagate`): a flat list of `source → destination`
+   routes propagated in one **snapshot-then-write** pass per tick (snapshot all
+   enabled sources from the State Table's current cache, then write all dests), so
+   a chain `x→y→z` advances one hop per tick. Sources are any State Table entry
+   (`vsig`/`cvar`); destinations are `cvar`s driven via `Backend::write_cvar` (the
+   DWARF path is the id's `name` segment — no separate mapping). Per-route
+   `suspend`/`resume` gates driving for fault injection (pairs with the table's
+   `override`). A `vsig` destination (model input) needs a `Model::write` seam and
+   is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
+   snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
+   model's `vsig` into a firmware `cvar` and proves suspend/resume gating.
 3. **Sim clock / step loop** — the engine loop: `advance models → propagate
    routes → sil_fw_advance_tick → record`. (`StateTable::set_time` + `record`
    are ready.)

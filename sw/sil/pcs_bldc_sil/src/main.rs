@@ -10,15 +10,17 @@
 //! Each check prints PASS/FAIL; the process exits nonzero if any check fails, so
 //! `tools/run_sil.sh` catches regressions. No firmware `_sim_*` API is called —
 //! all injection/inspection is DWARF white-box (the sim drivers' statics are the
-//! future State Table signals).
+//! future State Table signals). It also exercises the model + Route Table seams:
+//! a model's `vsig` is routed into a firmware `cvar` and read back, with
+//! suspend/resume proving per-route fault-injection gating.
 //!
 //! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voyant::{
-    record_model, register_model, vsig_id, Backend, Firmware, Model, RampModel, SignalId,
-    StateTable, Value,
+    record_model, register_model, vsig_id, Backend, Firmware, Model, ModelSignal, RampModel,
+    RouteTable, SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
@@ -119,8 +121,12 @@ fn main() -> ExitCode {
     println!("\n-- 5. model-backed vsig signal (Model trait) --");
     check_model_vsig(&mut rep);
 
-    // --- Check 6: shutdown --------------------------------------------------
-    println!("\n-- 6. shutdown --");
+    // --- Check 6: Route Table drives a firmware cvar from a model -----------
+    println!("\n-- 6. route table (model vsig -> firmware cvar) --");
+    check_route_table(&fw, &mut rep);
+
+    // --- Check 7: shutdown --------------------------------------------------
+    println!("\n-- 7. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -329,6 +335,106 @@ fn check_model_vsig(rep: &mut Report) {
         "vsig advances with sim time and the historian records it",
         (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
         format!("{n_changes} change-log entries, current = {last:?} (expect F64(5.0))"),
+    );
+}
+
+/// A minimal integer "sensor" model for the route demo: one `counts` signal that
+/// steps by a fixed amount each tick. It emits [`Value::U32`] so a route can drive
+/// a firmware `uint32_t` static with no type conversion — voyant's [`RampModel`]
+/// is `F64`, and a float→counts conversion is a *sensor model*'s job (deferred to
+/// Phase 3), not a route's (routes are pure copies). Board-specific models like
+/// this live on the instantiation side, per architecture.md §7.
+struct CountsRampModel {
+    name: String,
+    step: u32,
+    counts: u32,
+}
+
+impl CountsRampModel {
+    fn new(name: &str, step: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            step,
+            counts: 0,
+        }
+    }
+}
+
+impl Model for CountsRampModel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn signals(&self) -> Vec<ModelSignal> {
+        vec![ModelSignal::new("counts", Some("counts"))]
+    }
+    fn advance(&mut self, _dt_us: u64) {
+        self.counts = self.counts.wrapping_add(self.step);
+    }
+    fn read(&self, local: &str) -> Option<Value> {
+        match local {
+            "counts" => Some(Value::U32(self.counts)),
+            _ => None,
+        }
+    }
+}
+
+/// Prove the Route Table end-to-end against the real firmware: a Rust model's
+/// `vsig` drives a firmware `cvar` (the Phase-3 shape — plant output into a
+/// firmware sensor input), and suspend/resume gates that drive. Each tick:
+/// advance + record the model, `propagate`, then read the firmware static back
+/// (before any `advance_tick`, so the firmware ramp can't clobber it).
+fn check_route_table(fw: &Firmware, rep: &mut Report) {
+    let mut st = StateTable::new();
+    let mut model = CountsRampModel::new("sensor", 100);
+    register_model(&mut st, &model).expect("register vsig");
+    let src = vsig_id("sensor", "counts").expect("valid vsig id");
+
+    // Drive an ADC count static (a firmware sensor-input `cvar`) from the model.
+    let dst = SignalId::new("cvar", SOURCE, "HW_ADC_data.channelData[0].counts[6]", None)
+        .expect("valid cvar id");
+    let mut routes = RouteTable::new();
+    routes.add(src.clone(), dst.clone()).expect("add route");
+
+    // Active route: the firmware static tracks the model exactly, tick by tick.
+    let mut tracked = true;
+    let mut last = 0u64;
+    for tick in 1..=4u64 {
+        model.advance(TICK_US);
+        st.set_time(tick * TICK_US);
+        record_model(&mut st, &model).expect("record vsig");
+        routes.propagate(&st, fw).expect("propagate");
+        let got = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+        tracked &= got == (tick * 100);
+        last = got;
+    }
+    rep.check(
+        "route drives a firmware cvar from a model vsig",
+        tracked && (last == 400),
+        format!("counts[6] tracked the model to {last} over 4 ticks (expect 400)"),
+    );
+
+    // Suspend: advance the model to a new value; the firmware static must NOT
+    // follow (the route stopped driving its destination).
+    routes.suspend(&src, &dst).expect("suspend");
+    model.advance(TICK_US);
+    st.set_time(5 * TICK_US);
+    record_model(&mut st, &model).expect("record vsig");
+    routes.propagate(&st, fw).expect("propagate");
+    let held = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    rep.check(
+        "suspended route stops driving its destination",
+        (held == last) && (held != 500),
+        format!("counts[6] held at {held} while model advanced to 500"),
+    );
+
+    // Resume: the model's current value drives the destination again.
+    routes.resume(&src, &dst).expect("resume");
+    routes.propagate(&st, fw).expect("propagate");
+    let resumed = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    rep.check(
+        "resumed route drives the destination again",
+        resumed == 500,
+        format!("counts[6] = {resumed} after resume (expect 500)"),
     );
 }
 

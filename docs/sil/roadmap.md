@@ -104,8 +104,14 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   (StateTable stays pure data — the glue lives in `model`, not the table).
   `RampModel` reference impl; 8 new unit tests; sanity-suite check 5 shows
   register → advance-with-time → historian record.
-- ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
-  with per-route suspend/resume
+- ☑ **Route Table** (`voyant::route`): `RouteTable` of `source → destination`
+  routes, one **snapshot-then-write** pass/tick (`propagate` snapshots all enabled
+  sources from the State Table cache, then writes all dests — order-independent,
+  one hop/tick). Sources are any entry (`vsig`/`cvar`); `cvar` dests are driven
+  via `Backend::write_cvar` (DWARF path = id `name`). Per-route `suspend`/`resume`
+  for fault injection (pairs with the table `override`); `vsig` dests deferred to
+  a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
+  firmware `cvar`, suspend/resume gating).
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)
