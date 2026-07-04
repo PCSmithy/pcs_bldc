@@ -7,6 +7,13 @@
 //! (task_1ms -> IO_AS5048 -> HW_SPI(sim) -> telemetryTask -> IO_serial ->
 //! HW_USB(sim capture)) carries an injected encoder reading out as Teleplot text.
 //!
+//! Most checks now drive the firmware through the [`voyant::Engine`] step loop
+//! (the sim clock): each `step` advances sim time, advances models, propagates
+//! routes, runs the firmware, and samples registered cvars into the historian.
+//! The engine is the suite's first real consumer. Checks 6 (route-table
+//! primitives, read between propagate and advance_tick) and 1/7 (backend
+//! lifecycle) stay below the engine on purpose.
+//!
 //! Each check prints PASS/FAIL; the process exits nonzero if any check fails, so
 //! `tools/run_sil.sh` catches regressions. No firmware `_sim_*` API is called —
 //! all injection/inspection is DWARF white-box (the sim drivers' statics are the
@@ -19,8 +26,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voyant::{
-    record_model, register_model, vsig_id, Backend, Firmware, Model, ModelSignal, RampModel,
-    RouteTable, SignalId, StateTable, Value,
+    record_model, register_model, vsig_id, Backend, Engine, Firmware, Model, ModelSignal,
+    RampModel, RouteTable, SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
@@ -36,6 +43,11 @@ fn default_lib_path() -> PathBuf {
         "libpcs_bldc_fw.so"
     };
     PathBuf::from("../../build/native-fw/src").join(name)
+}
+
+/// A `cvar:pcs_bldc:<path>` id for this board's firmware statics.
+fn cvar(path: &str) -> SignalId {
+    SignalId::new("cvar", SOURCE, path, None).expect("valid cvar id")
 }
 
 /// Coerce a logical [`Value`] to an unsigned integer for the checks below.
@@ -119,7 +131,7 @@ fn main() -> ExitCode {
 
     // --- Check 5: model-backed (vsig) signal --------------------------------
     println!("\n-- 5. model-backed vsig signal (Model trait) --");
-    check_model_vsig(&mut rep);
+    check_model_vsig(&fw, &mut rep);
 
     // --- Check 6: Route Table drives a firmware cvar from a model -----------
     println!("\n-- 6. route table (model vsig -> firmware cvar) --");
@@ -139,8 +151,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Read the four per-task heartbeat counters, advance ~50 ticks, and assert each
-/// task advanced by roughly its expected count for its period.
+/// Read the four per-task heartbeat counters, advance ~50 ticks **through the
+/// engine**, and assert each task advanced by roughly its expected count for its
+/// period. The engine samples the counters into its historian each tick, so the
+/// post-window values are read straight from the State Table.
 fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];
     const N: u64 = 50;
@@ -149,12 +163,26 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         .iter()
         .map(|c| v_u64(&fw.read_cvar(c)).unwrap_or(0))
         .collect();
-    for _ in 0..N {
-        fw.advance_tick();
+
+    let mut eng = Engine::new(fw, TICK_US);
+    let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
+    for id in &ids {
+        eng.sample_cvar(id.clone(), None).expect("register counter");
     }
-    let after: Vec<u64> = COUNTERS
+    for _ in 0..N {
+        eng.step().expect("engine step");
+    }
+    // Post-window counter values come from the engine's own historian.
+    let after: Vec<u64> = ids
         .iter()
-        .map(|c| v_u64(&fw.read_cvar(c)).unwrap_or(0))
+        .map(|id| {
+            eng.state()
+                .current_value(id)
+                .ok()
+                .flatten()
+                .and_then(v_u64)
+                .unwrap_or(0)
+        })
         .collect();
     let d: Vec<u64> = before
         .iter()
@@ -187,25 +215,24 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     );
 }
 
-/// Sample a ramping ADC signal into the State Table across ticks and assert it
-/// change-logs; do a ZOH historical lookup; read an enum cvar symbolically.
+/// Drive the engine for a few ticks with a ramping ADC signal registered as a
+/// sampled cvar; the engine records it into its historian each tick. Assert the
+/// change-log accumulates and a ZOH historical lookup holds the prior sample;
+/// read an enum cvar symbolically.
 fn check_state_table(fw: &Firmware, rep: &mut Report) {
-    let mut st = StateTable::new();
-    let ramp = SignalId::new("cvar", SOURCE, "HW_ADC_data.channelData[0].counts[6]", None)
-        .expect("valid cvar id");
-    st.register(ramp.clone(), Some("counts")).unwrap();
+    let ramp = cvar("HW_ADC_data.channelData[0].counts[6]");
+    let mut eng = Engine::new(fw, TICK_US);
+    eng.sample_cvar(ramp.clone(), Some("counts")).unwrap();
 
     let mut samples = Vec::new();
-    for tick in 1..=6u64 {
-        fw.advance_tick();
-        st.set_time(tick * TICK_US);
-        let v = fw.read_cvar(ramp.name());
-        st.record(&ramp, v.clone()).unwrap();
-        samples.push(v_u64(&v).unwrap_or(0));
+    for _ in 1..=6u64 {
+        eng.step().expect("engine step");
+        let v = eng.state().current_value(&ramp).ok().flatten().cloned();
+        samples.push(v.as_ref().and_then(v_u64).unwrap_or(0));
     }
 
     let changed = samples.windows(2).any(|w| w[0] != w[1]);
-    let n_changes = st.changes(&ramp).unwrap().len();
+    let n_changes = eng.state().changes(&ramp).unwrap().len();
     rep.check(
         "historian records a changing ADC ramp signal",
         changed && (n_changes >= 2),
@@ -214,7 +241,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
 
     // Zero-order-hold: a lookup between samples holds the prior value.
     let mid = (2 * TICK_US) + 500;
-    let zoh = st.value_at(&ramp, mid).unwrap();
+    let zoh = eng.state().value_at(&ramp, mid).unwrap();
     rep.check(
         "ZOH historical lookup holds the prior sample",
         zoh.is_some(),
@@ -258,10 +285,12 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     // Drain any stale capture so we read a strictly post-injection window.
     fw.write_cvar("HW_USB_sim_data.txLen", &Value::U32(0));
 
-    // (3) Advance: task_1ms samples the encoder each tick; telemetry fires every
-    //     2 ms. 10 ticks -> several windows.
+    // (3) Advance through the engine: task_1ms samples the encoder each tick;
+    //     telemetry fires every 2 ms. 10 ticks -> several windows. Injection and
+    //     capture reads stay ad-hoc DWARF pokes on the shared firmware handle.
+    let mut eng = Engine::new(fw, TICK_US);
     for _ in 0..10 {
-        fw.advance_tick();
+        eng.step().expect("engine step");
     }
 
     // (3a) The decoded encoder static reflects the injected SPI frame.
@@ -297,7 +326,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     //     windows refill it — proves the path keeps flowing and the drain works.
     fw.write_cvar("HW_USB_sim_data.txLen", &Value::U32(0));
     for _ in 0..6 {
-        fw.advance_tick();
+        eng.step().expect("engine step");
     }
     let text2 = read_tx_capture(fw);
     rep.check(
@@ -307,30 +336,31 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     );
 }
 
-/// Demonstrate the `vsig` backing: a reference [`RampModel`] registers into the
-/// State Table, advances with sim time, and is recorded through the same
-/// historian machinery as cvar samples (no firmware involved — models are a
-/// separate, Rust-side backing).
-fn check_model_vsig(rep: &mut Report) {
-    let mut st = StateTable::new();
-    let mut model = RampModel::new("demo", 1000.0, Some("counts")); // +1.0 / ms
-
-    register_model(&mut st, &model).expect("register vsig");
-    let id = vsig_id(model.name(), "value").expect("valid vsig id");
-    let registered = st.current_value(&id).map(|v| v.is_none()).unwrap_or(false);
+/// Demonstrate the `vsig` backing driven by the engine: a reference [`RampModel`]
+/// is registered as a model, and the engine advances it with sim time and records
+/// it through the same historian machinery as cvar samples each [`Engine::step`].
+/// The firmware ticks alongside but is irrelevant to the model's own `vsig`.
+fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
+    let mut eng = Engine::new(fw, TICK_US);
+    eng.add_model(Box::new(RampModel::new("demo", 1000.0, Some("counts")))) // +1.0 / ms
+        .expect("register model");
+    let id = vsig_id("demo", "value").expect("valid vsig id");
+    let registered = eng
+        .state()
+        .current_value(&id)
+        .map(|v| v.is_none())
+        .unwrap_or(false);
     rep.check(
         "model registers a vsig signal into the State Table",
         registered,
-        format!("registered {} ({} signal(s) in table)", id, st.len()),
+        format!("registered {} ({} signal(s) in table)", id, eng.state().len()),
     );
 
-    for tick in 1..=5u64 {
-        model.advance(TICK_US);
-        st.set_time(tick * TICK_US);
-        record_model(&mut st, &model).expect("record vsig");
+    for _ in 1..=5u64 {
+        eng.step().expect("engine step");
     }
-    let n_changes = st.changes(&id).map(|c| c.len()).unwrap_or(0);
-    let last = st.current_value(&id).ok().flatten().cloned();
+    let n_changes = eng.state().changes(&id).map(|c| c.len()).unwrap_or(0);
+    let last = eng.state().current_value(&id).ok().flatten().cloned();
     rep.check(
         "vsig advances with sim time and the historian records it",
         (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
@@ -383,6 +413,14 @@ impl Model for CountsRampModel {
 /// firmware sensor input), and suspend/resume gates that drive. Each tick:
 /// advance + record the model, `propagate`, then read the firmware static back
 /// (before any `advance_tick`, so the firmware ramp can't clobber it).
+///
+/// This one stays hand-rolled rather than driving the engine: it reads the
+/// route-written `cvar` **between** `propagate` and `advance_tick` (the engine's
+/// [`Engine::step`] bundles the two, and the firmware's own ADC ramp overwrites
+/// `counts[6]` when it runs), and it toggles suspend/resume mid-sequence — a
+/// finer granularity than a whole-tick step. It exercises the same [`RouteTable`]
+/// the engine drives, just at the primitive level for the read-before-firmware
+/// timing.
 fn check_route_table(fw: &Firmware, rep: &mut Report) {
     let mut st = StateTable::new();
     let mut model = CountsRampModel::new("sensor", 100);

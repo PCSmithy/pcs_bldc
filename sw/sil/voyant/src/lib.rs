@@ -22,17 +22,23 @@
 //! - [`route`] — the [`RouteTable`]: declarative `source → destination`
 //!   transport, propagated once per tick (snapshot-then-write), with per-route
 //!   suspend/resume for fault injection (state-route-tables.md §2).
+//! - [`engine`] — the [`Engine`]: the sim clock + step loop that owns the State
+//!   Table / Route Table / models, borrows a [`Backend`], and advances the whole
+//!   system one tick at a time in the canonical order (state-route-tables.md §3).
 //!
-//! The sim clock and run modes build on these.
+//! Run modes (fast / realtime pacing) are a thin wrapper over [`Engine::step`]
+//! and land in a later chunk.
 
 mod backend;
 mod dwarf;
+pub mod engine;
 pub mod model;
 pub mod route;
 pub mod signal;
 pub mod state_table;
 
 pub use backend::{Backend, Firmware};
+pub use engine::{Engine, EngineError};
 pub use model::{record_model, register_model, vsig_id, Model, ModelError, ModelSignal, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};

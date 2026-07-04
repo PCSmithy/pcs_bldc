@@ -130,9 +130,23 @@ docs/sil/*.md            the design (see "Design docs" below)
    is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
    snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
    model's `vsig` into a firmware `cvar` and proves suspend/resume gating.
-3. **Sim clock / step loop** — the engine loop: `advance models → propagate
-   routes → sil_fw_advance_tick → record`. (`StateTable::set_time` + `record`
-   are ready.)
+3. ~~**Sim clock / step loop**~~ — **DONE (2026-07-04).** `voyant::engine` adds
+   `Engine`: it owns the State Table / Route Table / models, borrows a `Backend`,
+   and `step()`s the canonical order per tick — advance sim time (`now +=
+   tick_period`, monotonic/wall-clock-free) → advance models in registration order
+   + record their `vsig`s → propagate routes → `advance_tick` → sample registered
+   firmware `cvar`s into the historian. Sampled-cvar registry via `sample_cvar`;
+   models via `add_model`; routes via `add_route`/`suspend_route`/`resume_route`.
+   Perf seams baked in: each model's vsig ids + the sampled-cvar list are resolved
+   once, so the hot loop never calls `Model::signals()` (no per-tick alloc); the
+   remaining per-tick allocs (route `pending`, enum/bytes `Value`) sit behind seams
+   owned elsewhere and don't touch the engine API. 7 unit tests (step ordering via
+   a call-order mock backend, time advance, multi-model determinism, sampled-cvar
+   + vsig recording, empty step, unregistered-source error). The **sanity suite now
+   drives through the engine** for checks 2/3/4/5 (tasks, historian/ZOH,
+   end-to-end, model vsig); checks 1/6/7 stay below it (backend lifecycle; and 6
+   reads the route-written cvar *between* propagate and advance_tick, a
+   finer-than-step granularity).
 4. **Formalize the trait seams** — `Backend` and `Model` **DONE (2026-07-04):**
    `voyant::Backend` (lifecycle `start`/`advance_tick`/`shutdown` + `cvar`
    read/write) is extracted, with `Firmware` as its first impl; `Model` above.

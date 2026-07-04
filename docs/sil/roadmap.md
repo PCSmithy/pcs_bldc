@@ -115,8 +115,15 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)
-- ☐ Sim clock + step loop + **State Table historian** (change-logged,
-  timestamped per-signal series; dump at end-of-run — D12)
+- ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
+  Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
+  advance sim time (monotonic, wall-clock-free) → advance models (registration
+  order) + record vsigs → propagate routes → `advance_tick` → sample registered
+  cvars into the historian. `add_model`/`add_route`/`sample_cvar` registration;
+  model vsig ids + sampled list resolved once (hot loop skips `Model::signals()`).
+  7 unit tests; the sanity suite drives checks 2/3/4/5 through the engine. (The
+  historian itself — the change-logged per-signal series — is the State Table,
+  already done above; end-of-run trace **dump/MDF4 export** remains, D12.)
 - ☐ **Perf seams from the start** (performance.md): zero-alloc hot loop +
   columnar historian buffers; gated discrete work (continuous-integration every
   tick, firmware/routes/algebraic-models/historian-scan gated); pluggable
