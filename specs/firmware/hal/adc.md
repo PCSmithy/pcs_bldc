@@ -92,14 +92,18 @@ Needs: impl, test
 `fw~hal_adc_004~1`
 
 On a channel configured software-triggered and polled, each sampling pass shall
-start the regular sequence, poll each conversion to completion within a 2 ms
-per-conversion bound, and store the latest raw count for every enabled regular
-input; a conversion that exceeds the bound records a fault in the channel's
-pollable conversion status and retains the input's prior count.
+start the regular sequence and, holding the sequencer after each conversion
+until that conversion's result is read so no rank's result is lost or
+overwritten regardless of poll latency, poll each conversion to completion
+within a 2 ms per-conversion bound and store the latest raw count for every
+enabled regular input; a conversion that exceeds the bound records a fault in
+the channel's pollable conversion status and retains the input's prior count.
 
 Acceptance:
 - After a sampling pass, every enabled regular input's stored count reflects
   its most recent conversion.
+- A multi-rank sequence stores each rank's own result, with no rank lost or
+  overwritten when the poll loop runs slower than the conversions.
 - A sampling pass invoked before initialization leaves all stored counts
   unchanged.
 - A conversion that stalls past the 2 ms bound sets the channel's conversion

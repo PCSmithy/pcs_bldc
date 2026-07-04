@@ -11,6 +11,7 @@
   #include "FreeRTOS.h"
   #include "task.h"
   #include <stdio.h>
+  #include <math.h>           // fabsf, for signed telemetry formatting
   #include "lib_utils.h"
   #include "lib_timer.h"
   #include "HW_USB.h"
@@ -52,6 +53,20 @@ extern const app_rgbLedRing_config_S app_rgbLedRing_config;
 // integrated, so a zeroed weak handle lets it.o link (the DAC interrupt never
 // fires). TODO: remove when a DAC driver lands.
 __attribute__((weak)) DAC_HandleTypeDef hdac1;
+
+// The HAL time base runs on TIM6 (stm32g4xx_hal_timebase_tim.c), leaving
+// SysTick to FreeRTOS. TIM6_DAC_IRQHandler -> HAL_TIM_IRQHandler fires this
+// callback each 1 ms; without it HAL_IncTick is never called, uwTick stays
+// frozen at 0, and every HAL timeout (ADC/SPI/I2C PollForX) waits forever
+// instead of bounding. CubeMX emits this in its main.c, which this project
+// doesn't vendor, so it lives here.
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim)
+{
+    if (htim->Instance == TIM6)
+    {
+        HAL_IncTick();
+    }
+}
 #endif
 
 
@@ -198,7 +213,36 @@ static void task_usb(void * params)
 // One window's Teleplot packets are formatted into a buffer this size and pushed
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
 // rather than once per byte (the per-byte path is far too slow to keep up).
-#define TELEMETRY_TX_BUF_BYTES 512U
+// Sized to hold a full window's worst case (~500 B with the ADC engineering
+// signals below); kept in step with CFG_TUD_CDC_TX_BUFSIZE so the batched
+// write drains without backpressure.
+#define TELEMETRY_TX_BUF_BYTES 1024U
+
+// --- ADC engineering-unit scaling (bring-up scaffolding) -------------------
+// Maps raw pin volts (HW_ADC_getVolts) to amps/volts using the board's sense
+// front end. Acknowledged scaffolding — revisit once the analog path is
+// characterized. Phase current: INA240A3 (100 V/V) across a 1 mOhm shunt ->
+// 0.1 V/A, biased to a VREF/2 = 1.65 V zero-current midpoint: i = (v - 1.65)/0.1.
+#define ADC_PHASE_I_OFFSET_V   (1.65f)
+#define ADC_PHASE_I_V_PER_A    (0.1f)
+// VBUS current: INA180A2 (50 V/V) across a 12 mOhm shunt -> 0.6 V/A, ground
+// referenced: i = v / 0.6.
+#define ADC_VBUS_I_V_PER_A     (0.6f)
+// VBUS voltage: resistive divider, 0.15 V/V: v = v_adc / 0.15.
+#define ADC_VBUS_V_RATIO       (0.15f)
+// 5V0 / 3V3 rails: half-divider (two equal resistors), 0.5 V/V: v = v_adc / 0.5.
+#define ADC_RAIL_V_RATIO       (0.5f)
+
+// floatToFixed casts to uint32_t, so it underflows on negative inputs. Phase
+// currents sit near zero and swing negative, so split the sign off and
+// fixed-point the magnitude; the caller prints the returned "" / "-" ahead of
+// the "whole.frac" pair so e.g. -0.3 renders as "-0.300", not a garbage whole.
+static const char * telemetrySignedFixed(float32_t value, uint32_t scale,
+                                         uint32_t * const whole, uint32_t * const frac)
+{
+    floatToFixed(fabsf(value), scale, whole, frac);
+    return ((value < 0.0f)) ? "-" : "";
+}
 
 static void telemetryTask(void * params)
 {
@@ -221,8 +265,8 @@ static void telemetryTask(void * params)
 
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
-        // Source timestamp (ms) shared by every signal in this pass. FreeRTOS
-        // owns SysTick, so HAL_GetTick() stays 0 — use the RTOS tick (1 ms).
+        // Source timestamp (ms) shared by every signal in this pass. The RTOS
+        // tick is the natural in-task time base (1 ms period).
         const uint32_t nowMs = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         uint16_t motorAngleRaw = 0U;
@@ -270,22 +314,53 @@ static void telemetryTask(void * params)
                          (unsigned)dialAngleRaw);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        uint32_t  adc1Count = 0U;
-        float32_t adc1Volts = 0.0f;
-        (void)HW_ADC_getCount(HW_ADC_CHANNEL_1, 6U, &adc1Count);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &adc1Volts);
+        // ADC engineering-unit signals. getVolts returns each pin's voltage;
+        // the scaling constants above turn it into amps/volts. Phase currents
+        // are bipolar (swing negative), so telemetrySignedFixed splits the sign.
+        float32_t phaseU_v = 0.0f;
+        float32_t phaseV_v = 0.0f;
+        float32_t phaseW_v = 0.0f;
+        float32_t vbusI_v  = 0.0f;
+        float32_t vbusV_v  = 0.0f;
+        float32_t rail5_v  = 0.0f;
+        float32_t rail3_v  = 0.0f;
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &phaseU_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 7U, &phaseV_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 8U, &phaseW_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &vbusI_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 12U, &vbusV_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 1U, &rail5_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 9U, &rail3_v);
 
-        uint32_t  adc2Count = 0U;
-        float32_t adc2Volts = 0.0f;
-        (void)HW_ADC_getCount(HW_ADC_CHANNEL_2, 11U, &adc2Count);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &adc2Volts);
+        const float32_t phaseU_i = (phaseU_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+        const float32_t phaseV_i = (phaseV_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+        const float32_t phaseW_i = (phaseW_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+        const float32_t vbus_i   = vbusI_v / ADC_VBUS_I_V_PER_A;
+        const float32_t vbus_v   = vbusV_v / ADC_VBUS_V_RATIO;
+        const float32_t rail5v0  = rail5_v / ADC_RAIL_V_RATIO;
+        const float32_t rail3v3  = rail3_v / ADC_RAIL_V_RATIO;
 
-        uint32_t adc1Whole = 0U;
-        uint32_t adc1Frac  = 0U;
-        floatToFixed(adc1Volts, 1000U, &adc1Whole, &adc1Frac);
-        uint32_t adc2Whole = 0U;
-        uint32_t adc2Frac  = 0U;
-        floatToFixed(adc2Volts, 1000U, &adc2Whole, &adc2Frac);
+        uint32_t phaseUWhole = 0U;
+        uint32_t phaseUFrac  = 0U;
+        const char * const phaseUSign = telemetrySignedFixed(phaseU_i, 1000U, &phaseUWhole, &phaseUFrac);
+        uint32_t phaseVWhole = 0U;
+        uint32_t phaseVFrac  = 0U;
+        const char * const phaseVSign = telemetrySignedFixed(phaseV_i, 1000U, &phaseVWhole, &phaseVFrac);
+        uint32_t phaseWWhole = 0U;
+        uint32_t phaseWFrac  = 0U;
+        const char * const phaseWSign = telemetrySignedFixed(phaseW_i, 1000U, &phaseWWhole, &phaseWFrac);
+        uint32_t vbusIWhole = 0U;
+        uint32_t vbusIFrac  = 0U;
+        const char * const vbusISign = telemetrySignedFixed(vbus_i, 1000U, &vbusIWhole, &vbusIFrac);
+        uint32_t vbusVWhole = 0U;
+        uint32_t vbusVFrac  = 0U;
+        const char * const vbusVSign = telemetrySignedFixed(vbus_v, 1000U, &vbusVWhole, &vbusVFrac);
+        uint32_t rail5Whole = 0U;
+        uint32_t rail5Frac  = 0U;
+        const char * const rail5Sign = telemetrySignedFixed(rail5v0, 1000U, &rail5Whole, &rail5Frac);
+        uint32_t rail3Whole = 0U;
+        uint32_t rail3Frac  = 0U;
+        const char * const rail3Sign = telemetrySignedFixed(rail3v3, 1000U, &rail3Whole, &rail3Frac);
 
         HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
         HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
@@ -293,29 +368,37 @@ static void telemetryTask(void * params)
         (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
 
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "adc1_cnt:%lu:%lu;"
-                     "adc1_v:%lu:%lu.%03lu" TP_UNIT "V;"
-                     "adc1_status:%lu:%u\n",
-                     (unsigned long)nowMs,
-                     (unsigned long)adc1Count,
-                     (unsigned long)nowMs,
-                     (unsigned long)adc1Whole,
-                     (unsigned long)adc1Frac,
-                     (unsigned long)nowMs,
-                     (unsigned)adc1Status);
+                     "phase_u_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                     "phase_v_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                     "phase_w_i:%lu:%s%lu.%03lu" TP_UNIT "A\n",
+                     (unsigned long)nowMs, phaseUSign,
+                     (unsigned long)phaseUWhole, (unsigned long)phaseUFrac,
+                     (unsigned long)nowMs, phaseVSign,
+                     (unsigned long)phaseVWhole, (unsigned long)phaseVFrac,
+                     (unsigned long)nowMs, phaseWSign,
+                     (unsigned long)phaseWWhole, (unsigned long)phaseWFrac);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "adc2_cnt:%lu:%lu;"
-                     "adc2_v:%lu:%lu.%03lu" TP_UNIT "V;"
+                     "vbus_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                     "vbus_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                     "rail_5v0:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                     "rail_3v3:%lu:%s%lu.%03lu" TP_UNIT "V\n",
+                     (unsigned long)nowMs, vbusISign,
+                     (unsigned long)vbusIWhole, (unsigned long)vbusIFrac,
+                     (unsigned long)nowMs, vbusVSign,
+                     (unsigned long)vbusVWhole, (unsigned long)vbusVFrac,
+                     (unsigned long)nowMs, rail5Sign,
+                     (unsigned long)rail5Whole, (unsigned long)rail5Frac,
+                     (unsigned long)nowMs, rail3Sign,
+                     (unsigned long)rail3Whole, (unsigned long)rail3Frac);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                     "adc1_status:%lu:%u;"
                      "adc2_status:%lu:%u\n",
-                     (unsigned long)nowMs,
-                     (unsigned long)adc2Count,
-                     (unsigned long)nowMs,
-                     (unsigned long)adc2Whole,
-                     (unsigned long)adc2Frac,
-                     (unsigned long)nowMs,
-                     (unsigned)adc2Status);
+                     (unsigned long)nowMs, (unsigned)adc1Status,
+                     (unsigned long)nowMs, (unsigned)adc2Status);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         // Per-task worst-case body duration since the last emit (microseconds),

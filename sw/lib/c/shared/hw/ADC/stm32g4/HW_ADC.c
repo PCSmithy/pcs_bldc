@@ -226,6 +226,18 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
             data->channelData[ch].hadc.Init.ScanConvMode       = ((numEnabledRegular > 1U)) ? ADC_SCAN_ENABLE : ADC_SCAN_DISABLE;
             data->channelData[ch].hadc.Init.EOCSelection       = ADC_EOC_SINGLE_CONV;
             data->channelData[ch].hadc.Init.ContinuousConvMode = DISABLE;
+
+            // Polled multi-rank scans read DR one rank at a time from a task
+            // loop far slower than the back-to-back conversions. Auto-delayed
+            // conversion (AUTDLY) halts the sequencer after each conversion
+            // until HAL_ADC_GetValue reads DR, so EOC can't coalesce and later
+            // ranks can't overrun the preserved DR — the per-rank poll+read
+            // stays correct at any CPU/poll speed. Without it the 2nd poll
+            // waits on an EOC that never fires again (sequence already done).
+            if (channelConfig->xferMode == HW_ADC_XFER_POLLED)
+            {
+                data->channelData[ch].hadc.Init.LowPowerAutoWait = ENABLE;
+            }
         }
         if (channelConfig->triggerMode == HW_ADC_TRIGGER_SOFTWARE)
         {

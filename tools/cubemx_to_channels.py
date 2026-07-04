@@ -272,20 +272,22 @@ def parse_mx_adc_init(body: str, hadc_var: str) -> ADCConfig | None:
         for m in re.finditer(r'\bmultimode\.(\w+)\s*=\s*([^;]+);', body):
             multimode.append((m.group(1), m.group(2).strip()))
 
-    # Each HAL_ADC_ConfigChannel call corresponds to one input. Collect
-    # the sConfig.X assignments preceding each call (since the previous
-    # one).
+    # Each HAL_ADC_ConfigChannel call corresponds to one input. CubeMX sets
+    # the common sConfig fields (SamplingTime, SingleDiff, ...) once and then
+    # mutates only Channel/Rank before each subsequent call, relying on the
+    # struct persisting its other fields. Our per-input storage is independent,
+    # so snapshot the running sConfig at each call to give every input its full
+    # field set (same walk the TIM/injected parsers use).
     inputs: list[dict[str, str]] = []
-    cc_pattern = re.compile(r'\bHAL_ADC_ConfigChannel\s*\(')
-    prev_end = 0
-    for m in cc_pattern.finditer(body):
-        block = body[prev_end:m.start()]
-        fields: dict[str, str] = {}
-        for am in re.finditer(r'\bsConfig\.(\w+)\s*=\s*([^;]+);', block):
-            fields[am.group(1)] = am.group(2).strip()
-        if fields:
-            inputs.append(fields)
-        prev_end = m.end()
+    running: dict[str, str] = {}
+    token = re.compile(
+        r'\bsConfig\.(\w+)\s*=\s*([^;]+);'
+        r'|\bHAL_ADC_ConfigChannel\s*\(')
+    for m in token.finditer(body):
+        if m.group(1) is not None:
+            running[m.group(1)] = m.group(2).strip()
+        else:
+            inputs.append(dict(running))
 
     return ADCConfig(
         instance=instance, init=init_pairs,

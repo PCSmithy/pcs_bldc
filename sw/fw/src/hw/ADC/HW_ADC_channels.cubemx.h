@@ -21,11 +21,11 @@
     .Resolution            = ADC_RESOLUTION_12B, \
     .DataAlign             = ADC_DATAALIGN_RIGHT, \
     .GainCompensation      = 0, \
-    .ScanConvMode          = ADC_SCAN_DISABLE, \
+    .ScanConvMode          = ADC_SCAN_ENABLE, \
     .EOCSelection          = ADC_EOC_SINGLE_CONV, \
     .LowPowerAutoWait      = DISABLE, \
     .ContinuousConvMode    = DISABLE, \
-    .NbrOfConversion       = 1, \
+    .NbrOfConversion       = 4, \
     .DiscontinuousConvMode = DISABLE, \
     .ExternalTrigConv      = ADC_SOFTWARE_START, \
     .ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE, \
@@ -37,14 +37,53 @@
     .Mode = ADC_MODE_INDEPENDENT,
 
 #define HW_ADC_CUBEMX_INPUTS_ADC1 \
+    [1] = \
+    { \
+        .enabled = true, \
+        .sConfig = \
+        { \
+            .Channel      = ADC_CHANNEL_1, \
+            .Rank         = ADC_REGULAR_RANK_1, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
+            .SingleDiff   = ADC_SINGLE_ENDED, \
+            .OffsetNumber = ADC_OFFSET_NONE, \
+            .Offset       = 0, \
+        }, \
+    }, \
     [6] = \
     { \
         .enabled = true, \
         .sConfig = \
         { \
             .Channel      = ADC_CHANNEL_6, \
-            .Rank         = ADC_REGULAR_RANK_1, \
-            .SamplingTime = ADC_SAMPLETIME_2CYCLES_5, \
+            .Rank         = ADC_REGULAR_RANK_2, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
+            .SingleDiff   = ADC_SINGLE_ENDED, \
+            .OffsetNumber = ADC_OFFSET_NONE, \
+            .Offset       = 0, \
+        }, \
+    }, \
+    [8] = \
+    { \
+        .enabled = true, \
+        .sConfig = \
+        { \
+            .Channel      = ADC_CHANNEL_8, \
+            .Rank         = ADC_REGULAR_RANK_3, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
+            .SingleDiff   = ADC_SINGLE_ENDED, \
+            .OffsetNumber = ADC_OFFSET_NONE, \
+            .Offset       = 0, \
+        }, \
+    }, \
+    [12] = \
+    { \
+        .enabled = true, \
+        .sConfig = \
+        { \
+            .Channel      = ADC_CHANNEL_12, \
+            .Rank         = ADC_REGULAR_RANK_4, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
             .SingleDiff   = ADC_SINGLE_ENDED, \
             .OffsetNumber = ADC_OFFSET_NONE, \
             .Offset       = 0, \
@@ -52,7 +91,10 @@
     },
 
 #define HW_ADC_CUBEMX_SIM_INPUTS_ADC1 \
-    [6] = { .enabled = true, .inputNameStr = "ADC1_IN6" },
+    [1] = { .enabled = true, .inputNameStr = "ADC1_IN1" }, \
+    [6] = { .enabled = true, .inputNameStr = "ADC1_IN6" }, \
+    [8] = { .enabled = true, .inputNameStr = "ADC1_IN8" }, \
+    [12] = { .enabled = true, .inputNameStr = "ADC1_IN12" },
 
 // ----- ADC2 -----
 
@@ -63,11 +105,11 @@
     .Resolution            = ADC_RESOLUTION_12B, \
     .DataAlign             = ADC_DATAALIGN_RIGHT, \
     .GainCompensation      = 0, \
-    .ScanConvMode          = ADC_SCAN_DISABLE, \
+    .ScanConvMode          = ADC_SCAN_ENABLE, \
     .EOCSelection          = ADC_EOC_SINGLE_CONV, \
     .LowPowerAutoWait      = DISABLE, \
     .ContinuousConvMode    = DISABLE, \
-    .NbrOfConversion       = 1, \
+    .NbrOfConversion       = 3, \
     .DiscontinuousConvMode = DISABLE, \
     .ExternalTrigConv      = ADC_SOFTWARE_START, \
     .ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE, \
@@ -76,14 +118,40 @@
     .OversamplingMode      = DISABLE,
 
 #define HW_ADC_CUBEMX_INPUTS_ADC2 \
+    [7] = \
+    { \
+        .enabled = true, \
+        .sConfig = \
+        { \
+            .Channel      = ADC_CHANNEL_7, \
+            .Rank         = ADC_REGULAR_RANK_1, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
+            .SingleDiff   = ADC_SINGLE_ENDED, \
+            .OffsetNumber = ADC_OFFSET_NONE, \
+            .Offset       = 0, \
+        }, \
+    }, \
+    [9] = \
+    { \
+        .enabled = true, \
+        .sConfig = \
+        { \
+            .Channel      = ADC_CHANNEL_9, \
+            .Rank         = ADC_REGULAR_RANK_2, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
+            .SingleDiff   = ADC_SINGLE_ENDED, \
+            .OffsetNumber = ADC_OFFSET_NONE, \
+            .Offset       = 0, \
+        }, \
+    }, \
     [11] = \
     { \
         .enabled = true, \
         .sConfig = \
         { \
             .Channel      = ADC_CHANNEL_11, \
-            .Rank         = ADC_REGULAR_RANK_1, \
-            .SamplingTime = ADC_SAMPLETIME_2CYCLES_5, \
+            .Rank         = ADC_REGULAR_RANK_3, \
+            .SamplingTime = ADC_SAMPLETIME_47CYCLES_5, \
             .SingleDiff   = ADC_SINGLE_ENDED, \
             .OffsetNumber = ADC_OFFSET_NONE, \
             .Offset       = 0, \
@@ -91,6 +159,8 @@
     },
 
 #define HW_ADC_CUBEMX_SIM_INPUTS_ADC2 \
+    [7] = { .enabled = true, .inputNameStr = "ADC2_IN7" }, \
+    [9] = { .enabled = true, .inputNameStr = "ADC2_IN9" }, \
     [11] = { .enabled = true, .inputNameStr = "ADC2_IN11" },
 
 #endif // HW_ADC_CHANNELS_CUBEMX_H

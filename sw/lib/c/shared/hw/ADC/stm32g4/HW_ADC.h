@@ -82,6 +82,9 @@ typedef struct
 //   - ScanConvMode          <- ENABLE iff >1 enabled regular input
 //   - EOCSelection          <- ADC_EOC_SINGLE_CONV (polled needs per-conversion EOC)
 //   - ContinuousConvMode    <- DISABLE (single-shot per _run1ms)
+//   - LowPowerAutoWait      <- ENABLE for polled xfer (AUTDLY halts the
+//                              sequencer per conversion until DR is read, so
+//                              the per-rank poll+read can't overrun); left as-is otherwise
 //   - ExternalTrigConv      <- ADC_SOFTWARE_START iff triggerMode == HW_ADC_TRIGGER_SOFTWARE
 //
 // Library-managed injected-path injectedInputs[].sConfig fields
