@@ -1,5 +1,4 @@
-#ifndef DEV_SWITCH_CHANNELS_H
-#define DEV_SWITCH_CHANNELS_H
+#pragma once
 
 // Test-local channel seam (mirrors the project-provided header). Two hardware
 // buttons (one per active-level polarity) plus a network-backed switch, so both
@@ -12,4 +11,3 @@ typedef enum
     DEV_SWITCH_CHANNEL_COUNT,
 } dev_switch_channel_E;
 
-#endif // DEV_SWITCH_CHANNELS_H

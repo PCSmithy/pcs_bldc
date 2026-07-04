@@ -1,5 +1,4 @@
-#ifndef LIB_BUILD_H
-#define LIB_BUILD_H
+#pragma once
 
 // Named constants for the BUILD_TARGET preprocessor macro.
 //
@@ -19,4 +18,3 @@
 #define BUILD_TARGET_STM32G4 1
 #define BUILD_TARGET_SIM     2
 
-#endif /* LIB_BUILD_H */

@@ -1,5 +1,4 @@
-#ifndef HW_DMA_SIM_H
-#define HW_DMA_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -38,4 +37,3 @@ void HW_DMA_sim_setForceError(HW_DMA_channel_E channel, bool forceError);
 // Number of transfers completed on `channel` since reset.
 uint32_t HW_DMA_sim_getTransferCount(HW_DMA_channel_E channel);
 
-#endif // HW_DMA_SIM_H

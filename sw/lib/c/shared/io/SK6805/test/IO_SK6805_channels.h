@@ -1,5 +1,4 @@
-#ifndef IO_SK6805_CHANNELS_H
-#define IO_SK6805_CHANNELS_H
+#pragma once
 
 // Test-local channel seam: two LED-string channels so addressing and
 // per-channel invert can be exercised. A small pixel count keeps the
@@ -13,4 +12,3 @@ typedef enum
 
 #define IO_SK6805_PIXEL_COUNT  4U
 
-#endif // IO_SK6805_CHANNELS_H

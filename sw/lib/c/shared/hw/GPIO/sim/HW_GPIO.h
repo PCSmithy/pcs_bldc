@@ -1,5 +1,4 @@
-#ifndef HW_GPIO_H
-#define HW_GPIO_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -81,4 +80,3 @@ HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
 // back to the callback. Returns false on an out-of-range port.
 bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context);
 
-#endif // HW_GPIO_H

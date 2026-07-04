@@ -1,5 +1,4 @@
-#ifndef HW_GPIO_SIM_H
-#define HW_GPIO_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -36,4 +35,3 @@ void HW_GPIO_sim_setInputLevel(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_
 // callback once per set bit. No-op for bits with no registered callback.
 void HW_GPIO_sim_triggerExti(HW_GPIO_port_E port, uint32_t pin);
 
-#endif // HW_GPIO_SIM_H

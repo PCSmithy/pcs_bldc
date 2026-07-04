@@ -1,5 +1,4 @@
-#ifndef IO_SERIAL_H
-#define IO_SERIAL_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -43,4 +42,3 @@ uint32_t IO_serial_read(IO_serial_channel_E channel, uint8_t * buffer, uint32_t 
 // True iff a channel's backing transport is connected.
 bool IO_serial_connected(IO_serial_channel_E channel);
 
-#endif // IO_SERIAL_H

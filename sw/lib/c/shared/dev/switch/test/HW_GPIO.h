@@ -1,5 +1,4 @@
-#ifndef HW_GPIO_H
-#define HW_GPIO_H
+#pragma once
 
 // Minimal mock of the HW_GPIO public header — only the surface dev_switch
 // actually uses (port/level types + the cached-input read). The implementation
@@ -29,4 +28,3 @@ typedef enum
 // HW_GPIO_LEVEL_LOW until a value is injected via mock_HW_GPIO_setCachedLevel.
 HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
 
-#endif // HW_GPIO_H

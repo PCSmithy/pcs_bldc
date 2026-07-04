@@ -1,5 +1,4 @@
-#ifndef APP_RGBLEDRING_H
-#define APP_RGBLEDRING_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -133,4 +132,3 @@ bool app_rgbLedRing_advanceMode(app_rgbLedRing_state_S * state, bool buttonActiv
 void app_rgbLedRing_renderFrame(app_rgbLedRing_state_S * state, float32_t dialDeg, float32_t motorDeg,
                                 app_rgbLedRing_rgb_S * pixels, uint16_t ledCount);
 
-#endif // APP_RGBLEDRING_H

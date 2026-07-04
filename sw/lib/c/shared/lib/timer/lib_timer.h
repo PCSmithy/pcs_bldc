@@ -1,5 +1,4 @@
-#ifndef LIB_TIMER_H
-#define LIB_TIMER_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -171,4 +170,3 @@ static inline lib_timer_state_E lib_timer_runTimerWithRestart(lib_timer_channel_
     return ret;
 }
 
-#endif // LIB_TIMER_H

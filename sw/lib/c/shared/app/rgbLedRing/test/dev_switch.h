@@ -1,5 +1,4 @@
-#ifndef DEV_SWITCH_H
-#define DEV_SWITCH_H
+#pragma once
 
 // Minimal mock of the dev_switch surface app_rgbLedRing uses (channel enum +
 // debounced state read). Implemented as a stub in mock_app_deps.c.
@@ -13,4 +12,3 @@ typedef enum
 
 bool dev_switch_isActive(dev_switch_channel_E channel);
 
-#endif // DEV_SWITCH_H

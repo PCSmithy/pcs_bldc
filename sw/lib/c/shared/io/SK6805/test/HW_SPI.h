@@ -1,5 +1,4 @@
-#ifndef HW_SPI_H
-#define HW_SPI_H
+#pragma once
 
 // Minimal mock of the HW_SPI public header — only the surface IO_SK6805
 // uses (HW_SPI_transmit). Implemented by mock_HW_SPI.c, inspected via the
@@ -9,4 +8,3 @@
 
 bool HW_SPI_transmit(HW_SPI_channel_E channel, uint8_t * txData, size_t length);
 
-#endif // HW_SPI_H

@@ -1,5 +1,4 @@
-#ifndef LIB_TYPES_H
-#define LIB_TYPES_H
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,4 +9,3 @@
 typedef float float32_t;
 
 
-#endif /* LIB_TYPES_H */

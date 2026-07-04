@@ -40,5 +40,5 @@ specs in them yet.
   fault), command authority, mode transitions
 - `safety/` — protections (overcurrent, overtemp, encoder-loss,
   gate-driver fault), fault recovery
-- `power-startup/` — USB-PD negotiation, power-up sequencing,
-  brown-out recovery
+- `pd/` — USB-PD sink power monitoring (anchor `sys~pd_001`), power-up
+  sequencing, brown-out recovery

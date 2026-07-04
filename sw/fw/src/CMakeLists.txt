@@ -81,16 +81,20 @@ if(PCS_TARGET STREQUAL "embedded")
   )
 endif()
 
-# io/dev/app modules: the AS5048 encoder, SK6805 LED string, switch debounce, and
-# LED-ring UI. All are target-independent and build for both targets. Each links
-# its own hw_* dependency PUBLIC (io_AS5048/io_SK6805 -> hw_SPI, dev_switch ->
-# hw_GPIO), so the HW_* references resolve against the target's HW drivers — the
-# real ones on embedded, the sim drivers on native — pulled in transitively.
-# app_rgbLedRing_channels transitively pulls the io/dev modules it composes.
+# io/dev/app modules: the AS5048 encoder, SK6805 LED string, I2C device driver,
+# switch debounce, CYPD3177 PD sink, and LED-ring UI. All are target-independent
+# and build for both targets. Each links its own hw_* dependency PUBLIC
+# (io_AS5048/io_SK6805 -> hw_SPI, io_i2c -> hw_I2C, dev_switch -> hw_GPIO), so the
+# HW_* references resolve against the target's HW drivers — the real ones on
+# embedded, the sim drivers on native — pulled in transitively.
+# app_rgbLedRing_channels transitively pulls the io/dev modules it composes;
+# dev_CYPD3177_channels pulls io_i2c + lib_CYPD3177.
 target_link_libraries(pcs_bldc_fw PRIVATE
   io_AS5048_channels
   io_SK6805_channels
+  io_i2c_channels
   dev_switch_channels
+  dev_CYPD3177_channels
   app_rgbLedRing_channels
 )
 

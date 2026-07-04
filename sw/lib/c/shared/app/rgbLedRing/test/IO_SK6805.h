@@ -1,5 +1,4 @@
-#ifndef IO_SK6805_H
-#define IO_SK6805_H
+#pragma once
 
 // Minimal mock of the IO_SK6805 surface app_rgbLedRing uses (channel enum +
 // stage/transmit API). Implemented as no-op stubs in mock_app_deps.c.
@@ -16,4 +15,3 @@ void IO_SK6805_setAll(IO_SK6805_channel_E channel, uint8_t red, uint8_t green, u
 void IO_SK6805_clear(IO_SK6805_channel_E channel);
 bool IO_SK6805_update(IO_SK6805_channel_E channel);
 
-#endif // IO_SK6805_H

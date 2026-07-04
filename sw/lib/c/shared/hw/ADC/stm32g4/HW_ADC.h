@@ -1,5 +1,4 @@
-#ifndef HW_ADC_H
-#define HW_ADC_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -177,4 +176,3 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
 // Returns false if not initialized, channel out of range, or out is NULL.
 bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
 
-#endif // HW_ADC_H

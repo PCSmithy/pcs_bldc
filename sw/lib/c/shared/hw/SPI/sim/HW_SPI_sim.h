@@ -1,5 +1,4 @@
-#ifndef HW_SPI_SIM_H
-#define HW_SPI_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -49,4 +48,3 @@ uint32_t        HW_SPI_sim_getCsAssertCount(HW_SPI_channel_E channel);
 HW_GPIO_level_E HW_SPI_sim_getCsAssertLevel(HW_SPI_channel_E channel);
 HW_GPIO_level_E HW_SPI_sim_getCsDeassertLevel(HW_SPI_channel_E channel);
 
-#endif // HW_SPI_SIM_H

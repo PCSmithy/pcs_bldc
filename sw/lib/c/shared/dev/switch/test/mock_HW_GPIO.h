@@ -1,5 +1,4 @@
-#ifndef MOCK_HW_GPIO_H
-#define MOCK_HW_GPIO_H
+#pragma once
 
 #include "lib_types.h"
 #include "HW_GPIO.h"
@@ -14,4 +13,3 @@ void mock_HW_GPIO_reset(void);
 // of `port`.
 void mock_HW_GPIO_setCachedLevel(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
-#endif // MOCK_HW_GPIO_H

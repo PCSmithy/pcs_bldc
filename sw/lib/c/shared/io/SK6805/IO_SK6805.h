@@ -1,5 +1,4 @@
-#ifndef IO_SK6805_H
-#define IO_SK6805_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -51,4 +50,3 @@ void IO_SK6805_clear(IO_SK6805_channel_E channel);
 // or the SPI transfer fails.
 bool IO_SK6805_update(IO_SK6805_channel_E channel);
 
-#endif // IO_SK6805_H

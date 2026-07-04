@@ -1,5 +1,4 @@
-#ifndef IO_SK6805_CHANNELS_H
-#define IO_SK6805_CHANNELS_H
+#pragma once
 
 /* Typedefs */
 
@@ -16,4 +15,3 @@ typedef enum
 // See hw/rgb_LEDs.kicad_sch.
 #define IO_SK6805_PIXEL_COUNT  36U
 
-#endif // IO_SK6805_CHANNELS_H

@@ -27,8 +27,11 @@ REQUIRED_VERSION = "1"  # project policy: always ~1
 #   `<type>~<topic>[_<subtopic>]_<NNN>~<version>`
 # The sub-topic is optional (e.g. `hal` uses `hal_spi`, `hal_adc` to keep a
 # separate number space per peripheral); most topics omit it.
+# Topic and sub-topic are lowercase abbreviations that may contain digits after
+# the first letter (e.g. the `hal_i2c` sub-topic); they must start with a letter
+# so the trailing `_<NNN>` number is never mistaken for a sub-topic.
 STRICT_ID_LINE = re.compile(
-    r"^`([a-z]+)~([a-z]+)(?:_([a-z]+))?_(\d+)~(\d+)`\s*$"
+    r"^`([a-z]+)~([a-z][a-z0-9]*)(?:_([a-z][a-z0-9]*))?_(\d+)~(\d+)`\s*$"
 )
 # Loose: any backticked thing on its own line that has the shape word~word~word.
 # Used to flag near-misses (typos, wrong format) as violations rather than

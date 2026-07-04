@@ -1,5 +1,4 @@
-#ifndef MOCK_HW_SPI_H
-#define MOCK_HW_SPI_H
+#pragma once
 
 #include "lib_types.h"
 #include "HW_SPI_channels.h"
@@ -17,4 +16,3 @@ void mock_HW_SPI_setTransferOk(HW_SPI_channel_E channel, bool ok);
 const uint8_t * mock_HW_SPI_txBuf(HW_SPI_channel_E channel);
 size_t          mock_HW_SPI_txLen(HW_SPI_channel_E channel);
 
-#endif // MOCK_HW_SPI_H

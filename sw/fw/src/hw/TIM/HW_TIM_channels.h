@@ -1,5 +1,4 @@
-#ifndef HW_TIM_CHANNELS_H
-#define HW_TIM_CHANNELS_H
+#pragma once
 
 // Logical timer channels on the pcs_bldc board. Each maps to one physical
 // STM32G4 timer peripheral, addressed by hardware enumeration.
@@ -10,4 +9,3 @@ typedef enum
     HW_TIM_CHANNEL_COUNT,
 } HW_TIM_channels_E;
 
-#endif // HW_TIM_CHANNELS_H

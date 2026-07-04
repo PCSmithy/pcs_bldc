@@ -1,5 +1,4 @@
-#ifndef LIB_UTILS_H
-#define LIB_UTILS_H
+#pragma once
 
 // Cross-cutting utility macros. Add new ones here as concrete needs
 // arise; resist the urge to pre-stock with "everyone usually has
@@ -37,4 +36,3 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 
 #define US_TO_MS(us) ((us) / 1000)
 
-#endif /* LIB_UTILS_H */

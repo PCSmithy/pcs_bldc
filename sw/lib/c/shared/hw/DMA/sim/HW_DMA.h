@@ -1,5 +1,4 @@
-#ifndef HW_DMA_H
-#define HW_DMA_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -63,4 +62,3 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
 HW_DMA_status_E HW_DMA_getStatus(HW_DMA_channel_E channel);
 bool HW_DMA_registerCallback(HW_DMA_channel_E channel, HW_DMA_completeCallback_F callback, void * context);
 
-#endif // HW_DMA_H

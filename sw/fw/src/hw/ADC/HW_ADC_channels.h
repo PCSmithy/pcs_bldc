@@ -1,5 +1,4 @@
-#ifndef HW_ADC_CHANNELS_H
-#define HW_ADC_CHANNELS_H
+#pragma once
 
 /* Includes */
 
@@ -18,4 +17,3 @@ typedef enum
 
 /* Public Function Declarations */
 
-#endif // HW_ADC_CHANNELS_H

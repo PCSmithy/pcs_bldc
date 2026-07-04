@@ -1,5 +1,4 @@
-#ifndef PCS_LIB_RINGBUF_H
-#define PCS_LIB_RINGBUF_H
+#pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -25,4 +24,3 @@ bool   ringbuf_pop     (ringbuf_t *rb, uint8_t *out);
 size_t ringbuf_count   (const ringbuf_t *rb);
 size_t ringbuf_capacity(const ringbuf_t *rb);
 
-#endif

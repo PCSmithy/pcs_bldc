@@ -1,5 +1,4 @@
-#ifndef HW_TIM_SIM_H
-#define HW_TIM_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -43,4 +42,3 @@ void HW_TIM_sim_clearTriggers(HW_TIM_channels_E channel);
 // output of the channel is forced to its inactive level.
 void HW_TIM_sim_assertBreak(HW_TIM_channels_E channel, bool asserted);
 
-#endif // HW_TIM_SIM_H

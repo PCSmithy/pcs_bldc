@@ -1,5 +1,4 @@
-#ifndef HW_SPI_TIMEOUT_H
-#define HW_SPI_TIMEOUT_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -19,4 +18,3 @@
 // Returns 0 when fBitHz is 0 (no meaningful bit rate).
 uint32_t HW_SPI_computeTimeoutMs(uint32_t fBitHz, size_t numBytes);
 
-#endif // HW_SPI_TIMEOUT_H

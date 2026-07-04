@@ -215,6 +215,7 @@ numbering at `_001`.
 |-----------|--------------------------------------------------|-----------------|
 | `arch`    | Architecture (cross-cutting / overview)          | sys, fw, app    |
 | `hal`     | Hardware abstraction layer (hw-layer peripheral drivers: SPI, ADC, GPIO, DMA, timers); uses per-peripheral sub-topics, e.g. `hal_spi`, `hal_adc` | sys, fw |
+| `io`      | Generic io-layer infrastructure drivers (device abstractions over HAL buses); uses per-bus sub-topics, e.g. `io_i2c` | fw |
 | `mc`      | Motor control (FOC, motion, trajectory tracking) | sys, fw         |
 | `est`     | Estimation (Kalman, sensorless, parameter ID)    | sys, fw         |
 | `obs`     | Observability (telemetry, logging, plotting)     | sys, fw, app    |

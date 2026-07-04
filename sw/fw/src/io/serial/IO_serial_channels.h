@@ -1,5 +1,4 @@
-#ifndef IO_SERIAL_CHANNELS_H
-#define IO_SERIAL_CHANNELS_H
+#pragma once
 
 /* Typedefs */
 
@@ -10,4 +9,3 @@ typedef enum
     IO_SERIAL_CHANNEL_COUNT,
 } IO_serial_channel_E;
 
-#endif // IO_SERIAL_CHANNELS_H

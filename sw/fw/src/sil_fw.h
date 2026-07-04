@@ -1,5 +1,4 @@
-#ifndef SIL_FW_H
-#define SIL_FW_H
+#pragma once
 
 /*
  * SIL control ABI (D2) — the only hand-written Rust<->C surface.
@@ -29,4 +28,3 @@ void sil_fw_advance_tick(void);
 /* Tear down the scheduler. */
 void sil_fw_shutdown(void);
 
-#endif /* SIL_FW_H */

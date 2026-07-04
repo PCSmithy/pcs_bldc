@@ -1,5 +1,4 @@
-#ifndef HW_SPI_CHANNELS_H
-#define HW_SPI_CHANNELS_H
+#pragma once
 
 /* Includes */
 
@@ -27,4 +26,3 @@ typedef enum
 
 /* Public Function Declarations */
 
-#endif // HW_SPI_CHANNELS_H

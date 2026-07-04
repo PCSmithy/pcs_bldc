@@ -1,5 +1,4 @@
-#ifndef DEV_SWITCH_H
-#define DEV_SWITCH_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -66,4 +65,3 @@ dev_switch_state_E dev_switch_getState(dev_switch_channel_E channel);
 // channel or before init.
 bool dev_switch_isActive(dev_switch_channel_E channel);
 
-#endif // DEV_SWITCH_H

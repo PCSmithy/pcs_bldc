@@ -1,5 +1,4 @@
-#ifndef HW_USB_SIM_H
-#define HW_USB_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -26,4 +25,3 @@ uint32_t HW_USB_sim_txLen(void);
 // Inject bytes as if received from the host (readable via HW_USB_read).
 void HW_USB_sim_injectRx(const uint8_t * data, uint32_t len);
 
-#endif // HW_USB_SIM_H

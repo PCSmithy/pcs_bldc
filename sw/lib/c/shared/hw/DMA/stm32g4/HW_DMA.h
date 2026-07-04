@@ -1,5 +1,4 @@
-#ifndef HW_DMA_H
-#define HW_DMA_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -60,4 +59,3 @@ bool HW_DMA_registerCallback(HW_DMA_channel_E channel, HW_DMA_completeCallback_F
 // SPI-DMA integration (M4), where the path is bench-verified.
 void HW_DMA_irqHandler(HW_DMA_channel_E channel);
 
-#endif // HW_DMA_H

@@ -1,5 +1,4 @@
-#ifndef HW_USB_H
-#define HW_USB_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -39,4 +38,3 @@ uint32_t HW_USB_available(void);
 // Read up to len received bytes into buffer; returns the count read.
 uint32_t HW_USB_read(uint8_t * buffer, uint32_t len);
 
-#endif // HW_USB_H

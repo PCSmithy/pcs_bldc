@@ -1,5 +1,4 @@
-#ifndef IO_AS5048_H
-#define IO_AS5048_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -54,4 +53,3 @@ bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float
 // Returns false if uninitialized, channel out of range, or out is NULL.
 bool IO_AS5048_getStatus(IO_AS5048_channel_E channel, IO_AS5048_status_E * const out);
 
-#endif // IO_AS5048_H

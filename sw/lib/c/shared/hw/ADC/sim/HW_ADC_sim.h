@@ -1,5 +1,4 @@
-#ifndef HW_ADC_SIM_H
-#define HW_ADC_SIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -21,4 +20,3 @@ bool HW_ADC_sim_getMultimodeApplied(HW_ADC_channels_E channel);
 // hardware. Clear it to resume normal sampling.
 void HW_ADC_sim_setConversionStall(HW_ADC_channels_E channel, bool stall);
 
-#endif // HW_ADC_SIM_H

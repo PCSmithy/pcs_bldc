@@ -4,6 +4,7 @@
 #include "HW_OPAMP.h"
 #include "HW_ADC.h"
 #include "HW_SPI.h"
+#include "HW_I2C.h"
 #include "HW_TIM.h"
 #include "HW_DMA.h"
 
@@ -23,7 +24,9 @@
 #include "IO_serial.h"
 #include "IO_AS5048.h"
 #include "IO_SK6805.h"
+#include "IO_i2c.h"
 #include "dev_switch.h"
+#include "dev_CYPD3177.h"
 #include "app_rgbLedRing.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -35,12 +38,15 @@ extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_OPAMP_config_S HW_OPAMP_config;
 extern const HW_ADC_config_S HW_ADC_config;
 extern const HW_SPI_config_S HW_SPI_config;
+extern const HW_I2C_config_S HW_I2C_config;
 extern const HW_TIM_config_S HW_TIM_config;
 extern const HW_DMA_config_S HW_DMA_config;
+extern const IO_i2c_config_S IO_i2c_config;
 
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
 extern const dev_switch_config_S dev_switch_config;
+extern const dev_CYPD3177_config_S dev_CYPD3177_config;
 extern const IO_serial_config_S IO_serial_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
 
@@ -106,6 +112,7 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #define TASK_PRIORITY_10MS  (configMAX_PRIORITIES - 2U)
 #define TASK_PRIORITY_USB   (configMAX_PRIORITIES - 3U)
 #define TASK_PRIORITY_TELEM (configMAX_PRIORITIES - 4U)
+#define TASK_PRIORITY_200MS (configMAX_PRIORITIES - 5U)
 
 // --- Task profiling (bring-up telemetry) -----------------------------------
 // Each periodic task times its body against the microsecond time base and folds
@@ -116,6 +123,7 @@ typedef enum
 {
     PROFILE_TASK_1MS,
     PROFILE_TASK_10MS,
+    PROFILE_TASK_200MS,
     PROFILE_TASK_TELEM,
     PROFILE_TASK_COUNT,
 } profileTask_E;
@@ -131,6 +139,7 @@ static volatile uint32_t profileMaxUs[PROFILE_TASK_COUNT];
 // never stale.
 static volatile uint32_t task1msRuns;
 static volatile uint32_t task10msRuns;
+static volatile uint32_t task200msRuns;
 static volatile uint32_t taskUsbRuns;
 static volatile uint32_t telemRuns;
 
@@ -205,6 +214,31 @@ static void task_10ms(void * params)
         app_rgbLedRing_run10ms();
 
         profileUpdate(PROFILE_TASK_10MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
+    }
+}
+
+// Slow background sampling. Hosts blocking work (the PD-sink I2C poll), so it
+// runs at the lowest priority — every real-time task preempts it.
+static void task_200ms(void * params)
+{
+    (void)params;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(200U));
+        task200msRuns++;
+        const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
+
+        // hw
+
+        // io
+
+        // dev
+        dev_CYPD3177_run200ms();
+
+        // app
+
+        profileUpdate(PROFILE_TASK_200MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
 }
 
@@ -464,18 +498,21 @@ static void telemetryTask(void * params)
 
         // Per-task worst-case body duration since the last emit (microseconds),
         // snapshotted and reset each window. task1ms/task10ms are pure CPU time
-        // (their bodies never block); telem is wall-clock and so includes any
-        // CDC backpressure waits.
-        const uint32_t task1msMaxUs  = profileTakeMaxUs(PROFILE_TASK_1MS);
-        const uint32_t task10msMaxUs = profileTakeMaxUs(PROFILE_TASK_10MS);
-        const uint32_t telemMaxUs    = profileTakeMaxUs(PROFILE_TASK_TELEM);
+        // (their bodies never block); task200ms and telem are wall-clock and so
+        // include any I2C/CDC backpressure waits.
+        const uint32_t task1msMaxUs   = profileTakeMaxUs(PROFILE_TASK_1MS);
+        const uint32_t task10msMaxUs  = profileTakeMaxUs(PROFILE_TASK_10MS);
+        const uint32_t task200msMaxUs = profileTakeMaxUs(PROFILE_TASK_200MS);
+        const uint32_t telemMaxUs     = profileTakeMaxUs(PROFILE_TASK_TELEM);
 
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
                      "task1ms_us:%lu:%lu" TP_UNIT "us;"
                      "task10ms_us:%lu:%lu" TP_UNIT "us;"
+                     "task200ms_us:%lu:%lu" TP_UNIT "us;"
                      "telem_us:%lu:%lu" TP_UNIT "us\n",
                      (unsigned long)nowMs, (unsigned long)task1msMaxUs,
                      (unsigned long)nowMs, (unsigned long)task10msMaxUs,
+                     (unsigned long)nowMs, (unsigned long)task200msMaxUs,
                      (unsigned long)nowMs, (unsigned long)telemMaxUs);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
@@ -512,6 +549,7 @@ static bool prvHwInit(void)
     ok &= HW_ADC_init(&HW_ADC_config);
     ok &= HW_DMA_init(&HW_DMA_config);   // before SPI: SPI registers DMA completion callbacks
     ok &= HW_SPI_init(&HW_SPI_config);
+    ok &= HW_I2C_init(&HW_I2C_config);
     ok &= HW_TIM_init(&HW_TIM_config);
     return ok;
 }
@@ -524,17 +562,18 @@ static bool prvAppInit(void)
     bool ok = true;
     ok &= IO_AS5048_init(&IO_AS5048_config);
     ok &= IO_SK6805_init(&IO_SK6805_config);
+    ok &= IO_i2c_init(&IO_i2c_config);
     ok &= dev_switch_init(&dev_switch_config);
+    ok &= dev_CYPD3177_init(&dev_CYPD3177_config);
     ok &= app_rgbLedRing_init(&app_rgbLedRing_config);
     ok &= HW_USB_init();   // USB device stack (serviced in task_usb)
     ok &= IO_serial_init(&IO_serial_config);
     return ok;
 }
 
-// Spawn the four periodic tasks. Same names/priorities/stacks on both targets;
-// each allocates from the FreeRTOS heap, so a failure here (e.g. heap
-// exhaustion) is surfaced to the caller to halt loudly rather than silently
-// drop a task.
+// Spawn the periodic tasks. Same names/priorities/stacks on both targets; each
+// allocates from the FreeRTOS heap, so a failure here (e.g. heap exhaustion) is
+// surfaced to the caller to halt loudly rather than silently drop a task.
 static bool prvCreateTasks(void)
 {
     bool ok = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
@@ -545,6 +584,8 @@ static bool prvCreateTasks(void)
                        NULL, TASK_PRIORITY_USB, NULL) == pdPASS);
     ok &= (xTaskCreate(telemetryTask, "telem", 512U,
                        NULL, TASK_PRIORITY_TELEM, NULL) == pdPASS);
+    ok &= (xTaskCreate(task_200ms, "task_200ms", configMINIMAL_STACK_SIZE * 2U,
+                       NULL, TASK_PRIORITY_200MS, NULL) == pdPASS);
     return ok;
 }
 

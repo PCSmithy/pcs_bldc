@@ -1,0 +1,3 @@
+add_executable(test_lib_CYPD3177 test_CYPD3177.c)
+target_link_libraries(test_lib_CYPD3177 PRIVATE lib_CYPD3177 unity)
+add_test(NAME lib_CYPD3177 COMMAND test_lib_CYPD3177)

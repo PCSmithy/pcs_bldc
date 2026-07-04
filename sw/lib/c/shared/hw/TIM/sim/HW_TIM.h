@@ -1,5 +1,4 @@
-#ifndef HW_TIM_H
-#define HW_TIM_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -75,4 +74,3 @@ bool HW_TIM_getCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t * con
 
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool enabled);
 
-#endif // HW_TIM_H

@@ -1,6 +1,4 @@
-
-#ifndef HW_SYSTEM_CLOCK_CONFIG_H
-#define HW_SYSTEM_CLOCK_CONFIG_H
+#pragma once
 
 /* Includes */
 
@@ -12,4 +10,3 @@
 
 /* Public Function Declarations */
 
-#endif // HW_SYSTEM_CLOCK_CONFIG_H

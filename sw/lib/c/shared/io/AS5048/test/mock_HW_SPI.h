@@ -1,5 +1,4 @@
-#ifndef MOCK_HW_SPI_H
-#define MOCK_HW_SPI_H
+#pragma once
 
 #include "lib_types.h"
 #include "HW_SPI_channels.h"
@@ -21,4 +20,3 @@ void mock_HW_SPI_setTransferOk(HW_SPI_channel_E channel, bool ok);
 // The last command word the driver clocked out on `channel`.
 uint16_t mock_HW_SPI_lastCommand(HW_SPI_channel_E channel);
 
-#endif // MOCK_HW_SPI_H

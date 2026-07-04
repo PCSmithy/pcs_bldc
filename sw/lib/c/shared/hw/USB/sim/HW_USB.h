@@ -1,5 +1,4 @@
-#ifndef HW_USB_H
-#define HW_USB_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -19,4 +18,3 @@ void HW_USB_serviceYield(void);
 uint32_t HW_USB_available(void);
 uint32_t HW_USB_read(uint8_t * buffer, uint32_t len);
 
-#endif // HW_USB_H

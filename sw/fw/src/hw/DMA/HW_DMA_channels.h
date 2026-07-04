@@ -1,5 +1,4 @@
-#ifndef HW_DMA_CHANNELS_H
-#define HW_DMA_CHANNELS_H
+#pragma once
 
 /* Typedefs */
 
@@ -13,4 +12,3 @@ typedef enum
     HW_DMA_CHANNEL_COUNT,
 } HW_DMA_channel_E;
 
-#endif // HW_DMA_CHANNELS_H

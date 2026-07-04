@@ -1,5 +1,4 @@
-#ifndef APP_RGBLEDRING_CHANNELS_H
-#define APP_RGBLEDRING_CHANNELS_H
+#pragma once
 
 /* Typedefs */
 
@@ -10,4 +9,3 @@ typedef enum
     APP_RGBLEDRING_CHANNEL_COUNT,
 } app_rgbLedRing_channel_E;
 
-#endif // APP_RGBLEDRING_CHANNELS_H

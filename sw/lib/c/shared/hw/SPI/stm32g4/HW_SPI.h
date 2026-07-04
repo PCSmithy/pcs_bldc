@@ -1,5 +1,4 @@
-#ifndef HW_SPI_H
-#define HW_SPI_H
+#pragma once
 
 /* Includes */
 #include "lib_types.h"
@@ -87,4 +86,3 @@ bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t 
 bool HW_SPI_registerCallback(HW_SPI_channel_E channel, HW_SPI_completeCallback_F callback, void * context);
 HW_SPI_status_E HW_SPI_getStatus(HW_SPI_channel_E channel);
 
-#endif // HW_SPI_H
