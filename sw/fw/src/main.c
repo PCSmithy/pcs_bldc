@@ -210,7 +210,7 @@ static void task_usb(void * params)
 #define TP_UNIT "\xC2\xA7"
 
 // Telemetry emit period (ms).
-#define TELEMETRY_PERIOD_MS 1
+#define TELEMETRY_PERIOD_MS 2
 
 // One window's Teleplot packets are formatted into a buffer this size and pushed
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
