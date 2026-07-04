@@ -79,10 +79,14 @@ void Error_Handler(void)
     }
 }
 
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-// FreeRTOS static-allocation memory (configSUPPORT_STATIC_ALLOCATION=1).
-// cmsis_os2.c normally provides these; we supply them since we use the native
-// FreeRTOS API without the CMSIS-RTOS wrapper.
+// FreeRTOS static-allocation memory providers (configSUPPORT_STATIC_ALLOCATION=1).
+// cmsis_os2.c normally supplies these; we provide them since we use the native
+// FreeRTOS API without the CMSIS-RTOS wrapper. Target-uniform: the board config
+// and the SIL fiber-port config both enable static allocation, and the kernel
+// creates the idle task (and, where enabled, the timer task) through these on
+// either target. The timer-task provider is only needed when software timers
+// are compiled in (configUSE_TIMERS).
+#if (configSUPPORT_STATIC_ALLOCATION == 1)
 static StaticTask_t idleTaskTcb;
 static StackType_t  idleTaskStack[configMINIMAL_STACK_SIZE];
 void vApplicationGetIdleTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxStack, uint32_t * pulSize)
@@ -92,6 +96,7 @@ void vApplicationGetIdleTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSta
     *pulSize  = configMINIMAL_STACK_SIZE;
 }
 
+#if (configUSE_TIMERS == 1)
 static StaticTask_t timerTaskTcb;
 static StackType_t  timerTaskStack[configTIMER_TASK_STACK_DEPTH];
 void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxStack, uint32_t * pulSize)
@@ -100,7 +105,10 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
     *ppxStack = timerTaskStack;
     *pulSize  = configTIMER_TASK_STACK_DEPTH;
 }
+#endif
+#endif
 
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 #define TASK_PRIORITY_1MS   (configMAX_PRIORITIES - 1U)
 #define TASK_PRIORITY_10MS  (configMAX_PRIORITIES - 2U)
 #define TASK_PRIORITY_USB   (configMAX_PRIORITIES - 3U)

@@ -55,18 +55,25 @@ if(PCS_TARGET STREQUAL "embedded")
   )
 endif()
 
-# hw_USB (embedded) + io_serial. hw_USB and tinyusb have a genuine cyclic
+# io_serial: the CDC byte-stream transport. Builds for both targets — it talks
+# to its backing transport only through the HW_USB CDC API, which is the real
+# TinyUSB stack on embedded and a loopback on native. io_serial_channels pulls in
+# io_serial, which PUBLIC-links hw_USB, so the HW_USB_* references resolve
+# transitively on either target. Link it before the USB group below so those
+# references are already pending when hw_USB is pulled.
+target_link_libraries(pcs_bldc_fw PRIVATE io_serial_channels)
+
+# USB device stack (embedded only). hw_USB and tinyusb have a genuine cyclic
 # dependency: tinyusb's usbd.c calls our tud_descriptor_*_cb (in hw_USB's
 # descriptor unit), while hw_USB calls tinyusb's tud_* API. A single-pass static
 # link can't satisfy a cycle, so wrap them in an ld --start-group/--end-group
-# that re-scans the pair until no new references resolve. io_serial (pulled in by
-# io_serial_channels) layers the byte stream on hw_USB; link it before the group
-# so its HW_USB_* references resolve when hw_USB is pulled. fw_hw's
+# that re-scans the pair until no new references resolve. fw_hw's
 # USB_LP_IRQHandler also references dcd_int_handler (tinyusb); fw_hw is scanned
-# before the group, and the group resolves that pending reference too.
+# before the group, and the group resolves that pending reference too. On native
+# there is no TinyUSB stack — io_serial's transitive hw_USB is the sim loopback,
+# a plain acyclic archive that needs no group.
 if(PCS_TARGET STREQUAL "embedded")
   target_link_libraries(pcs_bldc_fw PRIVATE
-    io_serial_channels
     -Wl,--start-group
     hw_USB
     tinyusb
@@ -74,34 +81,18 @@ if(PCS_TARGET STREQUAL "embedded")
   )
 endif()
 
-# io_AS5048 (embedded only): the AS5048 encoder driver + its project channel
-# config (io_AS5048_channels pulls in io_AS5048). Their HW_SPI_* references
-# resolve against fw_hw (whole-archived above), so a plain PRIVATE link after
-# fw_hw is sufficient.
-if(PCS_TARGET STREQUAL "embedded")
-  target_link_libraries(pcs_bldc_fw PRIVATE io_AS5048_channels)
-endif()
-
-# io_SK6805 (embedded only): the SK6805 LED-string driver + its project config
-# (io_SK6805_config pulls in io_SK6805), same linking story as io_AS5048.
-if(PCS_TARGET STREQUAL "embedded")
-  target_link_libraries(pcs_bldc_fw PRIVATE io_SK6805_channels)
-endif()
-
-# dev_switch: the driver builds for both targets (native Unity suite included),
-# but only the embedded executable consumes it (the SIM main() has no UI yet).
-# dev_switch_channels pulls in dev_switch; HW_GPIO_* resolve via fw_hw.
-if(PCS_TARGET STREQUAL "embedded")
-  target_link_libraries(pcs_bldc_fw PRIVATE dev_switch_channels)
-endif()
-
-# app_rgbLedRing (embedded only link): the LED-ring UI task + its project channel
-# config (app_rgbLedRing_channels pulls in app_rgbLedRing, which pulls io_SK6805 /
-# io_AS5048 / dev_switch + freertos). HW_* references resolve via fw_hw
-# (whole-archived above). The SIM main() has no UI consumer yet.
-if(PCS_TARGET STREQUAL "embedded")
-  target_link_libraries(pcs_bldc_fw PRIVATE app_rgbLedRing_channels)
-endif()
+# io/dev/app modules: the AS5048 encoder, SK6805 LED string, switch debounce, and
+# LED-ring UI. All are target-independent and build for both targets. Each links
+# its own hw_* dependency PUBLIC (io_AS5048/io_SK6805 -> hw_SPI, dev_switch ->
+# hw_GPIO), so the HW_* references resolve against the target's HW drivers — the
+# real ones on embedded, the sim drivers on native — pulled in transitively.
+# app_rgbLedRing_channels transitively pulls the io/dev modules it composes.
+target_link_libraries(pcs_bldc_fw PRIVATE
+  io_AS5048_channels
+  io_SK6805_channels
+  dev_switch_channels
+  app_rgbLedRing_channels
+)
 
 # Embedded-target post-build: emit .bin and .hex artifacts and print the
 # memory section sizes (text/data/bss + flash/RAM percentages from the

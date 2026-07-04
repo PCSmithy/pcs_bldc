@@ -2,9 +2,14 @@
  * Native (SIL) FreeRTOSConfig.h for the cooperative fiber port.
  *
  * Mirrors the app-level settings of the stm32g4 board config (tick rate,
- * priorities, mutexes/semaphores, included API) but drops the Cortex-M
- * interrupt-priority machinery and uses the native fiber port: cooperative
- * single-thread, dynamic allocation, idle-hook quiescence handoff.
+ * priorities, mutexes/semaphores, static+dynamic allocation, included API) but
+ * drops the Cortex-M interrupt-priority machinery and uses the native fiber
+ * port: cooperative single-thread, idle-hook quiescence handoff.
+ *
+ * Static allocation is enabled to match the board config so main.c's task set
+ * (and the idle/timer memory-provider hooks) are target-uniform. The fiber port
+ * supports it natively — static allocation reuses pxPortInitialiseStack exactly
+ * as dynamic creation does, with no port-level hooks or macros of its own.
  */
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
@@ -16,7 +21,7 @@
 #define configUSE_TIME_SLICING                  1
 #define configIDLE_SHOULD_YIELD                 1
 
-#define configSUPPORT_STATIC_ALLOCATION         0
+#define configSUPPORT_STATIC_ALLOCATION         1
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 
 #define configUSE_IDLE_HOOK                     1   /* fiber-port quiescence handoff */
