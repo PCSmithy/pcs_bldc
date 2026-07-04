@@ -83,12 +83,18 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   (`cvar`/`vsig`/comms) over one `Value` enum; naming convention
   `<sig_type>:<source>:<local>[:<modifier>]`; comms = logical payloads captured
   via sim-HW upcall; routes first-class + suspendable (injection).
-- ◐ **State Table impl** — `voyant` modularized (`value`/`dwarf`/`backend`/
-  `state`). `Signal` trait + `cvar` backing (DWARF live ptr), `Value`, the
-  `SignalKey` name parser, and the `StateTable` registry: register + get/set
-  **by canonical name** (`cvar:pcs_bldc:<path>`). Demo reads/writes the ADC ramp
-  through the table; parser unit-tested. Next: `vsig` backing (with the `Model`
-  trait), comms backing, the historian.
+- ☑ **State Table impl** (pure-data historian design) — `voyant` modules
+  `signal`/`state_table`/`backend`/`dwarf`:
+  - `signal`: `SignalId` (owned, validated `sig_type:source:name[:modifier]`) +
+    the logical `Value` (`F32/F64/I32/U32/U64/Bool/Enum/Bytes`) + `approx_eq`.
+  - `state_table`: registry + **per-signal change-logged history** + current
+    cache + injection **overrides** + **per-signal epsilon** (default 1e-3) +
+    time-based retention (`None`=unbounded fast mode). `record`/`force_record`/
+    `current_value` (O(1))/`value_at` (O(log n) ZOH). *No FFI — pure data.*
+  - `backend`: the **cvar sample-resolver** — `read_cvar`/`write_cvar` coerce
+    firmware widths ↔ `Value` (the only unsafe/DWARF part).
+  - 10 unit tests; demo samples firmware into the table, shows change-log dedup,
+    ZOH lookup, and inject-and-react. Next: `vsig` (Model trait), comms, routes.
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
   with per-route suspend/resume
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;

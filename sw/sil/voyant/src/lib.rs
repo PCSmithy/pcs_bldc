@@ -7,20 +7,23 @@
 //! nothing here is specific to any one board.
 //!
 //! Modules:
-//! - [`value`] — the common `Value` currency + scalar memory access.
-//! - [`backend`] — the native firmware backend ([`Firmware`]): control ABI +
-//!   DWARF white-box read/write (ffi-boundary.md).
-//! - the DWARF reader (internal) — resolve `var.member`/`arr[i]` paths.
-//! - [`state`] — the State Table ([`StateTable`], [`Signal`]) over the common
-//!   `Value` (state-route-tables.md).
+//! - [`signal`] — [`SignalId`] (`sig_type:source:name[:modifier]`) + the common
+//!   [`Value`] currency.
+//! - [`state_table`] — the [`StateTable`]: signal registry + per-signal
+//!   change-logged history + current cache + injection overrides + retention
+//!   (state-route-tables.md; the State Table *is* the historian, D12). Pure
+//!   data — no FFI.
+//! - [`backend`] — the native firmware backend ([`Firmware`]): the control ABI
+//!   + the cvar sample-resolver (read/write firmware statics as [`Value`], the
+//!   only unsafe/DWARF part).
 //!
-//! The Route Table, sim clock, historian, and run modes build on these.
+//! The Route Table, sim clock, and run modes build on these.
 
 mod backend;
 mod dwarf;
-mod state;
-mod value;
+pub mod signal;
+pub mod state_table;
 
 pub use backend::Firmware;
-pub use state::{Signal, SignalKey, StateTable};
-pub use value::{Scalar, Value};
+pub use signal::{ParseError, SignalId, Value};
+pub use state_table::{StateTable, StateTableConfig, TableError};

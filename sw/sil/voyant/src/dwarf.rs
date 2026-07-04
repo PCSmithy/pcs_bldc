@@ -12,13 +12,29 @@
 //! Not yet: pointer-chasing. Name collisions (function-local statics) are
 //! last-wins until the State Table adds qualified paths.
 
-use crate::value::Scalar;
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 
 type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
+
+/// A DWARF base/enum scalar leaf kind. The cvar resolver coerces these into the
+/// logical [`crate::signal::Value`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scalar {
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    Bool,
+}
 
 #[derive(Default)]
 struct Maps {
@@ -36,11 +52,11 @@ struct Maps {
     base: HashMap<usize, (u8, u64)>,
 }
 
-pub struct DwarfMap(Maps);
+pub(crate) struct DwarfMap(Maps);
 
 impl DwarfMap {
     /// Parse the DWARF in a PE image (the firmware DLL).
-    pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let object = object::File::parse(bytes)?;
 
         let load = |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> {
@@ -62,14 +78,14 @@ impl DwarfMap {
     }
 
     /// Link-time address of a top-level variable.
-    pub fn var_addr(&self, name: &str) -> Option<u64> {
+    pub(crate) fn var_addr(&self, name: &str) -> Option<u64> {
         self.0.vars.get(name).map(|&(addr, _)| addr)
     }
 
     /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
     /// kind). Returns None if any segment, member, index type, or leaf kind is
     /// unknown.
-    pub fn resolve(&self, path: &str) -> Option<(u64, Scalar)> {
+    pub(crate) fn resolve(&self, path: &str) -> Option<(u64, Scalar)> {
         let mut segs = path.split('.');
 
         let (name, indices) = split_indices(segs.next()?)?;
