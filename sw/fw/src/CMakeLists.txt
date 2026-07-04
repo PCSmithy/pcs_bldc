@@ -18,7 +18,14 @@ add_subdirectory(app)
 # white-box symbol access). main()'s SIM smoke driver is unused inside the DLL.
 if(PCS_TARGET STREQUAL "native")
   add_library(pcs_bldc_fw SHARED main.c)
-  target_link_options(pcs_bldc_fw PRIVATE -Wl,--export-all-symbols)
+  # Expose sil_fw_* + globals to the loader for white-box symbol access. The
+  # export mechanism is host-linker-specific; macOS ld64 exports default-
+  # visibility symbols already, so it needs no flag.
+  if(WIN32)
+    target_link_options(pcs_bldc_fw PRIVATE -Wl,--export-all-symbols)
+  elseif(NOT APPLE)
+    target_link_options(pcs_bldc_fw PRIVATE -Wl,--export-dynamic)
+  endif()
 else()
   add_executable(pcs_bldc_fw main.c)
 endif()
@@ -34,11 +41,21 @@ target_include_directories(pcs_bldc_fw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # forces every fw_hw object to be linked so the real handlers win. fw_hw stays a
 # target (not a bare flag), so its usage requirements — include dirs and the
 # linker script / --specs via INTERFACE link options — still propagate.
-target_link_libraries(pcs_bldc_fw PRIVATE
-  -Wl,--whole-archive
-  fw_hw
-  -Wl,--no-whole-archive
-)
+if(APPLE)
+  # ld64 has no --whole-archive; -force_load takes the archive path. Also link
+  # fw_hw as a target so its usage requirements (include dirs, INTERFACE deps)
+  # and build ordering still propagate.
+  target_link_libraries(pcs_bldc_fw PRIVATE
+    "-Wl,-force_load,$<TARGET_FILE:fw_hw>"
+    fw_hw
+  )
+else()
+  target_link_libraries(pcs_bldc_fw PRIVATE
+    -Wl,--whole-archive
+    fw_hw
+    -Wl,--no-whole-archive
+  )
+endif()
 
 # newlib (--specs=nano.specs) is appended by the compiler driver after all of
 # our explicit libraries, and references the libc syscall backend (_sbrk,

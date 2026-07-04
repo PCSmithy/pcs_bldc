@@ -20,9 +20,25 @@ if(PCS_TARGET STREQUAL "embedded")
   set(FREERTOS_PORT_SRC  portable/GCC/ARM_CM4F/port.c)
   set(FREERTOS_PORT_INC  portable/GCC/ARM_CM4F)
   set(FREERTOS_PORT_DEPS cmsis)
-else()
+elseif(WIN32)
+  # Windows host: Win32-fiber cooperative port.
   set(FREERTOS_PORT_SRC  portable/Native-Fiber/port.c)
   set(FREERTOS_PORT_INC  portable/Native-Fiber)
+  set(FREERTOS_PORT_DEPS )
+else()
+  # macOS / Linux host: same cooperative semantics via a hand-rolled asm
+  # coroutine switch (no Win32 fibers, no deprecated ucontext).
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    set(FREERTOS_CORO_ASM portable/Native-Coro/coro_switch_aarch64.S)
+  else()
+    # Future: add portable/Native-Coro/coro_switch_x86_64.S (System V ABI) to
+    # cover Linux/Intel hosts. Deferred until such a host needs the SIL build.
+    message(FATAL_ERROR "Native-Coro: no context-switch backend for ${CMAKE_SYSTEM_PROCESSOR} yet")
+  endif()
+  set(FREERTOS_PORT_SRC  portable/Native-Coro/port.c
+                         portable/Native-Coro/coro.c
+                         ${FREERTOS_CORO_ASM})
+  set(FREERTOS_PORT_INC  portable/Native-Coro)
   set(FREERTOS_PORT_DEPS )
 endif()
 
