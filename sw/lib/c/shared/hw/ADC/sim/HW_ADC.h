@@ -7,7 +7,7 @@
 
 /* Defines */
 
-#define HW_ADC_INPUTS_PER_CHANNEL           (16U)
+#define HW_ADC_INPUTS_PER_CHANNEL           (19U)
 #define HW_ADC_INJECTED_INPUTS_PER_CHANNEL  (4U)
 
 /* Typedefs */

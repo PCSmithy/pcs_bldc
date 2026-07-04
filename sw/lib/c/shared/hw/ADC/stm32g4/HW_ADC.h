@@ -10,9 +10,10 @@
 
 // Max input pins per ADC peripheral on the regular conversion sequence.
 // STM32G4 ADC1/2 support channels 0..18 (incl. internal Vrefint, Vts,
-// Vbat). 16 covers all external pin inputs likely to be used; bump if
+// Vbat, and the VOPAMP outputs). Sized to 19 to index the highest
+// internal channel in use (VOPAMP3 = ADC2 IN18); bump if higher-numbered
 // internal channels are added.
-#define HW_ADC_INPUTS_PER_CHANNEL           (16U)
+#define HW_ADC_INPUTS_PER_CHANNEL           (19U)
 
 // Max inputs per ADC peripheral on the injected sequence. STM32G4 ADCs
 // have exactly 4 injected slots (JDR1..JDR4); this is an MCU-architecture

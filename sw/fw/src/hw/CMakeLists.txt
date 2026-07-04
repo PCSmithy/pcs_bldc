@@ -18,6 +18,7 @@ endif()
 # target_sources() has something to attach to.
 add_subdirectory(systemClock)
 add_subdirectory(ADC)
+add_subdirectory(OPAMP)
 add_subdirectory(GPIO)
 add_subdirectory(SPI)
 add_subdirectory(TIM)

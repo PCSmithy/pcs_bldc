@@ -43,7 +43,26 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .injectedXferMode    = HW_ADC_XFER_POLLED,
         .vref                = 3.3f,
 
-        .inputs         = { HW_ADC_CUBEMX_INPUTS_ADC1 },
+        .inputs         =
+        {
+            HW_ADC_CUBEMX_INPUTS_ADC1   // macro supplies its own trailing comma
+            // Hand-authored: the CubeMX converter does not emit VOPAMP
+            // internal channels. OPAMP1 output -> ADC1 IN13, appended to
+            // the regular sequence as rank 5 (cubemx claims ranks 1-4).
+            [13] =
+            {
+                .enabled = true,
+                .sConfig =
+                {
+                    .Channel      = ADC_CHANNEL_VOPAMP1,
+                    .Rank         = ADC_REGULAR_RANK_5,
+                    .SamplingTime = ADC_SAMPLETIME_47CYCLES_5,
+                    .SingleDiff   = ADC_SINGLE_ENDED,
+                    .OffsetNumber = ADC_OFFSET_NONE,
+                    .Offset       = 0,
+                },
+            },
+        },
         .injectedInputs = { { 0 } },  // No injected inputs configured yet.
                                   // FOC current sensing will put phase U on
                                   // this channel's slot 0, with ADC2's slot 0
@@ -73,7 +92,40 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .injectedXferMode    = HW_ADC_XFER_POLLED,
         .vref                = 3.3f,
 
-        .inputs         = { HW_ADC_CUBEMX_INPUTS_ADC2 },
+        .inputs         =
+        {
+            HW_ADC_CUBEMX_INPUTS_ADC2   // macro supplies its own trailing comma
+            // Hand-authored: the CubeMX converter does not emit VOPAMP
+            // internal channels. OPAMP2 output -> ADC2 IN16 (rank 4),
+            // OPAMP3 output -> ADC2 IN18 (rank 5), appended to the regular
+            // sequence after the cubemx-claimed ranks 1-3.
+            [16] =
+            {
+                .enabled = true,
+                .sConfig =
+                {
+                    .Channel      = ADC_CHANNEL_VOPAMP2,
+                    .Rank         = ADC_REGULAR_RANK_4,
+                    .SamplingTime = ADC_SAMPLETIME_47CYCLES_5,
+                    .SingleDiff   = ADC_SINGLE_ENDED,
+                    .OffsetNumber = ADC_OFFSET_NONE,
+                    .Offset       = 0,
+                },
+            },
+            [18] =
+            {
+                .enabled = true,
+                .sConfig =
+                {
+                    .Channel      = ADC_CHANNEL_VOPAMP3_ADC2,
+                    .Rank         = ADC_REGULAR_RANK_5,
+                    .SamplingTime = ADC_SAMPLETIME_47CYCLES_5,
+                    .SingleDiff   = ADC_SINGLE_ENDED,
+                    .OffsetNumber = ADC_OFFSET_NONE,
+                    .Offset       = 0,
+                },
+            },
+        },
         .injectedInputs = { { 0 } },
     },
 
@@ -87,7 +139,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .injectedXferMode    = HW_ADC_XFER_POLLED,
         .vref                = 3.3f,
         .numBits             = 12U,
-        .inputs              = { HW_ADC_CUBEMX_SIM_INPUTS_ADC1 },
+        .inputs              =
+        {
+            HW_ADC_CUBEMX_SIM_INPUTS_ADC1   // macro supplies its own trailing comma
+            // Hand-authored VOPAMP internal channel (see stm32g4 branch).
+            [13] = { .enabled = true, .inputNameStr = "ADC1_VOPAMP1" },
+        },
         .injectedInputs      = { { 0 } },
     },
 
@@ -100,7 +157,13 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .injectedXferMode    = HW_ADC_XFER_POLLED,
         .vref                = 3.3f,
         .numBits             = 12U,
-        .inputs              = { HW_ADC_CUBEMX_SIM_INPUTS_ADC2 },
+        .inputs              =
+        {
+            HW_ADC_CUBEMX_SIM_INPUTS_ADC2   // macro supplies its own trailing comma
+            // Hand-authored VOPAMP internal channels (see stm32g4 branch).
+            [16] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP2" },
+            [18] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP3" },
+        },
         .injectedInputs      = { { 0 } },
     },
 #else

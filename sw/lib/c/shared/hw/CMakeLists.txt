@@ -18,6 +18,7 @@ endif()
 # one to add based on PCS_TARGET.
 add_subdirectory(systemClock)
 add_subdirectory(ADC)
+add_subdirectory(OPAMP)
 add_subdirectory(GPIO)
 add_subdirectory(SPI)
 add_subdirectory(TIM)

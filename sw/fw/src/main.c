@@ -1,6 +1,7 @@
 #include "lib_build.h"
 #include "HW_systemClock.h"
 #include "HW_GPIO.h"
+#include "HW_OPAMP.h"
 #include "HW_ADC.h"
 #include "HW_SPI.h"
 #include "HW_TIM.h"
@@ -35,6 +36,7 @@
 
 extern const HW_systemClock_config_S HW_systemClock_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
+extern const HW_OPAMP_config_S HW_OPAMP_config;
 extern const HW_ADC_config_S HW_ADC_config;
 extern const HW_SPI_config_S HW_SPI_config;
 extern const HW_TIM_config_S HW_TIM_config;
@@ -208,14 +210,14 @@ static void task_usb(void * params)
 #define TP_UNIT "\xC2\xA7"
 
 // Telemetry emit period (ms).
-#define TELEMETRY_PERIOD_MS 25
+#define TELEMETRY_PERIOD_MS 1
 
 // One window's Teleplot packets are formatted into a buffer this size and pushed
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
 // rather than once per byte (the per-byte path is far too slow to keep up).
-// Sized to hold a full window's worst case (~500 B with the ADC engineering
-// signals below); kept in step with CFG_TUD_CDC_TX_BUFSIZE so the batched
-// write drains without backpressure.
+// Sized to hold a full window's worst case (~600 B with the ADC engineering
+// signals below, incl. the three phase-voltage sense channels); kept in step
+// with CFG_TUD_CDC_TX_BUFSIZE so the batched write drains without backpressure.
 #define TELEMETRY_TX_BUF_BYTES 1024U
 
 // --- ADC engineering-unit scaling (bring-up scaffolding) -------------------
@@ -230,6 +232,12 @@ static void task_usb(void * params)
 #define ADC_VBUS_I_V_PER_A     (0.6f)
 // VBUS voltage: resistive divider, 0.15 V/V: v = v_adc / 0.15.
 #define ADC_VBUS_V_RATIO       (0.15f)
+// Phase voltage sense: each phase node feeds a 274.0k/22.1k resistive
+// divider (22.1/296.1 V/V) into an OPAMP PGA at x2 whose output the ADC
+// samples. Recover the phase voltage: v_phase = v_adc / gain / ratio
+// (~x6.699 overall).
+#define ADC_PHASE_V_OPAMP_GAIN (2.0f)
+#define ADC_PHASE_V_DIV_RATIO  (22.1f / 296.1f)
 // 5V0 / 3V3 rails: half-divider (two equal resistors), 0.5 V/V: v = v_adc / 0.5.
 #define ADC_RAIL_V_RATIO       (0.5f)
 
@@ -379,6 +387,42 @@ static void telemetryTask(void * params)
                      (unsigned long)phaseWWhole, (unsigned long)phaseWFrac);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
+        // Phase terminal voltages via the OPAMP-buffered divider (IN13 on
+        // ADC1, IN16/IN18 on ADC2). Non-negative, but formatted through the
+        // signed helper to keep the fixed-point handling uniform.
+        float32_t phaseUsense_v = 0.0f;
+        float32_t phaseVsense_v = 0.0f;
+        float32_t phaseWsense_v = 0.0f;
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 13U, &phaseUsense_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 16U, &phaseVsense_v);
+        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 18U, &phaseWsense_v);
+
+        const float32_t phaseU_v_out = phaseUsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
+        const float32_t phaseV_v_out = phaseVsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
+        const float32_t phaseW_v_out = phaseWsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
+
+        uint32_t phaseUvWhole = 0U;
+        uint32_t phaseUvFrac  = 0U;
+        const char * const phaseUvSign = telemetrySignedFixed(phaseU_v_out, 1000U, &phaseUvWhole, &phaseUvFrac);
+        uint32_t phaseVvWhole = 0U;
+        uint32_t phaseVvFrac  = 0U;
+        const char * const phaseVvSign = telemetrySignedFixed(phaseV_v_out, 1000U, &phaseVvWhole, &phaseVvFrac);
+        uint32_t phaseWvWhole = 0U;
+        uint32_t phaseWvFrac  = 0U;
+        const char * const phaseWvSign = telemetrySignedFixed(phaseW_v_out, 1000U, &phaseWvWhole, &phaseWvFrac);
+
+        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                     "phase_u_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                     "phase_v_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                     "phase_w_v:%lu:%s%lu.%03lu" TP_UNIT "V\n",
+                     (unsigned long)nowMs, phaseUvSign,
+                     (unsigned long)phaseUvWhole, (unsigned long)phaseUvFrac,
+                     (unsigned long)nowMs, phaseVvSign,
+                     (unsigned long)phaseVvWhole, (unsigned long)phaseVvFrac,
+                     (unsigned long)nowMs, phaseWvSign,
+                     (unsigned long)phaseWvWhole, (unsigned long)phaseWvFrac);
+        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
                      "vbus_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
                      "vbus_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
@@ -394,12 +438,12 @@ static void telemetryTask(void * params)
                      (unsigned long)rail3Whole, (unsigned long)rail3Frac);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "adc1_status:%lu:%u;"
-                     "adc2_status:%lu:%u\n",
-                     (unsigned long)nowMs, (unsigned)adc1Status,
-                     (unsigned long)nowMs, (unsigned)adc2Status);
-        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+        // n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+        //              "adc1_status:%lu:%u;"
+        //              "adc2_status:%lu:%u\n",
+        //              (unsigned long)nowMs, (unsigned)adc1Status,
+        //              (unsigned long)nowMs, (unsigned)adc2Status);
+        // if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         // Per-task worst-case body duration since the last emit (microseconds),
         // snapshotted and reset each window. task1ms/task10ms are pure CPU time
@@ -445,6 +489,7 @@ static bool prvHwInit(void)
     bool ok = true;
     ok &= HW_systemClock_init(&HW_systemClock_config);
     ok &= HW_GPIO_init(&HW_GPIO_config);
+    ok &= HW_OPAMP_init(&HW_OPAMP_config);   // before ADC: op-amps must be calibrated and running before the ADC samples their internal outputs
     ok &= HW_ADC_init(&HW_ADC_config);
     ok &= HW_DMA_init(&HW_DMA_config);   // before SPI: SPI registers DMA completion callbacks
     ok &= HW_SPI_init(&HW_SPI_config);
