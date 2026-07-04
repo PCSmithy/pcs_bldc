@@ -122,6 +122,18 @@ typedef enum
 
 static volatile uint32_t profileMaxUs[PROFILE_TASK_COUNT];
 
+// --- Per-task heartbeat counters (SIL liveness) ----------------------------
+// One free-running counter per task, bumped once per loop-body iteration.
+// Unlike profileMaxUs (which resets every telemetry window), these are
+// monotonic — the SIL driver reads them by DWARF path to prove each real task
+// is actually advancing on the native scheduler, and they are candidate State
+// Table signals. Target-uniform; volatile so the external (DLL/DWARF) view is
+// never stale.
+static volatile uint32_t task1msRuns;
+static volatile uint32_t task10msRuns;
+static volatile uint32_t taskUsbRuns;
+static volatile uint32_t telemRuns;
+
 // Fold one body execution's duration into the task's window max.
 static void profileUpdate(profileTask_E task, uint32_t durationUs)
 {
@@ -154,6 +166,7 @@ static void task_1ms(void * params)
     for (;;)
     {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
+        task1msRuns++;
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
         // hw
@@ -179,6 +192,7 @@ static void task_10ms(void * params)
     for (;;)
     {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10U));
+        task10msRuns++;
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
         // hw
@@ -203,6 +217,7 @@ static void task_usb(void * params)
     (void)params;
     for (;;)
     {
+        taskUsbRuns++;
         HW_USB_run();
     }
 }
@@ -265,6 +280,7 @@ static void telemetryTask(void * params)
     for (;;)
     {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
+        telemRuns++;   // counts every window, whether or not a host is connected
 
         // Nothing is listening until a host opens the port — skip the work.
         if (!IO_serial_connected(IO_SERIAL_CHANNEL_CDC))

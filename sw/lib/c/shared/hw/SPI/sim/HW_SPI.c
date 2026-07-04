@@ -177,10 +177,26 @@ static void HW_SPI_private_fillRx(HW_SPI_channel_E channel)
     HW_SPI_channelData_S * const cd = &data->channels[channel];
     if (cd->op == HW_SPI_OP_TXRX)
     {
-        // Full-duplex loopback: MISO mirrors MOSI.
-        for (size_t i = 0U; i < cd->length; i++)
+        if (cd->injectedRxLen > 0U)
         {
-            cd->rxData[i] = cd->txData[i];
+            // Full-duplex with an injected response: MISO is driven from the
+            // injected frame rather than mirrored from MOSI. A peripheral that
+            // reads over transmitReceive (e.g. the AS5048 encoder) needs this to
+            // return a crafted response; the injectedRx static is the SIL
+            // white-box injection point. Falls back to loopback when nothing is
+            // injected, so plain loopback consumers are unaffected.
+            for (size_t i = 0U; i < cd->length; i++)
+            {
+                cd->rxData[i] = (i < cd->injectedRxLen) ? cd->injectedRx[i] : 0U;
+            }
+        }
+        else
+        {
+            // Full-duplex loopback: MISO mirrors MOSI.
+            for (size_t i = 0U; i < cd->length; i++)
+            {
+                cd->rxData[i] = cd->txData[i];
+            }
         }
     }
     else if (cd->op == HW_SPI_OP_RX)

@@ -42,8 +42,19 @@ fi
 echo "==> [2/3] Building SIL framework (cargo)"
 cargo build --manifest-path "$SIL_MANIFEST"
 
-# 3. Run the sim. The Rust binary is a native Windows process, so LoadLibrary
-#    needs a Windows-style path (C:/...), not an MSYS path (/c/...).
+# 3. Run the sim sanity suite. The Rust binary is a native Windows process, so
+#    LoadLibrary needs a Windows-style path (C:/...), not an MSYS path (/c/...).
+#    The suite exits nonzero if any check FAILs; propagate that so this script
+#    (and CI) fails loudly. `set -e` alone would abort here, but we want a
+#    summary line either way, so capture the status explicitly.
 DLL_WIN="$(cygpath -m "$DLL" 2>/dev/null || echo "$DLL")"
-echo "==> [3/3] Running sim against $DLL_WIN"
-cargo run --quiet --manifest-path "$SIL_MANIFEST" -p pcs_bldc_sil -- "$DLL_WIN"
+echo "==> [3/3] Running SIL sanity suite against $DLL_WIN"
+status=0
+cargo run --quiet --manifest-path "$SIL_MANIFEST" -p pcs_bldc_sil -- "$DLL_WIN" || status=$?
+
+if [ "$status" -eq 0 ]; then
+  echo "==> SIL sanity suite PASSED"
+else
+  echo "==> SIL sanity suite FAILED (exit $status)" >&2
+fi
+exit "$status"
