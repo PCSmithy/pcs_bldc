@@ -28,13 +28,21 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-# 1. Native firmware -> build/native-fw/src/libpcs_bldc_fw.dll
+# Host shared-library flavour. On macOS the DWARF sits in a sibling .dSYM
+# (the CMake build runs dsymutil); the Rust reader finds it from the .dylib path.
+case "$(uname -s)" in
+  Darwin) LIBNAME=libpcs_bldc_fw.dylib ;;
+  Linux)  LIBNAME=libpcs_bldc_fw.so ;;
+  *)      LIBNAME=libpcs_bldc_fw.dll ;;
+esac
+
+# 1. Native firmware -> build/native-fw/src/$LIBNAME
 echo "==> [1/3] Building native firmware (shared library)"
 bash "$HERE/build_native.sh" "$@"
 
-DLL="$ROOT/build/native-fw/src/libpcs_bldc_fw.dll"
-if [ ! -f "$DLL" ]; then
-  echo "error: firmware DLL not found at $DLL" >&2
+LIB="$ROOT/build/native-fw/src/$LIBNAME"
+if [ ! -f "$LIB" ]; then
+  echo "error: firmware shared library not found at $LIB" >&2
   exit 1
 fi
 
@@ -42,15 +50,14 @@ fi
 echo "==> [2/3] Building SIL framework (cargo)"
 cargo build --manifest-path "$SIL_MANIFEST"
 
-# 3. Run the sim sanity suite. The Rust binary is a native Windows process, so
-#    LoadLibrary needs a Windows-style path (C:/...), not an MSYS path (/c/...).
-#    The suite exits nonzero if any check FAILs; propagate that so this script
-#    (and CI) fails loudly. `set -e` alone would abort here, but we want a
-#    summary line either way, so capture the status explicitly.
-DLL_WIN="$(cygpath -m "$DLL" 2>/dev/null || echo "$DLL")"
-echo "==> [3/3] Running SIL sanity suite against $DLL_WIN"
+# 3. Run the sim sanity suite. On Windows (MSYS) the Rust binary needs a
+#    Windows-style path for LoadLibrary; cygpath handles that and is a no-op
+#    elsewhere. The suite exits nonzero if any check FAILs; capture the status
+#    explicitly so we still print a summary line either way.
+LIB_ARG="$(cygpath -m "$LIB" 2>/dev/null || echo "$LIB")"
+echo "==> [3/3] Running SIL sanity suite against $LIB_ARG"
 status=0
-cargo run --quiet --manifest-path "$SIL_MANIFEST" -p pcs_bldc_sil -- "$DLL_WIN" || status=$?
+cargo run --quiet --manifest-path "$SIL_MANIFEST" -p pcs_bldc_sil -- "$LIB_ARG" || status=$?
 
 if [ "$status" -eq 0 ]; then
   echo "==> SIL sanity suite PASSED"

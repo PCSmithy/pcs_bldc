@@ -26,6 +26,13 @@ if(PCS_TARGET STREQUAL "native")
   elseif(NOT APPLE)
     target_link_options(pcs_bldc_fw PRIVATE -Wl,--export-dynamic)
   endif()
+  if(APPLE)
+    # ld64 leaves DWARF out of the linked Mach-O; collect it into a .dSYM so the
+    # SIL framework's white-box DWARF reader can find it.
+    add_custom_command(TARGET pcs_bldc_fw POST_BUILD
+      COMMAND dsymutil $<TARGET_FILE:pcs_bldc_fw>
+      VERBATIM)
+  endif()
 else()
   add_executable(pcs_bldc_fw main.c)
 endif()

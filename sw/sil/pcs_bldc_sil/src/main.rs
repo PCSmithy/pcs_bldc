@@ -1,6 +1,6 @@
 //! pcs_bldc SIL sanity suite (and demo).
 //!
-//! Loads this board's firmware DLL, drives it over the control ABI, and proves —
+//! Loads this board's firmware shared library, drives it over the control ABI, and proves —
 //! purely through white-box DWARF read/write of firmware statics — that the REAL
 //! firmware runs on the native scheduler: all four FreeRTOS tasks advance, the
 //! State Table historian works, and one end-to-end data path
@@ -12,7 +12,7 @@
 //! all injection/inspection is DWARF white-box (the sim drivers' statics are the
 //! future State Table signals).
 //!
-//! Usage: `cargo run -p pcs_bldc_sil -- [path-to-libpcs_bldc_fw.dll]`
+//! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -21,8 +21,16 @@ use voyant::{Firmware, SignalId, StateTable, Value};
 const SOURCE: &str = "pcs_bldc";
 const TICK_US: u64 = 1_000; // the firmware's 1 ms task cadence
 
-fn default_dll_path() -> PathBuf {
-    PathBuf::from("../../build/native-fw/src/libpcs_bldc_fw.dll")
+fn default_lib_path() -> PathBuf {
+    // The host shared-library flavour: .dll (Windows), .dylib (macOS), .so (Linux).
+    let name = if cfg!(target_os = "windows") {
+        "libpcs_bldc_fw.dll"
+    } else if cfg!(target_os = "macos") {
+        "libpcs_bldc_fw.dylib"
+    } else {
+        "libpcs_bldc_fw.so"
+    };
+    PathBuf::from("../../build/native-fw/src").join(name)
 }
 
 /// Coerce a logical [`Value`] to an unsigned integer for the checks below.
@@ -69,14 +77,14 @@ fn main() -> ExitCode {
     let path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(default_dll_path);
+        .unwrap_or_else(default_lib_path);
 
     println!("=== pcs_bldc SIL sanity suite ===");
     println!("loading firmware: {}", path.display());
     let fw = match Firmware::load(&path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("FATAL: failed to load firmware DLL: {e}");
+            eprintln!("FATAL: failed to load firmware library: {e}");
             return ExitCode::FAILURE;
         }
     };
