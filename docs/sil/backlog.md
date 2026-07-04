@@ -30,6 +30,12 @@ redundant seam — extra firmware added to the firmware-under-test in order to
 test the firmware-under-test. Remove it across the board, on every peripheral
 driver.
 
+**Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
+APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the
+white-box path instead — DWARF read/write of the sim drivers' statics (and,
+as they land, State Table overrides / Route Table suspend-resume). The
+existing 8 test suites are the frozen consumer set this task removes.
+
 **The complication — unit tests:** 8 Unity suites currently exercise drivers
 through these `_sim_*` APIs (~108 call sites, audited 2026-07-04):
 `hw/{ADC,DMA,GPIO,OPAMP,SPI,TIM,USB}/sim/test/` and
