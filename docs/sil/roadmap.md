@@ -67,7 +67,10 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   it over the control ABI (`start`/`advance_tick`/`shutdown`), and reads
   `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
   fiber scheduler → task → white-box read.
-- ☐ `FwBackend` trait + `NativeFreeRtos` impl (formalize over the proof-of-life)
+- ☑ **`Backend` trait + `Firmware` impl** — the execution-backend seam
+  (architecture.md §3.2) formalized: `voyant::Backend` (lifecycle
+  `start`/`advance_tick`/`shutdown` + `cvar` read/write by path), with `Firmware`
+  as its first impl. (An ARM-emu backend could be a later impl.)
 - ☑ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap` resolves
   `var.member`, `arr[i]`, nested paths → link address + scalar leaf kind
   (members, array indexing, typedef/const/volatile pass-through, base/enum
@@ -95,6 +98,12 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
     firmware widths ↔ `Value` (the only unsafe/DWARF part).
   - 10 unit tests; demo samples firmware into the table, shows change-log dedup,
     ZOH lookup, and inject-and-react. Next: `vsig` (Model trait), comms, routes.
+- ☑ **`Model` trait + `vsig` backing** (`voyant::model`) — minimal `Model`
+  (`name`/`signals`/`advance(dt_us)`/`read`) + `ModelSignal`; `register_model` /
+  `record_model` sample a model into the State Table the way cvars are sampled
+  (StateTable stays pure data — the glue lives in `model`, not the table).
+  `RampModel` reference impl; 8 new unit tests; sanity-suite check 5 shows
+  register → advance-with-time → historian record.
 - ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
   with per-route suspend/resume
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;

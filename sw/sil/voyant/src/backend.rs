@@ -13,6 +13,39 @@ use libloading::{Library, Symbol};
 use std::error::Error;
 use std::path::Path;
 
+/// A firmware execution backend: load, drive, and introspect one firmware
+/// instance. This is the framework's single narrow seam onto the
+/// firmware-under-test (architecture.md §3.2) — lifecycle
+/// (`start`/`advance_tick`/`shutdown`) plus white-box `cvar` read/write by path.
+/// [`Firmware`] (native shared lib + DWARF) is the first impl; another backend
+/// (e.g. ARM emulation) could implement the same trait without disturbing the
+/// engine, models, State Table, or run modes.
+///
+/// All methods take `&self`: a backend mutates *external* state (the firmware's
+/// own memory / execution), not the Rust handle, so it needs no `&mut`.
+/// Construction (loading the artifact) is backend-specific and stays off the
+/// trait — see [`Firmware::load`].
+pub trait Backend {
+    /// Bring the firmware up: run HW/app init, create tasks, and run the
+    /// scheduler to first quiescence. Returns false on init/task-creation
+    /// failure.
+    fn start(&self) -> bool;
+
+    /// Advance one sim tick (run the firmware to its next quiescence).
+    fn advance_tick(&self);
+
+    /// Tear the firmware down.
+    fn shutdown(&self);
+
+    /// Sample a firmware `static` by path into a logical [`Value`] — the read
+    /// side of the State Table's `cvar` backing.
+    fn read_cvar(&self, path: &str) -> Value;
+
+    /// Write a logical [`Value`] into a firmware `static` by path — white-box
+    /// injection (the write side of the `cvar` backing).
+    fn write_cvar(&self, path: &str, v: &Value);
+}
+
 /// A loaded firmware instance (one per process — see ffi-boundary.md §1).
 pub struct Firmware {
     lib: Library,
@@ -50,9 +83,29 @@ impl Firmware {
         Ok(Self { lib, dwarf, slide })
     }
 
+    /// White-box read of an **exported** `uint32_t` global by name (export
+    /// table). For arbitrary statics use [`Backend::read_cvar`].
+    pub fn read_u32(&self, name: &[u8]) -> u32 {
+        // SAFETY: a data global is `Symbol<*mut u32>`; `**sym` reads it.
+        unsafe {
+            let sym: Symbol<*mut u32> = self.lib.get(name).expect("global symbol");
+            **sym
+        }
+    }
+
+    fn resolve(&self, path: &str) -> (*mut u8, Leaf) {
+        let (link, leaf) = self
+            .dwarf
+            .resolve(path)
+            .unwrap_or_else(|| panic!("DWARF path not found: {path}"));
+        (link.wrapping_add(self.slide) as *mut u8, leaf)
+    }
+}
+
+impl Backend for Firmware {
     /// Control ABI: HW init + create tasks + run the scheduler to first
     /// quiescence. Returns false on init/task-creation failure.
-    pub fn start(&self) -> bool {
+    fn start(&self) -> bool {
         // SAFETY: signature matches `bool sil_fw_start(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn() -> bool> =
@@ -62,7 +115,7 @@ impl Firmware {
     }
 
     /// Control ABI: advance one sim tick (run firmware to next quiescence).
-    pub fn advance_tick(&self) {
+    fn advance_tick(&self) {
         // SAFETY: signature matches `void sil_fw_advance_tick(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> = self
@@ -74,7 +127,7 @@ impl Firmware {
     }
 
     /// Control ABI: tear down the scheduler.
-    pub fn shutdown(&self) {
+    fn shutdown(&self) {
         // SAFETY: signature matches `void sil_fw_shutdown(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> =
@@ -83,21 +136,11 @@ impl Firmware {
         }
     }
 
-    /// White-box read of an **exported** `uint32_t` global by name (export
-    /// table). For arbitrary statics use [`read_cvar`](Self::read_cvar).
-    pub fn read_u32(&self, name: &[u8]) -> u32 {
-        // SAFETY: a data global is `Symbol<*mut u32>`; `**sym` reads it.
-        unsafe {
-            let sym: Symbol<*mut u32> = self.lib.get(name).expect("global symbol");
-            **sym
-        }
-    }
-
     /// Sample a firmware `static` by DWARF path into a logical [`Value`]
     /// (the cvar sample-resolver). Scalar widths are coerced; an enum field
     /// reads as its symbolic [`Value::Enum`] name (or `<n>` for an unknown
     /// enumerator, e.g. a bitwise combination).
-    pub fn read_cvar(&self, path: &str) -> Value {
+    fn read_cvar(&self, path: &str) -> Value {
         let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address (DWARF + slide); firmware quiescent.
         unsafe {
@@ -117,7 +160,7 @@ impl Firmware {
     /// Write a logical [`Value`] into a firmware `static` by DWARF path. Scalars
     /// coerce to the field's width; an enum accepts [`Value::Enum`] (name → its
     /// value) or a raw `U32`/`I32`. Panics on an incompatible variant.
-    pub fn write_cvar(&self, path: &str, v: &Value) {
+    fn write_cvar(&self, path: &str, v: &Value) {
         let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address of the field's size; firmware quiescent.
         unsafe {
@@ -137,14 +180,6 @@ impl Firmware {
                 }
             }
         }
-    }
-
-    fn resolve(&self, path: &str) -> (*mut u8, Leaf) {
-        let (link, leaf) = self
-            .dwarf
-            .resolve(path)
-            .unwrap_or_else(|| panic!("DWARF path not found: {path}"));
-        (link.wrapping_add(self.slide) as *mut u8, leaf)
     }
 }
 
@@ -211,5 +246,71 @@ unsafe fn value_to_scalar(p: *mut u8, kind: Scalar, v: &Value) {
         (Scalar::F64, Value::F64(x)) => (p as *mut f64).write_unaligned(*x),
         (Scalar::Bool, Value::Bool(x)) => p.write_unaligned(*x as u8),
         (k, val) => panic!("cvar write type mismatch: firmware {k:?} vs value {val:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// A pure-Rust [`Backend`] with no DLL, used to prove the trait is
+    /// object-safe and usable behind `dyn`/`Box` without touching real firmware.
+    #[derive(Default)]
+    struct MockBackend {
+        started: RefCell<bool>,
+        ticks: RefCell<u64>,
+        cvars: RefCell<HashMap<String, Value>>,
+    }
+
+    impl Backend for MockBackend {
+        fn start(&self) -> bool {
+            *self.started.borrow_mut() = true;
+            true
+        }
+        fn advance_tick(&self) {
+            *self.ticks.borrow_mut() += 1;
+        }
+        fn shutdown(&self) {
+            *self.started.borrow_mut() = false;
+        }
+        fn read_cvar(&self, path: &str) -> Value {
+            self.cvars
+                .borrow()
+                .get(path)
+                .cloned()
+                .unwrap_or(Value::U32(0))
+        }
+        fn write_cvar(&self, path: &str, v: &Value) {
+            self.cvars.borrow_mut().insert(path.to_string(), v.clone());
+        }
+    }
+
+    #[test]
+    fn backend_is_object_safe_and_usable_via_dyn() {
+        let be: Box<dyn Backend> = Box::new(MockBackend::default());
+        assert!(be.start());
+        be.advance_tick();
+        be.advance_tick();
+        be.write_cvar("x", &Value::U32(42));
+        assert_eq!(be.read_cvar("x"), Value::U32(42));
+        assert_eq!(be.read_cvar("unset"), Value::U32(0));
+        be.shutdown();
+    }
+
+    #[test]
+    fn backend_usable_behind_ref_dyn() {
+        // Prove `&dyn Backend` flows through a generic-free function boundary,
+        // the shape the engine loop uses.
+        fn drive(be: &dyn Backend) -> u32 {
+            be.write_cvar("n", &Value::U32(7));
+            match be.read_cvar("n") {
+                Value::U32(x) => x,
+                _ => 0,
+            }
+        }
+        let be = MockBackend::default();
+        assert_eq!(drive(&be), 7);
     }
 }

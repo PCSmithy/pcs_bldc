@@ -16,7 +16,10 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use voyant::{Firmware, SignalId, StateTable, Value};
+use voyant::{
+    record_model, register_model, vsig_id, Backend, Firmware, Model, RampModel, SignalId,
+    StateTable, Value,
+};
 
 const SOURCE: &str = "pcs_bldc";
 const TICK_US: u64 = 1_000; // the firmware's 1 ms task cadence
@@ -112,8 +115,12 @@ fn main() -> ExitCode {
     println!("\n-- 4. end-to-end: encoder -> SPI(sim) -> telemetry -> USB(sim) --");
     check_end_to_end(&fw, &mut rep);
 
-    // --- Check 5: shutdown --------------------------------------------------
-    println!("\n-- 5. shutdown --");
+    // --- Check 5: model-backed (vsig) signal --------------------------------
+    println!("\n-- 5. model-backed vsig signal (Model trait) --");
+    check_model_vsig(&mut rep);
+
+    // --- Check 6: shutdown --------------------------------------------------
+    println!("\n-- 6. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -291,6 +298,37 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         "TX capture drains and refills across windows",
         text2.contains("270.00") && text2.contains("motor_raw:"),
         format!("post-drain capture {} bytes, still carries the angle", text2.len()),
+    );
+}
+
+/// Demonstrate the `vsig` backing: a reference [`RampModel`] registers into the
+/// State Table, advances with sim time, and is recorded through the same
+/// historian machinery as cvar samples (no firmware involved — models are a
+/// separate, Rust-side backing).
+fn check_model_vsig(rep: &mut Report) {
+    let mut st = StateTable::new();
+    let mut model = RampModel::new("demo", 1000.0, Some("counts")); // +1.0 / ms
+
+    register_model(&mut st, &model).expect("register vsig");
+    let id = vsig_id(model.name(), "value").expect("valid vsig id");
+    let registered = st.current_value(&id).map(|v| v.is_none()).unwrap_or(false);
+    rep.check(
+        "model registers a vsig signal into the State Table",
+        registered,
+        format!("registered {} ({} signal(s) in table)", id, st.len()),
+    );
+
+    for tick in 1..=5u64 {
+        model.advance(TICK_US);
+        st.set_time(tick * TICK_US);
+        record_model(&mut st, &model).expect("record vsig");
+    }
+    let n_changes = st.changes(&id).map(|c| c.len()).unwrap_or(0);
+    let last = st.current_value(&id).ok().flatten().cloned();
+    rep.check(
+        "vsig advances with sim time and the historian records it",
+        (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
+        format!("{n_changes} change-log entries, current = {last:?} (expect F64(5.0))"),
     );
 }
 

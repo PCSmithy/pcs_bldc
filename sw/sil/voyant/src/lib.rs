@@ -13,17 +13,22 @@
 //!   change-logged history + current cache + injection overrides + retention
 //!   (state-route-tables.md; the State Table *is* the historian, D12). Pure
 //!   data — no FFI.
-//! - [`backend`] — the native firmware backend ([`Firmware`]): the control ABI
-//!   + the cvar sample-resolver (read/write firmware statics as [`Value`], the
-//!   only unsafe/DWARF part).
+//! - [`backend`] — the [`Backend`] seam (lifecycle + `cvar` read/write) and its
+//!   first impl [`Firmware`]: the control ABI + the cvar sample-resolver
+//!   (read/write firmware statics as [`Value`], the only unsafe/DWARF part).
+//! - [`model`] — the [`Model`] trait + the State Table's **`vsig`** backing:
+//!   model-declared signals sampled/recorded like cvars ([`register_model`] /
+//!   [`record_model`]), with [`RampModel`] as a reference impl.
 //!
 //! The Route Table, sim clock, and run modes build on these.
 
 mod backend;
 mod dwarf;
+pub mod model;
 pub mod signal;
 pub mod state_table;
 
-pub use backend::Firmware;
+pub use backend::{Backend, Firmware};
+pub use model::{record_model, register_model, vsig_id, Model, ModelError, ModelSignal, RampModel};
 pub use signal::{ParseError, SignalId, Value};
 pub use state_table::{StateTable, StateTableConfig, TableError};

@@ -36,7 +36,7 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (10 tests).
+Rust unit tests: `cd sw/sil && cargo test -p voyant` (18 tests).
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
@@ -53,8 +53,12 @@ sw/sil/
     src/state_table.rs      StateTable: registry + per-signal change-log history
                             + current cache + overrides + per-signal epsilon
                             + retention. Pure data, no FFI. (10 unit tests)
-    src/backend.rs          Firmware: control ABI + cvar sample-resolver
+    src/backend.rs          Backend trait (lifecycle + cvar R/W) + Firmware, its
+                            first impl: control ABI + cvar sample-resolver
                             (read_cvar/write_cvar; the only unsafe/DWARF part)
+    src/model.rs            Model trait + vsig backing: register_model/record_model
+                            glue + RampModel reference impl (models sampled into
+                            the State Table like cvars; StateTable stays pure data)
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
                             (Scalar | Enum), incl. enum value->name
   pcs_bldc_sil/           THE INSTANTIATION (board-specific driver/demo)
@@ -104,16 +108,23 @@ docs/sil/*.md            the design (see "Design docs" below)
 
 ## What's next (prioritized)
 
-1. **`Model` trait + `vsig` backing** — model-backed signals registered into the
-   State Table (the first non-cvar backing). Foundation for plant models.
+1. ~~**`Model` trait + `vsig` backing**~~ — **DONE (2026-07-04).** `voyant::model`
+   adds the minimal `Model` trait (`name`/`signals`/`advance(dt_us)`/`read`), the
+   `ModelSignal` descriptor, and `register_model`/`record_model` glue that samples
+   a model into the State Table exactly like cvars (StateTable stays pure data).
+   `RampModel` is the reference impl; the sanity suite check 5 demonstrates
+   register → advance-with-time → historian record. Plant models come later
+   (Phase 3, instantiation-side).
 2. **Route Table** — `source → destination`, snapshot-then-write once per tick,
    with per-route **suspend/resume** (pairs with the table's `override`) for
    fault injection.
 3. **Sim clock / step loop** — the engine loop: `advance models → propagate
    routes → sil_fw_advance_tick → record`. (`StateTable::set_time` + `record`
    are ready.)
-4. **Formalize the trait seams** — `Backend` / `Model` / `Transport` /
-   `Scenario` (today `Firmware` is concrete; make it the `Backend` impl).
+4. **Formalize the trait seams** — `Backend` and `Model` **DONE (2026-07-04):**
+   `voyant::Backend` (lifecycle `start`/`advance_tick`/`shutdown` + `cvar`
+   read/write) is extracted, with `Firmware` as its first impl; `Model` above.
+   `Transport` / `Scenario` remain (later chunks).
 5. **D8 interrupt controller** — the C→Rust upcall registration + port dispatch
    shim; needed before the fast control ISR / comms fire.
 6. **Comms** — the `Transport` trait + sim-HW upcall capture (logical payloads),
@@ -124,9 +135,11 @@ docs/sil/*.md            the design (see "Design docs" below)
 
 ## Open threads / pending decisions
 
-- **Trait seams not yet formalized.** `Firmware` is a concrete struct; the
-  generic-framework vision (D-doc `architecture.md` §7) wants `Backend`/`Model`/
-  `Transport`/`Scenario` traits. Do this alongside #1/#4.
+- **Trait seams — `Backend` + `Model` done; `Transport` + `Scenario` remain.**
+  `voyant::Backend` (with `Firmware` as first impl) and `voyant::Model` (with
+  `RampModel` reference impl) are formalized (2026-07-04). The generic-framework
+  vision (`architecture.md` §7) still wants `Transport` (comms) and `Scenario`
+  (wiring), which land with their chunks (#6 / run-config).
 - **Coercion follow-ups (low priority, accepted):** `i64` firmware fields narrow
   to `Value::I32` (rare; user OK with it); unknown enumerators read as `<n>`.
 - **Deferred cleanups live in `backlog.md`** — notably: remove the
