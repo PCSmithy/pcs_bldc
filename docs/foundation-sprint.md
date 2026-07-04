@@ -3,55 +3,30 @@
 Pre-motor-control cleanup: get the existing driver foundation spec'd, traced,
 and rounded out (DMA + all ADC channels) before starting the motor sprint.
 
-## [START HERE] — next-session entry point
+## Status: COMPLETE ✅
 
-**Where we are:** Milestone 1 (driver spec back-fill) in progress. The **ADC
-pilot is done** and establishes the repeatable workflow — `specs/firmware/hal/adc.md`
-(7 specs, all `Covers: sys~arch_005~1`), `[impl->]` tags on both `HW_ADC`
-drivers, a Unity suite (`sw/lib/c/shared/hw/ADC/sim/test/test_HW_ADC.c`), green
-on ARM + native ctest, all 7 specs OFT-covered.
+All five milestones (M1–M5) are done and bench-verified. The driver
+foundation is spec'd, traced, dual-target-built, and the full board-sensing
+path is verified in engineering units over CDC telemetry.
 
-**Working tree is UNCOMMITTED** — the ADC pilot (spec + tags + sim multimode
-model + tests + this doc) plus `docs/handoff.md` (staged). Commit it as the
-first thing (suggested: one commit "Spec + test the HW_ADC driver (foundation
-sprint pilot)").
+- **M1 — driver spec back-fill:** done (ADC pilot, then AS5048, SK6805, USB,
+  GPIO top-up). 65 spec defs, `validate-specs.py` clean.
+- **M2 — `app_rgbLedRing`:** done.
+- **M3 — `HW_DMA`:** done.
+- **M4 — DMA ↔ SPI ↔ SK6805:** SK6805 TX half done; encoder RX DMA half
+  **parked** (low value, ~3.5 µs read — see `docs/handoff.md`).
+- **M5 — remaining ADC channels + OPAMP:** done. All 10 board analog inputs
+  wired and bench-verified; new `HW_OPAMP` driver (`fw~hal_opamp_001/002`)
+  routes phase VSENSE via the internal op-amps.
 
-**The repeatable recipe** (use the `pcs_spec` skill — it drives this):
-1. Interview for intent (scope, what's in/out).
-2. Fan out two `Explore` agents in parallel: a spec-tree cartographer (parent,
-   placement, next ID, overlap/anti-bloat) and a codebase investigator (what
-   the code actually does → testable acceptance + divergences).
-3. Draft per `docs/spec-style.md`; then a **blind** style auditor subagent
-   (only the draft + the two rule docs, no conversation context).
-4. On approval: write the spec, add `[impl->]` tags (both target drivers) and a
-   Unity test (both targets are tagged; tests run on the sim), then
-   `validate-specs.py` + `oft.sh trace specs/ sw/`.
+OFT sits at the intentional 10-defect ahead-of-impl baseline (the `sys~`
+anchors + `fw~hal_adc_003/008`, reserved for the motor sprint). Native ctest
+green (14 suites); ARM links clean (~60 KB at `-Og`).
 
-**Spec-first philosophy (important):** specs state the intended *final-state*
-driver, not just what's built today. Specs may sit **OFT-uncovered** until the
-impl lands — that is expected and fine; coverage climbs to 100% as we
-implement. Do not water a spec down to match a current impl limitation; record
-the limitation as a gap instead (see "Known impl gaps" below).
-
-**Immediate next specs (milestone 1 remainder):**
-- **AS5048 encoder** → `specs/firmware/est/encoder.md` (topic `est`). This is
-  where we author the new **`sys~mc_001~1`** parent: "The system shall drive a
-  BLDC motor using both sensored (encoder-based) and sensorless control
-  algorithms." Add a `mc` row is unneeded (`mc` is already in the topic table).
-- **SK6805** → `specs/firmware/obs/rgb_leds.md` (topic `obs`, parent `sys~arch_001~1`).
-- **USB CDC** → `specs/firmware/conn/usb.md` (topic `conn`, parent `sys~arch_003~1`).
-- **GPIO top-up** → extend `specs/firmware/hal/gpio.md` for the input cache
-  (`HW_GPIO_run1ms`/`readCached`, added but untagged/unspec'd).
-
-ADC checklist-pass cleanup (done): deleted the timeline-laden "Theory of
-operation" block (folded the FOC motivation into a `Rationale:` on
-`fw~hal_adc_006~1`); strengthened `fw~hal_adc_001~1` to require contiguous
-regular ranks `1..N`; gave `fw~hal_adc_004~1` a pollable conversion-fault
-status (`run1ms` stays `void`); and authored **`fw~hal_adc_008~1`** (async
-conversion-completion model, parallel to `fw~hal_spi_005~1`) — OFT-uncovered
-until the interrupt/DMA path is built.
-
-Then milestones 2–5 below (app_rgbLedRing, HW_DMA, DMA integration, ADC channels).
+**Successor:** the next sprint's milestone doc is
+[`docs/motor-sprint.md`](motor-sprint.md) — drive-path bring-up, the FOC
+current loop, and velocity/position control + estimation. The rest of this
+file is the historical record of how the foundation sprint was run.
 
 ## Current traceability baseline
 
@@ -97,7 +72,7 @@ is still `fw~`.
 5. **Remaining ADC channels** — instantiate all board channels + CDC printout
    for verification. Depends on the (1) ADC spec.
 
-Then: the **motor-control sprint**.
+Then: the **motor-control sprint** — see [`docs/motor-sprint.md`](motor-sprint.md).
 
 ## Acceptance (every milestone)
 

@@ -12,7 +12,13 @@ like end-to-end.
 - **Hardware:** design finalized, layout complete. The board is frozen pending
   firmware work and will only be revised if firmware exposes a project-blocking
   issue.
-- **Firmware, simulation, and analysis tooling:** not yet started.
+- **Firmware:** foundation platform complete — a spec'd and traced driver
+  stack (clocks, GPIO, ADC, DMA, SPI, timers, USB CDC, op-amps, encoder, LED
+  ring, button, serial) with all board sensing bench-verified in engineering
+  units and streamed over USB telemetry. Next up is the motor-control sprint
+  (see [`docs/motor-sprint.md`](docs/motor-sprint.md)); the gate driver has
+  not yet been driven.
+- **Simulation and analysis tooling:** not yet started.
 
 The hardware is a USB-PD-powered BLDC controller built around an STM32G431 MCU,
 an STSPIN32G4 integrated gate driver, and an AS5048 magnetic rotor encoder. It

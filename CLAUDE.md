@@ -12,9 +12,14 @@ and an AS5048 magnetic rotor encoder, with on-device user controls (knob +
 mode button + RGB status LEDs) for standalone operation. Hardware is designed
 in **KiCad 10**, currently frozen pending firmware work.
 
-Two software components are planned. Neither has real application code yet,
-but the firmware build system is fully stood up (CMake + Ninja, dual-target
-embedded + native for SIL — see **Build System** below).
+Two software components are planned. The firmware **foundation platform is
+complete** — a full, spec'd + traced hw/io/dev/app driver stack (clocks,
+GPIO, ADC, DMA, SPI, timers, USB CDC, op-amps, encoder, LED ring, button,
+serial) with all 10 board analog inputs bench-verified in engineering units.
+No motor-drive or control-application code exists yet (that is the next
+sprint); the desktop app is not started. Build system is fully stood up
+(CMake + Ninja, dual-target embedded + native for SIL — see **Build System**
+below).
 
 - **Firmware** — C/C++ on FreeRTOS, on the STM32G431. Owns the device
   experience — control loops, estimator, mode FSM, on-device UI, persistence.
@@ -55,26 +60,33 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── lib/types/        lib_types.h (uint8_t, bool, size_t, ...)
 │   │   │       ├── lib/utils/        lib_utils.h (COUNTOF, ...)
 │   │   │       ├── lib/ringbuf/      Demo library + Unity tests
-│   │   │       └── hw/               Channelized HW modules:
-│   │   │           ├── systemClock/  systemClock_init (single-instance)
-│   │   │           ├── ADC/          ADC_init (multi-channel)
-│   │   │           └── stm32g4/      Family glue (system_, syscalls, sysmem)
+│   │   │       ├── hw/               Channelized HW modules:
+│   │   │       │   ├── systemClock/  systemClock_init (single-instance)
+│   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  TIM/  USB/  OPAMP/  (hw-layer drivers)
+│   │   │       │   └── stm32g4/      Family glue (system_, syscalls, sysmem)
+│   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial, ...)
+│   │   │       ├── dev/              Device drivers (switch, ...)
+│   │   │       └── app/              App-layer modules (rgbLedRing, ...)
 │   │   └── rust/         Rust libraries (future)
 │   └── fw/               Firmware project (pcs_bldc-specific integration)
 │       ├── stm32cube/g4/ STM32CubeMX-generated reference (not built directly)
 │       └── src/
-│           ├── main.c    Entry point: orchestrates HW_*_init calls + Error_Handler
-│           └── hw/       pcs_bldc-board channel configs + STM32G4 board glue
-│               ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
-│               ├── sim/          STATIC fw_hw placeholder for native build
-│               ├── systemClock/  HW_systemClock_config.{h,c}
-│               └── ADC/          HW_ADC_channels.{h,c}
+│           ├── main.c    Entry point: HW/IO init + FreeRTOS tasks + Error_Handler
+│           ├── hw/       pcs_bldc-board channel configs + STM32G4 board glue
+│           │   ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
+│           │   ├── sim/          STATIC fw_hw placeholder for native build
+│           │   ├── systemClock/  HW_systemClock_config.{h,c}
+│           │   └── GPIO/ ADC/ DMA/ SPI/ TIM/ OPAMP/  HW_<Module>_channels.{h,c}
+│           ├── io/       pcs_bldc IO-layer configs (AS5048, SK6805, serial)
+│           ├── dev/      pcs_bldc device configs (switch)
+│           └── app/      pcs_bldc app-layer configs (rgbLedRing)
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC
 │   ├── system/            sys~ requirements (system-level)
-│   │   └── overview.md    System overview + 6 architectural anchor specs
-│   ├── firmware/          fw~ requirements (STM32G4 firmware) — empty so far
+│   │   ├── overview.md    System overview + arch/ops/persist anchor specs
+│   │   └── mc/            sys~mc_001 (BLDC drive: sensored + sensorless)
+│   ├── firmware/          fw~ requirements (STM32G4 firmware) — hal/est/obs/ui/conn
 │   └── desktop-app/       app~ requirements (Rust GUI) — empty so far
 │
 ├── docs/                 Project documentation
@@ -150,7 +162,7 @@ file organization, OFT integration, and anti-bloat rules all live there.
 
 - `type` ∈ `{sys, fw, app}`.
 - `topic` is from the canonical table in `docs/spec-system.md` (current
-  topics: `arch`, `hal`, `mc`, `est`, `obs`, `ops`, `safety`, `pd`,
+  topics: `arch`, `hal`, `mc`, `est`, `obs`, `ui`, `ops`, `safety`, `pd`,
   `persist`, `conn`, `views`).
 - `subtopic` is an optional per-area number space under a topic. Used by
   `hal` (one per peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, ...); most
@@ -179,12 +191,22 @@ sufficient to make the tooling aware of a new topic.
 ### Current spec state
 
 - `specs/system/overview.md` — drafted, with 6 anchor `sys~` specs:
-  `sys~arch_001..004` (standalone device, app-as-auxiliary, USB CDC,
-  multi-device stretch), `sys~ops_001` (operating-mode FSM),
-  `sys~persist_001` (NVRAM in flash). All currently uncovered (expected —
-  no firmware or app code yet).
-- All other topic folders (`motor-control/`, `estimation/`, etc.) are
-  anticipated but empty until their first spec is written.
+  `sys~arch_001..005` (standalone device, app-as-auxiliary, USB CDC,
+  multi-device stretch, ...), `sys~mc_001` (`mc/motor-control.md` — drive a
+  BLDC via sensored + sensorless control), `sys~ops_001` (operating-mode
+  FSM), `sys~persist_001` (NVRAM in flash). These `sys~` anchors are
+  intentionally uncovered.
+- **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
+  - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp` (one file
+    per peripheral, per-peripheral sub-topic IDs).
+  - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
+    `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
+    `conn/serial.md` (IO_serial over USB CDC).
+- 65 spec defs across 14 files; `tools/validate-specs.py` clean. OFT-clean
+  at an intentional 10-defect (ahead-of-impl) baseline: the 8 `sys~` anchors
+  above plus `fw~hal_adc_003` / `fw~hal_adc_008` (timer-triggered injected +
+  async completion — reserved for the motor sprint).
+- `specs/desktop-app/` — empty until the app work begins.
 
 ### Decisions explicitly deferred (will become specs when made)
 

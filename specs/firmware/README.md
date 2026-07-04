@@ -11,8 +11,9 @@ Sub-folders are created when a topic gets its first spec.
 - `architecture/` — task structure, ISR design, memory layout, build
   configuration
 - `hal/` — hardware abstraction layer (hw-layer peripheral drivers: SPI,
-  ADC, GPIO, DMA, timers, USB). Uses per-peripheral sub-topic IDs, e.g.
-  `fw~hal_spi_001~1`, `fw~hal_adc_001~1`, `fw~hal_usb_001~1`
+  ADC, GPIO, DMA, timers, USB, op-amps). Uses per-peripheral sub-topic IDs,
+  e.g. `fw~hal_spi_001~1`, `fw~hal_adc_001~1`, `fw~hal_usb_001~1`,
+  `fw~hal_opamp_001~1`
 - `foc/` — Park / Clarke transforms, PWM modulation strategies
   (SVPWM/SPWM), inner current control loop
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
