@@ -7,17 +7,23 @@ extern void coro_asm_trampoline( void );
 
 #if defined( __aarch64__ )
 
-/* Saved-frame layout — must match coro_switch_aarch64.S. */
+/* Saved-frame layout — must match coro_switch_aarch64.S (x19-x30, d8-d15). */
 #define CORO_FRAME_BYTES  160u
 #define CORO_OFF_ENTRY    0u    /* x19 */
 #define CORO_OFF_ARG      8u    /* x20 */
 #define CORO_OFF_RET      88u   /* x30 (link register) */
 
+#elif defined( __x86_64__ )
+
+/* Saved-frame layout — must match coro_switch_x86_64.S (rbp, rbx, r12-r15,
+ * then the return address). FRAME_BYTES is 56 so an aligned stack top leaves
+ * the trampoline's `call` 16-byte aligned per the System V ABI. */
+#define CORO_FRAME_BYTES  56u
+#define CORO_OFF_ENTRY    24u   /* r12 */
+#define CORO_OFF_ARG      16u   /* r13 */
+#define CORO_OFF_RET      48u   /* return address */
+
 #else
-/* Future: add an x86-64 backend for Linux/Intel hosts — a coro_switch_x86_64.S
- * saving the System V callee-saved set (rbx, rbp, r12-r15) with the matching
- * frame offsets below, then drop the arch guard in FreeRTOS/CMakeLists.txt.
- * Deferred until a non-arm64 host actually needs the native/SIL build. */
 #error "Native-Coro: no context-switch backend for this architecture yet"
 #endif
 

@@ -30,9 +30,9 @@ else()
   # coroutine switch (no Win32 fibers, no deprecated ucontext).
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
     set(FREERTOS_CORO_ASM portable/Native-Coro/coro_switch_aarch64.S)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    set(FREERTOS_CORO_ASM portable/Native-Coro/coro_switch_x86_64.S)
   else()
-    # Future: add portable/Native-Coro/coro_switch_x86_64.S (System V ABI) to
-    # cover Linux/Intel hosts. Deferred until such a host needs the SIL build.
     message(FATAL_ERROR "Native-Coro: no context-switch backend for ${CMAKE_SYSTEM_PROCESSOR} yet")
   endif()
   set(FREERTOS_PORT_SRC  portable/Native-Coro/port.c
