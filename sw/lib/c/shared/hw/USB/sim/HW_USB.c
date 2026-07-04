@@ -1,6 +1,8 @@
 /* Includes */
 #include "HW_USB.h"
 #include "HW_USB_sim.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 /* Defines */
 
@@ -34,9 +36,14 @@ bool HW_USB_init(void)
 }
 
 // The loopback sim has no device stack to pump; TX/RX are driven directly by the
-// SIL hooks. Present for API symmetry with the stm32g4 target.
+// SIL hooks. On the cooperative fiber scheduler task_usb calls this in a tight
+// loop, so it must block/yield each iteration or it would starve every other
+// task and prevent the quiescence the driver waits on. Block one tick — an
+// interim polling seam. The faithful ISR-fed version (wake on a USB-event
+// upcall) arrives with the D8 interrupt controller (docs/sil/sim-interrupts.md).
 void HW_USB_run(void)
 {
+    vTaskDelay(1U);
 }
 
 // [impl->fw~hal_usb_002~1]

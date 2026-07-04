@@ -21,8 +21,11 @@ pub struct Firmware {
     slide: u64,
 }
 
-/// The exported global used to anchor the ASLR slide.
-const ANCHOR: &str = "sim_task1msRuns";
+/// An exported firmware global used to anchor the ASLR slide (its runtime
+/// address vs its DWARF link address). Only the symbol's address is used, never
+/// its value, so any exported data global present in DWARF works; this one is a
+/// stable const config always present in the image.
+const ANCHOR: &str = "HW_ADC_config";
 
 impl Firmware {
     /// Load the firmware shared library and its DWARF.
@@ -37,8 +40,9 @@ impl Firmware {
             .var_addr(ANCHOR)
             .ok_or("anchor symbol missing from DWARF")?;
         let runtime_anchor = {
-            // SAFETY: ANCHOR names an exported `uint32_t`; the symbol address is
-            // its runtime address.
+            // SAFETY: ANCHOR names an exported data global; we only take the
+            // symbol's runtime address (never dereference it), so its type is
+            // immaterial — `*mut u32` is just a placeholder pointer type.
             let sym: Symbol<*mut u32> = unsafe { lib.get(ANCHOR.as_bytes())? };
             *sym as u64
         };

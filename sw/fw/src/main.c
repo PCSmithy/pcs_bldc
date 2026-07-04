@@ -7,31 +7,27 @@
 #include "HW_TIM.h"
 #include "HW_DMA.h"
 
+// Task creation, the periodic tasks, and every io/dev/app module they drive are
+// target-uniform: the SIL (native) build runs the SAME FreeRTOS tasks against
+// the sim HW drivers that the embedded build runs against the STM32G4 drivers.
+// Target divergence lives only at the hw-layer seam and in the small gated
+// blocks below (HAL bring-up, the HAL timebase callback, printf retarget, and
+// each target's entry path).
+#include <stdio.h>
+#include <math.h>           // fabsf, for signed telemetry formatting
+#include "FreeRTOS.h"
+#include "task.h"
+#include "lib_utils.h"
+#include "lib_timer.h"
+#include "HW_USB.h"
+#include "IO_serial.h"
+#include "IO_AS5048.h"
+#include "IO_SK6805.h"
+#include "dev_switch.h"
+#include "app_rgbLedRing.h"
+
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
-  #include "FreeRTOS.h"
-  #include "task.h"
-  #include <stdio.h>
-  #include <math.h>           // fabsf, for signed telemetry formatting
-  #include "lib_utils.h"
-  #include "lib_timer.h"
-  #include "HW_USB.h"
-  #include "IO_serial.h"
-  // The tasks below need FreeRTOS, so the encoder, LED, switch, serial, and
-  // telemetry wiring is only built for this target.
-  #include "IO_AS5048.h"
-  #include "IO_SK6805.h"
-  #include "dev_switch.h"
-  #include "app_rgbLedRing.h"
-#endif
-
-#if (BUILD_TARGET == BUILD_TARGET_SIM)
-  // SIL bring-up: run FreeRTOS under the cooperative fiber port. Phase 2 will
-  // hand tick-driving to the Rust framework via the control ABI; for now a
-  // temporary in-process loop in main() advances the scheduler as a smoke test.
-  #include <stdio.h>
-  #include "FreeRTOS.h"
-  #include "task.h"
 #endif
 
 extern const HW_systemClock_config_S HW_systemClock_config;
@@ -42,13 +38,11 @@ extern const HW_SPI_config_S HW_SPI_config;
 extern const HW_TIM_config_S HW_TIM_config;
 extern const HW_DMA_config_S HW_DMA_config;
 
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
 extern const dev_switch_config_S dev_switch_config;
 extern const IO_serial_config_S IO_serial_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
-#endif
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 // stm32g4xx_it.c's TIM6_DAC_IRQHandler references hdac1; the DAC isn't
@@ -108,7 +102,6 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #endif
 #endif
 
-#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 #define TASK_PRIORITY_1MS   (configMAX_PRIORITIES - 1U)
 #define TASK_PRIORITY_10MS  (configMAX_PRIORITIES - 2U)
 #define TASK_PRIORITY_USB   (configMAX_PRIORITIES - 3U)
@@ -481,8 +474,10 @@ static void telemetryTask(void * params)
     }
 }
 
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 // Retarget printf to the CDC serial channel. syscalls.c's weak _write calls
-// __io_putchar; IO_serial_write applies the backpressure/yield.
+// __io_putchar; IO_serial_write applies the backpressure/yield. Native uses its
+// own libc stdio, so this hook is embedded-only.
 int __io_putchar(int ch)
 {
     const uint8_t c = (uint8_t) ch;
@@ -505,6 +500,38 @@ static bool prvHwInit(void)
     return ok;
 }
 
+// IO/dev/app-layer init, shared by both targets' entry paths. Aggregates each
+// module's bool the same way prvHwInit does; main.c stays the only caller of
+// Error_Handler.
+static bool prvAppInit(void)
+{
+    bool ok = true;
+    ok &= IO_AS5048_init(&IO_AS5048_config);
+    ok &= IO_SK6805_init(&IO_SK6805_config);
+    ok &= dev_switch_init(&dev_switch_config);
+    ok &= app_rgbLedRing_init(&app_rgbLedRing_config);
+    ok &= HW_USB_init();   // USB device stack (serviced in task_usb)
+    ok &= IO_serial_init(&IO_serial_config);
+    return ok;
+}
+
+// Spawn the four periodic tasks. Same names/priorities/stacks on both targets;
+// each allocates from the FreeRTOS heap, so a failure here (e.g. heap
+// exhaustion) is surfaced to the caller to halt loudly rather than silently
+// drop a task.
+static bool prvCreateTasks(void)
+{
+    bool ok = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
+                           NULL, TASK_PRIORITY_1MS, NULL) == pdPASS);
+    ok &= (xTaskCreate(task_10ms, "task_10ms", configMINIMAL_STACK_SIZE * 2U,
+                       NULL, TASK_PRIORITY_10MS, NULL) == pdPASS);
+    ok &= (xTaskCreate(task_usb, "usbd", configMINIMAL_STACK_SIZE * 2U,
+                       NULL, TASK_PRIORITY_USB, NULL) == pdPASS);
+    ok &= (xTaskCreate(telemetryTask, "telem", 512U,
+                       NULL, TASK_PRIORITY_TELEM, NULL) == pdPASS);
+    return ok;
+}
+
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
 #include "sil_fw.h"
 
@@ -519,31 +546,17 @@ void vApplicationIdleHook(void)
     vPortYieldToScheduler();
 }
 
-// Minimal SIL 1 ms task: drives the HW-layer periodic sampling. Stands in for
-// the real io/dev/app tasks until they're ungated for SIM. sim_task1msRuns is
-// observable from the framework via the State Table.
-volatile uint32_t sim_task1msRuns = 0U;
-static void sim_task_1ms(void * params)
-{
-    (void)params;
-    TickType_t lastWake = xTaskGetTickCount();
-    for (;;)
-    {
-        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
-        HW_GPIO_run1ms();
-        HW_ADC_run1ms();
-        sim_task1msRuns++;
-    }
-}
-
 // --- SIL control ABI (D2) --------------------------------------------------
 // The framework drives these; pacing (fast vs realtime) is the driver's choice.
+// The bring-up path is identical to the embedded main() below (minus HAL_Init):
+// the SAME HW/app init and the SAME four tasks. The fiber port runs the
+// scheduler to first quiescence and returns.
 
 bool sil_fw_start(void)
 {
     bool ok = prvHwInit();
-    ok = ok && ( xTaskCreate(sim_task_1ms, "sim_1ms", configMINIMAL_STACK_SIZE,
-                             NULL, 3, NULL) == pdPASS );
+    ok = ok && prvAppInit();
+    ok = ok && prvCreateTasks();
     if (ok)
     {
         // Fiber port: runs to first quiescence (all tasks blocked) and returns.
@@ -571,31 +584,15 @@ int main(void)
     HAL_Init();
 
     bool initSuccess = prvHwInit();
-    initSuccess &= IO_AS5048_init(&IO_AS5048_config);
-    initSuccess &= IO_SK6805_init(&IO_SK6805_config);
-    initSuccess &= dev_switch_init(&dev_switch_config);
-    initSuccess &= app_rgbLedRing_init(&app_rgbLedRing_config);
-    initSuccess &= HW_USB_init();   // USB device stack (serviced in task_1ms)
-    initSuccess &= IO_serial_init(&IO_serial_config);
+    initSuccess &= prvAppInit();
     if (!initSuccess)
     {
         Error_Handler();
     }
 
-    // Spawn the periodic tasks and hand control to the scheduler. Each task
-    // allocates from the FreeRTOS heap; a failure here (e.g. heap exhaustion)
-    // must halt loudly rather than silently drop a task. vTaskStartScheduler()
-    // does not return.
-    bool tasksCreated = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
-                                     NULL, TASK_PRIORITY_1MS, NULL) == pdPASS);
-    tasksCreated &= (xTaskCreate(task_10ms, "task_10ms", configMINIMAL_STACK_SIZE * 2U,
-                                 NULL, TASK_PRIORITY_10MS, NULL) == pdPASS);
-    tasksCreated &= (xTaskCreate(task_usb, "usbd", configMINIMAL_STACK_SIZE * 2U,
-                                 NULL, TASK_PRIORITY_USB, NULL) == pdPASS);
-    tasksCreated &= (xTaskCreate(telemetryTask, "telem", 512U,
-                                 NULL, TASK_PRIORITY_TELEM, NULL) == pdPASS);
-
-    if (!tasksCreated)
+    // Spawn the periodic tasks and hand control to the scheduler.
+    // vTaskStartScheduler() does not return.
+    if (!prvCreateTasks())
     {
         Error_Handler();
     }
@@ -606,10 +603,11 @@ int main(void)
 #endif
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-// Standalone SIL smoke driver over the control ABI (sil_fw.h). In Phase 2 the
-// Rust framework drives the same three calls (and owns pacing); this loop is a
-// temporary stand-in driver. Confirms the scheduler runs the task and the ADC
-// sim ramp advances tick-over-tick.
+// Standalone SIL smoke driver over the control ABI (sil_fw.h). Unused inside the
+// DLL (the Rust framework drives the same three calls and owns pacing); this
+// loop is a temporary in-process stand-in. It runs the SAME bring-up path as
+// sil_fw_start — no duplicated init — and watches the ADC sim ramp advance
+// tick-over-tick to confirm the real tasks run.
 int main(void)
 {
     if (!sil_fw_start())
@@ -646,8 +644,8 @@ int main(void)
 
         uint32_t counts = 0U;
         (void)HW_ADC_getCount(watchCh, watchIn, &counts);
-        printf("tick %2u  task_runs=%u  adc[ch%u,in%u]=%u\n",
-               tick, sim_task1msRuns, (unsigned)watchCh, watchIn, counts);
+        printf("tick %2u  adc[ch%u,in%u]=%u\n",
+               tick, (unsigned)watchCh, watchIn, counts);
     }
 
     sil_fw_shutdown();

@@ -10,5 +10,7 @@ target_include_directories(test_io_serial PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
-target_link_libraries(test_io_serial PRIVATE lib_types hw_USB unity)
+# freertos_host_hooks: hw_USB pulls the kernel (HW_USB_run's vTaskDelay); the
+# test never starts the scheduler, so it needs the vApplication* hook stubs.
+target_link_libraries(test_io_serial PRIVATE lib_types hw_USB unity freertos_host_hooks)
 add_test(NAME io_serial COMMAND test_io_serial)

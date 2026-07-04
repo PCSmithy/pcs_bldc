@@ -49,3 +49,15 @@ target_compile_options(freertos PRIVATE -w)
 # `pcs_freertos_config` (consumer-provided) supplies FreeRTOSConfig.h.
 # Embedded additionally needs `cmsis` (Cortex-M core headers + device header).
 target_link_libraries(freertos PUBLIC ${FREERTOS_PORT_DEPS} pcs_freertos_config)
+
+# Host-test hook stubs: strong vApplication* definitions for native unit tests
+# that pull the kernel transitively but never link main.c or start the scheduler
+# (see host_test_hooks.c). An OBJECT library so its objects are injected directly
+# into the test executable (always linked, order-independent) rather than left as
+# archive members that ld's single left-to-right pass would miss. Linked
+# explicitly by those tests, never by the firmware image.
+if(PCS_TARGET STREQUAL "native")
+  add_library(freertos_host_hooks OBJECT host_test_hooks.c)
+  target_compile_options(freertos_host_hooks PRIVATE -w)
+  target_link_libraries(freertos_host_hooks PUBLIC freertos)
+endif()
