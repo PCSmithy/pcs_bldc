@@ -8,8 +8,12 @@
 //! itself is pure data, fed by this resolver.
 
 use crate::dwarf::{DwarfMap, Leaf, Scalar};
-use crate::signal::Value;
+use crate::log::LogLevel;
+use crate::member::Member;
+use crate::signal::{SignalId, Value};
+use crate::state_table::StateTable;
 use libloading::{Library, Symbol};
+use object::Object;
 use std::error::Error;
 use std::path::Path;
 
@@ -54,43 +58,54 @@ pub struct Firmware {
     slide: u64,
 }
 
-/// An exported firmware global used to anchor the ASLR slide (its runtime
-/// address vs its DWARF link address). Only the symbol's address is used, never
-/// its value, so any exported data global present in DWARF works; this one is a
-/// stable const config always present in the image.
-const ANCHOR: &str = "HW_ADC_config";
-
 impl Firmware {
-    /// Load the firmware shared library and its DWARF.
+    /// Load the firmware shared library and its DWARF, **auto-deriving** the ASLR
+    /// anchor (see [`load_with_anchor`](Self::load_with_anchor)).
     pub fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::load_with_anchor(path, None)
+    }
+
+    /// Load the firmware, optionally pinning the ASLR **anchor** symbol.
+    ///
+    /// The slide (`runtime_addr - link_addr`) is computed from one exported data
+    /// global: only the symbol's address is used, never its value, so *any*
+    /// exported global that also appears in DWARF works — only the delta matters.
+    ///
+    /// When `anchor` is `None` the anchor is auto-derived: the first symbol that is
+    /// both in the DLL's export table (so `libloading` can resolve its runtime
+    /// address) and in the DWARF variable map (so it has a link address) is used.
+    /// Pass `Some(name)` only for exotic images where auto-derivation picks a bad
+    /// symbol.
+    pub fn load_with_anchor(path: &Path, anchor: Option<&str>) -> Result<Self, Box<dyn Error>> {
+        // Read the image bytes for the export-table anchor derivation below; load
+        // the DWARF via from_lib_path so macOS (DWARF in a sibling .dSYM, not the
+        // dylib) works — on ELF/PE it parses the same embedded DWARF as before.
+        let bytes = std::fs::read(path)?;
         let dwarf = DwarfMap::from_lib_path(path)?;
 
         // SAFETY: loading a trusted, project-built artifact.
         let lib = unsafe { Library::new(path)? };
 
+        let anchor = match anchor {
+            Some(a) => a.to_string(),
+            None => derive_anchor(&bytes, &dwarf)?,
+        };
+
         let link_anchor = dwarf
-            .var_addr(ANCHOR)
+            .var_addr(&anchor)
             .ok_or("anchor symbol missing from DWARF")?;
         let runtime_anchor = {
-            // SAFETY: ANCHOR names an exported data global; we only take the
+            let mut sym_name = anchor.clone().into_bytes();
+            sym_name.push(0);
+            // SAFETY: `anchor` names an exported data global; we only take the
             // symbol's runtime address (never dereference it), so its type is
-            // immaterial — `*mut u32` is just a placeholder pointer type.
-            let sym: Symbol<*mut u32> = unsafe { lib.get(ANCHOR.as_bytes())? };
+            // immaterial — `*mut u8` is just a placeholder pointer type.
+            let sym: Symbol<*mut u8> = unsafe { lib.get(&sym_name)? };
             *sym as u64
         };
         let slide = runtime_anchor.wrapping_sub(link_anchor);
 
         Ok(Self { lib, dwarf, slide })
-    }
-
-    /// White-box read of an **exported** `uint32_t` global by name (export
-    /// table). For arbitrary statics use [`Backend::read_cvar`].
-    pub fn read_u32(&self, name: &[u8]) -> u32 {
-        // SAFETY: a data global is `Symbol<*mut u32>`; `**sym` reads it.
-        unsafe {
-            let sym: Symbol<*mut u32> = self.lib.get(name).expect("global symbol");
-            **sym
-        }
     }
 
     fn resolve(&self, path: &str) -> (*mut u8, Leaf) {
@@ -180,6 +195,146 @@ impl Backend for Firmware {
                 }
             }
         }
+    }
+}
+
+/// Auto-derive an ASLR anchor: the first symbol present in **both** the DLL's
+/// export table (so `libloading` can resolve its runtime address) and the DWARF
+/// variable map (so it has a link address). Any such global works — only the
+/// address delta matters, never the value.
+fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error>> {
+    let object = object::File::parse(bytes)?;
+    for export in object.exports()? {
+        if let Ok(name) = std::str::from_utf8(export.name()) {
+            if dwarf.var_addr(name).is_some() {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    Err("no usable ASLR anchor: no exported global appears in DWARF".into())
+}
+
+/// A firmware instance as a [`Member`]: the "firmware kind" of member. It wraps a
+/// [`Backend`] (the internal driver of the DLL / lifecycle / DWARF) and drives it
+/// on the sim clock, and it is the **only** thing that touches firmware memory —
+/// routes never do (see [`RouteTable::propagate`](crate::route::RouteTable::propagate)).
+///
+/// Constructed with an explicit instance `name` — **not** derived from the DLL, so
+/// two boards can run the same firmware image as distinct members — and a firmware
+/// tick period. Each [`advance`](Member::advance) accumulates sim time and, per
+/// full firmware-tick period elapsed, syncs its two mirror lists around the tick:
+///
+/// 1. **Flush driven cvars** — read each *driven* cvar's current State Table value
+///    and [`write_cvar`](Backend::write_cvar) it into firmware memory. The table
+///    value is the **commanded** value (whatever a route or a test last recorded
+///    there); firmware memory is what the firmware actually saw.
+/// 2. **`advance_tick`** — run the firmware to quiescence.
+/// 3. **Sample sampled cvars** — [`read_cvar`](Backend::read_cvar) each *sampled*
+///    cvar out of firmware memory and [`record`](StateTable::record) it into the
+///    historian.
+///
+/// Both lists are registered when the member is enabled. Lifecycle
+/// (`start` / `shutdown`) stays on the wrapped [`Backend`] handle the driver holds
+/// and calls explicitly; [`set_enabled`](Member::set_enabled) registers both the
+/// driven and sampled `cvar`s (and, FUTURE, would reload the DLL on re-enable, i.e.
+/// boot-from-reset, which is not implemented here).
+///
+/// [`RouteTable`]: crate::route::RouteTable
+pub struct FirmwareMember<'b> {
+    name: String,
+    backend: &'b dyn Backend,
+    tick_period_us: u64,
+    /// Sim time accumulated toward the next firmware tick.
+    accum_us: u64,
+    /// cvars flushed *into* firmware memory before each firmware tick (the
+    /// commanded value): `(id, optional unit)`. DWARF path is the id's `name`.
+    driven: Vec<(SignalId, Option<String>)>,
+    /// cvars sampled *out of* firmware memory into the historian each firmware
+    /// tick: `(id, optional unit)`. The DWARF path is the id's `name` segment.
+    sampled: Vec<(SignalId, Option<String>)>,
+}
+
+impl<'b> FirmwareMember<'b> {
+    /// Wrap `backend` as a member named `name`, advancing one firmware tick per
+    /// `tick_period_us` of sim time.
+    pub fn new(name: &str, backend: &'b dyn Backend, tick_period_us: u64) -> Self {
+        Self {
+            name: name.to_string(),
+            backend,
+            tick_period_us,
+            accum_us: 0,
+            driven: Vec::new(),
+            sampled: Vec::new(),
+        }
+    }
+
+    /// Declare a firmware `cvar` (full [`SignalId`]; DWARF path in its `name`
+    /// segment) to sample into the State Table each firmware tick. The signal is
+    /// registered when the member is enabled (the engine does this on
+    /// [`add_member`](crate::engine::Engine::add_member)); call this before adding
+    /// the member.
+    pub fn sample_cvar(&mut self, id: SignalId, unit: Option<&str>) {
+        self.sampled.push((id, unit.map(str::to_string)));
+    }
+
+    /// Declare a firmware `cvar` to **drive**: its State Table value is flushed into
+    /// firmware memory (via [`write_cvar`](Backend::write_cvar), by the id's `name`
+    /// DWARF path) before each firmware tick. This is the mirror image of
+    /// [`sample_cvar`](Self::sample_cvar) — the write side of the `cvar` backing,
+    /// and the production path a route takes to reach firmware memory: a source is
+    /// routed into this cvar's table entry, and this member flushes it in. The
+    /// table value is the *commanded* value; firmware memory is what the firmware
+    /// actually saw. Registered when the member is enabled; call before adding it.
+    pub fn drive_cvar(&mut self, id: SignalId, unit: Option<&str>) {
+        self.driven.push((id, unit.map(str::to_string)));
+    }
+}
+
+impl Member for FirmwareMember<'_> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn advance(&mut self, dt_us: u64, st: &mut StateTable) {
+        // Run a firmware tick for each full period elapsed (usually exactly one
+        // when the engine tick == the firmware tick). Around each tick: flush the
+        // driven cvars into firmware memory, tick, then sample the sampled ones out.
+        self.accum_us += dt_us;
+        while self.accum_us >= self.tick_period_us {
+            self.accum_us -= self.tick_period_us;
+            // Flush: commanded table value -> firmware memory. A never-recorded or
+            // unregistered driven cvar simply has nothing to flush this tick.
+            for (id, _unit) in &self.driven {
+                if let Ok(Some(v)) = st.current_value(id) {
+                    self.backend.write_cvar(id.name(), v);
+                }
+            }
+            self.backend.advance_tick();
+            // Sample: firmware memory -> historian. Registered in set_enabled(true)
+            // at add-time; on error log a Warning rather than swallow it.
+            for (id, _unit) in &self.sampled {
+                let v = self.backend.read_cvar(id.name());
+                if let Err(e) = st.record(id, v) {
+                    st.log(
+                        LogLevel::Warning,
+                        &self.name,
+                        format!("cvar sample record {id} failed: {e}"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            // Register both mirror lists. Idempotent: a re-enable re-registers
+            // identically as a no-op.
+            for (id, unit) in self.driven.iter().chain(self.sampled.iter()) {
+                let _ = st.register(id.clone(), unit.as_deref());
+            }
+        }
+        // FUTURE: reload the DLL (boot-from-reset) on re-enable; today enable only
+        // gates advance (the engine skips a disabled member's tick).
     }
 }
 
@@ -297,6 +452,62 @@ mod tests {
         assert_eq!(be.read_cvar("x"), Value::U32(42));
         assert_eq!(be.read_cvar("unset"), Value::U32(0));
         be.shutdown();
+    }
+
+    #[test]
+    fn firmware_member_advances_firmware_and_samples_cvars() {
+        let be = MockBackend::default();
+        be.write_cvar("counter", &Value::U32(7));
+
+        let id = SignalId::new("cvar", "dut", "counter", None).unwrap();
+        let mut fm = FirmwareMember::new("dut", &be, 1_000);
+        fm.sample_cvar(id.clone(), Some("counts"));
+
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st); // registers the cvar signal
+        assert_eq!(st.len(), 1);
+
+        // One full period -> one firmware tick + one sample.
+        st.set_time(1_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!(*be.ticks.borrow(), 1);
+        assert_eq!(st.current_value(&id).unwrap(), Some(&Value::U32(7)));
+
+        // A sub-period advance accumulates but does not tick the firmware.
+        fm.advance(500, &mut st);
+        assert_eq!(*be.ticks.borrow(), 1);
+        // The next 500us completes the period -> a second tick.
+        fm.advance(500, &mut st);
+        assert_eq!(*be.ticks.borrow(), 2);
+    }
+
+    #[test]
+    fn firmware_member_flushes_driven_cvars_before_ticking() {
+        // The drive side: the table entry's value is flushed into firmware memory
+        // before advance_tick each firmware tick. A route/test records the entry;
+        // this member pushes it in.
+        let be = MockBackend::default();
+        let id = SignalId::new("cvar", "dut", "sensor_in", None).unwrap();
+        let mut fm = FirmwareMember::new("dut", &be, 1_000);
+        fm.drive_cvar(id.clone(), Some("counts"));
+
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st); // registers the driven cvar signal
+        assert_eq!(st.len(), 1);
+
+        // Command a value into the table entry (as a route would), then advance.
+        st.set_time(1_000);
+        st.record(&id, Value::U32(42)).unwrap();
+        fm.advance(1_000, &mut st);
+        assert_eq!(*be.ticks.borrow(), 1);
+        // Firmware memory now mirrors the commanded table value.
+        assert_eq!(be.read_cvar("sensor_in"), Value::U32(42));
+
+        // Re-command; the next tick flushes the new value.
+        st.set_time(2_000);
+        st.record(&id, Value::U32(7)).unwrap();
+        fm.advance(1_000, &mut st);
+        assert_eq!(be.read_cvar("sensor_in"), Value::U32(7));
     }
 
     #[test]

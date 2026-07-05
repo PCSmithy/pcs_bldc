@@ -7,27 +7,29 @@
 //! (task_1ms -> IO_AS5048 -> HW_SPI(sim) -> telemetryTask -> IO_serial ->
 //! HW_USB(sim capture)) carries an injected encoder reading out as Teleplot text.
 //!
-//! Most checks now drive the firmware through the [`voyant::Engine`] step loop
-//! (the sim clock): each `step` advances sim time, advances models, propagates
-//! routes, runs the firmware, and samples registered cvars into the historian.
-//! The engine is the suite's first real consumer. Checks 6 (route-table
-//! primitives, read between propagate and advance_tick) and 1/7 (backend
-//! lifecycle) stay below the engine on purpose.
+//! All checks that exercise the sim now drive the firmware through the
+//! [`voyant::Engine`] step loop (the sim clock): each `step` advances sim time,
+//! advances models, propagates routes (table→table), runs the firmware, and
+//! samples registered cvars into the historian. The engine is the suite's first
+//! real consumer. Only checks 1/7 (backend lifecycle) stay below the engine.
 //!
 //! Each check prints PASS/FAIL; the process exits nonzero if any check fails, so
 //! `tools/run_sil.sh` catches regressions. No firmware `_sim_*` API is called —
 //! all injection/inspection is DWARF white-box (the sim drivers' statics are the
-//! future State Table signals). It also exercises the model + Route Table seams:
-//! a model's `vsig` is routed into a firmware `cvar` and read back, with
-//! suspend/resume proving per-route fault-injection gating.
+//! future State Table signals). It also exercises the model + Route Table seams on
+//! the **real production path**: a model's `vsig` is routed into a firmware `cvar`
+//! entry, a [`FirmwareMember`] flushes that entry into firmware memory, and the
+//! value is read back — with suspend/resume proving per-route fault-injection
+//! gating. Warnings/errors logged into the State Table during the run are drained
+//! and printed at the end (informational).
 //!
 //! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voyant::{
-    record_model, register_model, vsig_id, Backend, Engine, Firmware, Model, ModelSignal,
-    RampModel, RouteTable, SignalId, StateTable, Value,
+    vsig_id, Backend, Engine, Firmware, FirmwareMember, LogEntry, LogLevel, Member, RampModel,
+    SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
@@ -70,14 +72,19 @@ fn v_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Running tally of the sanity suite; prints each check and counts failures.
+/// Running tally of the sanity suite; prints each check and counts failures, and
+/// collects any Warning/Error log entries drained from the checks' State Tables.
 struct Report {
     failures: u32,
+    logs: Vec<LogEntry>,
 }
 
 impl Report {
     fn new() -> Self {
-        Report { failures: 0 }
+        Report {
+            failures: 0,
+            logs: Vec::new(),
+        }
     }
 
     fn check(&mut self, name: &str, pass: bool, detail: String) {
@@ -87,6 +94,15 @@ impl Report {
             self.failures += 1;
             println!("  [FAIL] {name}\n         {detail}");
         }
+    }
+
+    /// Absorb log entries drained from a check's engine, keeping Warning/Error.
+    fn absorb(&mut self, entries: Vec<LogEntry>) {
+        self.logs.extend(
+            entries
+                .into_iter()
+                .filter(|e| matches!(e.level, LogLevel::Warning | LogLevel::Error)),
+        );
     }
 }
 
@@ -130,7 +146,7 @@ fn main() -> ExitCode {
     check_end_to_end(&fw, &mut rep);
 
     // --- Check 5: model-backed (vsig) signal --------------------------------
-    println!("\n-- 5. model-backed vsig signal (Model trait) --");
+    println!("\n-- 5. model-backed vsig signal (model Member) --");
     check_model_vsig(&fw, &mut rep);
 
     // --- Check 6: Route Table drives a firmware cvar from a model -----------
@@ -141,6 +157,17 @@ fn main() -> ExitCode {
     println!("\n-- 7. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
+
+    // Informational: surface any Warning/Error entries the checks logged into
+    // their State Tables (does not affect pass/fail for now).
+    if rep.logs.is_empty() {
+        println!("\n-- no warnings/errors logged during the run --");
+    } else {
+        println!("\n-- {} warning/error log entrie(s) --", rep.logs.len());
+        for e in &rep.logs {
+            println!("  {e}");
+        }
+    }
 
     println!("\n=== {} check(s) failed ===", rep.failures);
     if rep.failures == 0 {
@@ -164,11 +191,13 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         .map(|c| v_u64(&fw.read_cvar(c)).unwrap_or(0))
         .collect();
 
-    let mut eng = Engine::new(fw, TICK_US);
+    let mut eng = Engine::new(TICK_US);
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
     for id in &ids {
-        eng.sample_cvar(id.clone(), None).expect("register counter");
+        fwm.sample_cvar(id.clone(), None);
     }
+    eng.add_member(Box::new(fwm));
     for _ in 0..N {
         eng.step().expect("engine step");
     }
@@ -213,6 +242,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         (20..=30).contains(&d[3]),
         format!("telemRuns +{}", d[3]),
     );
+    rep.absorb(eng.take_logs());
 }
 
 /// Drive the engine for a few ticks with a ramping ADC signal registered as a
@@ -221,8 +251,10 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
 /// read an enum cvar symbolically.
 fn check_state_table(fw: &Firmware, rep: &mut Report) {
     let ramp = cvar("HW_ADC_data.channelData[0].counts[6]");
-    let mut eng = Engine::new(fw, TICK_US);
-    eng.sample_cvar(ramp.clone(), Some("counts")).unwrap();
+    let mut eng = Engine::new(TICK_US);
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+    fwm.sample_cvar(ramp.clone(), Some("counts"));
+    eng.add_member(Box::new(fwm));
 
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
@@ -255,6 +287,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
         matches!(tm, Value::Enum(_)),
         format!("HW_ADC_channelConfig[0].triggerMode = {tm}"),
     );
+    rep.absorb(eng.take_logs());
 }
 
 /// The flagship check: drive the whole encoder->telemetry->USB path on the
@@ -288,7 +321,9 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     // (3) Advance through the engine: task_1ms samples the encoder each tick;
     //     telemetry fires every 2 ms. 10 ticks -> several windows. Injection and
     //     capture reads stay ad-hoc DWARF pokes on the shared firmware handle.
-    let mut eng = Engine::new(fw, TICK_US);
+    //     The firmware runs as a FirmwareMember so the engine ticks it each step.
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
     for _ in 0..10 {
         eng.step().expect("engine step");
     }
@@ -334,6 +369,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         text2.contains("270.00") && text2.contains("motor_raw:"),
         format!("post-drain capture {} bytes, still carries the angle", text2.len()),
     );
+    rep.absorb(eng.take_logs());
 }
 
 /// Demonstrate the `vsig` backing driven by the engine: a reference [`RampModel`]
@@ -341,9 +377,10 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
 /// it through the same historian machinery as cvar samples each [`Engine::step`].
 /// The firmware ticks alongside but is irrelevant to the model's own `vsig`.
 fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
-    let mut eng = Engine::new(fw, TICK_US);
-    eng.add_model(Box::new(RampModel::new("demo", 1000.0, Some("counts")))) // +1.0 / ms
-        .expect("register model");
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(RampModel::new("demo", 1000.0, Some("counts")))); // +1.0 / ms
+    // The firmware ticks alongside (irrelevant to the model's own vsig).
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
     let id = vsig_id("demo", "value").expect("valid vsig id");
     let registered = eng
         .state()
@@ -366,6 +403,7 @@ fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
         (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
         format!("{n_changes} change-log entries, current = {last:?} (expect F64(5.0))"),
     );
+    rep.absorb(eng.take_logs());
 }
 
 /// A minimal integer "sensor" model for the route demo: one `counts` signal that
@@ -388,92 +426,115 @@ impl CountsRampModel {
             counts: 0,
         }
     }
+
+    fn counts_id(&self) -> SignalId {
+        vsig_id(&self.name, "counts").expect("valid vsig id")
+    }
 }
 
-impl Model for CountsRampModel {
+impl Member for CountsRampModel {
     fn name(&self) -> &str {
         &self.name
     }
-    fn signals(&self) -> Vec<ModelSignal> {
-        vec![ModelSignal::new("counts", Some("counts"))]
-    }
-    fn advance(&mut self, _dt_us: u64) {
+    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
         self.counts = self.counts.wrapping_add(self.step);
+        let id = self.counts_id();
+        if let Err(e) = st.record(&id, Value::U32(self.counts)) {
+            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        }
     }
-    fn read(&self, local: &str) -> Option<Value> {
-        match local {
-            "counts" => Some(Value::U32(self.counts)),
-            _ => None,
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            let _ = st.register(self.counts_id(), Some("counts"));
         }
     }
 }
 
-/// Prove the Route Table end-to-end against the real firmware: a Rust model's
-/// `vsig` drives a firmware `cvar` (the Phase-3 shape — plant output into a
-/// firmware sensor input), and suspend/resume gates that drive. Each tick:
-/// advance + record the model, `propagate`, then read the firmware static back
-/// (before any `advance_tick`, so the firmware ramp can't clobber it).
+/// Prove the Route Table end-to-end against the real firmware **on the engine**,
+/// exercising the real production path: a model's `vsig` is recorded, a route
+/// propagates it table→table into a firmware `cvar` entry, and a
+/// [`FirmwareMember`] flushes that entry into firmware memory before `advance_tick`
+/// — the Phase-3 shape (plant output into a firmware sensor input). Suspend/resume
+/// gates the route.
 ///
-/// This one stays hand-rolled rather than driving the engine: it reads the
-/// route-written `cvar` **between** `propagate` and `advance_tick` (the engine's
-/// [`Engine::step`] bundles the two, and the firmware's own ADC ramp overwrites
-/// `counts[6]` when it runs), and it toggles suspend/resume mid-sequence — a
-/// finer granularity than a whole-tick step. It exercises the same [`RouteTable`]
-/// the engine drives, just at the primitive level for the read-before-firmware
-/// timing.
+/// The destination is the SPI sim's per-channel `injectedRx[0]` byte — a firmware
+/// input the firmware *reads* (in `HW_SPI_private_fillRx`, when delivering a
+/// crafted MISO response) but **never writes**, so a value flushed just before
+/// `advance_tick` survives the tick and can be asserted afterward. (The old
+/// destination, an ADC `counts[]` static, was overwritten by the firmware's own
+/// ADC ramp each tick — which is exactly why the check formerly had to read
+/// *between* propagate and advance_tick; table-mediated propagation folds the flush
+/// inside the firmware member's advance, so that dodge is gone.) The model steps by
+/// 25 to stay within the byte's range.
+///
+/// Member order `[model, firmware]` gives zero-lag tracking: the model records its
+/// vsig, the pre-firmware `propagate` records it into the cvar entry, and the
+/// firmware member flushes it in the same step.
 fn check_route_table(fw: &Firmware, rep: &mut Report) {
-    let mut st = StateTable::new();
-    let mut model = CountsRampModel::new("sensor", 100);
-    register_model(&mut st, &model).expect("register vsig");
+    const STEP: u32 = 25; // stays within a u8 destination byte
     let src = vsig_id("sensor", "counts").expect("valid vsig id");
-
-    // Drive an ADC count static (a firmware sensor-input `cvar`) from the model.
-    let dst = SignalId::new("cvar", SOURCE, "HW_ADC_data.channelData[0].counts[6]", None)
+    // The SPI sim's injected-MISO byte: read by the firmware, never written by it.
+    let dst = SignalId::new("cvar", SOURCE, "HW_SPI_data.channels[0].injectedRx[0]", None)
         .expect("valid cvar id");
-    let mut routes = RouteTable::new();
-    routes.add(src.clone(), dst.clone()).expect("add route");
 
-    // Active route: the firmware static tracks the model exactly, tick by tick.
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+    fwm.drive_cvar(dst.clone(), Some("counts")); // route dest flushed into fw memory
+    eng.add_member(Box::new(fwm));
+    eng.add_route(src.clone(), dst.clone()).expect("add route");
+
+    // Active route: firmware memory tracks the model exactly, step by step.
     let mut tracked = true;
     let mut last = 0u64;
     for tick in 1..=4u64 {
-        model.advance(TICK_US);
-        st.set_time(tick * TICK_US);
-        record_model(&mut st, &model).expect("record vsig");
-        routes.propagate(&st, fw).expect("propagate");
+        eng.step().expect("engine step");
         let got = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
-        tracked &= got == (tick * 100);
+        tracked &= got == (tick * STEP as u64);
         last = got;
     }
     rep.check(
-        "route drives a firmware cvar from a model vsig",
-        tracked && (last == 400),
-        format!("counts[6] tracked the model to {last} over 4 ticks (expect 400)"),
+        "route drives a firmware cvar from a model vsig (via FirmwareMember flush)",
+        tracked && (last == 4 * STEP as u64),
+        format!("injectedRx[0] tracked the model to {last} over 4 steps (expect {})", 4 * STEP),
     );
 
-    // Suspend: advance the model to a new value; the firmware static must NOT
-    // follow (the route stopped driving its destination).
-    routes.suspend(&src, &dst).expect("suspend");
-    model.advance(TICK_US);
-    st.set_time(5 * TICK_US);
-    record_model(&mut st, &model).expect("record vsig");
-    routes.propagate(&st, fw).expect("propagate");
+    // Suspend: the model keeps advancing, but the route stops recording the dest
+    // entry, so the firmware member re-flushes the held value — firmware memory
+    // must NOT follow the model.
+    eng.suspend_route(&src, &dst).expect("suspend");
+    eng.step().expect("engine step");
     let held = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    let model_now = eng
+        .state()
+        .current_value(&src)
+        .ok()
+        .flatten()
+        .and_then(v_u64)
+        .unwrap_or(0);
     rep.check(
         "suspended route stops driving its destination",
-        (held == last) && (held != 500),
-        format!("counts[6] held at {held} while model advanced to 500"),
+        (held == last) && (model_now > held),
+        format!("injectedRx[0] held at {held} while model advanced to {model_now}"),
     );
 
-    // Resume: the model's current value drives the destination again.
-    routes.resume(&src, &dst).expect("resume");
-    routes.propagate(&st, fw).expect("propagate");
+    // Resume: the destination jumps to the model's current value again.
+    eng.resume_route(&src, &dst).expect("resume");
+    eng.step().expect("engine step");
     let resumed = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    let model_after = eng
+        .state()
+        .current_value(&src)
+        .ok()
+        .flatten()
+        .and_then(v_u64)
+        .unwrap_or(0);
     rep.check(
         "resumed route drives the destination again",
-        resumed == 500,
-        format!("counts[6] = {resumed} after resume (expect 500)"),
+        resumed == model_after,
+        format!("injectedRx[0] = {resumed} after resume (expect current model {model_after})"),
     );
+    rep.absorb(eng.take_logs());
 }
 
 /// Read the sim USB TX capture buffer (txLen + tx[] bytes) by DWARF and decode

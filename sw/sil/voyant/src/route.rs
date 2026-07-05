@@ -5,24 +5,58 @@
 //! routes is the system's signal-flow wiring (see
 //! `docs/sil/state-route-tables.md` §2). Routes are **pure typed transport** —
 //! they copy a value, never transform it; any conversion (amps→counts, angle→SPI
-//! frame) belongs in a [`Model`](crate::model::Model), not a route.
+//! frame) belongs in a model [`Member`](crate::member::Member), not a route.
+//!
+//! ## Table-mediated (routes never touch a backend)
+//!
+//! [`propagate`](RouteTable::propagate) is a **pure State Table operation**: it
+//! reads source *entries* and writes destination *entries*, and that is all. It
+//! takes **no [`Backend`]** — a route moves a value between two table entries and
+//! nothing else. This mirrors the backing model: a `cvar` entry is the table's
+//! *mirror* of firmware memory, and a `vsig` entry *abides* in the framework, so
+//! moving values between entries is always a table-only act. Members then sync
+//! their own mirrors on their own clock — a
+//! [`FirmwareMember`](crate::backend::FirmwareMember) flushes its *driven* cvar
+//! entries into firmware memory (and samples its *sampled* ones back out) around
+//! its `advance_tick`; a model reads a routed `vsig` input via
+//! [`StateTable::current_value`]. The route is indifferent to which.
+//!
+//! Because a destination is written via [`StateTable::record`], it participates in
+//! the historian *and* honours [`StateTable::set_override`]: pinning a destination
+//! entry makes `record` a no-op, so a route cannot drive it — **fault injection
+//! composes with routing at zero extra mechanism.**
+//!
+//! ## Any registered destination
+//!
+//! A destination is **any registered signal of any `sig_type`** — a `cvar` (model
+//! output → firmware sensor input, flushed by the consuming firmware member) or a
+//! `vsig` (a model input, read by the consuming model in its advance). There is no
+//! per-`sig_type` restriction: the table is a flat, member-agnostic registry.
+//!
+//! ## No direction metadata (deliberate)
+//!
+//! Signals carry no in/out direction, and [`add`](RouteTable::add) does no
+//! port-direction checking — the owner rejected that as premature. `add` is
+//! **permissive**: a route may be added before its endpoints are registered (or
+//! removed at any time). It is the sim designer's job to keep the wiring valid;
+//! the framework's job is to **fail loudly, not prevent** — [`propagate`] is the
+//! checkpoint (below). If wiring mistakes across port-like signals start to bite,
+//! the lever is to add direction metadata on signals plus an `add_route`
+//! compatibility check here.
 //!
 //! ## Snapshot-then-write (one delta cycle per tick)
 //!
-//! [`RouteTable::propagate`] runs in two phases: it first **snapshots every
-//! enabled route's source** from the State Table's current cache, then **writes
-//! every destination**. Because no source is re-read after any write, route
-//! order in the table never changes the result and a chain `x→y→z` advances
+//! [`propagate`](RouteTable::propagate) runs in two phases: it first **snapshots
+//! every enabled route's source** from the State Table's current cache, then
+//! **records every destination**. Because no source is re-read after any write,
+//! route order in the table never changes the result and a chain `x→y→z` advances
 //! exactly one hop per tick — the deterministic one-step sampling delay the
 //! design wants (state-route-tables.md §3).
 //!
-//! Sources are read uniformly from the State Table (a `vsig` freshly recorded by
-//! the model step, a `cvar` holding the previous tick's firmware output).
-//! Destinations are driven through the [`Backend`]: today only `cvar`
-//! destinations are wired (by DWARF path — the `name` segment of the id), which
-//! is the Phase-3 shape *model output → firmware sensor input*. Writing a model
-//! input (`vsig` destination) needs a `Model::write` seam and lands with that
-//! chunk; such a destination is rejected at [`add`](RouteTable::add) for now.
+//! Both endpoints must be **registered** at propagate time (symmetric): an
+//! unregistered *source* or *destination* is a wiring bug and errors
+//! ([`RouteError::Table`]). A registered-but-never-recorded source has nothing to
+//! copy and is silently skipped that tick.
 //!
 //! ## Suspend / resume (fault injection)
 //!
@@ -32,9 +66,10 @@
 //! fault, and [`resume`](RouteTable::resume) restores normal driving. A suspended
 //! route is simply skipped by `propagate`.
 //!
+//! [`Backend`]: crate::backend::Backend
 //! [`StateTable::set_override`]: crate::state_table::StateTable::set_override
+//! [`StateTable::current_value`]: crate::state_table::StateTable::current_value
 
-use crate::backend::Backend;
 use crate::signal::{SignalId, Value};
 use crate::state_table::{StateTable, TableError};
 use thiserror::Error;
@@ -54,9 +89,7 @@ pub enum RouteError {
     DuplicateRoute { src: SignalId, dst: SignalId },
     #[error("no such route: {src} -> {dst}")]
     UnknownRoute { src: SignalId, dst: SignalId },
-    #[error("unsupported route destination {0}: only `cvar` destinations are driven for now")]
-    UnsupportedDest(SignalId),
-    #[error("route source: {0}")]
+    #[error("route endpoint: {0}")]
     Table(#[from] TableError),
 }
 
@@ -79,14 +112,13 @@ impl RouteTable {
         Self { routes: Vec::new() }
     }
 
-    /// Add a route `src → dst`. The destination must be a `cvar` (the only wired
-    /// backing today). Rejects an exact-duplicate `(src, dst)` pair so
-    /// [`suspend`](Self::suspend)/[`resume`](Self::resume) address a route
-    /// unambiguously by its endpoints.
+    /// Add a route `src → dst`. **Permissive**: the endpoints need not be
+    /// registered yet (a route may be authored before its signals exist; validity
+    /// is checked at [`propagate`](Self::propagate), not here) and a destination
+    /// may be any `sig_type`. Rejects only an exact-duplicate `(src, dst)` pair, so
+    /// [`suspend`](Self::suspend)/[`resume`](Self::resume)/[`remove`](Self::remove)
+    /// address a route unambiguously by its endpoints.
     pub fn add(&mut self, src: SignalId, dst: SignalId) -> Result<(), RouteError> {
-        if dst.sig_type() != "cvar" {
-            return Err(RouteError::UnsupportedDest(dst));
-        }
         if self.find(&src, &dst).is_some() {
             return Err(RouteError::DuplicateRoute { src, dst });
         }
@@ -96,6 +128,22 @@ impl RouteTable {
             enabled: true,
         });
         Ok(())
+    }
+
+    /// Remove a route by its endpoints. Errors [`RouteError::UnknownRoute`] if no
+    /// such route exists. Like [`add`](Self::add), removal is legal at any time —
+    /// keeping the wiring valid is the sim designer's job.
+    pub fn remove(&mut self, src: &SignalId, dst: &SignalId) -> Result<(), RouteError> {
+        match self.find(src, dst) {
+            Some(i) => {
+                self.routes.remove(i);
+                Ok(())
+            }
+            None => Err(RouteError::UnknownRoute {
+                src: src.clone(),
+                dst: dst.clone(),
+            }),
+        }
     }
 
     /// Suspend a route (stop driving its destination) by its endpoints.
@@ -108,23 +156,36 @@ impl RouteTable {
         self.set_enabled(src, dst, true)
     }
 
-    /// Propagate every enabled route once: **snapshot all sources** from the
-    /// State Table's current cache, **then write all destinations** via the
-    /// backend. A source that has never been recorded (no current value) is
-    /// skipped this tick; an unregistered source is a wiring bug and errors.
-    pub fn propagate(&self, st: &StateTable, backend: &dyn Backend) -> Result<(), RouteError> {
-        // Phase 1 — snapshot every enabled source into a pending write list.
-        // Nothing is written yet, so no source can observe a same-tick write.
+    /// Propagate every enabled route once, **purely on the State Table**:
+    /// **snapshot all sources** from the current cache, **then record all
+    /// destinations**. Nothing touches any backend — a route moves a value between
+    /// two table entries (a `cvar` mirror or a `vsig`); members flush/sample their
+    /// own mirrors on their own clock.
+    ///
+    /// Both endpoints must be registered (symmetric): an unregistered source *or*
+    /// destination is a wiring bug and errors. A registered-but-never-recorded
+    /// source has no value to copy and is silently skipped this tick. A destination
+    /// pinned via [`StateTable::set_override`] absorbs the write as a no-op (the
+    /// record is ignored), which is exactly how a suspended-route fault injection
+    /// composes with routing.
+    ///
+    /// [`StateTable::set_override`]: crate::state_table::StateTable::set_override
+    pub fn propagate(&self, st: &mut StateTable) -> Result<(), RouteError> {
+        // Phase 1 — snapshot every enabled source into a pending write list, and
+        // validate both endpoints are registered (symmetric existence check).
+        // Nothing is recorded yet, so no source can observe a same-tick write.
         let mut pending: Vec<(&SignalId, Value)> = Vec::with_capacity(self.routes.len());
         for route in self.routes.iter().filter(|r| r.enabled) {
-            if let Some(v) = st.current_value(&route.src)? {
-                pending.push((&route.dst, v.clone()));
+            let value = st.current_value(&route.src)?.cloned(); // source registered?
+            st.current_value(&route.dst)?; // destination registered? (value unused)
+            if let Some(v) = value {
+                pending.push((&route.dst, v));
             }
         }
-        // Phase 2 — drive every destination. `add` guarantees `cvar` dests, whose
-        // DWARF path is the id's `name` segment.
+        // Phase 2 — record every destination into the table (historian + overrides
+        // apply). Endpoints were validated above, so this cannot hit UnknownSignal.
         for (dst, value) in pending {
-            backend.write_cvar(dst.name(), &value);
+            st.record(dst, value)?;
         }
         Ok(())
     }
@@ -166,44 +227,14 @@ impl RouteTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{record_model, register_model, vsig_id, Model, RampModel};
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    /// A pure-Rust [`Backend`] whose `cvar` store is a `HashMap`, for exercising
-    /// route propagation without a firmware DLL. Unlike [`Firmware`], it applies
-    /// no type coercion — it stores whatever [`Value`] a route copies in.
-    ///
-    /// [`Firmware`]: crate::backend::Firmware
-    #[derive(Default)]
-    struct MockBackend {
-        cvars: RefCell<HashMap<String, Value>>,
-    }
-
-    impl MockBackend {
-        fn get(&self, path: &str) -> Option<Value> {
-            self.cvars.borrow().get(path).cloned()
-        }
-    }
-
-    impl Backend for MockBackend {
-        fn start(&self) -> bool {
-            true
-        }
-        fn advance_tick(&self) {}
-        fn shutdown(&self) {}
-        fn read_cvar(&self, path: &str) -> Value {
-            self.get(path).unwrap_or(Value::U32(0))
-        }
-        fn write_cvar(&self, path: &str, v: &Value) {
-            self.cvars.borrow_mut().insert(path.to_string(), v.clone());
-        }
-    }
+    use crate::member::{vsig_id, Member, RampModel};
 
     fn cvar(name: &str) -> SignalId {
-        SignalId::new("cvar", "pcs_bldc", name, None).unwrap()
+        SignalId::new("cvar", "dut", name, None).unwrap()
     }
 
+    /// Register `name` as a `cvar` on `st` and seed it with `v` (a current value a
+    /// route can snapshot).
     fn register_cvar(st: &mut StateTable, name: &str, v: Value) -> SignalId {
         let id = cvar(name);
         st.register(id.clone(), None).unwrap();
@@ -211,8 +242,13 @@ mod tests {
         id
     }
 
+    /// Register a bare (never-recorded) signal so it can be a route destination.
+    fn register_dst(st: &mut StateTable, id: &SignalId) {
+        st.register(id.clone(), None).unwrap();
+    }
+
     #[test]
-    fn add_rejects_duplicate_and_non_cvar_dest() {
+    fn add_rejects_duplicate_but_allows_any_dest() {
         let mut rt = RouteTable::new();
         rt.add(cvar("a"), cvar("b")).unwrap();
         assert_eq!(rt.len(), 1);
@@ -221,26 +257,78 @@ mod tests {
             rt.add(cvar("a"), cvar("b")),
             Err(RouteError::DuplicateRoute { .. })
         ));
-        // A `vsig` destination is not wired yet.
+        // A `vsig` destination (a model input) is now a first-class route target.
         let vsig_dst = vsig_id("motor", "i_a").unwrap();
+        rt.add(cvar("a"), vsig_dst).unwrap();
+        assert_eq!(rt.len(), 2);
+    }
+
+    #[test]
+    fn remove_deletes_and_errors_when_absent() {
+        let mut rt = RouteTable::new();
+        let (a, b) = (cvar("a"), cvar("b"));
+        rt.add(a.clone(), b.clone()).unwrap();
+        assert_eq!(rt.len(), 1);
+        rt.remove(&a, &b).unwrap();
+        assert!(rt.is_empty());
+        // Removing a non-existent route errors.
         assert!(matches!(
-            rt.add(cvar("a"), vsig_dst),
-            Err(RouteError::UnsupportedDest(_))
+            rt.remove(&a, &b),
+            Err(RouteError::UnknownRoute { .. })
         ));
     }
 
     #[test]
-    fn propagate_copies_source_to_cvar_dest() {
+    fn propagate_records_source_into_destination_entry() {
         let mut st = StateTable::new();
         let src = register_cvar(&mut st, "src", Value::U32(7));
         let dst = cvar("dst");
+        register_dst(&mut st, &dst);
 
         let mut rt = RouteTable::new();
         rt.add(src, dst.clone()).unwrap();
 
-        let be = MockBackend::default();
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("dst"), Some(Value::U32(7)));
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(7)));
+    }
+
+    #[test]
+    fn propagate_drives_a_vsig_destination() {
+        // A `vsig` destination (model input) works with zero new seams: the route
+        // records straight into the table entry, which the consuming model reads.
+        let mut st = StateTable::new();
+        let src = register_cvar(&mut st, "fw_out", Value::F64(1.5));
+        let dst = vsig_id("motor", "load_torque").unwrap();
+        register_dst(&mut st, &dst);
+
+        let mut rt = RouteTable::new();
+        rt.add(src, dst.clone()).unwrap();
+
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::F64(1.5)));
+    }
+
+    #[test]
+    fn override_on_destination_pins_it_against_the_route() {
+        // The free fault-injection win: a pinned destination absorbs the route's
+        // record as a no-op, so the route cannot drive it.
+        let mut st = StateTable::new();
+        let src = register_cvar(&mut st, "src", Value::U32(1));
+        let dst = register_cvar(&mut st, "dst", Value::U32(0));
+        let mut rt = RouteTable::new();
+        rt.add(src.clone(), dst.clone()).unwrap();
+
+        st.set_override(&dst, true).unwrap();
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(0))); // pinned
+
+        // Unpin → the route drives it normally again.
+        st.set_override(&dst, false).unwrap();
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
     }
 
     #[test]
@@ -248,27 +336,28 @@ mod tests {
         let mut st = StateTable::new();
         let src = register_cvar(&mut st, "src", Value::U32(1));
         let dst = cvar("dst");
+        register_dst(&mut st, &dst);
         let mut rt = RouteTable::new();
         rt.add(src.clone(), dst.clone()).unwrap();
 
-        let be = MockBackend::default();
-
         // Enabled → drives.
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("dst"), Some(Value::U32(1)));
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
 
         // Suspended → destination stops being driven even as the source changes.
         rt.suspend(&src, &dst).unwrap();
         assert_eq!(rt.is_enabled(&src, &dst), Some(false));
+        st.set_time(2_000);
         st.force_record(&src, Value::U32(2)).unwrap();
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("dst"), Some(Value::U32(1))); // held at pre-suspend value
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1))); // held
 
         // Resumed → drives again from the source's current value.
         rt.resume(&src, &dst).unwrap();
-        assert_eq!(rt.is_enabled(&src, &dst), Some(true));
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("dst"), Some(Value::U32(2)));
+        st.set_time(3_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(2)));
     }
 
     #[test]
@@ -281,24 +370,35 @@ mod tests {
     }
 
     #[test]
-    fn propagate_skips_unset_source_but_errors_on_unregistered() {
+    fn propagate_skips_unset_source_but_errors_on_unregistered_endpoints() {
         // Registered-but-never-recorded source: nothing to copy, silently skipped.
         let mut st = StateTable::new();
         let src = cvar("src");
         st.register(src.clone(), None).unwrap();
         let dst = cvar("dst");
+        register_dst(&mut st, &dst);
         let mut rt = RouteTable::new();
-        rt.add(src, dst).unwrap();
-        let be = MockBackend::default();
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("dst"), None);
+        rt.add(src, dst.clone()).unwrap();
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), None);
 
-        // Unregistered source: a wiring bug → error.
-        let st2 = StateTable::new();
+        // Unregistered SOURCE: a wiring bug → error.
+        let mut st2 = StateTable::new();
+        register_dst(&mut st2, &cvar("dst"));
         let mut rt2 = RouteTable::new();
         rt2.add(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
-            rt2.propagate(&st2, &be),
+            rt2.propagate(&mut st2),
+            Err(RouteError::Table(TableError::UnknownSignal(_)))
+        ));
+
+        // Unregistered DESTINATION: symmetric wiring bug → error.
+        let mut st3 = StateTable::new();
+        register_cvar(&mut st3, "src", Value::U32(1));
+        let mut rt3 = RouteTable::new();
+        rt3.add(cvar("src"), cvar("ghost_dst")).unwrap();
+        assert!(matches!(
+            rt3.propagate(&mut st3),
             Err(RouteError::Table(TableError::UnknownSignal(_)))
         ));
     }
@@ -306,27 +406,27 @@ mod tests {
     #[test]
     fn chain_snapshot_then_write_uses_pre_tick_values() {
         // a→b, b→c in ONE pass: c must receive the PRE-tick b, not the b that
-        // a→b writes this pass (proves snapshot precedes all writes).
+        // a→b records this pass (proves snapshot precedes all writes).
         let mut st = StateTable::new();
         let a = register_cvar(&mut st, "a", Value::U32(1));
         let b = register_cvar(&mut st, "b", Value::U32(2));
-        let _c = cvar("c");
+        let c = register_cvar(&mut st, "c", Value::U32(0));
 
         let mut rt = RouteTable::new();
         rt.add(a, cvar("b")).unwrap();
         rt.add(b, cvar("c")).unwrap();
 
-        let be = MockBackend::default();
-        rt.propagate(&st, &be).unwrap();
-        assert_eq!(be.get("b"), Some(Value::U32(1))); // b := a (pre-tick 1)
-        assert_eq!(be.get("c"), Some(Value::U32(2))); // c := b (pre-tick 2), NOT 1
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
+        assert_eq!(st.current_value(&cvar("b")).unwrap(), Some(&Value::U32(1))); // b := a (1)
+        assert_eq!(st.current_value(&c).unwrap(), Some(&Value::U32(2))); // c := pre-tick b (2)
     }
 
     #[test]
     fn chain_advances_one_hop_per_tick() {
-        // Drive the engine shape: propagate, then "record" the written dests back
-        // into the State Table (the tick-4 historian step). A pulse at `a`
-        // marches a→b→c one hop per tick.
+        // Pure table-mediated: propagate records dests into the table, and the
+        // next tick's snapshot reads them. A pulse at `a` marches a→b→c one hop
+        // per tick.
         let mut st = StateTable::new();
         let a = register_cvar(&mut st, "a", Value::U32(9));
         let b = register_cvar(&mut st, "b", Value::U32(0));
@@ -336,48 +436,39 @@ mod tests {
         rt.add(a.clone(), b.clone()).unwrap();
         rt.add(b.clone(), c.clone()).unwrap();
 
-        let be = MockBackend::default();
-        let commit = |st: &mut StateTable, be: &MockBackend, t: u64| {
-            st.set_time(t);
-            for name in ["b", "c"] {
-                if let Some(v) = be.get(name) {
-                    st.record(&cvar(name), v).unwrap();
-                }
-            }
-        };
-
         // Tick 1: b gets 9, c still 0 (used pre-tick b=0).
-        rt.propagate(&st, &be).unwrap();
-        commit(&mut st, &be, 1_000);
+        st.set_time(1_000);
+        rt.propagate(&mut st).unwrap();
         assert_eq!(st.current_value(&b).unwrap(), Some(&Value::U32(9)));
         assert_eq!(st.current_value(&c).unwrap(), Some(&Value::U32(0)));
 
         // Tick 2: the pulse reaches c.
-        rt.propagate(&st, &be).unwrap();
-        commit(&mut st, &be, 2_000);
+        st.set_time(2_000);
+        rt.propagate(&mut st).unwrap();
         assert_eq!(st.current_value(&c).unwrap(), Some(&Value::U32(9)));
     }
 
     #[test]
-    fn ramp_model_vsig_routes_into_backend() {
-        // The Phase-3 shape in miniature: a model's vsig drives a cvar. Advance +
-        // record the model, then propagate; the destination tracks it each tick.
+    fn ramp_model_vsig_routes_into_a_cvar_entry() {
+        // The Phase-3 shape in miniature: a model member's vsig drives a cvar
+        // entry (which a firmware member would later flush into memory). set_time
+        // then advance (records the vsig), then propagate; the destination entry
+        // tracks it each tick.
         let mut st = StateTable::new();
         let mut model = RampModel::new("ramp", 1000.0, Some("counts")); // +1.0 / ms
-        register_model(&mut st, &model).unwrap();
+        model.set_enabled(true, &mut st); // registers vsig:ramp:value
         let src = vsig_id("ramp", "value").unwrap();
         let dst = cvar("sensor_in");
+        register_dst(&mut st, &dst);
 
         let mut rt = RouteTable::new();
         rt.add(src, dst.clone()).unwrap();
-        let be = MockBackend::default();
 
         for tick in 1..=3u64 {
-            model.advance(1_000);
             st.set_time(tick * 1_000);
-            record_model(&mut st, &model).unwrap();
-            rt.propagate(&st, &be).unwrap();
-            assert_eq!(be.get("sensor_in"), Some(Value::F64(tick as f64)));
+            model.advance(1_000, &mut st);
+            rt.propagate(&mut st).unwrap();
+            assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::F64(tick as f64)));
         }
     }
 }

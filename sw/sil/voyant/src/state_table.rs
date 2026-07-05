@@ -13,6 +13,7 @@
 //! injection pin). Retention evicts old samples per a time window (fast mode
 //! sets it to unbounded; realtime keeps a window).
 
+use crate::log::{LogEntry, LogLevel, LogRing};
 use crate::signal::{SignalId, Value};
 use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -23,6 +24,8 @@ use thiserror::Error;
 const DEFAULT_EPSILON: f64 = 1e-3;
 /// Default realtime retention window; fast mode overrides to `None` (unbounded).
 const DEFAULT_RETENTION: Duration = Duration::from_secs(30);
+/// Default log-ring capacity (drop-oldest beyond this; see [`LogRing`]).
+const DEFAULT_LOG_CAPACITY: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct StateTableConfig {
@@ -34,6 +37,8 @@ pub struct StateTableConfig {
     pub epsilon: f64,
     /// Per-signal epsilon overrides.
     pub signal_epsilon: HashMap<SignalId, f64>,
+    /// Capacity of the sim-time-stamped log ring (drop-oldest beyond this).
+    pub log_capacity: usize,
 }
 
 impl Default for StateTableConfig {
@@ -43,6 +48,7 @@ impl Default for StateTableConfig {
             signal_retention: HashMap::new(),
             epsilon: DEFAULT_EPSILON,
             signal_epsilon: HashMap::new(),
+            log_capacity: DEFAULT_LOG_CAPACITY,
         }
     }
 }
@@ -51,8 +57,12 @@ impl Default for StateTableConfig {
 pub enum TableError {
     #[error("unknown signal: {0}")]
     UnknownSignal(SignalId),
-    #[error("duplicate signal: {0}")]
-    DuplicateSignal(SignalId),
+    #[error("conflicting re-registration of {signal}: existing unit {existing:?} != requested {requested:?}")]
+    ConflictingUnit {
+        signal: SignalId,
+        existing: Option<String>,
+        requested: Option<String>,
+    },
     #[error("tick {requested_tick} for {signal} is before the retained window (oldest {oldest_available})")]
     OutOfWindow {
         signal: SignalId,
@@ -74,8 +84,10 @@ pub struct StateTable {
     overrides: HashSet<SignalId>,
     /// Signals that have had samples evicted (so `value_at` can report OutOfWindow).
     evicted: HashSet<SignalId>,
-    /// Current sim time (microseconds); the timestamp for `record`.
+    /// Current sim time (microseconds); the timestamp for `record` and `log`.
     current_time_us: u64,
+    /// Sim-time-stamped, bounded log ring (drop-oldest; see [`LogRing`]).
+    logs: LogRing,
     config: StateTableConfig,
 }
 
@@ -99,6 +111,7 @@ impl StateTable {
             overrides: HashSet::new(),
             evicted: HashSet::new(),
             current_time_us: 0,
+            logs: LogRing::new(config.log_capacity),
             config,
         }
     }
@@ -108,10 +121,24 @@ impl StateTable {
         self.current_time_us = time_us;
     }
 
-    /// Register a signal (optionally with a unit). Errors if already registered.
+    /// Register a signal (optionally with a unit).
+    ///
+    /// **Idempotent**: re-registering an existing id with *identical* unit metadata
+    /// is a benign no-op — a member (e.g. a firmware instance across a reboot)
+    /// legitimately re-registers its ports, and a signal's history spans member
+    /// lifetimes, so the entry (and its change-log) must be preserved. Re-registering
+    /// with a *conflicting* unit is a wiring bug and errors ([`TableError::ConflictingUnit`]).
     pub fn register(&mut self, id: SignalId, unit: Option<&str>) -> Result<(), TableError> {
         if self.signals.contains(&id) {
-            return Err(TableError::DuplicateSignal(id));
+            let existing = self.units.get(&id).map(String::as_str);
+            if existing == unit {
+                return Ok(());
+            }
+            return Err(TableError::ConflictingUnit {
+                signal: id.clone(),
+                existing: existing.map(str::to_string),
+                requested: unit.map(str::to_string),
+            });
         }
         if let Some(u) = unit {
             self.units.insert(id.clone(), u.to_string());
@@ -190,6 +217,38 @@ impl StateTable {
         self.changes.get(id)
     }
 
+    /// Emit a log entry, stamped with the table's **current sim time**. The
+    /// caller supplies only the severity, a `source` tag (a member name, or a
+    /// driver tag), and a message — never the timestamp, so members cannot fake
+    /// sim time and logging can never perturb behaviour (determinism, D7). The
+    /// ring drops the oldest entry when full (see [`take_logs`](Self::take_logs)
+    /// / [`dropped_logs`](Self::dropped_logs)).
+    pub fn log(&mut self, level: LogLevel, source: &str, message: impl Into<String>) {
+        self.logs.push(LogEntry {
+            time_us: self.current_time_us,
+            level,
+            source: source.to_string(),
+            message: message.into(),
+        });
+    }
+
+    /// Drain every buffered log entry (oldest first), leaving the ring empty.
+    /// The [`dropped_logs`](Self::dropped_logs) count survives the drain.
+    pub fn take_logs(&mut self) -> Vec<LogEntry> {
+        self.logs.take()
+    }
+
+    /// Peek the buffered log entries without draining.
+    pub fn logs(&self) -> &VecDeque<LogEntry> {
+        self.logs.peek()
+    }
+
+    /// How many log entries were dropped (evicted before a drain) over this
+    /// table's life — nonzero means a log storm outran [`take_logs`](Self::take_logs).
+    pub fn dropped_logs(&self) -> u64 {
+        self.logs.dropped()
+    }
+
     pub fn signals(&self) -> impl Iterator<Item = &SignalId> {
         self.signals.iter()
     }
@@ -262,7 +321,7 @@ mod tests {
     #[test]
     fn change_logs_and_dedups() {
         let mut st = StateTable::new();
-        let a = id("cvar:pcs_bldc:a");
+        let a = id("cvar:dut:a");
         st.register(a.clone(), Some("counts")).unwrap();
 
         for (t, v) in [(1_000, 5u32), (2_000, 5), (3_000, 5), (4_000, 9)] {
@@ -280,7 +339,7 @@ mod tests {
     #[test]
     fn value_at_zero_order_hold() {
         let mut st = StateTable::new();
-        let a = id("cvar:pcs_bldc:a");
+        let a = id("cvar:dut:a");
         st.register(a.clone(), None).unwrap();
         st.set_time(1_000);
         st.record(&a, Value::U32(5)).unwrap();
@@ -296,7 +355,7 @@ mod tests {
     #[test]
     fn override_pins_value() {
         let mut st = StateTable::new();
-        let a = id("cvar:pcs_bldc:a");
+        let a = id("cvar:dut:a");
         st.register(a.clone(), None).unwrap();
         st.set_time(1_000);
         st.record(&a, Value::U32(5)).unwrap();
@@ -308,7 +367,7 @@ mod tests {
 
     #[test]
     fn per_signal_epsilon() {
-        let a = id("cvar:pcs_bldc:a");
+        let a = id("cvar:dut:a");
         let mut cfg = StateTableConfig::default();
         cfg.signal_epsilon.insert(a.clone(), 0.5);
         let mut st = StateTable::with_config(cfg);
@@ -324,17 +383,76 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_duplicate() {
+    fn unknown_signal_errors() {
         let mut st = StateTable::new();
-        let a = id("cvar:pcs_bldc:a");
+        let a = id("cvar:dut:a");
         assert!(matches!(
             st.record(&a, Value::U32(1)),
             Err(TableError::UnknownSignal(_))
         ));
-        st.register(a.clone(), None).unwrap();
+    }
+
+    #[test]
+    fn log_stamps_current_sim_time_and_drains() {
+        let mut st = StateTable::new();
+        st.set_time(1_000);
+        st.log(LogLevel::Warning, "member_a", "something odd");
+        st.set_time(2_500);
+        st.log(LogLevel::Error, "member_b", format!("code {}", 7));
+
+        // Peek keeps the entries; timestamps are the table's sim time at log time.
+        assert_eq!(st.logs().len(), 2);
+        assert_eq!(st.logs()[0].time_us, 1_000);
+        assert_eq!(st.logs()[0].level, LogLevel::Warning);
+        assert_eq!(st.logs()[0].source, "member_a");
+        assert_eq!(st.logs()[1].time_us, 2_500);
+        assert_eq!(st.logs()[1].message, "code 7");
+
+        // Drain empties the ring.
+        let drained = st.take_logs();
+        assert_eq!(drained.len(), 2);
+        assert!(st.logs().is_empty());
+    }
+
+    #[test]
+    fn log_ring_drops_oldest_beyond_capacity() {
+        let cfg = StateTableConfig {
+            log_capacity: 2,
+            ..StateTableConfig::default()
+        };
+        let mut st = StateTable::with_config(cfg);
+        for i in 0..5u64 {
+            st.set_time(i * 1_000);
+            st.log(LogLevel::Info, "src", format!("m{i}"));
+        }
+        assert_eq!(st.logs().len(), 2);
+        assert_eq!(st.dropped_logs(), 3);
+        assert_eq!(st.logs().front().unwrap().message, "m3");
+        assert_eq!(st.logs().back().unwrap().message, "m4");
+    }
+
+    #[test]
+    fn register_is_idempotent_but_rejects_unit_conflict() {
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), Some("counts")).unwrap();
+        // Record some history, then re-register identically — a benign no-op that
+        // must NOT wipe the entry or its change-log.
+        st.set_time(1_000);
+        st.record(&a, Value::U32(5)).unwrap();
+        st.register(a.clone(), Some("counts")).unwrap(); // idempotent
+        assert_eq!(st.len(), 1);
+        assert_eq!(st.changes(&a).unwrap().len(), 1);
+        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+        // A conflicting unit is a wiring bug.
+        assert!(matches!(
+            st.register(a.clone(), Some("volts")),
+            Err(TableError::ConflictingUnit { .. })
+        ));
+        // None vs Some also conflicts.
         assert!(matches!(
             st.register(a.clone(), None),
-            Err(TableError::DuplicateSignal(_))
+            Err(TableError::ConflictingUnit { .. })
         ));
     }
 }

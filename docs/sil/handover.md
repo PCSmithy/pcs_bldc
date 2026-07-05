@@ -36,7 +36,7 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (26 tests).
+Rust unit tests: `cd sw/sil && cargo test -p voyant` (43 tests).
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
@@ -55,13 +55,25 @@ sw/sil/
                             + retention. Pure data, no FFI. (10 unit tests)
     src/backend.rs          Backend trait (lifecycle + cvar R/W) + Firmware, its
                             first impl: control ABI + cvar sample-resolver
-                            (read_cvar/write_cvar; the only unsafe/DWARF part)
-    src/model.rs            Model trait + vsig backing: register_model/record_model
-                            glue + RampModel reference impl (models sampled into
-                            the State Table like cvars; StateTable stays pure data)
+                            (read_cvar/write_cvar; the only unsafe/DWARF part).
+                            Auto-derives the ASLR anchor from export∩DWARF (no
+                            hardcoded symbol). Also FirmwareMember: a firmware
+                            instance wrapped as a Member — flushes driven cvars into
+                            fw memory (drive_cvar) + samples sampled cvars out
+                            (sample_cvar) around advance_tick; the ONLY thing that
+                            touches fw memory (routes never do).
+    src/member.rs           Member trait (the one seam the engine drives everything
+                            through: name/advance(dt,st)/set_enabled) + vsig_id +
+                            RampModel reference model member. Members register their
+                            own signals on the table (any time, any sig_type) and
+                            push records each advance.
     src/route.rs            RouteTable: source->destination transport, one
-                            snapshot-then-write pass/tick, per-route suspend/resume
-                            (pure data + explicit propagate; cvar dests via Backend)
+                            snapshot-then-write pass/tick, add/remove/suspend/resume.
+                            propagate is TABLE-ONLY (no backend): records src entry
+                            -> dst entry; dst = any registered signal; both endpoints
+                            checked at propagate; override pins a dest against a route.
+    src/log.rs              Unified log: LogLevel/LogEntry + drop-oldest LogRing the
+                            StateTable stamps with sim time (st.log/take_logs).
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
                             (Scalar | Enum), incl. enum value->name
   pcs_bldc_sil/           THE INSTANTIATION (board-specific driver/demo)
@@ -108,6 +120,42 @@ docs/sil/*.md            the design (see "Design docs" below)
   (interim until D8). Per-task heartbeat counters + the sanity suite (above)
   prove the real code runs natively. Embedded ELF impact: +~80 B flash,
   +16 B bss.
+
+- **Member-model refactor (chunk A, 2026-07-05):** the `Model` trait folded into a
+  single **`Member`** seam (`name`/`advance(dt,st)`/`set_enabled(on,st)`) that the
+  engine drives everything through; it now holds a `Vec<Box<dyn Member>>` and
+  advances in registration order. `RampModel` and the firmware (via the new
+  **`FirmwareMember`**) are both members; members register their own signals on the
+  table and push records each advance (no `signals()`/`read()`). `StateTable::register`
+  is now idempotent (identical re-registration is a no-op; conflicting unit errors).
+  The ASLR anchor is **auto-derived** (export∩DWARF) — no board symbol in voyant.
+  Deleted: `Model`/`ModelSignal`/`register_model`/`record_model`, `Firmware::read_u32`,
+  the engine's pull-based vsig cache + `Engine::sample_cvar`. **Route-hop latency is
+  an OPEN owner question**; the engine's before-each-member route placement is an
+  INTERIM placeholder (see [`state-route-tables.md`](state-route-tables.md) §3).
+
+- **Table-mediated routing + log system (chunk A follow-up, 2026-07-05):** routes
+  are now a **pure State Table operation** — `RouteTable::propagate(&mut StateTable)`
+  takes **no `Backend`**; it records source entries into destination entries and
+  nothing else. A destination is **any registered signal of any `sig_type`** (the
+  `cvar`-only restriction and `RouteError::UnsupportedDest` are gone), so `vsig`
+  destinations (model inputs) work with no new seam, and `set_override` on a
+  destination pins it against its route (free fault-injection compose). Added
+  `RouteTable::remove`; both endpoints are existence-checked at propagate
+  (symmetric). The firmware member gained **`drive_cvar`** — the mirror of
+  `sample_cvar`: per firmware tick it flushes driven cvars (table -> fw memory) ->
+  `advance_tick` -> samples sampled cvars (fw memory -> table). The **`Engine`
+  dropped its `&dyn Backend`** entirely (`Engine::new(tick_period_us)` /
+  `with_state(tick_period_us, st)`) — it touches only members/routes/table; each
+  firmware member drives its own backend, so multi-firmware is just multiple
+  `FirmwareMember`s. Added the **unified log system** (`log.rs`: `LogLevel`/`LogEntry`
+  + drop-oldest `LogRing`; the `StateTable` owns the sink and stamps sim time via
+  `st.log`/`take_logs`); the swallowed-`record`-error sites now log a `Warning`.
+  Sanity-suite **check 6 moved onto the engine** and now exercises the real
+  production path (model vsig -> route table->table -> FirmwareMember flush -> fw
+  memory), asserting against the SPI sim's `injectedRx[0]` — a firmware input the
+  firmware *reads* but never *writes*, so a flushed value survives `advance_tick`.
+  voyant unit tests 34 -> 43; sanity suite all PASS.
 
 ## What's next (prioritized)
 

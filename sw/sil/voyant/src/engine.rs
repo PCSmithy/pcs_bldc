@@ -1,129 +1,151 @@
 //! The sim clock + step loop: the engine that ties the parts together.
 //!
-//! [`Engine`] owns the [`StateTable`], the [`RouteTable`], and the plant/peer
-//! [`Model`]s, borrows a [`Backend`] (the firmware under test), and advances the
-//! whole system one tick at a time with [`step`](Engine::step). It is the first
-//! consumer of everything below it — the piece the design docs call the "sim
-//! core" (`architecture.md` §5, `state-route-tables.md` §3).
+//! [`Engine`] owns the [`StateTable`], the [`RouteTable`], and a list of
+//! [`Member`]s (every executable participant — firmware instances, plant/peer
+//! models, future native apps), and advances the whole system one tick at a time
+//! with [`step`](Engine::step). It is the "sim core" the design docs describe
+//! (`architecture.md` §5, `state-route-tables.md` §3), and it drives members
+//! *only* through the [`Member`] trait — an **engine of members**, agnostic to
+//! what any member actually is.
 //!
 //! ## The canonical tick order
 //!
-//! Each [`step`](Engine::step) advances sim time by one fixed tick period and runs
-//! the deterministic order from `state-route-tables.md` §3:
+//! Each [`step`](Engine::step) advances sim time by one fixed tick period, then
+//! walks the members in **registration order** (deterministic, D7). For each
+//! **enabled** member it **propagates routes, then advances the member**:
 //!
 //! 1. **advance sim time** — `now += tick_period`, monotonic and wall-clock-free
 //!    (D7/D9); [`StateTable::set_time`] stamps every record this tick.
-//! 2. **advance models** in **registration order**, recording each model's `vsig`
-//!    outputs into the State Table (the docs' "model output entries updated").
-//! 3. **propagate routes** (snapshot-then-write) — a model output routed to a
-//!    firmware `cvar` lands **before** the firmware runs this tick.
-//! 4. **`advance_tick`** — the firmware runs to quiescence.
-//! 5. **sample** the registered firmware `cvar`s into the State Table historian.
+//! 2. **for each enabled member, in order:** first **propagate routes**
+//!    (snapshot-then-write, purely on the State Table) so the member sees the
+//!    freshest routed inputs at its turn, then **`member.advance(dt, st)`** — the
+//!    member reads its routed inputs, steps, and pushes its outputs (a firmware
+//!    member also flushes its *driven* cvars into firmware memory, runs
+//!    `advance_tick`, and samples its cvars back out here).
 //!
-//! Steps 2 and 5 together are the docs' single "record signals" phase, split so a
-//! model output is visible to routes in the *same* tick (step 3) while firmware
-//! outputs are captured *after* the firmware ran (step 5). Both record at the same
-//! `now`, so the historian timestamps stay consistent.
+//! Disabled members are skipped while sim time keeps flowing (their signals hold
+//! their last value); see [`set_member_enabled`](Engine::set_member_enabled).
 //!
-//! Lifecycle (`start`/`shutdown`) stays on the [`Backend`] handle the caller
-//! holds — the engine only drives the loop. Run modes / pacing (fast vs realtime)
-//! are a thin wrapper over `step` and land in a later chunk; nothing here presumes
-//! either.
+//! ### Route placement is an INTERIM placeholder — NOT the final design
 //!
-//! ## Performance shape (see `performance.md`)
+//! Propagating routes *before each member* preserves today's semantics with zero
+//! added latency along registration order: a model member's output routed to a
+//! firmware member's `cvar` lands **before** that firmware's `advance_tick` in the
+//! *same* step, because the firmware member is advanced after the model that feeds
+//! it. That is the load-bearing ordering guarantee the tests pin.
 //!
-//! The hot loop is **allocation-free on the engine's own account**: each model's
-//! `vsig` [`SignalId`]s and the sampled-`cvar` list are resolved once at
-//! registration and iterated in place, so the per-tick model recording does **not**
-//! call [`Model::signals`] (which allocates a `Vec`). The remaining per-tick
-//! allocations live behind seams owned elsewhere and flagged for later work: the
-//! `pending` snapshot buffer in [`RouteTable::propagate`] (to become flat
-//! `(src, dst)` arrays) and any `Enum`/`Bytes` [`Value`] a read materializes (the
-//! historian goes columnar later). The engine API takes none of these into its
-//! surface, so those optimizations land without an API break.
+//! **This placement is explicitly interim.** The owner has an OPEN design question
+//! on route-hop latency: the "one tick per hop" delay stated in
+//! `state-route-tables.md` §3 is **not settled**, and the standing requirement is
+//! that routing add **no artificially induced per-hop latency**. Where a route's
+//! source is produced later in registration order than its consumer, freshness
+//! follows that order — a future ordering/latency design (a later chunk, after an
+//! owner design session) may replace this. Do not treat before-each-member as the
+//! final rule.
+//!
+//! ## No backend handle (routes are table-mediated)
+//!
+//! The engine touches **only** members, routes, and the table — it holds **no
+//! [`Backend`](crate::Backend) borrow**. Route propagation is a pure State Table
+//! operation ([`RouteTable::propagate`]): it records values between table entries
+//! and nothing more. Each firmware instance lives inside its own
+//! [`FirmwareMember`](crate::FirmwareMember) and drives *its own* backend — it
+//! flushes routed `cvar` destinations into firmware memory (and samples firmware
+//! outputs back out) inside its own `advance`. This removes the last
+//! single-firmware assumption: multi-firmware is simply multiple `FirmwareMember`s,
+//! each flushing/sampling through its own backend, all peers in one engine.
+//!
+//! [`RouteTable::propagate`]: crate::route::RouteTable::propagate
 
-use crate::backend::Backend;
-use crate::model::{vsig_id, Model};
+use crate::log::LogEntry;
+use crate::member::Member;
 use crate::route::{RouteError, RouteTable};
-use crate::signal::{ParseError, SignalId};
-use crate::state_table::{StateTable, TableError};
+use crate::signal::SignalId;
+use crate::state_table::StateTable;
 use thiserror::Error;
 
-/// A registered model plus its `vsig` [`SignalId`]s, resolved once so the tick
-/// loop never calls [`Model::signals`] (which allocates).
-struct ModelEntry {
-    model: Box<dyn Model>,
-    vsigs: Vec<SignalId>,
+/// A registered member plus the engine's own enable flag (engine-gating: the
+/// engine skips a disabled member's [`Member::advance`] — simpler than making
+/// every member self-gate).
+struct MemberEntry<'m> {
+    member: Box<dyn Member + 'm>,
+    enabled: bool,
 }
 
 /// Errors from engine setup and stepping.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum EngineError {
-    #[error("signal id: {0}")]
-    Id(#[from] ParseError),
-    #[error(transparent)]
-    Table(#[from] TableError),
     #[error(transparent)]
     Route(#[from] RouteError),
 }
 
 /// The sim clock + step loop. Owns the State Table (the historian), the Route
-/// Table, and the models; borrows a [`Backend`] for the firmware side.
+/// Table, and the members — and **nothing else**: it holds no backend handle (see
+/// the module "No backend handle" note). Each firmware member drives its own
+/// backend, so a caller can keep its own `&Backend` for ad-hoc white-box
+/// injection / inspection alongside the engine without contending with it.
 ///
-/// The backend is a shared borrow (`&dyn Backend`): every [`Backend`] method
-/// takes `&self` (it mutates the firmware's own memory, not the Rust handle), so
-/// the caller can keep its own `&Backend` for ad-hoc white-box injection /
-/// inspection alongside the engine — the two never contend.
+/// The `'b` lifetime bounds the members (a [`FirmwareMember`](crate::FirmwareMember)
+/// borrows its backend for `'b`); it no longer appears on the engine's own fields.
 pub struct Engine<'b> {
-    backend: &'b dyn Backend,
     state: StateTable,
     routes: RouteTable,
-    models: Vec<ModelEntry>,
-    /// Firmware `cvar`s sampled into the historian every tick (step 5).
-    sampled: Vec<SignalId>,
+    members: Vec<MemberEntry<'b>>,
     tick_period_us: u64,
     now_us: u64,
 }
 
 impl<'b> Engine<'b> {
-    /// A new engine driving `backend`, advancing `tick_period_us` of sim time per
-    /// [`step`](Self::step) (e.g. 1000 for the 1 kHz firmware tick). Sim time
-    /// starts at 0; the first `step` records at `tick_period_us`.
-    pub fn new(backend: &'b dyn Backend, tick_period_us: u64) -> Self {
+    /// A new engine advancing `tick_period_us` of sim time per [`step`](Self::step)
+    /// (e.g. 1000 for a 1 kHz cadence). Sim time starts at 0; the first `step`
+    /// records at `tick_period_us`.
+    pub fn new(tick_period_us: u64) -> Self {
         Self {
-            backend,
             state: StateTable::new(),
             routes: RouteTable::new(),
-            models: Vec::new(),
-            sampled: Vec::new(),
+            members: Vec::new(),
             tick_period_us,
             now_us: 0,
         }
     }
 
-    /// A new engine with a caller-configured [`StateTable`] (retention / epsilon).
-    pub fn with_state(backend: &'b dyn Backend, tick_period_us: u64, state: StateTable) -> Self {
+    /// A new engine with a caller-configured [`StateTable`] (retention / epsilon /
+    /// log capacity).
+    pub fn with_state(tick_period_us: u64, state: StateTable) -> Self {
         Self {
             state,
-            ..Self::new(backend, tick_period_us)
+            ..Self::new(tick_period_us)
         }
     }
 
-    /// Register a model: create its `vsig` State Table entries and add it to the
-    /// advance list. Advance order is registration order (deterministic, D7).
-    pub fn add_model(&mut self, model: Box<dyn Model>) -> Result<(), EngineError> {
-        let mut vsigs = Vec::with_capacity(4);
-        for sig in model.signals() {
-            let id = vsig_id(model.name(), &sig.local)?;
-            self.state.register(id.clone(), sig.unit.as_deref())?;
-            vsigs.push(id);
-        }
-        self.models.push(ModelEntry { model, vsigs });
-        Ok(())
+    /// Add a member. Members **start enabled**: the engine calls
+    /// [`Member::set_enabled(true)`](Member::set_enabled) now, which is where the
+    /// member registers its signals on the State Table. Advance order is
+    /// registration order (deterministic, D7).
+    pub fn add_member(&mut self, mut member: Box<dyn Member + 'b>) {
+        member.set_enabled(true, &mut self.state);
+        self.members.push(MemberEntry {
+            member,
+            enabled: true,
+        });
     }
 
-    /// Add a `src → dst` route (delegates to the [`RouteTable`]; `dst` must be a
-    /// `cvar`, see [`RouteTable::add`]).
+    /// Enable or disable a member by name. A disabled member's advance is skipped
+    /// each step (its signals hold their last value); re-enabling calls
+    /// [`Member::set_enabled(true)`](Member::set_enabled) again (which idempotently
+    /// re-registers its signals). Returns whether a member of that name was found.
+    pub fn set_member_enabled(&mut self, name: &str, on: bool) -> bool {
+        if let Some(entry) = self.members.iter_mut().find(|e| e.member.name() == name) {
+            entry.enabled = on;
+            entry.member.set_enabled(on, &mut self.state);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add a `src → dst` route (delegates to the [`RouteTable`]; `dst` may be any
+    /// registered signal, validated at propagate — see [`RouteTable::add`]).
     pub fn add_route(&mut self, src: SignalId, dst: SignalId) -> Result<(), EngineError> {
         self.routes.add(src, dst)?;
         Ok(())
@@ -141,45 +163,31 @@ impl<'b> Engine<'b> {
         Ok(())
     }
 
-    /// Register a firmware `cvar` to be sampled into the historian every tick
-    /// (its DWARF path is the id's `name` segment). Idempotent per id via the
-    /// State Table's duplicate-registration guard.
-    pub fn sample_cvar(&mut self, id: SignalId, unit: Option<&str>) -> Result<(), EngineError> {
-        self.state.register(id.clone(), unit)?;
-        self.sampled.push(id);
+    /// Remove a route by its endpoints (delegates to [`RouteTable::remove`]).
+    pub fn remove_route(&mut self, src: &SignalId, dst: &SignalId) -> Result<(), EngineError> {
+        self.routes.remove(src, dst)?;
         Ok(())
     }
 
     /// Advance the whole system one tick (the canonical order — see the module
-    /// docs). Idempotent-free: each call moves sim time forward by one period.
+    /// docs). Each call moves sim time forward by one period.
     pub fn step(&mut self) -> Result<(), EngineError> {
         // 1. Sim time advances (monotonic, deterministic — no wall-clock, D7/D9).
         self.now_us += self.tick_period_us;
         self.state.set_time(self.now_us);
 
-        // 2. Advance every model in registration order and record its vsig
-        //    outputs (the "model output entries updated" of the canonical order).
-        //    Uses the pre-resolved id list — no per-tick Model::signals() alloc.
+        // 2. Each enabled member, in registration order: propagate routes so it
+        //    sees the freshest routed inputs (INTERIM placement — see module docs),
+        //    then advance it. `routes` and `state` are disjoint fields from
+        //    `members`, so these borrows coexist with the iterator. Propagation is
+        //    table-only (no backend); the member syncs its own firmware mirrors.
         let dt = self.tick_period_us;
-        for entry in &mut self.models {
-            entry.model.advance(dt);
-            for id in &entry.vsigs {
-                if let Some(v) = entry.model.read(id.name()) {
-                    self.state.record(id, v)?;
-                }
+        for entry in &mut self.members {
+            if !entry.enabled {
+                continue;
             }
-        }
-
-        // 3. Propagate routes into firmware inputs — BEFORE the firmware runs.
-        self.routes.propagate(&self.state, self.backend)?;
-
-        // 4. Run the firmware to quiescence.
-        self.backend.advance_tick();
-
-        // 5. Sample the registered firmware cvars into the historian.
-        for id in &self.sampled {
-            let v = self.backend.read_cvar(id.name());
-            self.state.record(id, v)?;
+            self.routes.propagate(&mut self.state)?;
+            entry.member.advance(dt, &mut self.state);
         }
         Ok(())
     }
@@ -198,13 +206,23 @@ impl<'b> Engine<'b> {
     pub fn state(&self) -> &StateTable {
         &self.state
     }
+
+    /// Drain the State Table's buffered log entries (sim-time-stamped warnings /
+    /// info from members and the engine). See [`StateTable::take_logs`].
+    ///
+    /// [`StateTable::take_logs`]: crate::state_table::StateTable::take_logs
+    pub fn take_logs(&mut self) -> Vec<LogEntry> {
+        self.state.take_logs()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Model, ModelSignal, RampModel};
+    use crate::backend::{Backend, FirmwareMember};
+    use crate::member::{vsig_id, RampModel};
     use crate::signal::Value;
+    use crate::state_table::TableError;
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -212,7 +230,7 @@ mod tests {
     /// A pure-Rust [`Backend`] that records the order of its calls, so a test can
     /// prove *when* in a step a route write vs `advance_tick` happens. Reads return
     /// a stored value if written, else a `U32` of the tick count (a firmware-less
-    /// ramp for the sampling test).
+    /// ramp for the sampling tests).
     #[derive(Default)]
     struct MockBackend {
         log: RefCell<Vec<String>>,
@@ -243,26 +261,21 @@ mod tests {
         }
     }
 
-    /// A model that appends its name to a shared log when advanced — for proving
-    /// multi-model advance order. Exposes no signals.
+    /// A model member that appends its name to a shared log when advanced — for
+    /// proving multi-member advance order. Registers no signals.
     struct OrderModel {
         name: String,
         log: Rc<RefCell<Vec<String>>>,
     }
 
-    impl Model for OrderModel {
+    impl Member for OrderModel {
         fn name(&self) -> &str {
             &self.name
         }
-        fn signals(&self) -> Vec<ModelSignal> {
-            vec![]
-        }
-        fn advance(&mut self, _dt_us: u64) {
+        fn advance(&mut self, _dt_us: u64, _st: &mut StateTable) {
             self.log.borrow_mut().push(self.name.clone());
         }
-        fn read(&self, _local: &str) -> Option<Value> {
-            None
-        }
+        fn set_enabled(&mut self, _on: bool, _st: &mut StateTable) {}
     }
 
     fn cvar(name: &str) -> SignalId {
@@ -270,13 +283,18 @@ mod tests {
     }
 
     #[test]
-    fn step_writes_route_dest_before_advance_tick() {
-        // The load-bearing ordering guarantee: a model output routed to a cvar
-        // must reach the firmware BEFORE advance_tick of the same step.
+    fn step_flushes_driven_dest_before_advance_tick() {
+        // The load-bearing ordering guarantee: a model member's output routed to a
+        // firmware member's DRIVEN cvar must reach firmware memory BEFORE its
+        // advance_tick in the same step. Member order [model, firmware] makes it
+        // hold — the model records its vsig, propagate (before the firmware member)
+        // records it into the cvar entry, and the firmware member flushes it.
         let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 1_000);
-        eng.add_model(Box::new(RampModel::new("ramp", 1000.0, None)))
-            .unwrap();
+        let mut eng = Engine::new(1_000);
+        eng.add_member(Box::new(RampModel::new("ramp", 1000.0, None)));
+        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        fw.drive_cvar(cvar("sensor_in"), None);
+        eng.add_member(Box::new(fw));
         eng.add_route(vsig_id("ramp", "value").unwrap(), cvar("sensor_in"))
             .unwrap();
 
@@ -285,17 +303,19 @@ mod tests {
         let log = be.log.borrow();
         let w = log.iter().position(|e| e == "write:sensor_in").unwrap();
         let t = log.iter().position(|e| e == "advance_tick").unwrap();
-        assert!(w < t, "route write must precede advance_tick, got {log:?}");
-        // And the firmware actually received the model's first-tick value.
+        assert!(w < t, "driven flush must precede advance_tick, got {log:?}");
+        // And firmware memory actually received the model's first-tick value.
         assert_eq!(be.cvars.borrow().get("sensor_in"), Some(&Value::F64(1.0)));
     }
 
     #[test]
     fn time_advances_by_tick_period() {
         let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 1_000);
+        let mut eng = Engine::new(1_000);
         let id = cvar("counter");
-        eng.sample_cvar(id.clone(), None).unwrap();
+        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        fw.sample_cvar(id.clone(), None);
+        eng.add_member(Box::new(fw));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -311,16 +331,14 @@ mod tests {
     }
 
     #[test]
-    fn multi_model_advances_in_registration_order() {
-        let be = MockBackend::default();
+    fn multi_member_advances_in_registration_order() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut eng = Engine::new(&be, 1_000);
+        let mut eng = Engine::new(1_000);
         for name in ["first", "second", "third"] {
-            eng.add_model(Box::new(OrderModel {
+            eng.add_member(Box::new(OrderModel {
                 name: name.to_string(),
                 log: Rc::clone(&log),
-            }))
-            .unwrap();
+            }));
         }
 
         eng.step().unwrap();
@@ -336,9 +354,11 @@ mod tests {
     #[test]
     fn samples_registered_cvars_into_historian() {
         let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 1_000);
+        let mut eng = Engine::new(1_000);
         let id = cvar("ramp_counter");
-        eng.sample_cvar(id.clone(), Some("counts")).unwrap();
+        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        fw.sample_cvar(id.clone(), Some("counts"));
+        eng.add_member(Box::new(fw));
 
         for _ in 0..3 {
             eng.step().unwrap();
@@ -350,10 +370,8 @@ mod tests {
 
     #[test]
     fn records_model_vsig_each_tick() {
-        let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 1_000);
-        eng.add_model(Box::new(RampModel::new("ramp", 1000.0, Some("counts"))))
-            .unwrap();
+        let mut eng = Engine::new(1_000);
+        eng.add_member(Box::new(RampModel::new("ramp", 1000.0, Some("counts"))));
         let id = vsig_id("ramp", "value").unwrap();
 
         // Registered but unrecorded before the first step.
@@ -369,9 +387,11 @@ mod tests {
 
     #[test]
     fn empty_step_advances_firmware_and_time() {
-        // No models, routes, or sampled cvars: a step is just time + advance_tick.
+        // A lone firmware member with no sampled cvars: a step is just time +
+        // advance_tick (no routes, so no writes).
         let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 2_000);
+        let mut eng = Engine::new(2_000);
+        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 2_000)));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
@@ -380,10 +400,31 @@ mod tests {
     }
 
     #[test]
+    fn disabled_member_is_skipped_then_resumes() {
+        let be = MockBackend::default();
+        let mut eng = Engine::new(1_000);
+        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 1_000)));
+
+        assert!(eng.set_member_enabled("fw", false));
+        eng.step().unwrap(); // skipped: no advance_tick
+        assert_eq!(be.ticks.get(), 0);
+        assert_eq!(eng.now_us(), 1_000); // but sim time still flows
+
+        assert!(eng.set_member_enabled("fw", true));
+        eng.step().unwrap();
+        assert_eq!(be.ticks.get(), 1);
+
+        // Unknown member name is reported, not panicked.
+        assert!(!eng.set_member_enabled("nope", false));
+    }
+
+    #[test]
     fn route_source_unregistered_errors() {
         let be = MockBackend::default();
-        let mut eng = Engine::new(&be, 1_000);
-        // A route from a cvar that is never registered/sampled is a wiring bug.
+        let mut eng = Engine::new(1_000);
+        // A firmware member makes the step propagate routes; the route source is a
+        // cvar that is never registered/sampled — a wiring bug.
+        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 1_000)));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),

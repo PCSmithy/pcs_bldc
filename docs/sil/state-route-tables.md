@@ -11,20 +11,28 @@ together declaratively.
 ## 1. State Table
 
 A single flat namespace of **every piece of state in the system**, each as an
-addressable, typed **entry**. The framework may read or write any entry on any
-tick.
+addressable, typed **entry**. It is the flat, **member-agnostic backbone** and the
+**sole signal registry**: the framework may read or write any entry on any tick,
+and any [member](architecture.md#member-model) may register any entry at any time.
 
-Entries are **trait-backed** (a `Signal` trait), so the backing is pluggable;
-all values flow through one common **`Value`** enum (scalars + `Bytes`/`Record`
-for structured comms payloads), which is what lets a *heterogeneous* registry
-(`Box<dyn Signal>`) stay uniform. Three backings, one `read/write(Value)`
-interface + history:
+All values flow through one common **`Value`** enum (scalars + `Bytes`/`Record`
+for structured comms payloads), which keeps a *heterogeneous* registry uniform.
 
-| `sig_type` | Backing | Source | Accessed via |
+**`sig_type` names a *backing regime*** — where the entry's authoritative value
+lives, not what kind of member owns it:
+
+| `sig_type` | Backing regime | Typical source | Accessed via |
 |---|---|---|---|
-| `cvar` | **firmware** | every C `static` (+ nested members, array elements) | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4) |
-| `vsig` | **model** | plant/peer-model state (inputs, outputs, internals) | Rust-side storage |
-| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** | logical packet payloads on a serial bus | a framework queue, fed by a sim-HW-driver C→Rust upcall (*Comms entries* below) |
+| `cvar` | table **mirror** of authoritative memory inside a firmware instance | every C `static` (+ nested members, array elements) | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4); sampled into the table each firmware tick |
+| `vsig` | **framework-resident** — the entry's value *is* the authority (no external mirror); it abides entirely within the framework | a model/peer member's state (inputs, outputs, internals) | pushed into the table by the member each advance |
+| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** — a framework-resident transport payload (a future backing regime) | logical packet payloads on a serial bus | a framework queue, fed by a sim-HW-driver C→Rust upcall (*Comms entries* below) |
+
+**Open registration — no inference of member type from `sig_type`.** Registration
+is a runtime act any member performs directly on the table; it is never
+prescriptive per member type. Any member may register a signal of *any* `sig_type`
+at any time (a model may register a `cvar`, a firmware member a `vsig`), and
+**nothing infers a member's kind from the `sig_type` it registers**. A `cvar` says
+"this entry mirrors firmware memory," not "a firmware member owns it."
 
 Notes:
 
@@ -43,8 +51,12 @@ Notes:
   default** (stacks/large arrays excluded). The dumped table is the full
   timeseries history that Python SIL tests evaluate against. See
   [`signal-trace.md`](signal-trace.md) (D12).
-- **Model + comms entries are registered** (Rust-side): models register their
-  `vsig`s at construction; sim-HW bus drivers register their comms channels.
+- **Non-`cvar` entries are registered by members** (Rust-side) as a runtime act on
+  the table: a model member registers its `vsig`s (in `set_enabled(true)` / on
+  advance), sim-HW bus drivers their comms channels. `cvar` mirrors are the one
+  auto-derived case (DWARF). Re-registration of an identical entry is an idempotent
+  no-op, so a firmware member re-registering its ports across a reboot preserves the
+  entry's history.
 - **Any entry is readable and writable at any tick.** There is *no* clobber
   protection: if a route drives a `cvar` and a test also writes it, the route
   wins on its next tick — by design. Targeted injection is done by **suspending
@@ -98,12 +110,38 @@ Design rules:
 - **Routes are pure typed transport.** A route copies a value; it does not
   transform it. Endpoints must be type-compatible (trivial width coercion
   allowed; see open questions).
+- **Propagation is table-mediated — routes never touch a backend.** A route is a
+  pure State Table operation: it reads a source *entry* and records a destination
+  *entry*, and that is all. Moving a value between two entries is always a
+  table-only act, because a `cvar` entry is the table's *mirror* of firmware
+  memory and a `vsig` entry *abides* in the framework. **Members sync their own
+  mirrors** on their own clock: a `FirmwareMember` **flushes** its *driven* `cvar`
+  entries into firmware memory (and **samples** its *sampled* ones back out) around
+  its firmware tick; a model reads a routed `vsig` input straight from the entry.
+  The route is indifferent to which — no bespoke firmware code moves data.
+- **A destination is any registered signal of any `sig_type`.** A `cvar`
+  destination (model output → a firmware sensor input, flushed by the consuming
+  firmware member) and a `vsig` destination (a model input, read by the consuming
+  model) work through the identical path — a `record` into the entry — with no
+  per-`sig_type` restriction and no new seam. The table is a flat, member-agnostic
+  registry.
+- **Override pins a destination against its route.** Because a route drives its
+  destination via `record`, `set_override` on that entry makes the record a no-op —
+  the route cannot drive a pinned destination. Fault injection composes with
+  routing at **zero extra mechanism** (it is the same pin the historian uses).
 - **Conversions are models, not routes.** A motor model emits *amps*; a
   firmware ADC static holds *counts*. The amps→counts conversion lives in a
   **sensor model** whose input and output are themselves State Table entries:
   `model.motor.i_a → model.sense_a.in`, then `model.sense_a.out →
   fw::adc_counts_a`. Routes stay dumb pipes; all computation lives in models.
   This keeps the Route Table a readable wiring diagram.
+- **Add / remove at runtime; validity is the designer's job.** `add` is
+  permissive — a route may be authored before its endpoints are registered, and
+  `remove` may drop one at any time (`suspend`/`resume` toggle without removing).
+  The framework does not *prevent* invalid wiring; it **fails loudly** at
+  `propagate` instead: an unregistered source *or* destination (symmetric) is a
+  wiring bug and errors. A registered-but-never-recorded source has nothing to copy
+  and is silently skipped that tick.
 - Authoring is one flat list; the framework derives execution order (below).
 - **Routes are first-class and suspendable.** Each route has an `enabled` flag;
   a control API (`suspend`/`resume`, addressable by source/destination) lets a
@@ -126,11 +164,13 @@ per tick:
 
 Why one uniform propagation pass is correct:
 
-- **Mutual exclusion holds.** Propagation (step 2) runs while the firmware is
-  quiescent ([`ffi-boundary.md`](ffi-boundary.md) §5), so reading firmware-
-  *output* statics and writing firmware-*input* statics in the **same** pass is
-  race-free. Reading an output here simply reads the previous tick's value —
-  which is exactly the one-step sampling delay we want.
+- **Mutual exclusion holds.** Propagation (step 2) is a pure State Table
+  operation — it records between *entries* and never touches firmware memory. The
+  firmware member does the memory sync (flush driven `cvar` entries in, sample
+  outputs back out) inside its own advance while the firmware is quiescent
+  ([`ffi-boundary.md`](ffi-boundary.md) §5), so reading firmware-*output* statics
+  and writing firmware-*input* statics is race-free. Reading an output here simply
+  reads the previous tick's value — exactly the one-step sampling delay we want.
 - **Order-independent.** The pass **snapshots every source first, then writes
   every destination**, so route order in the table never changes the result,
   and a chain `x→y→z` advances one deterministic hop per tick (one delta
@@ -145,6 +185,15 @@ ill-posed in discrete time anyway.
 If a deep model→model chain ever accumulates too much latency, the lever is
 ordering the **model updates** (step 1) in dataflow order — *not* adding route
 phases. Routes stay uniform.
+
+> **OPEN — route-hop latency is NOT settled.** The "one tick per hop" delay
+> described above is *not* a decided contract; it is under an owner design review.
+> The firm requirement is that routing add **no artificially induced per-hop
+> latency**. The current engine implements an **interim** placement — it propagates
+> routes *before each member* in registration order, so along that order a value
+> reaches its consumer with zero added latency (a model output routed to a firmware
+> `cvar` lands before that firmware advances in the same step). Treat any per-hop
+> latency figure here as provisional pending that review.
 
 ## 4. What this subsumes
 
@@ -182,4 +231,7 @@ One namespace, one access path, zero firmware-side data code.
   internals) or filter to a project allowlist for a tidier namespace? (Full
   namespace is cheap; filtering is cosmetic.)
 - **Entry keying / path syntax** for nested members and array elements.
-- **Model registration API** (Rust): how models declare their entries.
+- ~~**Model registration API** (Rust): how models declare their entries.~~
+  **Resolved:** open registration — a member registers its entries directly on the
+  table at runtime (`StateTable::register`, idempotent), inside
+  `Member::set_enabled` / `advance`. No `signals()` declaration.
