@@ -19,6 +19,14 @@ static const IO_i2c_deviceConfig_S IO_i2c_deviceConfig[] =
         .devAddr7 = 0x08U,
         .memAddrSize = HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST,
     },
+    [IO_I2C_DEVICE_GATEDRIVER] =
+    {
+        // STSPIN32G4 gate driver: fixed 7-bit address 0x47, 8-bit register
+        // offsets.
+        .bus = HW_I2C_BUS_2,
+        .devAddr7 = 0x47U,
+        .memAddrSize = HW_I2C_MEMADDR_SIZE_8BIT,
+    },
 };
 
 const IO_i2c_config_S IO_i2c_config =

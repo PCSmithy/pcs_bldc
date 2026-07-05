@@ -33,7 +33,7 @@ extern "C" {
 // Hold a full telemetry window's burst (see TELEMETRY_TX_BUF_BYTES) so the
 // batched write is absorbed in one go and drains async — a window larger than
 // this FIFO forces IO_serial_write into 1 ms backpressure yields per overflow.
-#define CFG_TUD_CDC_TX_BUFSIZE  1024
+#define CFG_TUD_CDC_TX_BUFSIZE  2048
 
 #ifdef __cplusplus
 }

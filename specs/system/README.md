@@ -33,7 +33,8 @@ are the anticipated structure; folders that are not yet present have no
 specs in them yet.
 
 - `mc/` — sensored & sensorless motor control (anchor `sys~mc_001`), torque,
-  velocity, position, trajectory tracking
+  velocity, position, trajectory tracking; gate-driver management (anchors
+  `sys~mc_002` configuration, `sys~mc_003` fault observability)
 - `estimation/` — state estimation, sensorless operation
 - `observability/` — telemetry stream, diagnostics, logging
 - `operating-modes/` — system mode state machine (idle / calibrate / run /

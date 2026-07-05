@@ -261,4 +261,18 @@ void I2C1_ER_IRQHandler(void)
   HW_I2C_irqHandlerEr(HW_I2C_BUS_1);
 }
 
+/**
+  * @brief I2C3 event and error interrupts (STSPIN32G4 gate-driver bus, bonded
+  * in-package to PC8/PC9). Same dispatch as I2C1 above.
+  */
+void I2C3_EV_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEv(HW_I2C_BUS_2);
+}
+
+void I2C3_ER_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEr(HW_I2C_BUS_2);
+}
+
 /* USER CODE END 1 */

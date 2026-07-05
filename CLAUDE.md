@@ -197,15 +197,19 @@ sufficient to make the tooling aware of a new topic.
   FSM), `sys~persist_001` (NVRAM in flash). These `sys~` anchors are
   intentionally uncovered.
 - **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
-  - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp` (one file
-    per peripheral, per-peripheral sub-topic IDs).
+  - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
+    file per peripheral, per-peripheral sub-topic IDs).
   - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
-    `conn/serial.md` (IO_serial over USB CDC).
-- 65 spec defs across 14 files; `tools/validate-specs.py` clean. OFT-clean
-  at an intentional 10-defect (ahead-of-impl) baseline: the 8 `sys~` anchors
-  above plus `fw~hal_adc_003` / `fw~hal_adc_008` (timer-triggered injected +
-  async completion — reserved for the motor sprint).
+    `conn/serial.md` (IO_serial over USB CDC), `io/i2c.md` (IO_i2c),
+    `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
+    `mc/gate-driver.md` (dev_gateDriver STSPIN32G4 gate-driver management).
+- 88 spec defs across 21 files; `tools/validate-specs.py` clean. OFT-clean
+  at an intentional 13-defect (ahead-of-impl) baseline: the 11 `sys~` anchors
+  (the 8 above plus `sys~pd_001` `pd/usb-pd-monitoring.md`, `sys~mc_002`
+  `mc/gate-driver-configuration.md`, `sys~mc_003` `mc/gate-driver-faults.md`)
+  plus `fw~hal_adc_003` / `fw~hal_adc_008` (timer-triggered injected + async
+  completion — reserved for the motor sprint).
 - `specs/desktop-app/` — empty until the app work begins.
 
 ### Decisions explicitly deferred (will become specs when made)

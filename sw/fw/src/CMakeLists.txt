@@ -88,13 +88,15 @@ endif()
 # HW_* references resolve against the target's HW drivers — the real ones on
 # embedded, the sim drivers on native — pulled in transitively.
 # app_rgbLedRing_channels transitively pulls the io/dev modules it composes;
-# dev_CYPD3177_channels pulls io_i2c + lib_CYPD3177.
+# dev_CYPD3177_channels pulls io_i2c + lib_CYPD3177; dev_gateDriver_channels
+# pulls io_i2c.
 target_link_libraries(pcs_bldc_fw PRIVATE
   io_AS5048_channels
   io_SK6805_channels
   io_i2c_channels
   dev_switch_channels
   dev_CYPD3177_channels
+  dev_gateDriver_channels
   app_rgbLedRing_channels
 )
 

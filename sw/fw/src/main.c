@@ -27,6 +27,7 @@
 #include "IO_i2c.h"
 #include "dev_switch.h"
 #include "dev_CYPD3177.h"
+#include "dev_gateDriver.h"
 #include "app_rgbLedRing.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -47,6 +48,7 @@ extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
 extern const dev_switch_config_S dev_switch_config;
 extern const dev_CYPD3177_config_S dev_CYPD3177_config;
+extern const dev_gateDriver_config_S dev_gateDriver_config;
 extern const IO_serial_config_S IO_serial_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
 
@@ -235,6 +237,7 @@ static void task_200ms(void * params)
 
         // dev
         dev_CYPD3177_run200ms();
+        dev_gateDriver_run200ms();
 
         // app
 
@@ -272,10 +275,10 @@ static void task_usb(void * params)
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
 // rather than once per byte (the per-byte path is far too slow to keep up).
 // Sized to hold a full window's worst case (~600 B with the ADC engineering
-// signals below, plus ~350 B on slow-tier windows for the PD snapshot); kept in
-// step with CFG_TUD_CDC_TX_BUFSIZE so the batched write drains without
-// backpressure.
-#define TELEMETRY_TX_BUF_BYTES 1024U
+// signals below, plus ~600 B on slow-tier windows for the PD and gate-driver
+// snapshots); kept in step with CFG_TUD_CDC_TX_BUFSIZE so the batched write
+// drains without backpressure.
+#define TELEMETRY_TX_BUF_BYTES 2048U
 
 // --- ADC engineering-unit scaling (bring-up scaffolding) -------------------
 // Maps raw pin volts (HW_ADC_getVolts) to amps/volts using the board's sense
@@ -553,6 +556,31 @@ static void telemetryTask(void * params)
                          (unsigned long)nowMs, (unsigned long)pd.currentPdo,
                          (unsigned long)nowMs, (unsigned long)pd.currentRdo);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            // Gate-driver (STSPIN32G4) state: configuration progress, raw
+            // STATUS, and the decoded fault flags. gd_status_ok gates
+            // freshness — while it is 0 the flags are last-good values.
+            dev_gateDriver_snapshot_S gd;
+            (void)dev_gateDriver_getSnapshot(DEV_GATEDRIVER_CHANNEL_MAIN, &gd);
+
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "gd_configured:%lu:%u;"
+                         "gd_status_ok:%lu:%u;"
+                         "gd_status_raw:%lu:%u;"
+                         "gd_locked:%lu:%u;"
+                         "gd_reset:%lu:%u;"
+                         "gd_vds_fault:%lu:%u;"
+                         "gd_thermal_sd:%lu:%u;"
+                         "gd_vcc_uvlo:%lu:%u\n",
+                         (unsigned long)nowMs, (unsigned)gd.configured,
+                         (unsigned long)nowMs, (unsigned)gd.statusOk,
+                         (unsigned long)nowMs, (unsigned)gd.statusRaw,
+                         (unsigned long)nowMs, (unsigned)gd.locked,
+                         (unsigned long)nowMs, (unsigned)gd.resetLatched,
+                         (unsigned long)nowMs, (unsigned)gd.vdsProtection,
+                         (unsigned long)nowMs, (unsigned)gd.thermalShutdown,
+                         (unsigned long)nowMs, (unsigned)gd.vccUndervoltage);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
         }
 
         // Per-task worst-case body duration since the last emit (microseconds),
@@ -624,6 +652,7 @@ static bool prvAppInit(void)
     ok &= IO_i2c_init(&IO_i2c_config);
     ok &= dev_switch_init(&dev_switch_config);
     ok &= dev_CYPD3177_init(&dev_CYPD3177_config);
+    ok &= dev_gateDriver_init(&dev_gateDriver_config);
     ok &= app_rgbLedRing_init(&app_rgbLedRing_config);
     ok &= HW_USB_init();   // USB device stack (serviced in task_usb)
     ok &= IO_serial_init(&IO_serial_config);

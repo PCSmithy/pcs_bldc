@@ -19,6 +19,8 @@ Sub-folders are created when a topic gets its first spec.
   `fw~io_i2c_001~1` (IO_i2c generic per-device I2C driver over HW_I2C)
 - `pd/` — USB-PD sink status: register decode and runtime for the CYPD3177
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
+- `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4
+  gate-driver management); also FOC, motion, trajectory tracking
 - `foc/` — Park / Clarke transforms, PWM modulation strategies
   (SVPWM/SPWM), inner current control loop
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
@@ -33,8 +35,7 @@ Sub-folders are created when a topic gets its first spec.
   IDs, e.g. `fw~conn_serial_001~1` (IO_serial byte-stream transport over USB
   CDC); also the future framing protocol
 - `motion/` — velocity loop, position loop, trajectory generator
-- `drivers/` — STSPIN32G4 gate driver, AS5048 encoder, ADC current
-  sensing, USB CDC stack
+- `drivers/` — AS5048 encoder, ADC current sensing, USB CDC stack
 - `telemetry/` — USB streaming frame format, ring buffers, sample-rate
   control
 - `safety/` — fault state machine, protection thresholds, recovery
