@@ -262,12 +262,19 @@ static void task_usb(void * params)
 // Telemetry emit period (ms).
 #define TELEMETRY_PERIOD_MS 2
 
+// Slow-tier emit period (ms). Low-rate signals (the USB-PD sink snapshot) are
+// appended to every TELEMETRY_SLOW_DIVIDER-th window instead of every window —
+// the data only refreshes at the 200 ms poll, so emitting it faster is waste.
+#define TELEMETRY_SLOW_PERIOD_MS 200U
+#define TELEMETRY_SLOW_DIVIDER   (TELEMETRY_SLOW_PERIOD_MS / (uint32_t)TELEMETRY_PERIOD_MS)
+
 // One window's Teleplot packets are formatted into a buffer this size and pushed
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
 // rather than once per byte (the per-byte path is far too slow to keep up).
 // Sized to hold a full window's worst case (~600 B with the ADC engineering
-// signals below, incl. the three phase-voltage sense channels); kept in step
-// with CFG_TUD_CDC_TX_BUFSIZE so the batched write drains without backpressure.
+// signals below, plus ~350 B on slow-tier windows for the PD snapshot); kept in
+// step with CFG_TUD_CDC_TX_BUFSIZE so the batched write drains without
+// backpressure.
 #define TELEMETRY_TX_BUF_BYTES 1024U
 
 // --- ADC engineering-unit scaling (bring-up scaffolding) -------------------
@@ -310,6 +317,10 @@ static void telemetryTask(void * params)
     // TELEMETRY_TX_BUF_BYTES). Static to keep it off the task's small stack.
     static char txBuf[TELEMETRY_TX_BUF_BYTES];
 
+    // Slow-tier divider: counts connected windows so the slow signals emit on
+    // the first window after connect, then every TELEMETRY_SLOW_PERIOD_MS.
+    uint32_t slowWindowCount = 0U;
+
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
@@ -321,6 +332,9 @@ static void telemetryTask(void * params)
         {
             continue;
         }
+
+        const bool slowTick = (slowWindowCount == 0U);
+        slowWindowCount = (slowWindowCount + 1U) % TELEMETRY_SLOW_DIVIDER;
 
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
@@ -495,6 +509,51 @@ static void telemetryTask(void * params)
         //              (unsigned long)nowMs, (unsigned)adc1Status,
         //              (unsigned long)nowMs, (unsigned)adc2Status);
         // if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+        // Slow tier: the complete USB-PD sink snapshot — decoded engineering
+        // values plus every raw HPI register word the 200 ms poll fetches. The
+        // raw words are emitted as plain unsigned values (Teleplot is numeric);
+        // pd_present gates freshness — while it is 0 the other fields are the
+        // last-good values, not live ones.
+        if (slowTick)
+        {
+            dev_CYPD3177_snapshot_S pd;
+            (void)dev_CYPD3177_getSnapshot(DEV_CYPD3177_CHANNEL_SINK, &pd);
+
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "pd_present:%lu:%u;"
+                         "pd_contract:%lu:%u;"
+                         "pd_neg_v:%lu:%lu.%03lu" TP_UNIT "V;"
+                         "pd_neg_i:%lu:%lu.%03lu" TP_UNIT "A;"
+                         "pd_vbus_v:%lu:%lu.%03lu" TP_UNIT "V\n",
+                         (unsigned long)nowMs, (unsigned)pd.present,
+                         (unsigned long)nowMs, (unsigned)pd.contractActive,
+                         (unsigned long)nowMs,
+                         (unsigned long)(pd.negotiatedVoltage_mV / 1000U),
+                         (unsigned long)(pd.negotiatedVoltage_mV % 1000U),
+                         (unsigned long)nowMs,
+                         (unsigned long)(pd.negotiatedCurrent_mA / 1000U),
+                         (unsigned long)(pd.negotiatedCurrent_mA % 1000U),
+                         (unsigned long)nowMs,
+                         (unsigned long)(pd.busVoltage_mV / 1000U),
+                         (unsigned long)(pd.busVoltage_mV % 1000U));
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "pd_device_mode:%lu:%u;"
+                         "pd_silicon_id:%lu:%u;"
+                         "pd_status_raw:%lu:%lu;"
+                         "pd_typec_raw:%lu:%lu;"
+                         "pd_pdo_raw:%lu:%lu;"
+                         "pd_rdo_raw:%lu:%lu\n",
+                         (unsigned long)nowMs, (unsigned)pd.deviceMode,
+                         (unsigned long)nowMs, (unsigned)pd.siliconId,
+                         (unsigned long)nowMs, (unsigned long)pd.pdStatus,
+                         (unsigned long)nowMs, (unsigned long)pd.typeCStatus,
+                         (unsigned long)nowMs, (unsigned long)pd.currentPdo,
+                         (unsigned long)nowMs, (unsigned long)pd.currentRdo);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+        }
 
         // Per-task worst-case body duration since the last emit (microseconds),
         // snapshotted and reset each window. task1ms/task10ms are pure CPU time

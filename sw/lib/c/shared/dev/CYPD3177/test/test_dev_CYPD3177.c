@@ -8,10 +8,15 @@
 
 // A known 20 V / 3 A contract as the CYPD3177's little-endian register bytes.
 static const uint8_t DEVICE_MODE_ALIVE  = 0x95U;
+static const uint8_t SILICON_ID_BCR[2]  = { 0xB0U, 0x11U };                    // word 0x11B0
 static const uint8_t PD_STATUS_CONTRACT[4] = { 0x00U, 0x04U, 0x00U, 0x00U };  // bit10 set
+static const uint8_t TYPE_C_ATTACHED[4] = { 0x01U, 0x00U, 0x00U, 0x00U };     // bit0: port attached
 static const uint8_t BUS_VOLTAGE_20V    = 0xC8U;             // 200 * 100 mV = 20000 mV
 static const uint8_t CURRENT_PDO_20V[4] = { 0x00U, 0x40U, 0x06U, 0x00U };     // field 400 -> 20000 mV
 static const uint8_t CURRENT_RDO_3A[4]  = { 0x00U, 0xB0U, 0x04U, 0x00U };     // field 300 -> 3000 mA
+
+// Registers dev_CYPD3177_private_fetch reads per channel per fetch.
+#define REGS_PER_FETCH (7U)
 
 // dev_CYPD3177_init stores a pointer to the config, so it must outlive each test.
 static dev_CYPD3177_channelConfig_S channelCfg[DEV_CYPD3177_CHANNEL_COUNT];
@@ -29,7 +34,9 @@ static void injectContract(IO_i2c_device_E dev, uint8_t deviceMode,
                            const uint8_t currentPdo[4], const uint8_t currentRdo[4])
 {
     mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_DEVICE_MODE, &deviceMode, 1U);
+    mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_SILICON_ID, SILICON_ID_BCR, 2U);
     mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_PD_STATUS, pdStatus, 4U);
+    mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_TYPE_C_STATUS, TYPE_C_ATTACHED, 4U);
     mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_BUS_VOLTAGE, &busVoltage, 1U);
     mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_CURRENT_PDO, currentPdo, 4U);
     mock_IO_i2c_setReg(dev, (uint16_t)CYPD3177_REG_CURRENT_RDO, currentRdo, 4U);
@@ -124,7 +131,7 @@ static void test_run200ms_reads_each_register(void)
                    CURRENT_PDO_20V, CURRENT_RDO_3A);
 
     dev_CYPD3177_run200ms();
-    TEST_ASSERT_EQUAL_size_t(5U * DEV_CYPD3177_CHANNEL_COUNT, mock_IO_i2c_readCount());
+    TEST_ASSERT_EQUAL_size_t(REGS_PER_FETCH * DEV_CYPD3177_CHANNEL_COUNT, mock_IO_i2c_readCount());
 }
 
 // [test->fw~pd_007~1]
@@ -190,6 +197,46 @@ static void test_out_of_range_channel_accessors_default(void)
     TEST_ASSERT_EQUAL_UINT32(0U, dev_CYPD3177_negotiatedVoltage_mV(DEV_CYPD3177_CHANNEL_COUNT));
 }
 
+// [test->fw~pd_006~1]
+// [test->fw~pd_007~1]
+static void test_snapshot_returns_raw_and_decoded(void)
+{
+    TEST_ASSERT_TRUE(dev_CYPD3177_init(&config));
+    injectContract(IO_I2C_DEVICE_0, DEVICE_MODE_ALIVE, PD_STATUS_CONTRACT, BUS_VOLTAGE_20V,
+                   CURRENT_PDO_20V, CURRENT_RDO_3A);
+
+    dev_CYPD3177_run200ms();
+
+    dev_CYPD3177_snapshot_S snap;
+    TEST_ASSERT_TRUE(dev_CYPD3177_getSnapshot(DEV_CYPD3177_CHANNEL_A, &snap));
+    TEST_ASSERT_TRUE(snap.present);
+    TEST_ASSERT_EQUAL_UINT8(DEVICE_MODE_ALIVE, snap.deviceMode);
+    TEST_ASSERT_EQUAL_UINT16(0x11B0U, snap.siliconId);
+    TEST_ASSERT_EQUAL_UINT32(0x00000400U, snap.pdStatus);
+    TEST_ASSERT_EQUAL_UINT32(0x00000001U, snap.typeCStatus);
+    TEST_ASSERT_EQUAL_UINT8(BUS_VOLTAGE_20V, snap.busVoltageRaw);
+    TEST_ASSERT_EQUAL_UINT32(0x00064000U, snap.currentPdo);
+    TEST_ASSERT_EQUAL_UINT32(0x0004B000U, snap.currentRdo);
+    TEST_ASSERT_TRUE(snap.contractActive);
+    TEST_ASSERT_EQUAL_UINT32(20000U, snap.negotiatedVoltage_mV);
+    TEST_ASSERT_EQUAL_UINT32(3000U,  snap.negotiatedCurrent_mA);
+    TEST_ASSERT_EQUAL_UINT32(20000U, snap.busVoltage_mV);
+}
+
+// [test->fw~pd_007~1]
+static void test_snapshot_invalid_args_false_and_zeroed(void)
+{
+    TEST_ASSERT_TRUE(dev_CYPD3177_init(&config));
+
+    TEST_ASSERT_FALSE(dev_CYPD3177_getSnapshot(DEV_CYPD3177_CHANNEL_A, NULL));
+
+    dev_CYPD3177_snapshot_S snap;
+    snap.negotiatedVoltage_mV = 12345U;   // must be cleared by the failed call
+    TEST_ASSERT_FALSE(dev_CYPD3177_getSnapshot(DEV_CYPD3177_CHANNEL_COUNT, &snap));
+    TEST_ASSERT_FALSE(snap.present);
+    TEST_ASSERT_EQUAL_UINT32(0U, snap.negotiatedVoltage_mV);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -210,6 +257,8 @@ int main(void)
     RUN_TEST(test_device_mode_zero_reports_not_present);
     RUN_TEST(test_read_failure_reports_not_present_and_retains);
     RUN_TEST(test_out_of_range_channel_accessors_default);
+    RUN_TEST(test_snapshot_returns_raw_and_decoded);
+    RUN_TEST(test_snapshot_invalid_args_false_and_zeroed);
 
     return UNITY_END();
 }

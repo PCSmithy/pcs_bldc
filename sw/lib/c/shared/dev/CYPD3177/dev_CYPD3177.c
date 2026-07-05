@@ -6,17 +6,8 @@
 
 typedef struct
 {
-    bool     present;
-    bool     contractActive;
-    uint32_t negotiatedVoltage_mV;
-    uint32_t negotiatedCurrent_mA;
-    uint32_t busVoltage_mV;
-} dev_CYPD3177_channelData_S;
-
-typedef struct
-{
     const dev_CYPD3177_config_S * config;
-    dev_CYPD3177_channelData_S channels[DEV_CYPD3177_CHANNEL_COUNT];
+    dev_CYPD3177_snapshot_S channels[DEV_CYPD3177_CHANNEL_COUNT];
 } dev_CYPD3177_data_S;
 
 /* Private Data Definitions */
@@ -26,9 +17,16 @@ static dev_CYPD3177_data_S * const data = &dev_CYPD3177_data;
 
 /* Private Function Definitions */
 
-static void dev_CYPD3177_private_clear(dev_CYPD3177_channelData_S * const channelData)
+static void dev_CYPD3177_private_clear(dev_CYPD3177_snapshot_S * const channelData)
 {
     channelData->present              = false;
+    channelData->deviceMode           = 0U;
+    channelData->siliconId            = 0U;
+    channelData->pdStatus             = 0U;
+    channelData->typeCStatus          = 0U;
+    channelData->busVoltageRaw        = 0U;
+    channelData->currentPdo           = 0U;
+    channelData->currentRdo           = 0U;
     channelData->contractActive       = false;
     channelData->negotiatedVoltage_mV = 0U;
     channelData->negotiatedCurrent_mA = 0U;
@@ -50,27 +48,43 @@ static uint32_t dev_CYPD3177_private_leWord(const uint8_t * const bytes, size_t 
 static void dev_CYPD3177_private_fetch(dev_CYPD3177_channel_E channel)
 {
     const IO_i2c_device_E ioDevice = data->config->channels[channel].ioDevice;
-    dev_CYPD3177_channelData_S * const channelData = &data->channels[channel];
+    dev_CYPD3177_snapshot_S * const channelData = &data->channels[channel];
 
     uint8_t deviceMode = 0U;
     uint8_t busVoltage = 0U;
+    uint8_t siliconId[2] = { 0U, 0U };
     uint8_t pdStatus[4] = { 0U, 0U, 0U, 0U };
+    uint8_t typeCStatus[4] = { 0U, 0U, 0U, 0U };
     uint8_t currentPdo[4] = { 0U, 0U, 0U, 0U };
     uint8_t currentRdo[4] = { 0U, 0U, 0U, 0U };
 
     bool ok = true;
     ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_DEVICE_MODE, &deviceMode, sizeof(deviceMode));
+    ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_SILICON_ID, siliconId, sizeof(siliconId));
     ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_PD_STATUS, pdStatus, sizeof(pdStatus));
+    ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_TYPE_C_STATUS, typeCStatus, sizeof(typeCStatus));
     ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_BUS_VOLTAGE, &busVoltage, sizeof(busVoltage));
     ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_CURRENT_PDO, currentPdo, sizeof(currentPdo));
     ok &= IO_i2c_readReg(ioDevice, (uint16_t)CYPD3177_REG_CURRENT_RDO, currentRdo, sizeof(currentRdo));
 
     if (ok)
     {
-        channelData->present              = (deviceMode != 0U);
-        channelData->contractActive       = CYPD3177_isContractActive(dev_CYPD3177_private_leWord(pdStatus, sizeof(pdStatus)));
-        channelData->negotiatedVoltage_mV = CYPD3177_negotiatedVoltage_mV(dev_CYPD3177_private_leWord(currentPdo, sizeof(currentPdo)));
-        channelData->negotiatedCurrent_mA = CYPD3177_negotiatedCurrent_mA(dev_CYPD3177_private_leWord(currentRdo, sizeof(currentRdo)));
+        const uint32_t pdStatusWord   = dev_CYPD3177_private_leWord(pdStatus, sizeof(pdStatus));
+        const uint32_t currentPdoWord = dev_CYPD3177_private_leWord(currentPdo, sizeof(currentPdo));
+        const uint32_t currentRdoWord = dev_CYPD3177_private_leWord(currentRdo, sizeof(currentRdo));
+
+        channelData->present       = (deviceMode != 0U);
+        channelData->deviceMode    = deviceMode;
+        channelData->siliconId     = (uint16_t)dev_CYPD3177_private_leWord(siliconId, sizeof(siliconId));
+        channelData->pdStatus      = pdStatusWord;
+        channelData->typeCStatus   = dev_CYPD3177_private_leWord(typeCStatus, sizeof(typeCStatus));
+        channelData->busVoltageRaw = busVoltage;
+        channelData->currentPdo    = currentPdoWord;
+        channelData->currentRdo    = currentRdoWord;
+
+        channelData->contractActive       = CYPD3177_isContractActive(pdStatusWord);
+        channelData->negotiatedVoltage_mV = CYPD3177_negotiatedVoltage_mV(currentPdoWord);
+        channelData->negotiatedCurrent_mA = CYPD3177_negotiatedCurrent_mA(currentRdoWord);
         channelData->busVoltage_mV        = CYPD3177_busVoltage_mV(busVoltage);
     }
     else
@@ -174,4 +188,23 @@ uint32_t dev_CYPD3177_busVoltage_mV(dev_CYPD3177_channel_E channel)
         voltage_mV = data->channels[channel].busVoltage_mV;
     }
     return voltage_mV;
+}
+
+// [impl->fw~pd_007~1]
+bool dev_CYPD3177_getSnapshot(dev_CYPD3177_channel_E channel, dev_CYPD3177_snapshot_S * const snapshot)
+{
+    bool ret = false;
+    if (snapshot != NULL)
+    {
+        if ((data->config != NULL) && (channel < DEV_CYPD3177_CHANNEL_COUNT))
+        {
+            *snapshot = data->channels[channel];
+            ret = true;
+        }
+        else
+        {
+            dev_CYPD3177_private_clear(snapshot);
+        }
+    }
+    return ret;
 }
