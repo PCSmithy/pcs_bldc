@@ -87,9 +87,10 @@ Needs: impl, test
 
 The I2C HW driver shall perform register-read and register-write transfers to an
 addressed device as a single bus transaction, each addressing the register by an
-8-bit or 16-bit offset and carrying a caller-specified number of bytes, suspending
-the calling task and applying the timeout of `fw~hal_i2c_003~1`, with the
-register-offset bytes counted in the transferred length.
+8-bit or 16-bit offset — a 16-bit offset transmitted MSB-first or LSB-first per
+the caller's offset encoding — and carrying a caller-specified number of bytes,
+suspending the calling task and applying the timeout of `fw~hal_i2c_003~1`, with
+the register-offset bytes counted in the transferred length.
 
 Acceptance:
 - A register read returns the addressed device's register bytes, exactly

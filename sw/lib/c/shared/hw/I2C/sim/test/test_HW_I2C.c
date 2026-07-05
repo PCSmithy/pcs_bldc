@@ -184,6 +184,22 @@ static void test_mem_write_read_16bit_offset(void)
 }
 
 // [test->fw~hal_i2c_004~1]
+// The CYPD3177 HPI registers live at 0x1008..0x1017 — the register space must
+// reach them or every PD read silently fails on the native target.
+static void test_mem_write_read_cypd3177_hpi_range(void)
+{
+    TEST_ASSERT_TRUE(HW_I2C_init(&i2cConfig));
+
+    const uint16_t reg = 0x1014U;   // CURRENT_RDO, highest fetched offset
+    uint8_t wr[4] = { 0x11U, 0x22U, 0x33U, 0x44U };
+    TEST_ASSERT_TRUE(HW_I2C_memWrite(HW_I2C_BUS_1, DEV_B, reg, HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST, wr, 4U));
+
+    uint8_t rd[4] = { 0U };
+    TEST_ASSERT_TRUE(HW_I2C_memRead(HW_I2C_BUS_1, DEV_B, reg, HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST, rd, 4U));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(wr, rd, 4U);
+}
+
+// [test->fw~hal_i2c_004~1]
 static void test_mem_read_returns_seeded_register_bytes(void)
 {
     TEST_ASSERT_TRUE(HW_I2C_init(&i2cConfig));
@@ -241,6 +257,7 @@ int main(void)
 
     RUN_TEST(test_mem_write_read_8bit_offset);
     RUN_TEST(test_mem_write_read_16bit_offset);
+    RUN_TEST(test_mem_write_read_cypd3177_hpi_range);
     RUN_TEST(test_mem_read_returns_seeded_register_bytes);
     RUN_TEST(test_mem_write_observable_via_reg_bytes);
     RUN_TEST(test_mem_transfer_error_returns_false);

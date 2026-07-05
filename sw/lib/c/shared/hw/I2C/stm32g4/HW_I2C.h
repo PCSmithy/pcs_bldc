@@ -16,11 +16,14 @@ typedef enum
     HW_I2C_TRANSFERMODE_DMA,
 } HW_I2C_transferMode_E;
 
-// Register-offset width for HW_I2C_memRead / HW_I2C_memWrite.
+// Register-offset encoding for HW_I2C_memRead / HW_I2C_memWrite. 16BIT sends
+// the offset MSB-first (the I2C EEPROM convention); 16BIT_LSBFIRST sends it
+// LSB-first for devices like the Cypress HPI that expect the low byte first.
 typedef enum
 {
     HW_I2C_MEMADDR_SIZE_8BIT,
     HW_I2C_MEMADDR_SIZE_16BIT,
+    HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST,
 } HW_I2C_memAddrSize_E;
 
 typedef struct

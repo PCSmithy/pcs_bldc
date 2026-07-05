@@ -7,11 +7,12 @@
 #include "lib_types.h"
 #include "HW_I2C_channels.h"
 
-// Register-offset width for HW_I2C_memRead / HW_I2C_memWrite.
+// Register-offset encoding for HW_I2C_memRead / HW_I2C_memWrite.
 typedef enum
 {
     HW_I2C_MEMADDR_SIZE_8BIT,
     HW_I2C_MEMADDR_SIZE_16BIT,
+    HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST,
 } HW_I2C_memAddrSize_E;
 
 bool HW_I2C_memRead(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,

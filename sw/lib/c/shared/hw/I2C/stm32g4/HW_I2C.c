@@ -13,6 +13,11 @@
 // DMA path), so their completion callbacks may use the FromISR API.
 #define HW_I2C_IRQ_PRIORITY    (5U)
 
+// Bounded wait for an issued abort to settle (AbortCpltCallback gives the
+// semaphore). An abort is a STOP condition plus state teardown — milliseconds
+// at any supported bit rate.
+#define HW_I2C_ABORT_SETTLE_MS (5U)
+
 /* Typedefs */
 typedef enum
 {
@@ -134,9 +139,12 @@ static bool HW_I2C_private_waitDone(HW_I2C_bus_E bus, uint8_t devAddr7, uint32_t
     else
     {
         // Timed out: tear the in-flight transfer down so the bus is usable
-        // again. The abort's completion token is drained before the next start.
+        // again, then wait (bounded) for the abort to settle. Without the wait
+        // the abort completes after the next transfer starts, and that transfer
+        // fails spuriously with HAL_BUSY on a healthy bus.
         const uint16_t halAddr = (uint16_t)((uint32_t)devAddr7 << 1U);
         (void)HAL_I2C_Master_Abort_IT(&busData->hi2c, halAddr);
+        (void)xSemaphoreTake(busData->doneSem, pdMS_TO_TICKS(HW_I2C_ABORT_SETTLE_MS));
     }
     return ret;
 }
@@ -160,12 +168,18 @@ static bool HW_I2C_private_transfer(HW_I2C_bus_E bus, uint8_t devAddr7, HW_I2C_o
         const uint16_t halAddr = (uint16_t)((uint32_t)devAddr7 << 1U);
 
         // Register offset bytes count toward N in the timeout formula.
-        const bool isMemOp = ((op == HW_I2C_OP_MEM_READ) || (op == HW_I2C_OP_MEM_WRITE));
-        const size_t addrBytes = (memAddrSize == HW_I2C_MEMADDR_SIZE_16BIT) ? 2U : 1U;
+        const bool isMemOp    = ((op == HW_I2C_OP_MEM_READ) || (op == HW_I2C_OP_MEM_WRITE));
+        const bool is16BitAddr = (memAddrSize != HW_I2C_MEMADDR_SIZE_8BIT);
+        const size_t addrBytes = (is16BitAddr) ? 2U : 1U;
         const size_t numBytes  = (isMemOp) ? (length + addrBytes) : length;
-        const uint32_t halMemSize = (memAddrSize == HW_I2C_MEMADDR_SIZE_16BIT)
-                                        ? (uint32_t)I2C_MEMADD_SIZE_16BIT
-                                        : (uint32_t)I2C_MEMADD_SIZE_8BIT;
+        const uint32_t halMemSize = (is16BitAddr) ? (uint32_t)I2C_MEMADD_SIZE_16BIT
+                                                  : (uint32_t)I2C_MEMADD_SIZE_8BIT;
+        // The HAL transmits a 16-bit offset MSB-first; for an LSB-first device
+        // (e.g. Cypress HPI) pre-swap the bytes so the wire order comes out low
+        // byte first.
+        const uint16_t halMemAddr = (memAddrSize == HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST)
+                                        ? (uint16_t)(((memAddr & 0x00FFU) << 8U) | (memAddr >> 8U))
+                                        : memAddr;
         const uint32_t timeoutMs = HW_I2C_computeTimeoutMs(busConfig->sclBitRateHz, numBytes);
 
         // Drop any stale completion token from a prior aborted transfer so this
@@ -183,10 +197,10 @@ static bool HW_I2C_private_transfer(HW_I2C_bus_E bus, uint8_t devAddr7, HW_I2C_o
                 halStatus = HAL_I2C_Master_Receive_IT(&busData->hi2c, halAddr, data_, (uint16_t)length);
                 break;
             case HW_I2C_OP_MEM_READ:
-                halStatus = HAL_I2C_Mem_Read_IT(&busData->hi2c, halAddr, memAddr, halMemSize, data_, (uint16_t)length);
+                halStatus = HAL_I2C_Mem_Read_IT(&busData->hi2c, halAddr, halMemAddr, halMemSize, data_, (uint16_t)length);
                 break;
             case HW_I2C_OP_MEM_WRITE:
-                halStatus = HAL_I2C_Mem_Write_IT(&busData->hi2c, halAddr, memAddr, halMemSize, data_, (uint16_t)length);
+                halStatus = HAL_I2C_Mem_Write_IT(&busData->hi2c, halAddr, halMemAddr, halMemSize, data_, (uint16_t)length);
                 break;
             default:
                 halStatus = HAL_ERROR;

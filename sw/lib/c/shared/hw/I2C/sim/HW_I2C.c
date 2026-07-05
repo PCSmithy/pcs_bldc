@@ -5,9 +5,11 @@
 /* Defines */
 
 // Modelled devices per bus, register-offset space per device, and the largest
-// byte transfer captured/injected. Tests stay well under these bounds.
+// byte transfer captured/injected. The register space must cover the highest
+// offset of any modelled device — the CYPD3177 HPI reaches 0x1400 (RESPONSE)
+// plus its payload region, so 0x1800 covers it with headroom.
 #define HW_I2C_SIM_MAX_DEVICES_PER_BUS    (4U)
-#define HW_I2C_SIM_REG_SPACE              (512U)
+#define HW_I2C_SIM_REG_SPACE              (0x1800U)
 #define HW_I2C_SIM_MAX_XFER               (256U)
 
 /* Typedefs */
