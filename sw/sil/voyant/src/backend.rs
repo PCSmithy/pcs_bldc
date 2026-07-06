@@ -30,8 +30,7 @@ const ANCHOR: &str = "HW_ADC_config";
 impl Firmware {
     /// Load the firmware shared library and its DWARF.
     pub fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
-        let bytes = std::fs::read(path)?;
-        let dwarf = DwarfMap::parse(&bytes)?;
+        let dwarf = DwarfMap::from_lib_path(path)?;
 
         // SAFETY: loading a trusted, project-built artifact.
         let lib = unsafe { Library::new(path)? };

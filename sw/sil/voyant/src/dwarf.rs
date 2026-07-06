@@ -16,6 +16,49 @@ use object::{Object, ObjectSection};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
+use std::path::{Path, PathBuf};
+
+/// Fetch a DWARF section by its gimli name, tolerant of the host object format.
+/// ELF/PE name the sections `.debug_info`; Mach-O uses `__debug_info` in the
+/// `__DWARF` segment, capped to the 16-char sectname limit (so `.debug_str_offsets`
+/// becomes `__debug_str_offs`). Try the gimli name first, then the Mach-O form.
+fn section_data<'a>(obj: &'a object::File, id: gimli::SectionId) -> Cow<'a, [u8]> {
+    let name = id.name();
+    let mut macho = String::from("__");
+    macho.push_str(&name[1..]);
+    macho.truncate(16);
+    obj.section_by_name(name)
+        .or_else(|| obj.section_by_name(&macho))
+        .and_then(|s| s.uncompressed_data().ok())
+        .unwrap_or(Cow::Borrowed(&[]))
+}
+
+/// True if the parsed image carries embedded DWARF (ELF/PE do; a linked Mach-O
+/// does not — its DWARF lives in a sibling .dSYM).
+fn image_has_dwarf(bytes: &[u8]) -> bool {
+    object::File::parse(bytes)
+        .ok()
+        .and_then(|o| {
+            o.section_by_name(".debug_info")
+                .or_else(|| o.section_by_name("__debug_info"))
+                .map(|s| s.size() > 0)
+        })
+        .unwrap_or(false)
+}
+
+/// The DWARF file inside a macOS `.dSYM` bundle for `lib`, i.e.
+/// `<lib>.dSYM/Contents/Resources/DWARF/<lib filename>`.
+fn dsym_dwarf_path(lib: &Path) -> Option<PathBuf> {
+    let file = lib.file_name()?;
+    let mut bundle = lib.as_os_str().to_owned();
+    bundle.push(".dSYM");
+    let mut p = PathBuf::from(bundle);
+    p.push("Contents");
+    p.push("Resources");
+    p.push("DWARF");
+    p.push(file);
+    Some(p)
+}
 
 type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
 
@@ -72,16 +115,33 @@ struct Maps {
 pub(crate) struct DwarfMap(Maps);
 
 impl DwarfMap {
-    /// Parse the DWARF in a PE image (the firmware DLL).
+    /// Load the firmware's DWARF given the shared-library path. ELF/PE embed it
+    /// in the image; macOS ld64 leaves it in a sibling `.dSYM` bundle (produced
+    /// by `dsymutil`), so fall back to that when the image itself carries none.
+    pub(crate) fn from_lib_path(lib: &Path) -> Result<Self, Box<dyn Error>> {
+        let image = std::fs::read(lib)?;
+        if image_has_dwarf(&image) {
+            return Self::parse(&image);
+        }
+        let dsym = dsym_dwarf_path(lib)
+            .filter(|p| p.exists())
+            .ok_or_else(|| {
+                format!(
+                    "no DWARF in {} and no .dSYM alongside it (run dsymutil)",
+                    lib.display()
+                )
+            })?;
+        let dwarf = std::fs::read(&dsym)?;
+        Self::parse(&dwarf)
+    }
+
+    /// Parse DWARF from an object image (ELF/PE firmware, or the Mach-O inside a
+    /// macOS `.dSYM`).
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let object = object::File::parse(bytes)?;
 
-        let load = |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> {
-            Ok(match object.section_by_name(id.name()) {
-                Some(s) => s.uncompressed_data().unwrap_or(Cow::Borrowed(&[])),
-                None => Cow::Borrowed(&[]),
-            })
-        };
+        let load =
+            |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> { Ok(section_data(&object, id)) };
         let sections = gimli::DwarfSections::load(&load)?;
         let dwarf = sections.borrow(|s| gimli::EndianSlice::new(s, gimli::LittleEndian));
 
