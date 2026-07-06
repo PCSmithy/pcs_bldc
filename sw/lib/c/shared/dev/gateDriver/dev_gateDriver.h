@@ -84,6 +84,11 @@ bool dev_gateDriver_isConfigured(dev_gateDriver_channel_E channel);
 bool dev_gateDriver_getSnapshot(dev_gateDriver_channel_E channel,
                                 dev_gateDriver_snapshot_S * const snapshot);
 
+// The go/no-go gate for driving the power stage: configured, the most recent
+// STATUS read succeeded, and the cached STATUS reports locked (unlocked
+// protected registers force the gate outputs low) with every fault flag clear.
+bool dev_gateDriver_isOperational(dev_gateDriver_channel_E channel);
+
 // Clear the device's latched faults (CLEAR = 0xFF). A deliberate consumer
 // action — the driver never clears runtime faults on its own.
 bool dev_gateDriver_clearFaults(dev_gateDriver_channel_E channel);

@@ -81,14 +81,20 @@ Needs: impl, test
 `fw~mc_004~1`
 
 The dev_gateDriver driver shall return a channel's cached state through an
-accessor for the configured state and a snapshot accessor copying the raw
-STATUS byte, its decoded flags (lock, reset, VDS protection, thermal
-shutdown, VCC undervoltage), and whether the most recent STATUS read
-succeeded; a read of an out-of-range channel or of a channel before
-successful initialization returns false (a zeroed snapshot).
+accessor for the configured state, an accessor for the operational state
+(configured, the most recent STATUS read succeeded, and the cached STATUS
+reports locked with reset, VDS protection, thermal shutdown, and VCC
+undervoltage clear), and a snapshot accessor copying the raw STATUS byte, its
+decoded flags (lock, reset, VDS protection, thermal shutdown, VCC
+undervoltage), and whether the most recent STATUS read succeeded; a read of
+an out-of-range channel or of a channel before successful initialization
+returns false (a zeroed snapshot).
 
 Acceptance:
 - Each accessor returns the value stored by the channel's most recent fetch.
+- The operational accessor returns true when the channel is configured, the
+  most recent STATUS read succeeded, and the cached STATUS reports locked
+  with every fault flag clear; false when any of those does not hold.
 - A read of an out-of-range channel or before initialization returns false
   (snapshot accessor: returns false and zeroes the caller's snapshot).
 

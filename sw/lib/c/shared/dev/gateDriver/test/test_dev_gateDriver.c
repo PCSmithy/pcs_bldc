@@ -203,6 +203,43 @@ static void test_status_read_failure_retains_flags(void)
 }
 
 // [test->fw~mc_004~1]
+static void test_is_operational(void)
+{
+    TEST_ASSERT_TRUE(dev_gateDriver_init(&config));
+    TEST_ASSERT_FALSE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));   // pre-fetch
+
+    // Healthy post-config state: locked, no faults.
+    static const uint8_t statusHealthy = 0x80U;
+    mock_IO_i2c_setReg(IO_I2C_DEVICE_0, (uint16_t)DEV_GATEDRIVER_REG_STATUS, &statusHealthy, 1U);
+    dev_gateDriver_run200ms();
+    TEST_ASSERT_TRUE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));
+
+    // Any fault flag drops operational (locked + VDS protection).
+    static const uint8_t statusVdsFault = 0x84U;
+    mock_IO_i2c_setReg(IO_I2C_DEVICE_0, (uint16_t)DEV_GATEDRIVER_REG_STATUS, &statusVdsFault, 1U);
+    dev_gateDriver_run200ms();
+    TEST_ASSERT_FALSE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));
+
+    // Unlocked (STATUS.LOCK clear) forces the gate outputs low: not operational
+    // even with no fault flags.
+    static const uint8_t statusUnlocked = 0x00U;
+    mock_IO_i2c_setReg(IO_I2C_DEVICE_0, (uint16_t)DEV_GATEDRIVER_REG_STATUS, &statusUnlocked, 1U);
+    dev_gateDriver_run200ms();
+    TEST_ASSERT_FALSE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));
+
+    // A failed STATUS read (stale cache) drops operational.
+    mock_IO_i2c_setReg(IO_I2C_DEVICE_0, (uint16_t)DEV_GATEDRIVER_REG_STATUS, &statusHealthy, 1U);
+    dev_gateDriver_run200ms();
+    TEST_ASSERT_TRUE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));
+    mock_IO_i2c_failReg(IO_I2C_DEVICE_0, (uint16_t)DEV_GATEDRIVER_REG_STATUS);
+    dev_gateDriver_run200ms();
+    TEST_ASSERT_FALSE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_A));
+
+    // Out-of-range channel.
+    TEST_ASSERT_FALSE(dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_COUNT));
+}
+
+// [test->fw~mc_004~1]
 static void test_out_of_range_channel_accessors_default(void)
 {
     TEST_ASSERT_TRUE(dev_gateDriver_init(&config));
@@ -260,6 +297,7 @@ int main(void)
     RUN_TEST(test_status_fetch_decodes_flags);
     RUN_TEST(test_status_read_failure_retains_flags);
 
+    RUN_TEST(test_is_operational);
     RUN_TEST(test_out_of_range_channel_accessors_default);
     RUN_TEST(test_clear_faults_writes_clear_register);
     RUN_TEST(test_clear_faults_out_of_range_rejected);

@@ -565,6 +565,7 @@ static void telemetryTask(void * params)
 
             n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
                          "gd_configured:%lu:%u;"
+                         "gd_operational:%lu:%u;"
                          "gd_status_ok:%lu:%u;"
                          "gd_status_raw:%lu:%u;"
                          "gd_locked:%lu:%u;"
@@ -573,6 +574,7 @@ static void telemetryTask(void * params)
                          "gd_thermal_sd:%lu:%u;"
                          "gd_vcc_uvlo:%lu:%u\n",
                          (unsigned long)nowMs, (unsigned)gd.configured,
+                         (unsigned long)nowMs, (unsigned)dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_MAIN),
                          (unsigned long)nowMs, (unsigned)gd.statusOk,
                          (unsigned long)nowMs, (unsigned)gd.statusRaw,
                          (unsigned long)nowMs, (unsigned)gd.locked,

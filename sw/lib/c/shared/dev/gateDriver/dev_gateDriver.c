@@ -159,6 +159,24 @@ bool dev_gateDriver_isConfigured(dev_gateDriver_channel_E channel)
 }
 
 // [impl->fw~mc_004~1]
+bool dev_gateDriver_isOperational(dev_gateDriver_channel_E channel)
+{
+    bool operational = false;
+    if ((data->config != NULL) && (channel < DEV_GATEDRIVER_CHANNEL_COUNT))
+    {
+        const dev_gateDriver_snapshot_S * const channelData = &data->channels[channel];
+        operational = (channelData->configured) &&
+                      (channelData->statusOk) &&
+                      (channelData->locked) &&
+                      (!channelData->resetLatched) &&
+                      (!channelData->vdsProtection) &&
+                      (!channelData->thermalShutdown) &&
+                      (!channelData->vccUndervoltage);
+    }
+    return operational;
+}
+
+// [impl->fw~mc_004~1]
 bool dev_gateDriver_getSnapshot(dev_gateDriver_channel_E channel,
                                 dev_gateDriver_snapshot_S * const snapshot)
 {
