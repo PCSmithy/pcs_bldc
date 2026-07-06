@@ -168,3 +168,11 @@ Explicitly out of scope, to keep the project tractable:
 | `tools/`       | Desktop visualizer / control app and other tooling (TBD)  |
 
 `CLAUDE.md` contains working notes used by the AI assistant on this project.
+
+## License
+
+- Firmware, tooling, scripts, specs, and docs: **Apache-2.0** ([`LICENSE`](LICENSE)).
+- Hardware design in [`hw/`](hw/): **CERN-OHL-W-2.0** ([`hw/LICENSE`](hw/LICENSE)).
+- Vendored third-party code keeps its own license.
+
+See [`LICENSES.md`](LICENSES.md) for the full map, including third-party components.
