@@ -582,32 +582,32 @@ static void telemetryTask(void * params)
                          (unsigned long)nowMs, (unsigned)gd.vccUndervoltage);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-            // task200ms's profile is taken here (once per slow window) rather
-            // than every 2 ms window: the task runs once per slow period, so a
-            // per-window take would read 0 in 99 of 100 samples and bury the
-            // real value.
+            // The slower tasks' profiles are taken here (once per slow window)
+            // rather than every 2 ms window: they run once per 5 / 100 windows,
+            // so a per-window take would read 0 in most samples and bury the
+            // real values. Each emitted sample is the max over the slow period.
+            const uint32_t task10msMaxUs  = profileTakeMaxUs(PROFILE_TASK_10MS);
             const uint32_t task200msMaxUs = profileTakeMaxUs(PROFILE_TASK_200MS);
             n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "task10ms_us:%lu:%lu" TP_UNIT "us;"
                          "task200ms_us:%lu:%lu" TP_UNIT "us\n",
+                         (unsigned long)nowMs, (unsigned long)task10msMaxUs,
                          (unsigned long)nowMs, (unsigned long)task200msMaxUs);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
         }
 
         // Per-task worst-case body duration since the last emit (microseconds),
-        // snapshotted and reset each window. task1ms/task10ms are pure CPU time
-        // (their bodies never block); telem is wall-clock and so includes any
-        // CDC backpressure waits. task200ms is reported in the slow tier above
-        // (wall-clock, includes I2C waits).
-        const uint32_t task1msMaxUs  = profileTakeMaxUs(PROFILE_TASK_1MS);
-        const uint32_t task10msMaxUs = profileTakeMaxUs(PROFILE_TASK_10MS);
-        const uint32_t telemMaxUs    = profileTakeMaxUs(PROFILE_TASK_TELEM);
+        // snapshotted and reset each window. task1ms is pure CPU time (its body
+        // never blocks); telem is wall-clock and so includes any CDC
+        // backpressure waits. task10ms/task200ms are reported in the slow tier
+        // above (they run less often than the 2 ms window).
+        const uint32_t task1msMaxUs = profileTakeMaxUs(PROFILE_TASK_1MS);
+        const uint32_t telemMaxUs   = profileTakeMaxUs(PROFILE_TASK_TELEM);
 
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
                      "task1ms_us:%lu:%lu" TP_UNIT "us;"
-                     "task10ms_us:%lu:%lu" TP_UNIT "us;"
                      "telem_us:%lu:%lu" TP_UNIT "us\n",
                      (unsigned long)nowMs, (unsigned long)task1msMaxUs,
-                     (unsigned long)nowMs, (unsigned long)task10msMaxUs,
                      (unsigned long)nowMs, (unsigned long)telemMaxUs);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
