@@ -135,7 +135,7 @@ static void test_solid_colour_persists_and_only_active_picker_responds(void)
     const uint8_t pickR = state.pickR;
     const uint8_t pickG = state.pickG;
     const uint8_t pickB = state.pickB;
-    TEST_ASSERT_TRUE((pickR + pickG + pickB) > 0U);
+    TEST_ASSERT_TRUE((pickR + pickG + pickB) > 0);
 
     // Leave for OFF and move the encoders there; the SOLID colour must not move.
     state.mode = APP_RGBLEDRING_MODE_OFF;

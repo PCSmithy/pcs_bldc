@@ -27,3 +27,9 @@ add_compile_options(
   -Wall -Wextra -Wpedantic
   -g -O0
 )
+
+# The firmware links as a SHARED library (SIL). On Linux/ELF that requires all
+# objects — including the static libs it pulls in — to be position-independent,
+# or the .so link fails with "final link failed: bad value". Harmless on macOS
+# (already PIC) and MinGW (ignored).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
