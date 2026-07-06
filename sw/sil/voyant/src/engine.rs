@@ -54,7 +54,7 @@
 //! ## No backend handle (routes are table-mediated)
 //!
 //! The engine touches **only** members, routes, and the table — it holds **no
-//! [`Backend`](crate::Backend) borrow**. Route propagation is a pure State Table
+//! backend borrow**. Route propagation is a pure State Table
 //! operation: it records values between table entries and nothing more. Each
 //! firmware instance lives inside its own
 //! [`FirmwareMember`](crate::FirmwareMember) and drives *its own* backend, so
@@ -86,7 +86,7 @@ pub enum EngineError {
 /// The sim clock + step loop. Owns the State Table (the historian), the Route
 /// Table, and the members — and **nothing else**: it holds no backend handle (see
 /// the module "No backend handle" note). Each firmware member drives its own
-/// backend, so a caller can keep its own `&Backend` for ad-hoc white-box
+/// backend, so a caller can keep its own `&Firmware` for ad-hoc white-box
 /// injection / inspection alongside the engine without contending with it.
 ///
 /// The `'b` lifetime bounds the members (a [`FirmwareMember`](crate::FirmwareMember)
@@ -295,14 +295,10 @@ mod tests {
     }
 
     impl Backend for MockBackend {
-        fn start(&self) -> bool {
-            true
-        }
         fn advance_tick(&self) {
             self.ticks.set(self.ticks.get() + 1);
             self.log.borrow_mut().push("advance_tick".into());
         }
-        fn shutdown(&self) {}
         fn read_cvar(&self, path: &str) -> Value {
             self.log.borrow_mut().push(format!("read:{path}"));
             self.cvars
@@ -392,7 +388,7 @@ mod tests {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
         eng.add_member(Box::new(RampModel::new("ramp", 1000.0, None)));
-        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
         fw.drive_cvar(cvar("sensor_in"), None);
         eng.add_member(Box::new(fw));
         eng.add_route(vsig_id("ramp", "value").unwrap(), cvar("sensor_in"))
@@ -412,7 +408,7 @@ mod tests {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
         let id = cvar("counter");
-        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
         fw.sample_cvar(id.clone(), None);
         eng.add_member(Box::new(fw));
 
@@ -452,7 +448,7 @@ mod tests {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
         let id = cvar("ramp_counter");
-        let mut fw = FirmwareMember::new("fw", &be, 1_000);
+        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
         fw.sample_cvar(id.clone(), Some("counts"));
         eng.add_member(Box::new(fw));
 
@@ -482,7 +478,7 @@ mod tests {
     fn empty_step_advances_firmware_and_time() {
         let be = MockBackend::default();
         let mut eng = Engine::new(2_000);
-        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 2_000)));
+        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 2_000)));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
@@ -494,7 +490,7 @@ mod tests {
     fn disabled_member_is_skipped_then_resumes() {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 1_000)));
+        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
 
         assert!(eng.set_member_enabled("fw", false));
         eng.step().unwrap(); // skipped: no advance_tick
@@ -512,7 +508,7 @@ mod tests {
     fn route_source_unregistered_errors() {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(FirmwareMember::new("fw", &be, 1_000)));
+        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),

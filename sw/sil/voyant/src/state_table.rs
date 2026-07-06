@@ -125,7 +125,7 @@ impl StateTable {
     ///
     /// **Idempotent**: re-registering an existing id with *identical* unit metadata
     /// is a benign no-op — a member (e.g. a firmware instance across a reboot)
-    /// legitimately re-registers its ports, and a signal's history spans member
+    /// legitimately re-registers its signals, and a signal's history spans member
     /// lifetimes, so the entry (and its change-log) must be preserved. Re-registering
     /// with a *conflicting* unit is a wiring bug and errors ([`TableError::ConflictingUnit`]).
     pub fn register(&mut self, id: SignalId, unit: Option<&str>) -> Result<(), TableError> {

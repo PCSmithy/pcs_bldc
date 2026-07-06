@@ -78,24 +78,37 @@ white-box access to firmware state, in two modes:
   (types/addresses), dereferenced in-process. No hand-written accessor per
   signal; the firmware doesn't know it's being simulated.
 
-### 3.2 The execution-backend seam
+### 3.2 The public member seam and the internal execution backend
 
-The framework talks to the firmware through one narrow trait so the
-execution mechanism can evolve without disturbing the core engine, models,
-or modes:
+The framework's one **public** seam onto everything it executes is the
+**`Member`** trait (see "Member model" below): the engine drives firmware
+instances, plant models, and future native apps uniformly through it. Firmware is
+one *kind* of member — a **`FirmwareMember`** wrapping the concrete **`Firmware`**
+handle (native shared lib + DWARF white-box; white-box `read_cvar`/`write_cvar`
+and lifecycle `start`/`shutdown` are inherent methods on that handle).
+
+Behind `FirmwareMember` sits an **internal, crate-private** `Backend` trait — the
+narrow execution seam the member drives *around each tick*:
 
 ```rust
-trait FwBackend {
-    fn init(&mut self);                       // run HW_*_init, create tasks
-    fn advance(&mut self, dt: SimDuration);   // let firmware run for dt of sim time
-    fn read(&self, sym: &str) -> Value;       // white-box read
-    fn write(&mut self, sym: &str, v: Value); // white-box write / injection
+pub(crate) trait Backend {
+    fn advance_tick(&self);                    // let firmware run one tick of sim time
+    fn read_cvar(&self, path: &str) -> Value;  // white-box read
+    fn write_cvar(&self, path: &str, v: &Value); // white-box write / injection
+    // + the port registration seam (defaults to no-ops)
 }
 ```
 
-- `NativeFreeRtos` — the first and primary impl (§4).
+It is **not** a public architectural seam. Its value is the in-crate test double
+(mock backends prove `FirmwareMember`/engine semantics without a firmware DLL),
+and it keeps the door open for a second execution mechanism to slot in behind
+`FirmwareMember` without disturbing the engine, models, or modes. Lifecycle
+(`start`/`shutdown`) and DLL loading are deliberately *off* the trait — they are
+called on the concrete `Firmware` handle the driver holds.
+
+- `Firmware` (native shared lib) — the first and primary backend (§4).
 - `ArmEmu` — a possible later impl (Unicorn/QEMU) for a high-fidelity
-  subset, same trait.
+  subset, same internal trait.
 
 ### 3.3 Open decisions (to resolve)
 
@@ -176,19 +189,21 @@ another's signals (a discipline convention, not enforced — members are first-p
 trusted code; a narrowed per-member table view is the escalation if scripted
 members ever change the trust model).
 
-**The firmware is one *kind* of member.** A **`FirmwareMember`** wraps the
-`Backend` — which demotes from "the firmware seam" to the internal *driver* of the
-firmware kind of member (DLL load, lifecycle, DWARF white-box). It is constructed
-with an explicit instance **`name`** (not derived from the DLL — two boards may run
-the same image as distinct members) and a firmware tick period; its `advance`
+**The firmware is one *kind* of member.** A **`FirmwareMember`** wraps a concrete
+**`Firmware`** handle (DLL load, lifecycle, DWARF white-box) and drives it through
+the internal, crate-private `Backend` seam (§3.2) — which demotes from "the
+firmware seam" to internal plumbing behind the member. It is constructed with an
+explicit instance **`name`** (not derived from the DLL — two boards may run the
+same image as distinct members) and a firmware tick period; its `advance`
 accumulates sim time and, per elapsed firmware-tick period, **flushes** its *driven*
 `cvar`s into firmware memory (`drive_cvar` — the commanded table value, e.g. a route
 destination), runs one `advance_tick`, then **samples** its *sampled* `cvar`s back
 out into the table (`sample_cvar`). It is the **only** thing that touches firmware
 memory — routes never do (they are table-mediated; see
 [`state-route-tables.md`](state-route-tables.md) §2). Lifecycle (`start`/`shutdown`)
-stays an explicit call on the `Backend` the driver holds. Multi-firmware is simply
-multiple `FirmwareMember`s, each syncing through its own backend.
+stays an explicit call on the concrete `Firmware` handle the driver holds.
+Multi-firmware is simply multiple `FirmwareMember`s, each syncing through its own
+backend.
 
 **Firmware ports.** A firmware member's sim HW drivers can register signals of
 their own at runtime — **ports** — through a hook vtable the framework installs
@@ -298,9 +313,11 @@ sw/sil/                 Rust cargo workspace
                          modes, plus the trait seams a project implements:
                            Member    — any executable participant (the engine
                                        drives everything through this); a model
-                                       member, or a FirmwareMember wrapping…
-                           Backend   — the firmware-member's internal driver
-                                       (load/drive/introspect a firmware)
+                                       member, or a FirmwareMember wrapping the
+                                       concrete Firmware handle. (An internal,
+                                       crate-private Backend trait is the
+                                       test-double seam behind FirmwareMember —
+                                       not something a project implements.)
                            Transport — a comms bus (tx → rx, completion timing)
                            Scenario  — the project's wiring (members/routes/trace)
   pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board

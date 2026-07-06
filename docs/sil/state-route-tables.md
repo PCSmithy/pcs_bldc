@@ -81,10 +81,19 @@ Every entry has a canonical key: **`<sig_type>:<source>:<local>[:<modifier>]`**.
 Examples: `cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]`,
 `vsig:motor:phase_u_voltage`, `spi:encoder:rx:decoded`.
 
-### Ports (firmware-registered signals, C→Rust)
+### Firmware "ports" (ordinary Signals, registered from C)
 
-Firmware members expose **ports**: signals their **sim HW drivers register with
-the framework at runtime** — the C-side counterpart of open registration. The
+**"Port" is firmware-member vocabulary, not a voyant concept.** Table-side, a
+port is a plain, ordinary Signal — indistinguishable from any other entry, with
+no special type, flag, or treatment anywhere in the framework. The word only
+describes *why the firmware member cares about that particular Signal*: it is
+one its C-side sim drivers registered in order to consume state into, or
+broadcast state out of, the firmware executable. Nothing outside the firmware
+member (and its `backend` internals) should reuse the term or expect a "port
+kind" to exist.
+
+Firmware members register these signals via their **sim HW drivers at
+runtime** — the C-side counterpart of open registration. The
 seam is a hook vtable installed over the control ABI (`sil_fw_setHooks`, called
 before `sil_fw_start`), wrapped driver-side by the null-safe helper
 `SIL_ports_*` (`sw/lib/c/shared/hw/sim/ports/`): with no hooks installed —
@@ -104,11 +113,16 @@ exist.
   variants are the documented extension path (transport/event payloads arrive
   with the D5 comms work).
 - **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
-  State Table mid-tick. Per firmware tick its member: applies pending
-  registrations → fills **every** port's *input cache* from the entry's current
-  table value (never driven → `None` → C read returns false → driver fallback)
-  → flushes driven cvars → `advance_tick` (C reads caches, buffers writes) →
-  drains the *output buffer* into the table → samples sampled cvars.
+  State Table mid-tick. Per firmware tick the member runs **three fixed phases**
+  over its signal *bindings* (ports, driven cvars, sampled cvars — each an
+  optional in-half and/or out-half): **in-sync → `advance_tick` → out-sync**.
+  In-sync (table → firmware): apply pending registrations then fill **every**
+  port's *input cache* from the entry's current value (never driven → `None` → C
+  read returns false → driver fallback), and flush driven cvars in. `advance_tick`
+  (C reads caches, buffers writes). Out-sync (firmware → table): drain the
+  *output buffer* into the table, and sample sampled cvars out. A future
+  transport `sig_type` is a new binding with its own halves — the phase sequence
+  never changes, and direction stays on the binding mechanism, never on a signal.
 - **Input vs output is behavioral, not metadata.** Input ports carry commanded
   values (table → cache → C read); output ports carry firmware-produced values
   (C write → table). A signal has no direction metadata — the same port may do

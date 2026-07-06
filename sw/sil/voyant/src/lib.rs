@@ -13,14 +13,18 @@
 //!   change-logged history + current cache + injection overrides + retention
 //!   (state-route-tables.md; the State Table *is* the historian, D12). Pure
 //!   data — no FFI.
-//! - [`backend`] — the [`Backend`] seam (lifecycle + `cvar` read/write + the
-//!   **port** registration seam: signals a firmware's sim HW drivers register
-//!   at runtime through a hook vtable, carried in native units and
-//!   cache-mediated around each tick) and its first impl [`Firmware`]: the
-//!   control ABI + the cvar sample-resolver (read/write firmware statics as
-//!   [`Value`], the only unsafe/DWARF part). Also [`FirmwareMember`]: a
-//!   firmware instance wrapped as a [`Member`], syncing cvar mirrors and port
-//!   caches around its firmware tick.
+//! - `backend` — [`Firmware`], the public firmware handle: the control ABI +
+//!   the cvar sample-resolver (read/write firmware statics as [`Value`] by DWARF
+//!   path, the only unsafe/DWARF part), plus the port-registration seam
+//!   (signals a firmware's sim HW drivers register at runtime through a hook
+//!   vtable, carried in native units and cache-mediated around each tick — a
+//!   "port" is just an ordinary Signal the firmware syncs from C; the word is
+//!   firmware-member vocabulary, not a voyant primitive). And
+//!   [`FirmwareMember`]: a firmware instance wrapped as a [`Member`], syncing
+//!   cvar mirrors and port caches around its firmware tick. An internal
+//!   `Backend` trait is the execution / test-double seam `FirmwareMember` drives
+//!   (mock backends stand in for a DLL in unit tests); [`Member`] is the public
+//!   seam.
 //! - [`member`] — the [`Member`] trait, the single seam the [`Engine`] drives
 //!   every participant through (register signals on the table, push outputs, read
 //!   routed inputs), plus [`RampModel`], voyant's reference model member, and the
@@ -50,7 +54,7 @@ pub mod route;
 pub mod signal;
 pub mod state_table;
 
-pub use backend::{Backend, Firmware, FirmwareMember, PortDef};
+pub use backend::{Firmware, FirmwareMember};
 pub use engine::{Engine, EngineError};
 pub use log::{LogEntry, LogLevel, LogRing};
 pub use member::{vsig_id, Member, RampModel};

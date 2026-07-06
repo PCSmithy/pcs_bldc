@@ -36,7 +36,7 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (43 tests).
+Rust unit tests: `cd sw/sil && cargo test -p voyant` (59 tests).
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
@@ -53,9 +53,11 @@ sw/sil/
     src/state_table.rs      StateTable: registry + per-signal change-log history
                             + current cache + overrides + per-signal epsilon
                             + retention. Pure data, no FFI. (10 unit tests)
-    src/backend.rs          Backend trait (lifecycle + cvar R/W) + Firmware, its
-                            first impl: control ABI + cvar sample-resolver
-                            (read_cvar/write_cvar; the only unsafe/DWARF part).
+    src/backend.rs          Firmware (public handle): control ABI + cvar
+                            sample-resolver (start/shutdown/advance_tick +
+                            read_cvar/write_cvar; the only unsafe/DWARF part).
+                            An internal pub(crate) Backend trait is the
+                            execution/test-double seam FirmwareMember drives.
                             Auto-derives the ASLR anchor from export∩DWARF (no
                             hardcoded symbol). Also FirmwareMember: a firmware
                             instance wrapped as a Member — flushes driven cvars into
@@ -187,11 +189,13 @@ docs/sil/*.md            the design (see "Design docs" below)
   helper** (`sw/lib/c/shared/hw/sim/ports/`, target `hw_SIL_ports`; no hooks →
   register invalid / read false / write no-op, so standalone + Unity runs are
   untouched). Port I/O is **cache-mediated like the cvar mirror lists** — per
-  firmware tick the `FirmwareMember` applies pending registrations (id =
-  `{sig_type}:{member}:{local}`; C never knows its instance name), fills every
-  port's input cache from the table (never-driven → C read false → driver
-  fallback), flushes driven cvars, `advance_tick`s, drains the port-write
-  buffer into the table, samples sampled cvars. Registrations become visible at
+  firmware tick the `FirmwareMember` runs three fixed phases over its signal
+  bindings (ports, driven/sampled cvars): **in-sync** (apply pending
+  registrations, id = `{sig_type}:{member}:{local}` — C never knows its instance
+  name; fill every port's input cache from the table, never-driven → C read
+  false → driver fallback; flush driven cvars in) → **`advance_tick`** →
+  **out-sync** (drain the port-write buffer into the table; sample sampled
+  cvars out). Registrations become visible at
   `set_enabled(true)` (= `add_member`) or the next firmware tick. First user:
   **sim `HW_ADC`** registers one input port per enabled regular input
   (`inputNameStr`, unit V) and converts a driven port's volts → counts via its
@@ -200,6 +204,16 @@ docs/sil/*.md            the design (see "Design docs" below)
   quantized counts by DWARF, with a neighboring input still ramping. ARM build
   byte-identical (SIM-only C). voyant unit tests 53 -> 58; sanity suite all
   PASS. The `_sim_*` removal (backlog) now has its input-injection replacement.
+
+- **Route-validation fix + Backend demotion (2026-07-05):** fixed a forward-flow
+  validation bug — availability now folds through the zero-latency DAG in
+  *topological* route order (was insertion order, which under-propagated through
+  chains of ≥2 unowned intermediates and let a transitively-backward route pass
+  validation). Demoted the `Backend` trait and `PortDef` to `pub(crate)`:
+  **`Member` is THE public seam**, `FirmwareMember` wraps the concrete public
+  `Firmware` handle, and `Backend` is internal execution/test-double plumbing
+  (lifecycle `start`/`shutdown` are now inherent `Firmware` methods, off the
+  trait). voyant unit tests 58 -> 59; sanity suite all PASS.
 
 ## What's next (prioritized)
 

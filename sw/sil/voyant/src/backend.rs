@@ -1,7 +1,14 @@
-//! The native firmware backend: load the firmware shared library, drive it over
-//! the control ABI, and read/write its state in-process. It is also the **cvar
-//! sample-resolver** — it reads a firmware `static` (any width) and coerces it
-//! into the logical [`Value`], and writes a [`Value`] back into firmware memory.
+//! The firmware member and its execution seam. [`Firmware`] is the public
+//! firmware handle: it loads the shared library, drives it over the control ABI
+//! (`start`/`advance_tick`/`shutdown`), and is the **cvar sample-resolver** —
+//! reading a firmware `static` (any width) and coercing it into the logical
+//! [`Value`], and writing a [`Value`] back into firmware memory. [`FirmwareMember`]
+//! wraps it as a [`Member`], the public seam the engine drives everything through.
+//!
+//! The `Backend` trait is **internal plumbing**: the execution / test-double seam
+//! [`FirmwareMember`] drives around each tick (so unit-test mock backends can prove
+//! member/engine semantics without a real DLL). It is not a public architectural
+//! seam — [`Member`] is.
 //!
 //! This is the in-process boundary from `docs/sil/ffi-boundary.md`, and the
 //! only firmware-coupled (unsafe / DWARF) part of the framework; the State Table
@@ -19,29 +26,26 @@ use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
 use std::path::Path;
 
-/// A firmware execution backend: load, drive, and introspect one firmware
-/// instance. This is the framework's single narrow seam onto the
-/// firmware-under-test (architecture.md §3.2) — lifecycle
-/// (`start`/`advance_tick`/`shutdown`) plus white-box `cvar` read/write by path.
-/// [`Firmware`] (native shared lib + DWARF) is the first impl; another backend
-/// (e.g. ARM emulation) could implement the same trait without disturbing the
-/// engine, models, State Table, or run modes.
+/// The **internal execution seam** [`FirmwareMember`] drives one firmware
+/// instance through **around each tick**: `advance_tick`, white-box `cvar`
+/// read/write by path, and the port registration seam. This is crate plumbing,
+/// **not** a public architectural seam — [`Member`] is the public seam, and
+/// [`FirmwareMember`] (wrapping the concrete [`Firmware`]) is the firmware kind
+/// of member. The trait exists so in-crate unit tests can stand up **mock
+/// backends** that prove [`FirmwareMember`]/engine semantics without a real
+/// firmware DLL.
+///
+/// Lifecycle (`start`/`shutdown`) is deliberately **off** the trait: it is not
+/// driven by the member/engine but called explicitly on the concrete
+/// [`Firmware`] handle the driver holds (see [`Firmware::start`] /
+/// [`Firmware::shutdown`]). Construction (loading the artifact) is likewise
+/// backend-specific and stays off the trait — see [`Firmware::load`].
 ///
 /// All methods take `&self`: a backend mutates *external* state (the firmware's
 /// own memory / execution), not the Rust handle, so it needs no `&mut`.
-/// Construction (loading the artifact) is backend-specific and stays off the
-/// trait — see [`Firmware::load`].
-pub trait Backend {
-    /// Bring the firmware up: run HW/app init, create tasks, and run the
-    /// scheduler to first quiescence. Returns false on init/task-creation
-    /// failure.
-    fn start(&self) -> bool;
-
+pub(crate) trait Backend {
     /// Advance one sim tick (run the firmware to its next quiescence).
     fn advance_tick(&self);
-
-    /// Tear the firmware down.
-    fn shutdown(&self);
 
     /// Sample a firmware `static` by path into a logical [`Value`] — the read
     /// side of the State Table's `cvar` backing.
@@ -94,7 +98,7 @@ pub trait Backend {
 /// instance name; the consuming [`FirmwareMember`] prefixes its own name to
 /// form the table id `{sig_type}:{member}:{local}`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PortDef {
+pub(crate) struct PortDef {
     /// The handle handed back to C (the index into the backend's port state).
     pub handle: i32,
     /// The signal's backing regime (e.g. `vsig`), as the driver declared it.
@@ -310,25 +314,17 @@ impl Firmware {
             .unwrap_or_else(|| panic!("DWARF path not found: {path}"));
         (link.wrapping_add(self.slide) as *mut u8, leaf)
     }
-}
 
-impl Drop for Firmware {
-    fn drop(&mut self) {
-        // Uninstall the hooks before the DLL unloads so no window exists in
-        // which C could call into a dangling context (belt-and-braces: the sim
-        // is single-threaded, so nothing can run concurrently anyway).
-        unsafe {
-            if let Ok(set_hooks) = self.lib.get::<SetHooksFn>(b"sil_fw_setHooks\0") {
-                set_hooks(std::ptr::null());
-            }
-        }
-    }
-}
+    // --- white-box lifecycle + cvar access (the public firmware handle) -----
+    //
+    // These are the operations a driver reaches for while holding `&Firmware`
+    // for ad-hoc injection/inspection alongside the engine. The internal
+    // [`Backend`] impl below forwards to them; the trait exists only for the
+    // in-crate mock-backend test seam.
 
-impl Backend for Firmware {
     /// Control ABI: HW init + create tasks + run the scheduler to first
     /// quiescence. Returns false on init/task-creation failure.
-    fn start(&self) -> bool {
+    pub fn start(&self) -> bool {
         // SAFETY: signature matches `bool sil_fw_start(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn() -> bool> =
@@ -338,7 +334,7 @@ impl Backend for Firmware {
     }
 
     /// Control ABI: advance one sim tick (run firmware to next quiescence).
-    fn advance_tick(&self) {
+    pub fn advance_tick(&self) {
         // SAFETY: signature matches `void sil_fw_advance_tick(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> = self
@@ -350,7 +346,7 @@ impl Backend for Firmware {
     }
 
     /// Control ABI: tear down the scheduler.
-    fn shutdown(&self) {
+    pub fn shutdown(&self) {
         // SAFETY: signature matches `void sil_fw_shutdown(void)`.
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> =
@@ -363,7 +359,7 @@ impl Backend for Firmware {
     /// (the cvar sample-resolver). Scalar widths are coerced; an enum field
     /// reads as its symbolic [`Value::Enum`] name (or `<n>` for an unknown
     /// enumerator, e.g. a bitwise combination).
-    fn read_cvar(&self, path: &str) -> Value {
+    pub fn read_cvar(&self, path: &str) -> Value {
         let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address (DWARF + slide); firmware quiescent.
         unsafe {
@@ -383,7 +379,7 @@ impl Backend for Firmware {
     /// Write a logical [`Value`] into a firmware `static` by DWARF path. Scalars
     /// coerce to the field's width; an enum accepts [`Value::Enum`] (name → its
     /// value) or a raw `U32`/`I32`. Panics on an incompatible variant.
-    fn write_cvar(&self, path: &str, v: &Value) {
+    pub fn write_cvar(&self, path: &str, v: &Value) {
         let (p, leaf) = self.resolve(path);
         // SAFETY: valid firmware address of the field's size; firmware quiescent.
         unsafe {
@@ -403,6 +399,35 @@ impl Backend for Firmware {
                 }
             }
         }
+    }
+}
+
+impl Drop for Firmware {
+    fn drop(&mut self) {
+        // Uninstall the hooks before the DLL unloads so no window exists in
+        // which C could call into a dangling context (belt-and-braces: the sim
+        // is single-threaded, so nothing can run concurrently anyway).
+        unsafe {
+            if let Ok(set_hooks) = self.lib.get::<SetHooksFn>(b"sil_fw_setHooks\0") {
+                set_hooks(std::ptr::null());
+            }
+        }
+    }
+}
+
+/// The internal [`Backend`] impl forwards lifecycle + `cvar` access to the
+/// inherent [`Firmware`] methods (the public handle) and adds the port seam.
+impl Backend for Firmware {
+    fn advance_tick(&self) {
+        Firmware::advance_tick(self);
+    }
+
+    fn read_cvar(&self, path: &str) -> Value {
+        Firmware::read_cvar(self, path)
+    }
+
+    fn write_cvar(&self, path: &str, v: &Value) {
+        Firmware::write_cvar(self, path, v);
     }
 
     fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
@@ -441,54 +466,57 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error
     Err("no usable ASLR anchor: no exported global appears in DWARF".into())
 }
 
-/// A firmware instance as a [`Member`]: the "firmware kind" of member. It wraps a
-/// [`Backend`] (the internal driver of the DLL / lifecycle / DWARF) and drives it
-/// on the sim clock, and it is the **only** thing that touches firmware memory —
+/// A firmware instance as a [`Member`]: the "firmware kind" of member. It borrows
+/// a concrete [`Firmware`] and drives it through the internal `Backend` seam
+/// (per-tick `advance_tick` + DWARF `cvar`/port I/O) on the sim clock, and it is
+/// the **only** thing that touches firmware memory —
 /// routes never do (they are table-mediated; see [`RouteTable`](crate::route::RouteTable)).
 ///
 /// Constructed with an explicit instance `name` — **not** derived from the DLL, so
 /// two boards can run the same firmware image as distinct members — and a firmware
 /// tick period. Each [`advance`](Member::advance) accumulates sim time and, per
-/// full firmware-tick period elapsed, syncs its mirror lists around the tick:
+/// full firmware-tick period elapsed, runs **three fixed phases** over its signal
+/// [`Binding`]s. Ports are Signals, cvars are Signals, a future transport entry
+/// will be a Signal; each binding contributes an optional in-sync and/or out-sync
+/// half, and the phase sequence never restructures as new `sig_type`s arrive:
 ///
-/// 1. **Apply pending port registrations** — turn each new [`PortDef`] the
-///    backend accumulated (a sim HW driver registered it through the hook
-///    vtable) into a table entry `{sig_type}:{member_name}:{local}`
-///    (idempotent; this member prefixes its own instance name).
-/// 2. **Flush port input caches** — for **every** registered port, cache the
-///    table entry's current value in the backend ([`set_port_input`]); a port
-///    never driven caches `None`, which the firmware's `readSignal` reports as
-///    false (the driver falls back). **Input ports carry commanded values**
-///    (table → cache → C read).
-/// 3. **Flush driven cvars** — read each *driven* cvar's current State Table value
-///    and [`write_cvar`](Backend::write_cvar) it into firmware memory. The table
-///    value is the **commanded** value (whatever a route or a test last recorded
-///    there); firmware memory is what the firmware actually saw.
-/// 4. **`advance_tick`** — run the firmware to quiescence.
-/// 5. **Drain port writes** — record every value the firmware wrote via
-///    `writeSignal` into its port's table entry ([`drain_port_writes`]).
-///    **Output ports carry firmware-produced values** (C write → table). The
-///    same port may do both — the table is the rendezvous; no direction
-///    metadata exists on a signal.
-/// 6. **Sample sampled cvars** — [`read_cvar`](Backend::read_cvar) each *sampled*
-///    cvar out of firmware memory and [`record`](StateTable::record) it into the
-///    historian.
+/// 1. **In-sync (table → firmware).** Every binding's inbound half, in order:
+///    - *Ports* — apply pending port registrations (each new `PortDef` the
+///      backend accumulated becomes a table entry `{sig_type}:{member}:{local}`,
+///      idempotent, this member prefixing its own instance name), then fill
+///      **every** registered port's input cache from its entry's current value
+///      (`set_port_input`; never driven → `None` → the firmware's `readSignal`
+///      reports false and the driver falls back). Input ports carry commanded
+///      values (table → cache → C read).
+///    - *Driven cvars* — `write_cvar` each *driven* cvar's current table value
+///      (the **commanded** value a route or test last recorded) into firmware
+///      memory.
+/// 2. **Tick.** `advance_tick` runs the firmware to quiescence — C reads the
+///    input caches and buffers any `writeSignal` output.
+/// 3. **Out-sync (firmware → table).** Every binding's outbound half, in order:
+///    - *Ports* — drain the output buffer (`drain_port_writes`), recording each
+///      value into its port's entry. Output ports carry firmware-produced values
+///      (C write → table). The same port may do both halves — the table is the
+///      rendezvous; **no direction metadata exists on a signal** (direction is a
+///      property of the binding mechanism).
+///    - *Sampled cvars* — `read_cvar` each *sampled* cvar out of firmware memory
+///      and [`record`](StateTable::record) it into the historian.
 ///
-/// Port I/O is cache-mediated end to end — deterministic, with **no mid-tick
-/// State Table access from C** (mirroring how driven/sampled cvars sync their
+/// A future serial-transport `sig_type` is simply a **new [`Binding`] variant**
+/// with its own in/out halves; the three-phase sequence above is unchanged. Port
+/// I/O is cache-mediated end to end — deterministic, with **no mid-tick State
+/// Table access from C** (mirroring how driven/sampled cvars sync their
 /// firmware-memory mirrors).
 ///
 /// The cvar lists are registered when the member is enabled; **pending port
 /// registrations are also applied there**, so ports registered during
 /// `sil_fw_start` become table entries as soon as the member is added to an
 /// engine (else at its next advance). Lifecycle (`start` / `shutdown`) stays on
-/// the wrapped [`Backend`] handle the driver holds and calls explicitly
+/// the concrete [`Firmware`] handle the driver holds and calls explicitly
 /// (FUTURE: re-enable would reload the DLL, i.e. boot-from-reset — not
 /// implemented here).
 ///
 /// [`RouteTable`]: crate::route::RouteTable
-/// [`set_port_input`]: Backend::set_port_input
-/// [`drain_port_writes`]: Backend::drain_port_writes
 pub struct FirmwareMember<'b> {
     name: String,
     backend: &'b dyn Backend,
@@ -509,9 +537,19 @@ pub struct FirmwareMember<'b> {
 }
 
 impl<'b> FirmwareMember<'b> {
-    /// Wrap `backend` as a member named `name`, advancing one firmware tick per
-    /// `tick_period_us` of sim time.
-    pub fn new(name: &str, backend: &'b dyn Backend, tick_period_us: u64) -> Self {
+    /// Wrap a concrete [`Firmware`] as a member named `name`, advancing one
+    /// firmware tick per `tick_period_us` of sim time. The driver keeps its own
+    /// `&fw` alongside for ad-hoc white-box access; the member borrows it for the
+    /// engine.
+    pub fn new(name: &str, fw: &'b Firmware, tick_period_us: u64) -> Self {
+        Self::with_backend(name, fw, tick_period_us)
+    }
+
+    /// Wrap any [`Backend`] (in-crate mock-backend test seam) as a member. The
+    /// public constructor is [`new`](Self::new), which takes the concrete
+    /// [`Firmware`]; this exists so unit tests can drive a `FirmwareMember` over
+    /// a pure-Rust mock without a firmware DLL.
+    pub(crate) fn with_backend(name: &str, backend: &'b dyn Backend, tick_period_us: u64) -> Self {
         Self {
             name: name.to_string(),
             backend,
@@ -534,7 +572,7 @@ impl<'b> FirmwareMember<'b> {
     }
 
     /// Declare a firmware `cvar` to **drive**: its State Table value is flushed into
-    /// firmware memory (via [`write_cvar`](Backend::write_cvar), by the id's `name`
+    /// firmware memory (via `write_cvar`, by the id's `name`
     /// DWARF path) before each firmware tick. This is the mirror image of
     /// [`sample_cvar`](Self::sample_cvar) — the write side of the `cvar` backing,
     /// and the production path a route takes to reach firmware memory: a source is
@@ -572,6 +610,133 @@ impl<'b> FirmwareMember<'b> {
             }
         }
     }
+
+    // --- binding halves: the per-mechanism in-sync / out-sync operations the
+    //     three-phase `advance` loop dispatches (see [`Binding`]). Each is one
+    //     half of one binding; a binding may contribute an in half, an out half,
+    //     or both. Direction lives here on the mechanism, never on a Signal.
+
+    /// Ports in-sync: apply pending registrations, then fill **every** port's
+    /// input cache from its entry's current table value (never driven / a
+    /// non-numeric value → `None`, which the firmware's `readSignal` reports as
+    /// false → the driver falls back). Registrations MUST apply before the cache
+    /// fill, so both live in this one half.
+    fn in_sync_ports(&mut self, st: &mut StateTable) {
+        self.apply_pending_ports(st);
+        for (handle, id) in &self.ports {
+            let v = st.current_value(id).ok().flatten().and_then(value_to_f64);
+            self.backend.set_port_input(*handle, v);
+        }
+    }
+
+    /// Driven-cvar in-sync: flush each driven cvar's commanded table value into
+    /// firmware memory. A never-recorded driven cvar (`Ok(None)`) has nothing to
+    /// flush this tick; an unregistered one (`Err`) is a wiring bug — log it,
+    /// symmetric with the sample side, rather than swallow it.
+    fn in_sync_driven(&mut self, st: &mut StateTable) {
+        for (id, _unit) in &self.driven {
+            match st.current_value(id) {
+                Ok(Some(v)) => self.backend.write_cvar(id.name(), v),
+                Ok(None) => {}
+                Err(e) => st.log(
+                    LogLevel::Warning,
+                    &self.name,
+                    format!("driven cvar flush {id} failed: {e}"),
+                ),
+            }
+        }
+    }
+
+    /// Ports out-sync: drain the firmware's `writeSignal` output buffer into the
+    /// historian, recording each value into its port's entry. A write to a handle
+    /// this member never applied is dropped with a Warning.
+    fn out_sync_ports(&mut self, st: &mut StateTable) {
+        for (handle, value) in self.backend.drain_port_writes() {
+            match self.ports.iter().find(|(h, _)| *h == handle) {
+                Some((_, id)) => {
+                    if let Err(e) = st.record(id, Value::F64(value)) {
+                        st.log(
+                            LogLevel::Warning,
+                            &self.name,
+                            format!("port write record {id} failed: {e}"),
+                        );
+                    }
+                }
+                None => st.log(
+                    LogLevel::Warning,
+                    &self.name,
+                    format!("port write to unapplied handle {handle} dropped"),
+                ),
+            }
+        }
+    }
+
+    /// Sampled-cvar out-sync: read each sampled cvar out of firmware memory and
+    /// record it into the historian; on a record error log a Warning rather than
+    /// swallow it.
+    fn out_sync_sampled(&mut self, st: &mut StateTable) {
+        for (id, _unit) in &self.sampled {
+            let v = self.backend.read_cvar(id.name());
+            if let Err(e) = st.record(id, v) {
+                st.log(
+                    LogLevel::Warning,
+                    &self.name,
+                    format!("cvar sample record {id} failed: {e}"),
+                );
+            }
+        }
+    }
+}
+
+/// One **firmware-side signal binding** — a mechanism that mirror-syncs a class
+/// of signals between the State Table and firmware memory around a tick. Ports
+/// are Signals, cvars are Signals, a future serial-transport entry will be a
+/// Signal; each such mechanism contributes an optional **in-sync** half (table →
+/// firmware, run before `advance_tick`) and/or an optional **out-sync** half
+/// (firmware → table, run after). The [`advance`](FirmwareMember::advance) loop
+/// is fixed at three phases — **in-sync → tick → out-sync** — and a new
+/// `sig_type` is a new variant here, never a new phase.
+///
+/// **Direction is a property of the mechanism, not of a Signal** — there is no
+/// direction metadata anywhere on a signal. `DrivenCvars` is in-only,
+/// `SampledCvars` is out-only, `Ports` is behaviorally both (one collective
+/// binding over the backend's port state; the point is the phase structure, not
+/// one binding per port).
+#[derive(Clone, Copy)]
+enum Binding {
+    /// Driven cvars (in-only): flush commanded table values into firmware memory.
+    DrivenCvars,
+    /// Sampled cvars (out-only): sample firmware memory into the historian.
+    SampledCvars,
+    /// Ports (in + out): apply registrations + fill input caches; drain writes.
+    Ports,
+}
+
+impl Binding {
+    /// Every binding, in deterministic in-sync/out-sync order. `Ports` precedes
+    /// `DrivenCvars` so port registrations + cache fill happen first (matching
+    /// the historical sequence; the two are independent — different backend
+    /// state). Out-sync runs the same order (`Ports` drain before `SampledCvars`
+    /// sample); the empty halves are no-ops.
+    const ALL: [Binding; 3] = [Binding::Ports, Binding::DrivenCvars, Binding::SampledCvars];
+
+    /// Run this binding's in-sync half (table → firmware), if any.
+    fn in_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
+        match self {
+            Binding::Ports => fm.in_sync_ports(st),
+            Binding::DrivenCvars => fm.in_sync_driven(st),
+            Binding::SampledCvars => {}
+        }
+    }
+
+    /// Run this binding's out-sync half (firmware → table), if any.
+    fn out_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
+        match self {
+            Binding::Ports => fm.out_sync_ports(st),
+            Binding::SampledCvars => fm.out_sync_sampled(st),
+            Binding::DrivenCvars => {}
+        }
+    }
 }
 
 impl Member for FirmwareMember<'_> {
@@ -581,60 +746,23 @@ impl Member for FirmwareMember<'_> {
 
     fn advance(&mut self, dt_us: u64, st: &mut StateTable) {
         // Run a firmware tick for each full period elapsed (usually exactly one
-        // when the engine tick == the firmware tick). Around each tick, in this
-        // order: apply pending port registrations; flush the port input caches
-        // and the driven cvars in; tick; drain the port writes and sample the
-        // sampled cvars out. All mirror-synced — C never touches the table.
+        // when the engine tick == the firmware tick). Each tick runs three
+        // fixed phases over every signal binding (see [`Binding`]): in-sync
+        // (table -> firmware) → advance_tick → out-sync (firmware -> table).
+        // All mirror-synced — C never touches the table.
         self.accum_us += dt_us;
         while self.accum_us >= self.tick_period_us {
             self.accum_us -= self.tick_period_us;
-            self.apply_pending_ports(st);
-            // Input ports: cache each port's commanded table value for the C
-            // side to read. Every port gets a cache slot every tick; a port
-            // never driven (or holding a non-numeric Value) caches None, which
-            // readSignal reports as false -> the driver falls back.
-            for (handle, id) in &self.ports {
-                let v = st.current_value(id).ok().flatten().and_then(value_to_f64);
-                self.backend.set_port_input(*handle, v);
+            // Phase 1 — in-sync: every binding's table → firmware half.
+            for binding in Binding::ALL {
+                binding.in_sync(self, st);
             }
-            // Flush: commanded table value -> firmware memory. A never-recorded or
-            // unregistered driven cvar simply has nothing to flush this tick.
-            for (id, _unit) in &self.driven {
-                if let Ok(Some(v)) = st.current_value(id) {
-                    self.backend.write_cvar(id.name(), v);
-                }
-            }
+            // Phase 2 — tick: run the firmware to quiescence (C reads the input
+            // caches, buffers its writes).
             self.backend.advance_tick();
-            // Output ports: drain what the firmware wrote into the historian.
-            for (handle, value) in self.backend.drain_port_writes() {
-                match self.ports.iter().find(|(h, _)| *h == handle) {
-                    Some((_, id)) => {
-                        if let Err(e) = st.record(id, Value::F64(value)) {
-                            st.log(
-                                LogLevel::Warning,
-                                &self.name,
-                                format!("port write record {id} failed: {e}"),
-                            );
-                        }
-                    }
-                    None => st.log(
-                        LogLevel::Warning,
-                        &self.name,
-                        format!("port write to unapplied handle {handle} dropped"),
-                    ),
-                }
-            }
-            // Sample: firmware memory -> historian. Registered in set_enabled(true)
-            // at add-time; on error log a Warning rather than swallow it.
-            for (id, _unit) in &self.sampled {
-                let v = self.backend.read_cvar(id.name());
-                if let Err(e) = st.record(id, v) {
-                    st.log(
-                        LogLevel::Warning,
-                        &self.name,
-                        format!("cvar sample record {id} failed: {e}"),
-                    );
-                }
+            // Phase 3 — out-sync: every binding's firmware → table half.
+            for binding in Binding::ALL {
+                binding.out_sync(self, st);
             }
         }
     }
@@ -750,21 +878,13 @@ mod tests {
     /// object-safe and usable behind `dyn`/`Box` without touching real firmware.
     #[derive(Default)]
     struct MockBackend {
-        started: RefCell<bool>,
         ticks: RefCell<u64>,
         cvars: RefCell<HashMap<String, Value>>,
     }
 
     impl Backend for MockBackend {
-        fn start(&self) -> bool {
-            *self.started.borrow_mut() = true;
-            true
-        }
         fn advance_tick(&self) {
             *self.ticks.borrow_mut() += 1;
-        }
-        fn shutdown(&self) {
-            *self.started.borrow_mut() = false;
         }
         fn read_cvar(&self, path: &str) -> Value {
             self.cvars
@@ -781,13 +901,11 @@ mod tests {
     #[test]
     fn backend_is_object_safe_and_usable_via_dyn() {
         let be: Box<dyn Backend> = Box::new(MockBackend::default());
-        assert!(be.start());
         be.advance_tick();
         be.advance_tick();
         be.write_cvar("x", &Value::U32(42));
         assert_eq!(be.read_cvar("x"), Value::U32(42));
         assert_eq!(be.read_cvar("unset"), Value::U32(0));
-        be.shutdown();
     }
 
     #[test]
@@ -796,7 +914,7 @@ mod tests {
         be.write_cvar("counter", &Value::U32(7));
 
         let id = SignalId::new("cvar", "dut", "counter", None).unwrap();
-        let mut fm = FirmwareMember::new("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
         fm.sample_cvar(id.clone(), Some("counts"));
 
         let mut st = StateTable::new();
@@ -824,7 +942,7 @@ mod tests {
         // this member pushes it in.
         let be = MockBackend::default();
         let id = SignalId::new("cvar", "dut", "sensor_in", None).unwrap();
-        let mut fm = FirmwareMember::new("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
         fm.drive_cvar(id.clone(), Some("counts"));
 
         let mut st = StateTable::new();
@@ -876,9 +994,6 @@ mod tests {
     }
 
     impl Backend for PortMock {
-        fn start(&self) -> bool {
-            true
-        }
         fn advance_tick(&self) {
             let seen = self.ports.inner.borrow().read(0);
             *self.seen.borrow_mut() = seen;
@@ -886,7 +1001,6 @@ mod tests {
                 self.ports.inner.borrow_mut().write(1, v * 2.0);
             }
         }
-        fn shutdown(&self) {}
         fn read_cvar(&self, _path: &str) -> Value {
             Value::U32(0)
         }
@@ -938,7 +1052,7 @@ mod tests {
         // The full mirror-synced port loop: table -> input cache -> C read,
         // then C write -> output buffer -> table. Native format end to end.
         let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::new("dut", &mock, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
         let mut st = StateTable::new();
 
         // set_enabled applies the pending registrations immediately.
@@ -960,7 +1074,7 @@ mod tests {
     #[test]
     fn undriven_port_reads_as_not_driven() {
         let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::new("dut", &mock, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -983,7 +1097,7 @@ mod tests {
     #[test]
     fn port_registered_mid_run_applies_at_next_advance() {
         let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::new("dut", &mock, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(st.len(), 2);

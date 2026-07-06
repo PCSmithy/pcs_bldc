@@ -28,7 +28,7 @@
 //! ## Table-mediated (routes never touch a backend)
 //!
 //! Propagation is a **pure State Table operation**: it reads source *entries* and
-//! writes destination *entries*, and that is all. It takes **no [`Backend`]** — a
+//! writes destination *entries*, and that is all. It takes **no backend** — a
 //! route moves a value between two table entries and nothing else. This mirrors the
 //! backing model: a `cvar` entry is the table's *mirror* of firmware memory, and a
 //! `vsig` entry *abides* in the framework, so moving values between entries is
@@ -91,13 +91,12 @@
 //! [`resume`](RouteTable::resume) restores normal driving. A suspended route is
 //! simply skipped by propagation and exempt from validation.
 //!
-//! [`Backend`]: crate::backend::Backend
 //! [`StateTable::set_override`]: crate::state_table::StateTable::set_override
 //! [`StateTable::current_value`]: crate::state_table::StateTable::current_value
 
 use crate::signal::{SignalId, Value};
 use crate::state_table::{StateTable, TableError};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use thiserror::Error;
 
 /// The only latency currently supported beyond zero (one engine tick — the ZOH
@@ -218,7 +217,7 @@ impl RouteTable {
     pub fn validate(&self, member_names: &[&str]) -> Result<Vec<usize>, RouteError> {
         self.check_single_driver()?;
         let (topo_rank, order) = self.zero_latency_topo()?;
-        self.check_forward_flow(member_names, &topo_rank)?;
+        self.check_forward_flow(member_names, &topo_rank, &order)?;
         Ok(order)
     }
 
@@ -307,9 +306,9 @@ impl RouteTable {
 
     /// No two enabled routes (any latency) may drive the same destination.
     fn check_single_driver(&self) -> Result<(), RouteError> {
-        let mut seen: HashMap<&SignalId, ()> = HashMap::new();
+        let mut seen: HashSet<&SignalId> = HashSet::new();
         for route in self.routes.iter().filter(|r| r.enabled) {
-            if seen.insert(&route.dst, ()).is_some() {
+            if !seen.insert(&route.dst) {
                 return Err(RouteError::MultiDriver {
                     dst: route.dst.clone(),
                 });
@@ -388,10 +387,19 @@ impl RouteTable {
     }
 
     /// Forward-flow availability check (module docs, rule 3).
+    ///
+    /// `order` is the zero-latency route indices in the topological order
+    /// [`validate`](Self::validate) computed; the availability fold **must**
+    /// walk it in that order, not route-insertion order — a chain of ≥2 unowned
+    /// intermediates authored anti-topologically otherwise under-propagates and
+    /// lets a transitively-backward route slip through. Single-driver guarantees
+    /// each signal has ≤1 incoming route, so one topo-ordered pass reaches the
+    /// fixpoint. `topo_rank` covers exactly the signals in that DAG.
     fn check_forward_flow(
         &self,
         member_names: &[&str],
         topo_rank: &HashMap<&SignalId, usize>,
+        order: &[usize],
     ) -> Result<(), RouteError> {
         let own = |s: &SignalId| -> i64 {
             member_names
@@ -401,13 +409,12 @@ impl RouteTable {
                 .unwrap_or(-1)
         };
 
-        // Propagate availability through the zero-latency DAG in topo order.
-        // `topo_rank` covers exactly the signals in that DAG.
-        let mut ordered: Vec<&SignalId> = topo_rank.keys().copied().collect();
-        ordered.sort_by_key(|s| topo_rank[s]);
+        // Seed every DAG signal with its own index, then propagate availability
+        // through the zero-latency routes in topological order.
         let mut avail: HashMap<&SignalId, i64> =
-            ordered.iter().map(|&s| (s, own(s))).collect();
-        for route in self.routes.iter().filter(|r| r.enabled && (r.latency == 0)) {
+            topo_rank.keys().map(|&s| (s, own(s))).collect();
+        for &ri in order {
+            let route = &self.routes[ri];
             let a = avail[&route.src];
             let slot = avail.get_mut(&route.dst).unwrap();
             if a > *slot {
@@ -705,6 +712,34 @@ mod tests {
         rt.remove(&src, &dst).unwrap();
         rt.add_with_latency(src, dst, 1).unwrap();
         assert!(rt.validate(&members).is_ok());
+    }
+
+    #[test]
+    fn forward_flow_propagates_through_anti_topological_insertion() {
+        // Availability must fold through a chain of unowned intermediates in
+        // topological ROUTE order, not insertion order. Chain a → x → y → in,
+        // authored backward as [y→in, x→y, a→x], all zero-latency. `a` is owned
+        // by m3 (member idx 1), `in` by m1 (idx 0); availability at `a` (1) must
+        // reach `y`, making the y→in route into m1's owned input a backward edge.
+        //
+        // Old code folded in insertion order: avail[y] stayed -1, so y→in passed
+        // and validation wrongly succeeded (a silent one-tick delay at runtime).
+        let members = ["m1", "m3"];
+        let a = vsig_id("m3", "a").unwrap();
+        let x = vsig_id("wire", "x").unwrap();
+        let y = vsig_id("wire", "y").unwrap();
+        let dst_in = vsig_id("m1", "in").unwrap();
+
+        let mut rt = RouteTable::new();
+        rt.add(y.clone(), dst_in.clone()).unwrap();
+        rt.add(x.clone(), y.clone()).unwrap();
+        rt.add(a.clone(), x.clone()).unwrap();
+
+        // The route into the owned destination (y→in) is the backward edge.
+        assert!(matches!(
+            rt.validate(&members),
+            Err(RouteError::BackwardRoute { src, dst }) if (src == y) && (dst == dst_in)
+        ));
     }
 
     #[test]

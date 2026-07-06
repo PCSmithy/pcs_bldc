@@ -85,7 +85,7 @@ pub trait Member {
     /// Registering signals here is the **typical convention**, not a mandate:
     /// registration is legal **at any time during runtime** — any member, any
     /// `sig_type`, mid-[`advance`](Member::advance) included (a member may add a
-    /// port it just discovered it needs, or a firmware member re-derive its cvars
+    /// signal it just discovered it needs, or a firmware member re-derive its cvars
     /// across a reboot). `set_enabled(true)` is simply the common, tidy place to do
     /// it. Registration is idempotent, so a re-enable is a benign no-op on
     /// already-registered signals.

@@ -32,8 +32,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voyant::{
-    vsig_id, Backend, Engine, EngineError, Firmware, FirmwareMember, LogEntry, LogLevel, Member,
-    RampModel, RouteError, SignalId, StateTable, Value,
+    vsig_id, Engine, EngineError, Firmware, FirmwareMember, LogEntry, LogLevel, Member, RampModel,
+    RouteError, SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
