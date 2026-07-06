@@ -21,13 +21,16 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
         .hi2c =
         {
             .Instance = I2C1,
-            // CYPD3177 USB-PD sink HPI bus. TIMINGR from the .ioc (MX_I2C1_Init):
-            // 0x60715075 at the 144 MHz I2C1 kernel clock -> ~100 kHz standard
-            // mode. TIMINGR is opaque, so the SCL rate is carried separately for
-            // the transfer-timeout formula.
+            // CYPD3177 USB-PD sink HPI bus (external, 5.1k pull-ups): 400 kHz
+            // fast mode at the 144 MHz kernel clock. Unverified until the C28
+            // rework frees the bus — drop to 100 kHz if the rise time proves
+            // marginal. TIMINGR is opaque, so the SCL rate is carried
+            // separately for the transfer-timeout formula.
             .Init =
             {
-                .Timing           = 0x60715075,
+                // .Timing           = 0x60715075, // 100kHz
+                .Timing           = 0x10E32674, // 400kHz
+                // .Timing           = 0x10A30E20, // 1MHz
                 .OwnAddress1      = 0,
                 .AddressingMode   = I2C_ADDRESSINGMODE_7BIT,
                 .DualAddressMode  = I2C_DUALADDRESS_DISABLE,
@@ -38,10 +41,10 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
             },
         },
         .transferMode = HW_I2C_TRANSFERMODE_INTERRUPT,
-        .sclBitRateHz = 100000U,
+        .sclBitRateHz = 400000U,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
         .transferMode = HW_I2C_TRANSFERMODE_INTERRUPT,
-        .sclBitRateHz = 100000U,
+        .sclBitRateHz = 400000U,
         .busNameStr   = "I2C1",
 #else
 # error "ERROR! HW_I2C_config not defined for build target!"
@@ -54,12 +57,14 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
         .hi2c =
         {
             .Instance = I2C3,
-            // STSPIN32G4 gate-driver bus, bonded in-package to PC8/PC9. Same
-            // 144 MHz PCLK1 kernel clock as I2C1, so the same TIMINGR gives
-            // ~100 kHz standard mode.
+            // STSPIN32G4 gate-driver bus, bonded in-package to PC8/PC9 (short,
+            // internal pull-ups): 1 MHz Fast-mode Plus at the 144 MHz PCLK1
+            // kernel clock, bench-verified.
             .Init =
             {
-                .Timing           = 0x60715075,
+                // .Timing           = 0x60715075, // 100kHz
+                // .Timing           = 0x10E32674, // 400kHz
+                .Timing           = 0x10A30E20, // 1MHz
                 .OwnAddress1      = 0,
                 .AddressingMode   = I2C_ADDRESSINGMODE_7BIT,
                 .DualAddressMode  = I2C_DUALADDRESS_DISABLE,
@@ -70,10 +75,10 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
             },
         },
         .transferMode = HW_I2C_TRANSFERMODE_INTERRUPT,
-        .sclBitRateHz = 100000U,
+        .sclBitRateHz = 1000000U,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
         .transferMode = HW_I2C_TRANSFERMODE_INTERRUPT,
-        .sclBitRateHz = 100000U,
+        .sclBitRateHz = 1000000U,
         .busNameStr   = "I2C3",
 #else
 # error "ERROR! HW_I2C_config not defined for build target!"
