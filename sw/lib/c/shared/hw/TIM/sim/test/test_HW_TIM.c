@@ -213,6 +213,7 @@ static void test_output_level_follows_compare_and_enable(void)
     TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
 
     TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));   // MOE gates the output
     // counter 0 < compare 400 -> active.
     TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
 
@@ -226,6 +227,7 @@ static void test_complementary_antiphase(void)
 {
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
     TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));   // MOE gates the outputs
 
     // counter 0 < compare -> primary active, complement inactive.
     TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
@@ -271,14 +273,115 @@ static void test_break_forces_outputs_inactive(void)
 {
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
     TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
     TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
 
     HW_TIM_sim_assertBreak(PWM_CH, true);
     TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
     TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getComplementaryLevel(PWM_CH, OC0));
 
+    // Break release does not restore outputs: they stay inactive until the
+    // master output enable is set again (fw~hal_tim_008).
     HW_TIM_sim_assertBreak(PWM_CH, false);
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
     TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+}
+
+/* ---- fw~hal_tim_008: master output enable ---- */
+
+// Bullet 1: clearing MOE holds every enabled output at its inactive state.
+// [test->fw~hal_tim_008~1]
+static void test_moe_gates_enabled_output(void)
+{
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+
+    // MOE is commanded OFF at init, so an enabled unit still reads inactive.
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, false));
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getComplementaryLevel(PWM_CH, OC0));
+}
+
+// Bullet 2: setting MOE restores outputs per the unchanged per-unit config;
+// the clear leaves compare values and enables intact. The reported state
+// tracks the commanded state with no break asserted.
+// [test->fw~hal_tim_008~1]
+static void test_moe_restore_preserves_config(void)
+{
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+    TEST_ASSERT_TRUE(HW_TIM_setCompare(PWM_CH, OC0, 250U));
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+
+    bool moe = false;
+    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_CH, &moe));
+    TEST_ASSERT_TRUE(moe);
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, false));
+    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_CH, &moe));
+    TEST_ASSERT_FALSE(moe);
+
+    // Per-unit compare survived the gate toggling.
+    uint32_t compare = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getCompare(PWM_CH, OC0, &compare));
+    TEST_ASSERT_EQUAL_UINT32(250U, compare);
+
+    // Re-enabling restores the waveform: counter 0 < compare 250 -> active.
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+}
+
+// Bullet 3: after a break assertion and release, the reported state reads
+// disabled and outputs stay inactive until MOE is set again.
+// [test->fw~hal_tim_008~1]
+static void test_moe_reads_disabled_after_break(void)
+{
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, OC0, true));
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+
+    bool moe = false;
+    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_CH, &moe));
+    TEST_ASSERT_TRUE(moe);
+
+    HW_TIM_sim_assertBreak(PWM_CH, true);
+    HW_TIM_sim_assertBreak(PWM_CH, false);
+
+    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_CH, &moe));
+    TEST_ASSERT_FALSE(moe);
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH, OC0));
+}
+
+// Bullet 4: set, clear, and read on an out-of-range or uninitialized channel
+// return false.
+// [test->fw~hal_tim_008~1]
+static void test_moe_error_returns(void)
+{
+    bool moe = false;
+
+    // Uninitialized driver.
+    TEST_ASSERT_FALSE(HW_TIM_setMainOutputEnabled(PWM_CH, true));
+    TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(PWM_CH, &moe));
+
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    // Out-of-range channel.
+    TEST_ASSERT_FALSE(HW_TIM_setMainOutputEnabled(HW_TIM_CHANNEL_COUNT, true));
+    TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(HW_TIM_CHANNEL_COUNT, &moe));
+
+    // NULL out-pointer.
+    TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(PWM_CH, NULL));
 }
 
 int main(void)
@@ -313,6 +416,11 @@ int main(void)
     RUN_TEST(test_trgo_on_oc_match);
 
     RUN_TEST(test_break_forces_outputs_inactive);
+
+    RUN_TEST(test_moe_gates_enabled_output);
+    RUN_TEST(test_moe_restore_preserves_config);
+    RUN_TEST(test_moe_reads_disabled_after_break);
+    RUN_TEST(test_moe_error_returns);
 
     return UNITY_END();
 }

@@ -148,7 +148,32 @@ there while the break remains asserted.
 Acceptance:
 - Asserting the break input drives every output of the channel to its inactive
   level.
-- The outputs remain inactive for as long as the break stays asserted.
+- The outputs remain inactive while the break stays asserted; after release,
+  restoration follows the master output enable (fw~hal_tim_008~1).
+
+Covers:
+- sys~arch_005~1
+
+Needs: impl, test
+
+### Master output enable
+`fw~hal_tim_008~1`
+
+The driver shall set, clear, and report a channel's master output enable,
+which gates every enabled output-compare output simultaneously while leaving
+per-unit configuration intact: the outputs hold their inactive state whenever
+it is clear — commanded, or cleared by a break event — and it stays clear
+until set again.
+
+Acceptance:
+- Clearing the master output enable holds every enabled output at its
+  inactive state.
+- Setting it restores the outputs per the per-unit compare values and
+  enables, which are unchanged by the clear.
+- After a break-input assertion and release, the reported state reads
+  disabled and the outputs stay inactive until it is set again.
+- Set, clear, and read on an out-of-range or uninitialized channel returns
+  false.
 
 Covers:
 - sys~arch_005~1

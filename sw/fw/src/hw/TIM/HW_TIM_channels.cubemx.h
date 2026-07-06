@@ -23,7 +23,7 @@
 #define HW_TIM_CUBEMX_INIT_TIM1 \
     .Prescaler         = 0, \
     .CounterMode       = TIM_COUNTERMODE_CENTERALIGNED1, \
-    .Period            = 3599, \
+    .Period            = 4249, \
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
     .RepetitionCounter = 1, \
     .AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE,
@@ -82,7 +82,7 @@
     .OffStateRunMode  = TIM_OSSR_ENABLE, \
     .OffStateIDLEMode = TIM_OSSI_ENABLE, \
     .LockLevel        = TIM_LOCKLEVEL_OFF, \
-    .DeadTime         = 0, \
+    .DeadTime         = 43, \
     .BreakState       = TIM_BREAK_ENABLE, \
     .BreakPolarity    = TIM_BREAKPOLARITY_HIGH, \
     .BreakFilter      = 0, \
@@ -132,12 +132,12 @@
 #define HW_TIM_CUBEMX_SIM_TIM1 \
     .channelNameStr   = "TIM1", \
     .prescaler        = 0U, \
-    .period           = 3599U, \
+    .period           = 4249U, \
     .counterWidthBits = 16U, \
     .countDir         = HW_TIM_COUNT_CENTER, \
     .outputCompare    = { HW_TIM_CUBEMX_SIM_OC_TIM1 }, \
     .configureBreakDeadTime = true, \
-    .deadTime               = 0U, \
+    .deadTime               = 43U, \
     .hasBreakInput          = true, \
     .configureTrgo          = true, \
     .trgoSource             = HW_TIM_TRGO_UPDATE,

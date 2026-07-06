@@ -74,7 +74,13 @@ FREERTOS_SRC="${SRC}/Middlewares/Third_Party/FreeRTOS/Source"
 FREERTOS_DST="${LIB_C}/FreeRTOS"
 if [ -d "${FREERTOS_SRC}" ]; then
   echo "==> Refreshing ${FREERTOS_DST}/ (vendor content only — CMakeLists.txt left alone)"
-  rm -f  "${FREERTOS_DST}"/*.c
+  # Wipe only the known vendor kernel sources (mirror of the cp list below).
+  # Hand-authored root-level files (host_test_hooks.c) must survive the
+  # round-trip, so no *.c glob here.
+  rm -f  "${FREERTOS_DST}"/tasks.c "${FREERTOS_DST}"/queue.c \
+         "${FREERTOS_DST}"/list.c "${FREERTOS_DST}"/timers.c \
+         "${FREERTOS_DST}"/event_groups.c "${FREERTOS_DST}"/stream_buffer.c \
+         "${FREERTOS_DST}"/croutine.c
   rm -rf "${FREERTOS_DST}/include"
   # Refresh only the vendor-managed portable subdirs. portable/Native-Fiber/ is
   # our hand-authored cooperative SIL port (not in the CubeMX tree) and must

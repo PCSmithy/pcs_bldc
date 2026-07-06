@@ -90,6 +90,11 @@ bool HW_TIM_init(const HW_TIM_config_S * const config);
 // Returns false if not initialized, channel out of range, or out is NULL.
 bool HW_TIM_getCounter(HW_TIM_channels_E channel, uint32_t * const out);
 
+// Read a channel's configured counter period (ARR) in raw counts — the
+// full-scale a duty fraction maps against. Returns false if not initialized,
+// the channel is out of range, or out is NULL.
+bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out);
+
 // Set the compare value (raw counts) of an output-compare unit. Returns
 // false if not initialized, indices out of range, the unit is not enabled,
 // or counts exceeds the configured period.
@@ -104,4 +109,17 @@ bool HW_TIM_getCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t * con
 // driven alongside CHx. Returns false if not initialized, indices out of
 // range, or the unit is not enabled in the config.
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool enabled);
+
+// Set or clear a channel's master output enable (MOE), the single gate over
+// every enabled output-compare output. Commanded OFF at init, so outputs stay
+// inactive until a consumer sets it. Per-unit compare values and enables are
+// left untouched, so clearing then setting restores the prior waveform.
+// Returns false if not initialized or the channel is out of range.
+bool HW_TIM_setMainOutputEnabled(HW_TIM_channels_E channel, bool enabled);
+
+// Report a channel's master output enable. Reflects hardware truth (the BDTR
+// MOE bit), so a break-forced clear reads back as disabled even though the
+// commanded state used by set/restore is unchanged. Returns false if not
+// initialized, the channel is out of range, or `enabled` is NULL.
+bool HW_TIM_getMainOutputEnabled(HW_TIM_channels_E channel, bool * const enabled);
 

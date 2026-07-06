@@ -25,6 +25,7 @@
 #include "IO_AS5048.h"
 #include "IO_SK6805.h"
 #include "IO_i2c.h"
+#include "IO_PWM.h"
 #include "dev_switch.h"
 #include "dev_CYPD3177.h"
 #include "dev_gateDriver.h"
@@ -43,6 +44,7 @@ extern const HW_I2C_config_S HW_I2C_config;
 extern const HW_TIM_config_S HW_TIM_config;
 extern const HW_DMA_config_S HW_DMA_config;
 extern const IO_i2c_config_S IO_i2c_config;
+extern const IO_PWM_config_S IO_PWM_config;
 
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
@@ -660,6 +662,7 @@ static bool prvAppInit(void)
     ok &= IO_AS5048_init(&IO_AS5048_config);
     ok &= IO_SK6805_init(&IO_SK6805_config);
     ok &= IO_i2c_init(&IO_i2c_config);
+    ok &= IO_PWM_init(&IO_PWM_config);
     ok &= dev_switch_init(&dev_switch_config);
     ok &= dev_CYPD3177_init(&dev_CYPD3177_config);
     ok &= dev_gateDriver_init(&dev_gateDriver_config);

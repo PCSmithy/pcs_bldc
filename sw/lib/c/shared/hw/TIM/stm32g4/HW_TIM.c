@@ -14,6 +14,12 @@ typedef struct
     // mutates these (state, lock), so they cannot live in the const config.
     TIM_HandleTypeDef htim[HW_TIM_CHANNEL_COUNT];
 
+    // Last-commanded MOE per channel. HAL_TIM_PWM_Start force-sets the BDTR
+    // MOE bit, so setOutputEnabled re-applies this to keep enabling a CCx unit
+    // from energizing outputs while the bridge is commanded off. Distinct from
+    // the hardware MOE bit, which a break event can clear behind our back.
+    bool moeCommanded[HW_TIM_CHANNEL_COUNT];
+
     const HW_TIM_config_S * config;
     bool initialized;
 } HW_TIM_data_S;
@@ -198,6 +204,10 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             for (size_t ch = 0U; (ch < config->numChannels) && initOk; ch++)
             {
                 data->htim[ch] = config->channels[ch].htim;
+                // MOE commanded OFF at init: outputs stay dead (matching
+                // fw~hal_tim_001's inactive-at-start contract) until a consumer
+                // calls HW_TIM_setMainOutputEnabled.
+                data->moeCommanded[ch] = false;
                 initOk = HW_TIM_private_initChannel(&data->htim[ch], &config->channels[ch]);
             }
             data->initialized = initOk;
@@ -217,6 +227,20 @@ bool HW_TIM_getCounter(HW_TIM_channels_E channel, uint32_t * const out)
         (channel < data->config->numChannels))
     {
         *out = __HAL_TIM_GET_COUNTER(&data->htim[channel]);
+        ret = true;
+    }
+    return ret;
+}
+
+bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out)
+{
+    bool ret = false;
+    if ((out != NULL) &&
+        (data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        *out = data->htim[channel].Init.Period;
         ret = true;
     }
     return ret;
@@ -261,6 +285,7 @@ bool HW_TIM_getCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t * con
 }
 
 // [impl->fw~hal_tim_004~1]
+// [impl->fw~hal_tim_008~1]
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool enabled)
 {
     bool ret = false;
@@ -282,6 +307,16 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool ena
                 {
                     ok = (HAL_TIMEx_PWMN_Start(htim, ocConfig->channel) == HAL_OK);
                 }
+                // HAL_TIM_PWM_Start / _PWMN_Start unconditionally set MOE on
+                // advanced timers. MOE is owned by setMainOutputEnabled, so
+                // clear it back when the bridge is commanded off — otherwise
+                // enabling a CCx unit would energize outputs. The unconditional
+                // clear is required because the CCx channel is now enabled, so
+                // the guarded __HAL_TIM_MOE_DISABLE would decline to act.
+                if (ok && !data->moeCommanded[channel])
+                {
+                    __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(htim);
+                }
             }
             else
             {
@@ -293,6 +328,49 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool ena
             }
             ret = ok;
         }
+    }
+    return ret;
+}
+
+// [impl->fw~hal_tim_008~1]
+bool HW_TIM_setMainOutputEnabled(HW_TIM_channels_E channel, bool enabled)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        TIM_HandleTypeDef * const htim = &data->htim[channel];
+        if (enabled)
+        {
+            __HAL_TIM_MOE_ENABLE(htim);
+        }
+        else
+        {
+            // Unconditional: the gate must drop outputs even while the CCx
+            // units stay enabled (the guarded disable would decline).
+            __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(htim);
+        }
+        data->moeCommanded[channel] = enabled;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_tim_008~1]
+bool HW_TIM_getMainOutputEnabled(HW_TIM_channels_E channel, bool * const enabled)
+{
+    bool ret = false;
+    if ((enabled != NULL) &&
+        (data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        // Read the live BDTR bit, not moeCommanded: a break event clears MOE in
+        // hardware (AutomaticOutput is disabled, so it stays clear after the
+        // break releases) and that must be visible to the caller.
+        *enabled = ((data->htim[channel].Instance->BDTR & TIM_BDTR_MOE) != 0U);
+        ret = true;
     }
     return ret;
 }

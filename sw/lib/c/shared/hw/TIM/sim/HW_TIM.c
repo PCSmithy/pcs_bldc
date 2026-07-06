@@ -15,7 +15,9 @@ typedef struct
     bool     centerGoingUp;                          // direction within a center-aligned ramp
     uint32_t compare[HW_TIM_OC_UNITS_PER_CHANNEL];
     bool     outputEnabled[HW_TIM_OC_UNITS_PER_CHANNEL];
-    bool     breakAsserted;
+    // MOE latch gating every enabled output. Commanded OFF at init; a break
+    // assertion clears it and it stays clear (no auto-restore) until set again.
+    bool     mainOutputEnabled;
     uint32_t triggerCount;
 } HW_TIM_channelData_S;
 
@@ -141,6 +143,20 @@ bool HW_TIM_getCounter(HW_TIM_channels_E channel, uint32_t * const out)
     return ret;
 }
 
+bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out)
+{
+    bool ret = false;
+    if ((out != NULL) &&
+        (data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        *out = data->config->channels[channel].period;
+        ret = true;
+    }
+    return ret;
+}
+
 // [impl->fw~hal_tim_004~1]
 bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t counts)
 {
@@ -188,6 +204,35 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool ena
         (data->config->channels[channel].outputCompare[ocUnit].enabled))
     {
         data->channelData[channel].outputEnabled[ocUnit] = enabled;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_tim_008~1]
+bool HW_TIM_setMainOutputEnabled(HW_TIM_channels_E channel, bool enabled)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        data->channelData[channel].mainOutputEnabled = enabled;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_tim_008~1]
+bool HW_TIM_getMainOutputEnabled(HW_TIM_channels_E channel, bool * const enabled)
+{
+    bool ret = false;
+    if ((enabled != NULL) &&
+        (data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels))
+    {
+        *enabled = data->channelData[channel].mainOutputEnabled;
         ret = true;
     }
     return ret;
@@ -311,7 +356,7 @@ uint32_t HW_TIM_sim_getOutputLevel(HW_TIM_channels_E channel, uint8_t ocUnit)
         const HW_TIM_channelData_S * const channelData = &data->channelData[channel];
 
         level = ocConfig->inactiveLevel;
-        if (channelData->outputEnabled[ocUnit] && !channelData->breakAsserted)
+        if (channelData->outputEnabled[ocUnit] && channelData->mainOutputEnabled)
         {
             level = (channelData->counter < channelData->compare[ocUnit])
                         ? HW_TIM_private_activeLevel(ocConfig->inactiveLevel)
@@ -334,7 +379,7 @@ uint32_t HW_TIM_sim_getComplementaryLevel(HW_TIM_channels_E channel, uint8_t ocU
         const HW_TIM_channelData_S * const channelData = &data->channelData[channel];
 
         level = ocConfig->inactiveLevel;
-        if (channelData->outputEnabled[ocUnit] && !channelData->breakAsserted)
+        if (channelData->outputEnabled[ocUnit] && channelData->mainOutputEnabled)
         {
             // Antiphase to the primary output.
             level = (channelData->counter < channelData->compare[ocUnit])
@@ -377,10 +422,14 @@ void HW_TIM_sim_clearTriggers(HW_TIM_channels_E channel)
 }
 
 // [impl->fw~hal_tim_007~1]
+// [impl->fw~hal_tim_008~1]
 void HW_TIM_sim_assertBreak(HW_TIM_channels_E channel, bool asserted)
 {
-    if ((data->initialized) && (channel < HW_TIM_CHANNEL_COUNT))
+    // A break assertion clears the MOE latch, as hardware does when
+    // AutomaticOutput is disabled. Release does not restore it — the latch
+    // stays clear until HW_TIM_setMainOutputEnabled sets it again.
+    if ((data->initialized) && (channel < HW_TIM_CHANNEL_COUNT) && asserted)
     {
-        data->channelData[channel].breakAsserted = asserted;
+        data->channelData[channel].mainOutputEnabled = false;
     }
 }

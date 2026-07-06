@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "HW_DMA.h"   // HW_DMA_irqHandler + HW_DMA_CHANNEL_* (DMA IRQ dispatch)
+#include "HW_I2C.h"   // HW_I2C_irqHandlerEv/Er + HW_I2C_BUS_* (I2C IRQ dispatch)
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -242,6 +243,36 @@ void DMA1_Channel1_IRQHandler(void)
 void DMA1_Channel2_IRQHandler(void)
 {
   HW_DMA_irqHandler(HW_DMA_CHANNEL_AS5048_RX);
+}
+
+/**
+  * @brief I2C1 event and error interrupts (CYPD3177 HPI bus). Each forwards to
+  * HW_I2C, which drives the HAL interrupt state machine and, at completion,
+  * wakes the transfer's suspended task. The NVIC lines are enabled by
+  * HW_I2C_init (the generated MSP wires only the pins/clock).
+  */
+void I2C1_EV_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEv(HW_I2C_BUS_1);
+}
+
+void I2C1_ER_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEr(HW_I2C_BUS_1);
+}
+
+/**
+  * @brief I2C3 event and error interrupts (STSPIN32G4 gate-driver bus, bonded
+  * in-package to PC8/PC9). Same dispatch as I2C1 above.
+  */
+void I2C3_EV_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEv(HW_I2C_BUS_2);
+}
+
+void I2C3_ER_IRQHandler(void)
+{
+  HW_I2C_irqHandlerEr(HW_I2C_BUS_2);
 }
 
 /* USER CODE END 1 */

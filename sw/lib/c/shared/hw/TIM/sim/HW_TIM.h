@@ -68,9 +68,16 @@ typedef struct
 bool HW_TIM_init(const HW_TIM_config_S * const config);
 
 bool HW_TIM_getCounter(HW_TIM_channels_E channel, uint32_t * const out);
+bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out);
 
 bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t counts);
 bool HW_TIM_getCompare(HW_TIM_channels_E channel, uint8_t ocUnit, uint32_t * const out);
 
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, uint8_t ocUnit, bool enabled);
+
+// Master output enable (MOE): the single latch gating every enabled output on
+// the channel. Commanded OFF at init and cleared by a break event, staying
+// clear until set again. get reports the latch's live state.
+bool HW_TIM_setMainOutputEnabled(HW_TIM_channels_E channel, bool enabled);
+bool HW_TIM_getMainOutputEnabled(HW_TIM_channels_E channel, bool * const enabled);
 
