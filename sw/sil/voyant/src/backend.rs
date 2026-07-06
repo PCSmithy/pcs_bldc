@@ -217,7 +217,7 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error
 /// A firmware instance as a [`Member`]: the "firmware kind" of member. It wraps a
 /// [`Backend`] (the internal driver of the DLL / lifecycle / DWARF) and drives it
 /// on the sim clock, and it is the **only** thing that touches firmware memory —
-/// routes never do (see [`RouteTable::propagate`](crate::route::RouteTable::propagate)).
+/// routes never do (they are table-mediated; see [`RouteTable`](crate::route::RouteTable)).
 ///
 /// Constructed with an explicit instance `name` — **not** derived from the DLL, so
 /// two boards can run the same firmware image as distinct members — and a firmware

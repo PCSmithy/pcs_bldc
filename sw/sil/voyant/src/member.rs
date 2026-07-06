@@ -45,6 +45,18 @@
 //! would only add friction today. The planned escalation, *if* scripted members
 //! (Python bindings) ever change the trust model, is to hand a member an enforced
 //! narrowed view instead of the full table.
+//!
+//! ## Registration order is a design surface
+//!
+//! The [`Engine`](crate::engine::Engine) advances members in **registration order**,
+//! and forward (zero-latency) route dataflow is resolved along that order. So the
+//! order you add members is a deliberate design choice: **order members along the
+//! signal flow** (producer before consumer). You do not have to get it right by
+//! inspection — the engine's step-time validator tells you when you get it wrong: a
+//! zero-latency route that reads a value a later-ordered member has not produced yet
+//! is a backward/feedback edge, and the validator names it and asks you to either
+//! declare that route delayed (the ZOH cut) or reorder the members. See
+//! [`state-route-tables.md`](../state-route-tables.md) §3.
 
 use crate::log::LogLevel;
 use crate::signal::{ParseError, SignalId, Value};

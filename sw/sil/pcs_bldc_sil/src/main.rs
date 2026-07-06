@@ -28,8 +28,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voyant::{
-    vsig_id, Backend, Engine, Firmware, FirmwareMember, LogEntry, LogLevel, Member, RampModel,
-    SignalId, StateTable, Value,
+    vsig_id, Backend, Engine, EngineError, Firmware, FirmwareMember, LogEntry, LogLevel, Member,
+    RampModel, RouteError, SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
@@ -153,8 +153,12 @@ fn main() -> ExitCode {
     println!("\n-- 6. route table (model vsig -> firmware cvar) --");
     check_route_table(&fw, &mut rep);
 
-    // --- Check 7: shutdown --------------------------------------------------
-    println!("\n-- 7. shutdown --");
+    // --- Check 7: two-member feedback loop (latency / validation) -----------
+    println!("\n-- 7. feedback loop (model <-> firmware, delayed ZOH cut) --");
+    check_feedback_loop(&fw, &mut rep);
+
+    // --- Check 8: shutdown --------------------------------------------------
+    println!("\n-- 8. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -533,6 +537,132 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
         "resumed route drives the destination again",
         resumed == model_after,
         format!("injectedRx[0] = {resumed} after resume (expect current model {model_after})"),
+    );
+    rep.absorb(eng.take_logs());
+}
+
+/// A model member for the feedback loop: reads input `in` (a firmware counter,
+/// delivered on the *delayed* backward edge) and emits `out = in % 200` (a
+/// [`Value::U32`] within a `u8` so it can drive the SPI sim's `injectedRx[0]` byte
+/// with no conversion). The modulo keeps `out` in range regardless of the firmware
+/// counter's absolute value.
+struct LoopModel {
+    name: String,
+    out: u32,
+}
+
+impl LoopModel {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            out: 0,
+        }
+    }
+    fn in_id(&self) -> SignalId {
+        vsig_id(&self.name, "in").expect("valid vsig id")
+    }
+    fn out_id(&self) -> SignalId {
+        vsig_id(&self.name, "out").expect("valid vsig id")
+    }
+}
+
+impl Member for LoopModel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
+        let input = st
+            .current_value(&self.in_id())
+            .ok()
+            .flatten()
+            .and_then(v_u64)
+            .unwrap_or(0);
+        self.out = (input % 200) as u32;
+        let id = self.out_id();
+        if let Err(e) = st.record(&id, Value::U32(self.out)) {
+            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        }
+    }
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            let _ = st.register(self.in_id(), None);
+            let _ = st.register(self.out_id(), Some("counts"));
+        }
+    }
+}
+
+/// Prove the settled per-route latency design end-to-end against the real firmware,
+/// as a genuine **two-member feedback loop**:
+///
+/// - forward (zero-latency): the model's `out` drives the firmware's SPI-sim input
+///   byte `HW_SPI_data.channels[0].injectedRx[0]` (a cvar the firmware *reads* but
+///   never writes, so a flushed value survives the tick);
+/// - backward (DELAYED, the explicit ZOH cut): the firmware counter
+///   `task1msRuns` routes back into the model's `in`.
+///
+/// The member order is `[model, firmware]`, so the backward firmware→model edge is a
+/// backward edge in registration order: the validator **rejects** it while it is
+/// zero-latency, and accepts it once declared delayed. We catch that step error,
+/// fix the wiring **live** (rewire-at-runtime), then assert the exact deterministic
+/// sequence the delayed loop produces.
+fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
+    let out = vsig_id("loop_model", "out").expect("valid vsig id");
+    let inp = vsig_id("loop_model", "in").expect("valid vsig id");
+    let counter = cvar("task1msRuns"); // firmware output (sampled)
+    let miso = cvar("HW_SPI_data.channels[0].injectedRx[0]"); // firmware input (driven)
+
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(LoopModel::new("loop_model"))); // idx 0
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US); // idx 1
+    fwm.drive_cvar(miso.clone(), Some("counts")); // route dest -> fw memory
+    fwm.sample_cvar(counter.clone(), None); // fw counter -> table
+    eng.add_member(Box::new(fwm));
+
+    // Forward edge: model out -> firmware MISO byte (zero-latency, model before fw).
+    eng.add_route(out.clone(), miso.clone()).expect("add forward route");
+    // Backward edge as ZERO-latency first: firmware counter -> model in. This is a
+    // backward edge (source firmware is registered AFTER the consuming model), so
+    // the validator must reject it at the next step.
+    eng.add_route(counter.clone(), inp.clone()).expect("add backward route");
+
+    let rejected = matches!(
+        eng.step(),
+        Err(EngineError::Route(RouteError::BackwardRoute { .. }))
+    );
+    rep.check(
+        "validator rejects the zero-latency feedback loop (backward edge)",
+        rejected,
+        "step() -> BackwardRoute until the backward edge is declared delayed".into(),
+    );
+
+    // Fix the wiring LIVE: drop the zero-latency backward edge, re-add it delayed
+    // (the explicit ZOH sample/actuation cut). Rewire-at-runtime is legal.
+    eng.remove_route(&counter, &inp).expect("remove backward route");
+    eng.add_delayed_route(counter.clone(), inp.clone())
+        .expect("add delayed backward route");
+
+    // Predicted deterministic sequence for injectedRx[0] read after each step:
+    //   step 1: model in is unset (fw counter not yet sampled by this engine) -> 0.
+    //   step k>=2: in = task1msRuns as of the end of step k-1 = base + (k-1),
+    //             so injectedRx[0] = (base + (k-1)) % 200.
+    // `base` is the firmware counter right before the first successful step (the
+    // rejected step returned early and did NOT advance the firmware).
+    let base = v_u64(&fw.read_cvar(counter.name())).unwrap_or(0);
+    const N: u64 = 6;
+    let got: Vec<u64> = (1..=N)
+        .map(|_| {
+            eng.step().expect("engine step");
+            v_u64(&fw.read_cvar(miso.name())).unwrap_or(0)
+        })
+        .collect();
+    let predicted: Vec<u64> = (1..=N)
+        .map(|k| if k == 1 { 0 } else { (base + (k - 1)) % 200 })
+        .collect();
+
+    rep.check(
+        "delayed feedback loop produces the exact predicted sequence",
+        got == predicted,
+        format!("injectedRx[0] over {N} steps = {got:?}, predicted {predicted:?} (base counter {base})"),
     );
     rep.absorb(eng.take_logs());
 }

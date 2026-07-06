@@ -22,12 +22,15 @@
 //!   routed inputs), plus [`RampModel`], voyant's reference model member, and the
 //!   [`vsig_id`] helper.
 //! - [`route`] — the [`RouteTable`]: declarative `source → destination`
-//!   transport, propagated once per tick (snapshot-then-write), with per-route
-//!   suspend/resume for fault injection (state-route-tables.md §2).
+//!   transport with per-route latency (0 = same-tick forward dataflow, 1 = the
+//!   delayed ZOH cut), step-time validation, and per-route suspend/resume for
+//!   fault injection (state-route-tables.md §2–§3).
 //! - [`engine`] — the [`Engine`]: the sim clock + step loop that owns the State
 //!   Table / Route Table / members and advances the whole system one tick at a
-//!   time in the canonical order (state-route-tables.md §3). It holds no backend
-//!   handle — each firmware member drives its own backend.
+//!   time in the canonical order — delayed routes from a pre-tick snapshot, then
+//!   per member the zero-latency DAG resolved fresh in topo order + advance
+//!   (state-route-tables.md §3). It holds no backend handle — each firmware member
+//!   drives its own backend.
 //! - [`log`] — the unified log system: [`LogLevel`] / [`LogEntry`] + the
 //!   drop-oldest [`LogRing`] the [`StateTable`] stamps with sim time.
 //!

@@ -83,6 +83,16 @@ into **chunked per-signal columnar buffers**; routes as flat `(src, dst, size)`
 arrays iterated with `memcpy`. Steady-state allocation-free. Easy to design in,
 miserable to retrofit.
 
+**Known seam — `M×R` zero-latency route re-evaluation.** The settled step
+([`state-route-tables.md`](state-route-tables.md) §3) re-resolves the full
+zero-latency route DAG (in cached topological order) before *each* of the `M`
+members, so a member always sees fully-resolved forward dataflow. That is `M×R`
+pure copies per tick where `R` is the zero-latency route count. It is correct and
+simple, and fine at current scale; the optimization (resolve once per tick and let
+each member read its already-final inputs, or per-member incoming-route slices) is
+deferred here — the topo order is already cached across ticks (rebuilt only when the
+wiring is dirty), so only the copies remain.
+
 ## 7. Lever 6 — parallelism (free aggregate throughput)
 
 Fast mode scales across **processes** (pytest-xdist): aggregate = per-sim speed ×

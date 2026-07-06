@@ -149,51 +149,98 @@ Design rules:
   **fault-injection** primitive (driven from the Python layer). A suspended
   route simply isn't propagated that tick.
 
-## 3. Tick evaluation order
+## 3. Tick evaluation order (SETTLED — per-route latency)
 
-A single fixed period, every tick — **no per-route phase inference**:
+**The design: option B with annotations.** Discrete sim serializes concurrent
+physics, so every feedback cycle needs *exactly one* tick of separation
+somewhere. Rather than bake a uniform one-hop-per-tick delay into *all* routes,
+the cut is made **explicit and physical per route**, and **forward dataflow gets
+zero added latency**.
+
+### Per-route latency
+
+Every route carries a **`latency`** in engine ticks: **`0`** (default) or **`1`**.
+(The field is a `u32` so higher values are representable later; anything `> 1` is
+rejected today with a clear "not yet supported" error.)
+
+- **Zero-latency (forward dataflow).** The destination receives the source's value
+  **as produced this same tick**. A chain `a→b→c` of zero-latency routes resolves
+  *fully* in one tick.
+- **Latency-1 (the ZOH cut).** The destination receives the source's value **as of
+  the end of the previous tick** — modelling the real zero-order-hold
+  sample/actuation boundary of a sensor/actuator. This is the *one* explicit
+  tick of separation a feedback loop needs.
+
+The API keeps the common case terse: `add(src, dst)` is latency-0; a delayed edge
+is `add_with_latency(src, dst, 1)` (voyant) / `Engine::add_delayed_route(src, dst)`
+(the engine sugar).
+
+### Engine step
 
 ```
 per tick:
-  1. advance models (dt)         → model output entries updated
-  2. propagate routes            snapshot ALL sources, then write ALL dests
-  3. sil_fw_advance_tick()       firmware runs to quiescence (D1)
-  4. record signals; asserts/injection
-  5. pace (realtime: sleep · fast: now)
+  1. now += tick_period; set_time(now)
+  2. if wiring dirty: validate (below); cache the verdict + zero-latency topo order
+  3. propagate DELAYED routes once — from a snapshot taken BEFORE any member
+     advances (each delayed dst gets its source's end-of-previous-tick value)
+  4. for each ENABLED member, in registration order:
+       a. evaluate the enabled ZERO-latency routes in topological order with FRESH
+          reads (a→b→c resolves fully, reading values produced earlier this tick)
+       b. member.advance(dt)   (a firmware member: flush driven cvars → advance_tick
+                                → sample sampled cvars; a model: read inputs, step,
+                                push outputs)
+  5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
 ```
 
-Why one uniform propagation pass is correct:
+Why this is correct:
 
-- **Mutual exclusion holds.** Propagation (step 2) is a pure State Table
-  operation — it records between *entries* and never touches firmware memory. The
-  firmware member does the memory sync (flush driven `cvar` entries in, sample
-  outputs back out) inside its own advance while the firmware is quiescent
-  ([`ffi-boundary.md`](ffi-boundary.md) §5), so reading firmware-*output* statics
-  and writing firmware-*input* statics is race-free. Reading an output here simply
-  reads the previous tick's value — exactly the one-step sampling delay we want.
-- **Order-independent.** The pass **snapshots every source first, then writes
-  every destination**, so route order in the table never changes the result,
-  and a chain `x→y→z` advances one deterministic hop per tick (one delta
-  cycle). This is the rule that matters for determinism.
+- **Mutual exclusion holds.** Propagation is a pure State Table operation — it
+  records between *entries* and never touches firmware memory. The firmware member
+  syncs memory (flush driven `cvar` entries in, sample outputs back out) inside its
+  own advance while the firmware is quiescent ([`ffi-boundary.md`](ffi-boundary.md)
+  §5), so reading firmware-*output* statics and writing firmware-*input* statics is
+  race-free.
+- **Zero forward latency.** Re-evaluating the full zero-latency DAG (in topo order)
+  before *each* member is semantically identical to per-member incoming-route
+  resolution — routes are pure copies and `record` dedups unchanged values — but far
+  simpler. So a member always sees the fully-resolved forward dataflow at its turn,
+  with no artificial per-hop delay. (The `M×R` re-evaluation cost is a flagged perf
+  seam — fine at current scale; [`performance.md`](performance.md) owns later
+  optimization.)
+- **The delayed edge is the physical cut.** A latency-1 route is where a feedback
+  loop's one unavoidable tick of separation lives — a faithful ZOH sample. At the
+  base `dt` (finest ISR rate, D6) this is sub-sampling-period and physically
+  correct; zero-delay algebraic loops are ill-posed in discrete time anyway.
 
-**Consequence — a small, fixed, consistent latency.** A value leaving the
-firmware reaches the models the next tick; each hop adds one tick. At the base
-`dt` (fastest ISR rate, D6) this is sub-sampling-period and physically faithful
-— real sensors/actuators sample with delay, and zero-delay algebraic loops are
-ill-posed in discrete time anyway.
+### Member registration order is a design surface
 
-If a deep model→model chain ever accumulates too much latency, the lever is
-ordering the **model updates** (step 1) in dataflow order — *not* adding route
-phases. Routes stay uniform.
+Because forward flow is resolved along **member registration order**, that order is
+a deliberate design surface: **order members along the signal flow.** The validator
+(below) tells you when you get it wrong — a route that reads a value a member has
+not produced yet is a backward edge and must either be declared delayed or the
+members reordered.
 
-> **OPEN — route-hop latency is NOT settled.** The "one tick per hop" delay
-> described above is *not* a decided contract; it is under an owner design review.
-> The firm requirement is that routing add **no artificially induced per-hop
-> latency**. The current engine implements an **interim** placement — it propagates
-> routes *before each member* in registration order, so along that order a value
-> reaches its consumer with zero added latency (a model output routed to a firmware
-> `cvar` lands before that firmware advances in the same step). Treat any per-hop
-> latency figure here as provisional pending that review.
+### Step-time validation (dirty-flag cached)
+
+Wiring mutations (route add/remove/suspend/resume, member add, member
+enable/disable) set a **dirty flag**; `step()` revalidates only when dirty, else
+reuses the cached verdict + topo order. Rewire-at-any-time stays legal — a
+validation failure surfaces at the **next** `step`, loudly, as an error naming the
+offending route. Checks:
+
+- **Zero-latency graph acyclic** (enabled zero-latency routes only). A cycle is an
+  algebraic loop → error; declare one edge delayed to break it.
+- **Forward flow.** Each signal gets an *availability index*: `avail(s) =
+  ownerIndex(s)` if `s`'s `<source>` names a registered member, else `-1`
+  (driver-owned — set between steps, available before all members); then propagate
+  through the zero-latency DAG in topo order: `avail(s) = max(own,
+  max(avail(src)))` over enabled zero-latency routes into `s`. For every enabled
+  zero-latency route whose `dst` is owned by a member, require `avail(src) <
+  ownerIndex(dst)` **strictly** (a same-member zero-latency loop is a silent delay
+  and must be declared delayed). A violation errors: *"route X→Y needs latency
+  (feedback/backward edge) or reorder members"*.
+- **Single driver.** Two *enabled* routes with the same `dst` is an error
+  (suspended routes exempt — fault-injection swaps stay legal).
 
 ## 4. What this subsumes
 
@@ -224,9 +271,9 @@ One namespace, one access path, zero firmware-side data code.
 - **Route transforms:** strictly pure copy + width coercion, or allow a small
   declarative scale/offset on a route for convenience? (Leaning pure; push all
   real conversion into models.) Ties to D6 (model↔firmware representation).
-- **Model-update ordering** (step 1): declaration order vs dataflow/topological
-  order, if deep model→model chains ever make per-hop latency matter. (Route
-  propagation itself is already order-independent via snapshot-then-write.)
+- ~~**Model-update ordering** vs per-hop latency.~~ **Resolved (§3):** per-route
+  latency (0 forward / 1 delayed ZOH cut); forward flow resolves fully each tick in
+  topological order along member registration order, validated at step time.
 - **Auto-registration scope:** register *all* DWARF statics (incl. FreeRTOS/HAL
   internals) or filter to a project allowlist for a tidier namespace? (Full
   namespace is cheap; filtering is cosmetic.)

@@ -204,10 +204,13 @@ its signals hold their last recorded value. `set_enabled` is where a member
 depth* — a firmware member reloading its DLL (boot-from-reset), a model reinit'ing
 its integration state — is not implemented; today enable is gating only.
 
-The per-tick order the engine runs (advance sim time → for each enabled member:
-propagate routes, then advance) and its **interim** route placement are documented
-in [`state-route-tables.md`](state-route-tables.md) §3 (route-hop latency is an
-OPEN question there).
+The per-tick order the engine runs — advance sim time → validate wiring if dirty →
+propagate delayed routes from a pre-tick snapshot → for each enabled member:
+resolve the zero-latency route DAG (topo order, fresh reads) then advance — and the
+**settled per-route latency** model (0 forward / 1 delayed ZOH cut) are documented
+in [`state-route-tables.md`](state-route-tables.md) §3. Member registration order is
+a design surface for forward flow; the step-time validator flags a route that needs
+to be delayed or reordered.
 
 ## 5. Sim core (Rust)
 
@@ -215,15 +218,22 @@ One **sim clock** drives a discrete time-step engine at a fixed base `dt`
 (D6; set by model numerical stability, typically finer than the PWM rate, with
 ISRs firing on integer multiples). State flows through the State
 Table; the Route Table moves it (see
-[`state-route-tables.md`](state-route-tables.md)). Each step:
+[`state-route-tables.md`](state-route-tables.md) §3 for the settled per-route
+latency model). Each step:
 
-1. Advance plant models by `dt` (updates their State Table entries).
-2. **Propagate routes** in one uniform pass — snapshot all sources, then record
-   all destinations. This is **table-only**: routes move values between State
-   Table entries and never touch a backend. The firmware member then flushes its
-   routed `cvar` destinations into firmware memory (and samples outputs back out)
-   inside its own advance. Race-free: the firmware is quiescent here (D1).
-3. `sil_fw_advance_tick()` — firmware runs to quiescence (D1).
+1. Advance sim time; **validate the wiring if dirty** (acyclic zero-latency graph,
+   forward flow along member order, single-driver) — a bad verdict is raised at
+   this step and cached until fixed.
+2. **Propagate delayed (latency-1) routes** from a snapshot taken before any member
+   advances — each delayed destination gets its source's end-of-previous-tick value
+   (the ZOH cut).
+3. **For each enabled member, in registration order:** re-resolve the enabled
+   **zero-latency** routes in topological order with fresh reads (forward dataflow,
+   zero added latency), then advance the member. This is **table-only**: routes move
+   values between entries and never touch a backend; the firmware member flushes its
+   routed `cvar` destinations into firmware memory and samples outputs back out
+   inside its own advance (`sil_fw_advance_tick` runs to quiescence — race-free, the
+   firmware is quiescent here, D1).
 4. Append changed signals to the State Table historian (change-logged,
    per-signal timeseries — D12); run test asserts/injection (ad-hoc State
    Table reads/writes). The `Engine` holds **no backend handle** — it touches

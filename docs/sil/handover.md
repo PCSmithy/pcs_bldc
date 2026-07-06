@@ -1,6 +1,6 @@
 # SIL bring-up — handover
 
-Last updated: 2026-07-04. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-07-05. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
 `roadmap.md` in this folder.
 
@@ -130,9 +130,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   is now idempotent (identical re-registration is a no-op; conflicting unit errors).
   The ASLR anchor is **auto-derived** (export∩DWARF) — no board symbol in voyant.
   Deleted: `Model`/`ModelSignal`/`register_model`/`record_model`, `Firmware::read_u32`,
-  the engine's pull-based vsig cache + `Engine::sample_cvar`. **Route-hop latency is
-  an OPEN owner question**; the engine's before-each-member route placement is an
-  INTERIM placeholder (see [`state-route-tables.md`](state-route-tables.md) §3).
+  the engine's pull-based vsig cache + `Engine::sample_cvar`.
 
 - **Table-mediated routing + log system (chunk A follow-up, 2026-07-05):** routes
   are now a **pure State Table operation** — `RouteTable::propagate(&mut StateTable)`
@@ -156,6 +154,26 @@ docs/sil/*.md            the design (see "Design docs" below)
   memory), asserting against the SPI sim's `injectedRx[0]` — a firmware input the
   firmware *reads* but never *writes*, so a flushed value survives `advance_tick`.
   voyant unit tests 34 -> 43; sanity suite all PASS.
+
+- **Route latency + step-time validation (settled "B with annotations", 2026-07-05):**
+  routes gained a **per-route `latency`** (0 = same-tick forward dataflow, 1 = the
+  delayed ZOH sample/actuation cut; `u32`, `>1` rejected). `RouteTable::propagate`
+  split into **`propagate_delayed`** (snapshot-then-write, once at tick start, from
+  end-of-previous-tick values) and **`propagate_zero_latency`** (fresh reads in
+  cached topological order, re-run before each member so a chain `a→b→c` resolves the
+  SAME tick — the old one-hop-per-tick defect is gone). New **`RouteTable::validate`**
+  (given member names in registration order) enforces: single-driver (enabled routes;
+  suspended exempt), zero-latency-graph acyclic, and forward-flow (availability-index
+  along member order) — errors `MultiDriver`/`Cycle`/`BackwardRoute`/`UnsupportedLatency`.
+  The **`Engine` caches the verdict + topo order behind a dirty flag** set by every
+  wiring mutation; a bad verdict is raised at the next `step` and re-raised until
+  fixed (rewire-at-runtime stays legal). API sugar: `Engine::add_delayed_route`.
+  **Member registration order is now an explicit design surface.** Sanity-suite
+  **check 7** added: a genuine two-member feedback loop (model `out` → firmware
+  `injectedRx[0]` zero-latency; firmware `task1msRuns` → model `in` delayed) — the
+  validator rejects the loop until the backward edge is declared delayed, then the
+  loop steps to an exact predicted sequence. voyant unit tests 43 -> 53; sanity suite
+  all PASS.
 
 ## What's next (prioritized)
 
