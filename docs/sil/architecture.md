@@ -190,6 +190,20 @@ memory — routes never do (they are table-mediated; see
 stays an explicit call on the `Backend` the driver holds. Multi-firmware is simply
 multiple `FirmwareMember`s, each syncing through its own backend.
 
+**Firmware ports.** A firmware member's sim HW drivers can register signals of
+their own at runtime — **ports** — through a hook vtable the framework installs
+over the control ABI (`sil_fw_setHooks`, before `sil_fw_start`; the null-safe
+`SIL_ports` C helper wraps it, so hookless standalone/unit-test runs are
+unchanged). Ports carry **native-format** values (volts stay volts; the driver
+owns conversion to its C representation), and their I/O is **cache-mediated**
+exactly like the cvar mirror lists — the member fills every port's input cache
+from the table before each `advance_tick` and drains the port-write buffer back
+into the table after it, so C never touches the State Table mid-tick. The C side
+names only `{sig_type, local, unit}`; the member prefixes its instance name. The
+sim `HW_ADC` (one input port per enabled input, volts→counts in the driver,
+synthetic-ramp fallback when undriven) is the first user. See
+[`state-route-tables.md`](state-route-tables.md) §1 "Ports".
+
 **Multi-instance vision.** Firmware instances, plant/peer models, and future native
 apps are all **peers** — members side by side in one engine. The `<source>` segment
 of a signal's id names its producing member, so *N* firmware instances (the

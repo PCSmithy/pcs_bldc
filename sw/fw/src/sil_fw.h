@@ -15,6 +15,15 @@
  */
 
 #include "lib_types.h"
+#include "SIL_ports.h"
+
+/* Install the port-registration hook vtable (see SIL_ports.h): the seam sim
+ * HW drivers use to expose runtime-registered signals ("ports") in native
+ * units. Called by the framework BEFORE sil_fw_start so drivers can register
+ * ports during init; NULL uninstalls. The struct is copied. With no hooks
+ * installed the drivers behave exactly as standalone (SIL_ports is
+ * null-safe). */
+void sil_fw_setHooks(const SIL_ports_hooks_S * const hooks);
 
 /* HW init + create tasks + run the scheduler to first quiescence. Returns
  * false on init / task-creation failure — the framework reports it; the

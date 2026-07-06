@@ -24,11 +24,16 @@ ADC, ...). Files, as of 2026-07-04:
 - `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 
 **Why it goes:** the SIL (voyant) has white-box DWARF read/write access to all
-firmware memory, plus State Table overrides and (soon) Route Table
-suspend/resume for injection. A hand-written per-driver injection API is a
-redundant seam — extra firmware added to the firmware-under-test in order to
-test the firmware-under-test. Remove it across the board, on every peripheral
-driver.
+firmware memory, plus State Table overrides and Route Table suspend/resume for
+injection. A hand-written per-driver injection API is a redundant seam — extra
+firmware added to the firmware-under-test in order to test the
+firmware-under-test. Remove it across the board, on every peripheral driver.
+
+**Prerequisite met (2026-07-05):** the **port registration seam** now exists
+(`SIL_ports` + `sil_fw_setHooks` + voyant's cache-mediated port state; see
+`state-route-tables.md` §1 "Ports"), giving drivers a sanctioned, native-format
+input/output path — sim `HW_ADC` is the first conversion. Removal itself is
+still parked; drivers migrate to ports as they are converted.
 
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the

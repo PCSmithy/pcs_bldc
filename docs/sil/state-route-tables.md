@@ -81,6 +81,48 @@ Every entry has a canonical key: **`<sig_type>:<source>:<local>[:<modifier>]`**.
 Examples: `cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]`,
 `vsig:motor:phase_u_voltage`, `spi:encoder:rx:decoded`.
 
+### Ports (firmware-registered signals, C→Rust)
+
+Firmware members expose **ports**: signals their **sim HW drivers register with
+the framework at runtime** — the C-side counterpart of open registration. The
+seam is a hook vtable installed over the control ABI (`sil_fw_setHooks`, called
+before `sil_fw_start`), wrapped driver-side by the null-safe helper
+`SIL_ports_*` (`sw/lib/c/shared/hw/sim/ports/`): with no hooks installed —
+standalone native runs, Unity tests — register returns an invalid handle, read
+returns false, write no-ops, and drivers behave exactly as if the seam did not
+exist.
+
+- **The C side never knows its instance name.** A driver registers only
+  `{sig_type, local, unit}` (e.g. `vsig`/`ADC1_IN6`/`V`); the consuming
+  `FirmwareMember` prefixes its own member name to form the entry id
+  `{sig_type}:{member}:{local}` — two boards may run the same DLL as distinct
+  members.
+- **Native format.** Port values flow member-to-member in native units
+  (volts→volts). The sim HW driver owns any conversion to its C-memory
+  representation (volts→counts per its own numBits/vref) — the conversion lives
+  where real hardware does it. Values are `double` scalars today; typed
+  variants are the documented extension path (transport/event payloads arrive
+  with the D5 comms work).
+- **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
+  State Table mid-tick. Per firmware tick its member: applies pending
+  registrations → fills **every** port's *input cache* from the entry's current
+  table value (never driven → `None` → C read returns false → driver fallback)
+  → flushes driven cvars → `advance_tick` (C reads caches, buffers writes) →
+  drains the *output buffer* into the table → samples sampled cvars.
+- **Input vs output is behavioral, not metadata.** Input ports carry commanded
+  values (table → cache → C read); output ports carry firmware-produced values
+  (C write → table). A signal has no direction metadata — the same port may do
+  both; the table is the rendezvous.
+- **When registrations become visible:** they buffer in the backend and become
+  table entries when the member applies them — at `set_enabled(true)` (i.e.
+  `Engine::add_member`) and at the start of each firmware tick. The typical flow
+  (`start` → `add_member`) makes init-time ports visible before the first step,
+  so routes into them validate and propagate immediately.
+- **First user:** the sim `HW_ADC` registers one input port per enabled regular
+  input (local name = the channel config's `inputNameStr`, unit `V`). A driven
+  port commands that input's pin voltage; an undriven one keeps the synthetic
+  ramp.
+
 ### Comms entries (the framework is the wire)
 
 Because the firmware runs in virtual space, the framework *is* the transport

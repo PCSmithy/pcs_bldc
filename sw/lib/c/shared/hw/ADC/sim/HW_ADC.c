@@ -4,6 +4,7 @@
 
 #include "HW_ADC.h"
 #include "HW_ADC_sim.h"
+#include "SIL_ports.h"
 
 /* Defines */
 
@@ -26,11 +27,18 @@ typedef struct
     HW_ADC_conversionStatus_E status[HW_ADC_CHANNEL_COUNT];
     bool conversionStall[HW_ADC_CHANNEL_COUNT];
 
+    // SIL input-port handles, one per regular input (SIL_PORTS_HANDLE_INVALID
+    // when unregistered). A driven port commands the input's pin voltage.
+    int32_t portHandles[HW_ADC_CHANNEL_COUNT][HW_ADC_INPUTS_PER_CHANNEL];
+
     uint32_t tickCounter;
     bool initialized;
 } HW_ADC_data_S;
 
 /* Private Function Declarations */
+
+static uint32_t HW_ADC_private_voltsToCounts(double volts,
+                                             const HW_ADC_channelConfig_S * const channelConfig);
 
 /* Private Data Definitions */
 
@@ -38,6 +46,21 @@ static HW_ADC_data_S HW_ADC_data;
 static HW_ADC_data_S * const data = &HW_ADC_data;
 
 /* Private Function Definitions */
+
+// Inverse of HW_ADC_getVolts: quantize a commanded pin voltage to counts the
+// way the real converter would, saturating at the rails.
+static uint32_t HW_ADC_private_voltsToCounts(double volts,
+                                             const HW_ADC_channelConfig_S * const channelConfig)
+{
+    const uint32_t maxCounts = (1UL << channelConfig->numBits) - 1UL;
+    uint32_t counts = 0U;
+    if (volts > 0.0)
+    {
+        const double scaled = ((volts / (double)channelConfig->vref) * (double)maxCounts) + 0.5;
+        counts = ((scaled >= (double)maxCounts)) ? maxCounts : (uint32_t)scaled;
+    }
+    return counts;
+}
 
 /* Public Function Definitions */
 
@@ -98,9 +121,31 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
             data->config       = config;
             data->tickCounter  = 0U;
             data->initialized  = true;
+            for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
+            {
+                for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)
+                {
+                    data->portHandles[ch][input] = SIL_PORTS_HANDLE_INVALID;
+                }
+            }
             for (size_t ch = 0U; ch < config->numChannels; ch++)
             {
-                data->multimodeApplied[ch] = config->channels[ch].configureMultimode;
+                const HW_ADC_channelConfig_S * const channelConfig = &config->channels[ch];
+                data->multimodeApplied[ch] = channelConfig->configureMultimode;
+
+                // Register one SIL input port per enabled, named input: the
+                // framework may drive its pin voltage (volts, native units);
+                // undriven inputs keep the synthetic ramp. Null-safe: with no
+                // hooks installed every handle stays invalid.
+                for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)
+                {
+                    if ((channelConfig->inputs[input].enabled) &&
+                        (channelConfig->inputs[input].inputNameStr != NULL))
+                    {
+                        data->portHandles[ch][input] =
+                            SIL_ports_register("vsig", channelConfig->inputs[input].inputNameStr, "V");
+                    }
+                }
             }
             ret = true;
         }
@@ -142,8 +187,19 @@ void HW_ADC_run1ms(void)
             {
                 if (channelConfig->inputs[input].enabled)
                 {
-                    const uint32_t offset = ((uint32_t)ch * 256U) + ((uint32_t)input * 16U);
-                    data->channelData[ch].counts[input] = (offset + data->tickCounter) % modulo;
+                    double volts = 0.0;
+                    if (SIL_ports_read(data->portHandles[ch][input], &volts))
+                    {
+                        // Driven SIL port: convert the commanded pin voltage
+                        // to counts, as the real converter would.
+                        data->channelData[ch].counts[input] =
+                            HW_ADC_private_voltsToCounts(volts, channelConfig);
+                    }
+                    else
+                    {
+                        const uint32_t offset = ((uint32_t)ch * 256U) + ((uint32_t)input * 16U);
+                        data->channelData[ch].counts[input] = (offset + data->tickCounter) % modulo;
+                    }
                     sampled = true;
                 }
             }

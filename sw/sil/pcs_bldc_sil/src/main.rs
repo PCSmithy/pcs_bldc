@@ -20,8 +20,12 @@
 //! the **real production path**: a model's `vsig` is routed into a firmware `cvar`
 //! entry, a [`FirmwareMember`] flushes that entry into firmware memory, and the
 //! value is read back — with suspend/resume proving per-route fault-injection
-//! gating. Warnings/errors logged into the State Table during the run are drained
-//! and printed at the end (informational).
+//! gating. The **port seam** is exercised end to end too: the sim ADC driver's
+//! runtime-registered input ports carry a model's voltage (native format) into
+//! the driver, which converts volts -> counts itself, while an undriven
+//! neighbor input keeps its synthetic ramp. Warnings/errors logged into the
+//! State Table during the run are drained and printed at the end
+//! (informational).
 //!
 //! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
 
@@ -157,8 +161,12 @@ fn main() -> ExitCode {
     println!("\n-- 7. feedback loop (model <-> firmware, delayed ZOH cut) --");
     check_feedback_loop(&fw, &mut rep);
 
-    // --- Check 8: shutdown --------------------------------------------------
-    println!("\n-- 8. shutdown --");
+    // --- Check 8: port seam (native-format volts -> ADC counts) -------------
+    println!("\n-- 8. ports: model volts -> sim ADC port -> counts --");
+    check_adc_ports(&fw, &mut rep);
+
+    // --- Check 9: shutdown --------------------------------------------------
+    println!("\n-- 9. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -663,6 +671,124 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
         "delayed feedback loop produces the exact predicted sequence",
         got == predicted,
         format!("injectedRx[0] over {N} steps = {got:?}, predicted {predicted:?} (base counter {base})"),
+    );
+    rep.absorb(eng.take_logs());
+}
+
+/// A model member holding one output `volts` at a constant voltage — the
+/// simplest stand-in for a plant/sensor model driving an analog pin.
+struct VoltsModel {
+    name: String,
+    volts: f64,
+}
+
+impl VoltsModel {
+    fn new(name: &str, volts: f64) -> Self {
+        Self {
+            name: name.to_string(),
+            volts,
+        }
+    }
+    fn volts_id(&self) -> SignalId {
+        vsig_id(&self.name, "volts").expect("valid vsig id")
+    }
+}
+
+impl Member for VoltsModel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
+        let id = self.volts_id();
+        if let Err(e) = st.record(&id, Value::F64(self.volts)) {
+            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        }
+    }
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            let _ = st.register(self.volts_id(), Some("V"));
+        }
+    }
+}
+
+/// Prove the **port seam** end to end on the idiomatic native-format path: the
+/// sim ADC driver registered one input port per enabled input (during
+/// `sil_fw_start`, via the control-ABI hook vtable), local names from the
+/// channel config's per-input name strings (`ADC1_IN1`, ..., unit V). A model
+/// member emits a *voltage*; a zero-latency route carries it — volts, native
+/// format, member to member — into the firmware's port entry
+/// `vsig:pcs_bldc:ADC1_IN6`; the [`FirmwareMember`] caches it for the C side;
+/// and the sim ADC driver converts volts -> counts with its own numBits/vref
+/// parameters (the conversion lives where real hardware does it). DWARF-read
+/// the counts static and assert the exact quantization; a NEIGHBORING undriven
+/// input must keep the synthetic ramp (the fallback, proven in the same run).
+fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
+    const VOLTS: f64 = 1.234;
+    // ADC1 regular input 6 (port ADC1_IN6) is driven; input 1 stays undriven.
+    let port = SignalId::new("vsig", SOURCE, "ADC1_IN6", None).expect("valid port id");
+    let driven_counts = "HW_ADC_data.channelData[0].counts[6]";
+    let neighbor_counts = "HW_ADC_data.channelData[0].counts[1]";
+
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(VoltsModel::new("pin_model", VOLTS)));
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+
+    // The ADC's ports were registered during sil_fw_start; the FirmwareMember
+    // applied them to the table at add_member. The board config enables 10
+    // regular inputs (5 per ADC), so 10 ports exist under this member's name.
+    let n_ports = eng
+        .state()
+        .signals()
+        .filter(|s| (s.sig_type() == "vsig") && (s.source() == SOURCE))
+        .count();
+    rep.check(
+        "sim ADC registered one input port per enabled input",
+        n_ports == 10,
+        format!("{n_ports} vsig:{SOURCE}:* port(s) in the table (expect 10)"),
+    );
+
+    // Route the model's volts into the port (native format: volts -> volts).
+    eng.add_route(vsig_id("pin_model", "volts").expect("valid vsig id"), port.clone())
+        .expect("add route");
+
+    // Expected counts: mirror of the sim driver's volts->counts math
+    // (HW_ADC_private_voltsToCounts), with numBits/vref read via DWARF from
+    // the sim channel config rather than hardcoded.
+    let vref = v_f64(&fw.read_cvar("HW_ADC_channelConfig[0].vref")).unwrap_or(0.0);
+    let num_bits = v_u64(&fw.read_cvar("HW_ADC_channelConfig[0].numBits")).unwrap_or(0);
+    let max_counts = (1u64 << num_bits) - 1;
+    let scaled = ((VOLTS / vref) * (max_counts as f64)) + 0.5;
+    let expected = if scaled >= (max_counts as f64) {
+        max_counts
+    } else {
+        scaled as u64
+    };
+
+    // Step a few ticks; sample both counts statics after each. The driven
+    // input must sit at the exact quantized value once the port takes effect;
+    // the undriven neighbor must keep ramping (distinct values across the
+    // window — task_1ms fires at least once per engine step after the first).
+    let mut driven: Vec<u64> = Vec::new();
+    let mut neighbor: Vec<u64> = Vec::new();
+    for _ in 0..6 {
+        eng.step().expect("engine step");
+        driven.push(v_u64(&fw.read_cvar(driven_counts)).unwrap_or(0));
+        neighbor.push(v_u64(&fw.read_cvar(neighbor_counts)).unwrap_or(0));
+    }
+    let settled = &driven[2..];
+    rep.check(
+        "driven port converts volts -> counts via the sim's numBits/vref",
+        settled.iter().all(|c| *c == expected),
+        format!(
+            "counts[6] = {settled:?} (expect {expected} = {VOLTS} V @ {num_bits} bits / {vref} V vref)"
+        ),
+    );
+    let neighbor_settled = &neighbor[2..];
+    let ramping = neighbor_settled.windows(2).any(|w| w[0] != w[1]);
+    rep.check(
+        "neighboring undriven input still ramps (fallback intact)",
+        ramping,
+        format!("counts[1] = {neighbor_settled:?} (must keep changing)"),
     );
     rep.absorb(eng.take_logs());
 }

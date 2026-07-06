@@ -82,7 +82,9 @@ sw/sil/
                             determinism + throughput test (throwaway scaffolding)
 
 sw/lib/c/FreeRTOS/portable/Native-Fiber/   the native cooperative fiber port
-sw/fw/src/sil_fw.h                          the control ABI (start/advance/shutdown)
+sw/lib/c/shared/hw/sim/ports/              SIL_ports: the null-safe C helper sim
+                                            drivers use to register/read/write ports
+sw/fw/src/sil_fw.h                          the control ABI (setHooks/start/advance/shutdown)
 sw/fw/src/main.c                            SIM path: fiber-port bring-up + ABI impl
 sw/fw/src/hw/sim/FreeRTOSConfig.h           native FreeRTOS config
 tools/run_sil.sh                            one-command build + run
@@ -174,6 +176,30 @@ docs/sil/*.md            the design (see "Design docs" below)
   validator rejects the loop until the backward edge is declared delayed, then the
   loop steps to an exact predicted sequence. voyant unit tests 43 -> 53; sanity suite
   all PASS.
+
+- **Port registration seam (chunk B, 2026-07-05):** firmware members now expose
+  **ports** — signals their sim HW drivers register with voyant at runtime, in
+  **native format** (volts stay volts; the driver owns conversion to its C
+  representation). The control ABI gained **`sil_fw_setHooks`** (installed by
+  `Firmware::load`, before `start`): a vtable of `registerSignal` /
+  `readSignal` / `writeSignal` trampolines targeting a RefCell'd port state
+  inside the `Firmware`. The C side wraps it in the **null-safe `SIL_ports`
+  helper** (`sw/lib/c/shared/hw/sim/ports/`, target `hw_SIL_ports`; no hooks →
+  register invalid / read false / write no-op, so standalone + Unity runs are
+  untouched). Port I/O is **cache-mediated like the cvar mirror lists** — per
+  firmware tick the `FirmwareMember` applies pending registrations (id =
+  `{sig_type}:{member}:{local}`; C never knows its instance name), fills every
+  port's input cache from the table (never-driven → C read false → driver
+  fallback), flushes driven cvars, `advance_tick`s, drains the port-write
+  buffer into the table, samples sampled cvars. Registrations become visible at
+  `set_enabled(true)` (= `add_member`) or the next firmware tick. First user:
+  **sim `HW_ADC`** registers one input port per enabled regular input
+  (`inputNameStr`, unit V) and converts a driven port's volts → counts via its
+  own numBits/vref; undriven inputs keep the synthetic ramp. Sanity-suite
+  **check 8**: model volts → route → `vsig:pcs_bldc:ADC1_IN6` → exact
+  quantized counts by DWARF, with a neighboring input still ramping. ARM build
+  byte-identical (SIM-only C). voyant unit tests 53 -> 58; sanity suite all
+  PASS. The `_sim_*` removal (backlog) now has its input-injection replacement.
 
 ## What's next (prioritized)
 
