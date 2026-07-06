@@ -1,7 +1,7 @@
 # Milestone — CYPD3177 USB-PD sink telemetry over I2C
 
-**Branch:** `cypd3177-i2c` (off `main`; merges back as one functional unit)
-**Status:** planning
+**Branch:** `cypd3177-i2c` (off `main`; merged back 2026-07-05, branch pruned)
+**Status:** merged — CYPD3177 bench close-out pending hardware rework (see §10)
 **Introduces:** the `i2c` peripheral at the HAL, and the `pd` (power-delivery)
 topic in the spec tree (first `sys~pd` / `fw~pd` specs).
 
@@ -58,9 +58,10 @@ implemented on this die. None block the read-only telemetry path above.
 ### 2.4 Board wiring (confirmed from schematic)
 
 The MCU is the **STSPIN32G4** (ref U8) — the integrated gate driver with an
-embedded STM32G431 core. Its package bonds out only a subset of pins; **PC8/PC9
-do not exist on this part, so I2C3 is physically unavailable.** The CYPD3177 is
-ref U4.
+embedded STM32G431 core. Its package bonds out only a subset of pins; PC8/PC9
+are not package pins — they are bonded **in-package** to the gate-driver die's
+SCL/SDA (datasheet Table 7), so **I2C3 is the internal gate-driver bus**,
+unavailable for external devices. The CYPD3177 is ref U4.
 
 | CYPD3177 pin | Net | MCU pin | Function |
 |--------------|-----|---------|----------|
@@ -332,3 +333,54 @@ Branch `cypd3177-i2c`, pushed to origin. Progress against §6:
   `sys~pd_001`'s `test` need closes.
 - **Merge:** `oft trace specs/ sw/` clean across the new specs (currently only the
   bench `test` on `sys~pd_001` is open); merge the branch back to `main`.
+
+## 10. Close-out (2026-07-05, post-merge)
+
+Merged to `main` as a fast-forward (`91a3f6b..67b351a` + follow-ups). What
+changed relative to the plan above, and what remains.
+
+**Landed beyond the §6 plan:**
+
+- **Pre-flash review caught a blocker:** the implementation sent the 16-bit
+  HPI register offset MSB-first (the HAL `Mem_*` default) while HPI wants LSB
+  first (§2.1 documented it; the code didn't do it). Fixed via a new
+  `HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST` offset encoding. Also fixed: the
+  timeout path now drains its abort completion; the sim register space covers
+  the HPI range (was 512 B, PD registers at 0x1008+ silently unreachable on
+  native).
+- `dev_CYPD3177` fetches SILICON_ID + TYPE_C_STATUS too and exposes every raw
+  register word via `dev_CYPD3177_getSnapshot` (fw~pd_006/007 updated).
+- **Tiered telemetry:** a 200 ms slow tier on the 2 ms telemetry task carries
+  the full PD snapshot, the gate-driver snapshot, and the slow tasks' profile
+  metrics.
+- **The STSPIN32G4 gate driver rode the same branch** (`sys~mc_002/003`,
+  `fw~mc_001..005`, `dev_gateDriver` over I2C3 at 1 MHz FM+ — see
+  `specs/firmware/mc/gate-driver.md`) and **bench-validated the whole
+  HW_I2C/IO_i2c stack on real silicon** (`gd_configured:1`, STATUS 0x80:
+  locked, no faults) while the CYPD bus is blocked on hardware.
+- Bus rates: I2C3 at 1 MHz (bench-verified); I2C1 staged at 400 kHz
+  (unverified — see below).
+
+**Why the CYPD bench cases did not run: hardware, not firmware.**
+
+- **C28** (0.1 uF debounce cap, part of the BOOT0 switch circuit) sits
+  permanently on the SCL net: with the 5.1 k pull-up that is a ~510 us rise
+  time — the bus cannot clock at any speed until C28 is removed.
+- **BOOT0 = PB8 = SCL**: once SW4 is left open so I2C can work, the SCL
+  pull-up strap-boots the ROM bootloader on every reset. Burn option bytes
+  **nSWBOOT0=0 (nBOOT0 stays 1)** before relying on the bus.
+
+**Outstanding to close this milestone (the only remaining work):**
+
+1. Rework: remove C28; burn nSWBOOT0=0; leave SW4 open.
+2. Run the bench cases in `../hw-tests/cypd3177-i2c.md`: true negotiated
+   contract vs telemetry, the §2.3 verify-on-hardware flags (DEVICE_MODE
+   0x95, SILICON_ID), and the 400 kHz rate (drop to 100 kHz if marginal).
+   `pd_silicon_id` nonzero on telemetry is the addressing + bus proof.
+3. Promote the executed cases to OFT `test~` items → closes `sys~pd_001`'s
+   open `test` need.
+
+**Noted, non-blocking:** SIL end-to-end CYPD scenario (inject canned register
+bytes through the sim HW_I2C, assert decoded accessors through the real
+IO_i2c path); `fw~pd_009` Type-C decode (raw word already fetched and
+broadcast); HW_I2C stuck-bus recovery (`docs/backlog.md`).
