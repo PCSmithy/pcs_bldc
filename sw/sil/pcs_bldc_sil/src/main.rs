@@ -31,6 +31,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 use voyant::{
     vsig_id, Engine, EngineError, Firmware, FirmwareMember, LogEntry, LogLevel, Member, RampModel,
     RouteError, SignalId, StateTable, Value,
@@ -165,8 +166,16 @@ fn main() -> ExitCode {
     println!("\n-- 8. ports: model volts -> sim ADC port -> counts --");
     check_adc_ports(&fw, &mut rep);
 
-    // --- Check 9: shutdown --------------------------------------------------
-    println!("\n-- 9. shutdown --");
+    // --- Check 9: whole-namespace cvar mirror accuracy ----------------------
+    println!("\n-- 9. cvar mirror accuracy (auto-derived, no declaration) --");
+    check_mirror_accuracy(&fw, &mut rep);
+
+    // --- Sweep-cost measurement (informational) -----------------------------
+    println!("\n-- sweep cost (whole-namespace mirror) --");
+    measure_sweep_cost(&fw);
+
+    // --- Check 10: shutdown -------------------------------------------------
+    println!("\n-- 10. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -205,11 +214,9 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
 
     let mut eng = Engine::new(TICK_US);
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    for id in &ids {
-        fwm.sample_cvar(id.clone(), None);
-    }
-    eng.add_member(Box::new(fwm));
+    // No per-signal declaration: the FirmwareMember auto-mirrors the whole cvar
+    // namespace, so these counters are sampled into the historian each tick.
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
     for _ in 0..N {
         eng.step().expect("engine step");
     }
@@ -264,9 +271,9 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
 fn check_state_table(fw: &Firmware, rep: &mut Report) {
     let ramp = cvar("HW_ADC_data.channelData[0].counts[6]");
     let mut eng = Engine::new(TICK_US);
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    fwm.sample_cvar(ramp.clone(), Some("counts"));
-    eng.add_member(Box::new(fwm));
+    // Auto-mirrored: counts[19] is under the array threshold, so counts[6] is
+    // registered + sampled with no `sample_cvar` declaration.
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
 
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
@@ -492,7 +499,11 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    fwm.drive_cvar(dst.clone(), Some("counts")); // route dest flushed into fw memory
+    // injectedRx is a 256-byte buffer, over the array threshold, so the driven
+    // element is force-included to register + mirror it. No `drive_cvar`: a
+    // registered cvar the framework command-writes (the route) is flushed by the
+    // member automatically (fresh-dirty flush).
+    fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
     eng.add_member(Box::new(fwm));
     eng.add_route(src.clone(), dst.clone()).expect("add route");
 
@@ -622,8 +633,10 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     eng.add_member(Box::new(LoopModel::new("loop_model"))); // idx 0
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US); // idx 1
-    fwm.drive_cvar(miso.clone(), Some("counts")); // route dest -> fw memory
-    fwm.sample_cvar(counter.clone(), None); // fw counter -> table
+    // The MISO byte lives in a 256-byte buffer (over threshold) -> force-include
+    // it so the route can drive it. `task1msRuns` (the sampled counter) is a
+    // top-level scalar, auto-mirrored with no declaration.
+    fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
     eng.add_member(Box::new(fwm));
 
     // Forward edge: model out -> firmware MISO byte (zero-latency, model before fw).
@@ -791,6 +804,59 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
         format!("counts[1] = {neighbor_settled:?} (must keep changing)"),
     );
     rep.absorb(eng.take_logs());
+}
+
+/// Prove the whole-namespace cvar mirror is **accurate and automatic**: pick a
+/// firmware static that no other check declares or samples
+/// (`HW_ADC_data.tickCounter`, the sim ADC's free-running counter), step the
+/// engine with a plain [`FirmwareMember`] (zero declarations), and assert the
+/// State Table entry both *tracks* (changes across the window) and *equals* a
+/// fresh DWARF read of the same static — with no `sample_cvar` anywhere.
+fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
+    let leaf = cvar("HW_ADC_data.tickCounter");
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+
+    let mut vals: Vec<Option<u64>> = Vec::new();
+    for _ in 0..6 {
+        eng.step().expect("engine step");
+        vals.push(eng.state().current_value(&leaf).ok().flatten().and_then(v_u64));
+    }
+    // The mirror at the end of the last tick equals firmware memory now (single-
+    // threaded: nothing changed memory between the sweep and this read).
+    let table_now = eng.state().current_value(&leaf).ok().flatten().and_then(v_u64);
+    let mem_now = v_u64(&fw.read_cvar(leaf.name()));
+    let tracks = table_now.is_some() && (table_now == mem_now);
+    let changed = vals.windows(2).any(|w| w[0] != w[1]);
+    rep.check(
+        "cvar mirror tracks firmware memory (auto-derived, no declaration)",
+        tracks && changed,
+        format!("table {table_now:?} == memory {mem_now:?}; window {vals:?}"),
+    );
+    rep.absorb(eng.take_logs());
+}
+
+/// Measure the per-tick cost of the whole-namespace mirror sweep and report the
+/// registered-leaf count + µs/advance-tick. `std::time` is fine here — this is
+/// driver code, not sim-deterministic state (voyant core stays wall-clock-free).
+fn measure_sweep_cost(fw: &Firmware) {
+    let mut st = StateTable::new();
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+    fwm.set_enabled(true, &mut st); // enumerate + register the whole namespace
+    let leaves = fwm.cvar_leaf_count();
+
+    const N: u64 = 200;
+    let start = Instant::now();
+    for i in 1..=N {
+        st.set_time(i * TICK_US);
+        fwm.advance(TICK_US, &mut st);
+    }
+    let per_tick_us = (start.elapsed().as_nanos() as f64) / (N as f64) / 1000.0;
+    println!(
+        "         {leaves} cvar leaves swept/tick; {per_tick_us:.2} µs/advance-tick over {N} ticks\n\
+         \x20        (includes the firmware advance_tick; the sweep is the trace-everything workload\n\
+         \x20         performance.md Lever 4's dirty-page scan optimizes)"
+    );
 }
 
 /// Read the sim USB TX capture buffer (txLen + tx[] bytes) by DWARF and decode

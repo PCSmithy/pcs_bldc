@@ -33,10 +33,11 @@
 //! backing model: a `cvar` entry is the table's *mirror* of firmware memory, and a
 //! `vsig` entry *abides* in the framework, so moving values between entries is
 //! always a table-only act. Members then sync their own mirrors on their own clock —
-//! a [`FirmwareMember`](crate::backend::FirmwareMember) flushes its *driven* cvar
-//! entries into firmware memory (and samples its *sampled* ones back out) around its
-//! `advance_tick`; a model reads a routed `vsig` input via
-//! [`StateTable::current_value`].
+//! a [`FirmwareMember`](crate::backend::FirmwareMember) flushes the *fresh*
+//! (route-/test-/pin-written) cvar entries in its namespace into firmware memory
+//! and sweeps its whole cvar mirror back out around its `advance_tick`; a model
+//! reads a routed `vsig` input via [`StateTable::current_value`]. A route driving a
+//! cvar marks it dirty, so the consuming member flushes it that tick.
 //!
 //! Because a destination is written via [`StateTable::record`], it participates in
 //! the historian *and* honours [`StateTable::set_override`]: pinning a destination

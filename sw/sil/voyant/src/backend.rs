@@ -55,6 +55,28 @@ pub(crate) trait Backend {
     /// injection (the write side of the `cvar` backing).
     fn write_cvar(&self, path: &str, v: &Value);
 
+    /// Enumerate this firmware's traceable `cvar` leaves for whole-namespace
+    /// mirroring — every scalar/enum leaf under every firmware `static` (nested
+    /// struct members + array elements expanded), with the exclusion policy
+    /// (array-size `threshold`, `includes` overrides) applied. Each leaf carries an
+    /// optional pre-resolved [`CvarHandle`] fast-read token so the per-tick sweep
+    /// never re-resolves DWARF (see [`read_cvar_resolved`](Self::read_cvar_resolved)).
+    /// Default: an empty enumeration (a backend with no DWARF has no cvar leaves).
+    fn enumerate_cvars(&self, threshold: usize, includes: &[String]) -> CvarEnumeration {
+        let _ = (threshold, includes);
+        CvarEnumeration::default()
+    }
+
+    /// Fast-read a leaf previously handed out by [`enumerate_cvars`](Self::enumerate_cvars)
+    /// via its resolved [`CvarHandle`] — the sweep's hot path, bypassing path
+    /// parsing / DWARF lookup. Only called with a handle this backend produced;
+    /// the default is unreachable (a backend that yields no handles never gets one
+    /// back).
+    fn read_cvar_resolved(&self, handle: CvarHandle) -> Value {
+        let _ = handle;
+        unreachable!("backend produced no cvar handles but was asked to read one")
+    }
+
     // --- ports (the C→Rust runtime registration seam) ----------------------
     //
     // Firmware members expose **ports**: signals their sim HW drivers register
@@ -89,6 +111,29 @@ pub(crate) trait Backend {
     fn drain_port_writes(&self) -> Vec<(i32, f64)> {
         Vec::new()
     }
+}
+
+/// An opaque, backend-private token for a **pre-resolved** `cvar` leaf: whatever
+/// the backend needs to read that leaf without re-resolving its path (for
+/// [`Firmware`], an index into its address/type resolution cache). Handed out by
+/// [`Backend::enumerate_cvars`] and read back via [`Backend::read_cvar_resolved`];
+/// never inspected outside the backend, so it stays off the public API.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CvarHandle(usize);
+
+/// The result of [`Backend::enumerate_cvars`]: the traceable leaves plus what the
+/// exclusion policy dropped (reported once at member enable).
+#[derive(Default)]
+pub(crate) struct CvarEnumeration {
+    /// Each traceable leaf: its DWARF path and an optional fast-read handle
+    /// (`None` → the member falls back to the string-path [`Backend::read_cvar`]).
+    pub leaves: Vec<(String, Option<CvarHandle>)>,
+    /// Arrays skipped whole by the size threshold / multi-dim / unknown-length rule.
+    pub excluded_arrays: usize,
+    /// Leaves skipped as non-traceable types (pointer/function/opaque/unresolvable).
+    pub skipped_leaves: usize,
+    /// A recursion/leaf-budget safety cap was hit during enumeration.
+    pub capped: bool,
 }
 
 /// One **port**: a signal a firmware's sim HW driver registered at runtime
@@ -232,6 +277,10 @@ pub struct Firmware {
     /// Port rendezvous the hook vtable's `context` points at. Boxed so its
     /// address survives moves of the `Firmware` value itself.
     ports: Box<PortState>,
+    /// Fast-read resolution cache for [`CvarHandle`]s: `(runtime addr, leaf type)`
+    /// resolved once at leaf enumeration, indexed by the handle. The per-tick
+    /// mirror sweep reads straight from here — no DWARF lookup, no path parsing.
+    cvar_cache: RefCell<Vec<(*mut u8, Leaf)>>,
 }
 
 impl Firmware {
@@ -304,6 +353,7 @@ impl Firmware {
             dwarf,
             slide,
             ports,
+            cvar_cache: RefCell::new(Vec::new()),
         })
     }
 
@@ -361,6 +411,13 @@ impl Firmware {
     /// enumerator, e.g. a bitwise combination).
     pub fn read_cvar(&self, path: &str) -> Value {
         let (p, leaf) = self.resolve(path);
+        self.read_leaf(p, leaf)
+    }
+
+    /// Read an already-resolved leaf (runtime address + leaf type) into a
+    /// [`Value`] — shared by [`read_cvar`](Self::read_cvar) (resolve-then-read) and
+    /// the [`CvarHandle`] fast path (cache-then-read).
+    fn read_leaf(&self, p: *mut u8, leaf: Leaf) -> Value {
         // SAFETY: valid firmware address (DWARF + slide); firmware quiescent.
         unsafe {
             match leaf {
@@ -373,6 +430,35 @@ impl Firmware {
                     }
                 }
             }
+        }
+    }
+
+    /// Enumerate traceable `cvar` leaves (via [`DwarfMap::enumerate_leaves`]) and
+    /// resolve each to a cached [`CvarHandle`] (runtime addr + leaf type) so the
+    /// per-tick mirror sweep never re-resolves DWARF. A leaf the enumerator emitted
+    /// but the resolver cannot place is counted as skipped (should not happen —
+    /// both walk the same maps — but keeps the contract honest).
+    fn enumerate_cvars_impl(&self, threshold: usize, includes: &[String]) -> CvarEnumeration {
+        let en = self.dwarf.enumerate_leaves(threshold, includes);
+        let mut leaves = Vec::with_capacity(en.paths.len());
+        let mut skipped = en.skipped_leaves;
+        for path in en.paths {
+            match self.dwarf.resolve(&path) {
+                Some((link, leaf)) => {
+                    let addr = link.wrapping_add(self.slide) as *mut u8;
+                    let mut cache = self.cvar_cache.borrow_mut();
+                    let handle = CvarHandle(cache.len());
+                    cache.push((addr, leaf));
+                    leaves.push((path, Some(handle)));
+                }
+                None => skipped += 1,
+            }
+        }
+        CvarEnumeration {
+            leaves,
+            excluded_arrays: en.excluded_arrays,
+            skipped_leaves: skipped,
+            capped: en.capped,
         }
     }
 
@@ -428,6 +514,15 @@ impl Backend for Firmware {
 
     fn write_cvar(&self, path: &str, v: &Value) {
         Firmware::write_cvar(self, path, v);
+    }
+
+    fn enumerate_cvars(&self, threshold: usize, includes: &[String]) -> CvarEnumeration {
+        self.enumerate_cvars_impl(threshold, includes)
+    }
+
+    fn read_cvar_resolved(&self, handle: CvarHandle) -> Value {
+        let (p, leaf) = self.cvar_cache.borrow()[handle.0];
+        self.read_leaf(p, leaf)
     }
 
     fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
@@ -488,9 +583,13 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error
 ///      (`set_port_input`; never driven → `None` → the firmware's `readSignal`
 ///      reports false and the driver falls back). Input ports carry commanded
 ///      values (table → cache → C read).
-///    - *Driven cvars* — `write_cvar` each *driven* cvar's current table value
-///      (the **commanded** value a route or test last recorded) into firmware
-///      memory.
+///    - *Cvars (flush)* — flush the **fresh** cvars back into firmware memory:
+///      the ids in this member's namespace that a command wrote since the last
+///      sweep ([`take_dirty`](StateTable::take_dirty)) plus its currently-pinned
+///      ids ([`pinned`](StateTable::pinned), re-asserted every tick). The sim is
+///      single-threaded, so between one tick's sweep and the next tick's flush no
+///      firmware code runs — a table entry differs from memory **iff** the
+///      framework command-wrote it, so "flush fresh" ≡ "flush all", done sparsely.
 /// 2. **Tick.** `advance_tick` runs the firmware to quiescence — C reads the
 ///    input caches and buffers any `writeSignal` output.
 /// 3. **Out-sync (firmware → table).** Every binding's outbound half, in order:
@@ -499,16 +598,21 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error
 ///      (C write → table). The same port may do both halves — the table is the
 ///      rendezvous; **no direction metadata exists on a signal** (direction is a
 ///      property of the binding mechanism).
-///    - *Sampled cvars* — `read_cvar` each *sampled* cvar out of firmware memory
-///      and [`record`](StateTable::record) it into the historian.
+///    - *Cvars (sweep)* — sweep the cached resolved leaf list, reading **every**
+///      registered cvar leaf out of firmware memory and
+///      [`record_mirror`](StateTable::record_mirror)-ing it into the historian, so
+///      the cvar namespace is an accurate, automatic mirror of firmware memory
+///      (epsilon dedup + retention manage growth). The sweep reads through
+///      pre-resolved handles — it never re-resolves DWARF per tick.
 ///
 /// A future serial-transport `sig_type` is simply a **new [`Binding`] variant**
 /// with its own in/out halves; the three-phase sequence above is unchanged. Port
 /// I/O is cache-mediated end to end — deterministic, with **no mid-tick State
-/// Table access from C** (mirroring how driven/sampled cvars sync their
-/// firmware-memory mirrors).
+/// Table access from C** (mirroring how the cvar mirror syncs firmware memory).
 ///
-/// The cvar lists are registered when the member is enabled; **pending port
+/// The cvar leaf list is enumerated + registered when the member is enabled (the
+/// whole traceable namespace, minus the exclusion policy — see
+/// [`exclude`](Self::exclude) / [`include`](Self::include)); **pending port
 /// registrations are also applied there**, so ports registered during
 /// `sil_fw_start` become table entries as soon as the member is added to an
 /// engine (else at its next advance). Lifecycle (`start` / `shutdown`) stays on
@@ -523,18 +627,44 @@ pub struct FirmwareMember<'b> {
     tick_period_us: u64,
     /// Sim time accumulated toward the next firmware tick.
     accum_us: u64,
-    /// cvars flushed *into* firmware memory before each firmware tick (the
-    /// commanded value): `(id, optional unit)`. DWARF path is the id's `name`.
-    driven: Vec<(SignalId, Option<String>)>,
-    /// cvars sampled *out of* firmware memory into the historian each firmware
-    /// tick: `(id, optional unit)`. The DWARF path is the id's `name` segment.
-    sampled: Vec<(SignalId, Option<String>)>,
+    /// The resolved cvar leaf list swept memory→table each tick: `(id, read
+    /// token)`. Enumerated + cached once at enable (the whole traceable namespace
+    /// minus excludes), so the sweep never re-resolves DWARF. The id's `name`
+    /// segment is the DWARF path.
+    cvar_leaves: Vec<(SignalId, CvarRead)>,
+    /// Whether [`cvar_leaves`](Self::cvar_leaves) has been enumerated (guards the
+    /// one-time enumeration across re-enables — re-enable only re-registers).
+    leaves_cached: bool,
+    /// Array-size exclusion threshold for enumeration (default
+    /// [`DEFAULT_ARRAY_THRESHOLD`]): arrays larger than this are skipped whole.
+    array_threshold: usize,
+    /// Prefix drops applied after enumeration (leaves whose path starts with a
+    /// prefix are excluded). See [`exclude`](Self::exclude).
+    excludes: Vec<String>,
+    /// Force-includes: paths/prefixes pulled in despite the array threshold. See
+    /// [`include`](Self::include).
+    includes: Vec<String>,
     /// Ports this member has applied to the table: `(handle, id)`, in
     /// registration order (deterministic iteration).
     ports: Vec<(i32, SignalId)>,
     /// How many of the backend's port defs this member has consumed.
     port_cursor: usize,
 }
+
+/// How a swept cvar leaf is read each tick: a pre-resolved backend fast-read
+/// handle (the hot path), or the string DWARF path (fallback for a backend that
+/// yields no handles, e.g. a test mock).
+enum CvarRead {
+    Resolved(CvarHandle),
+    Path(String),
+}
+
+/// Default array-element-count exclusion threshold (owner default): any array
+/// with more than this many elements is excluded whole from the cvar mirror. This
+/// naturally drops FreeRTOS task stacks, `ucHeap`, and large scratch buffers,
+/// while keeping small per-channel arrays. Override with
+/// [`FirmwareMember::set_array_threshold`].
+pub const DEFAULT_ARRAY_THRESHOLD: usize = 32;
 
 impl<'b> FirmwareMember<'b> {
     /// Wrap a concrete [`Firmware`] as a member named `name`, advancing one
@@ -555,32 +685,43 @@ impl<'b> FirmwareMember<'b> {
             backend,
             tick_period_us,
             accum_us: 0,
-            driven: Vec::new(),
-            sampled: Vec::new(),
+            cvar_leaves: Vec::new(),
+            leaves_cached: false,
+            array_threshold: DEFAULT_ARRAY_THRESHOLD,
+            excludes: Vec::new(),
+            includes: Vec::new(),
             ports: Vec::new(),
             port_cursor: 0,
         }
     }
 
-    /// Declare a firmware `cvar` (full [`SignalId`]; DWARF path in its `name`
-    /// segment) to sample into the State Table each firmware tick. The signal is
-    /// registered when the member is enabled (the engine does this on
-    /// [`add_member`](crate::engine::Engine::add_member)); call this before adding
-    /// the member.
-    pub fn sample_cvar(&mut self, id: SignalId, unit: Option<&str>) {
-        self.sampled.push((id, unit.map(str::to_string)));
+    /// **Exclude** every enumerated cvar leaf whose path starts with `prefix` from
+    /// the mirror (prefix match only — no globs). Configure before adding the
+    /// member (the leaf list is enumerated at enable). Use to drop a noisy or
+    /// irrelevant subtree; the array-size threshold already drops stacks/heap.
+    pub fn exclude(&mut self, prefix: &str) {
+        self.excludes.push(prefix.to_string());
     }
 
-    /// Declare a firmware `cvar` to **drive**: its State Table value is flushed into
-    /// firmware memory (via `write_cvar`, by the id's `name`
-    /// DWARF path) before each firmware tick. This is the mirror image of
-    /// [`sample_cvar`](Self::sample_cvar) — the write side of the `cvar` backing,
-    /// and the production path a route takes to reach firmware memory: a source is
-    /// routed into this cvar's table entry, and this member flushes it in. The
-    /// table value is the *commanded* value; firmware memory is what the firmware
-    /// actually saw. Registered when the member is enabled; call before adding it.
-    pub fn drive_cvar(&mut self, id: SignalId, unit: Option<&str>) {
-        self.driven.push((id, unit.map(str::to_string)));
+    /// **Force-include** a cvar path (or prefix) that the array-size threshold
+    /// would otherwise exclude — e.g. one element of an oversized buffer the test
+    /// drives (`HW_SPI_data.channels[0].injectedRx[0]`). A concrete leaf path pulls
+    /// in just that element; a prefix naming a whole over-threshold array pulls in
+    /// all of it. Prefix match only. Configure before adding the member.
+    pub fn include(&mut self, path: &str) {
+        self.includes.push(path.to_string());
+    }
+
+    /// Override the array-size exclusion threshold (default
+    /// [`DEFAULT_ARRAY_THRESHOLD`]). Configure before adding the member.
+    pub fn set_array_threshold(&mut self, n: usize) {
+        self.array_threshold = n;
+    }
+
+    /// How many cvar leaves this member mirrors (0 until enabled). The per-tick
+    /// sweep cost is proportional to this count.
+    pub fn cvar_leaf_count(&self) -> usize {
+        self.cvar_leaves.len()
     }
 
     /// Apply the backend's pending port registrations to the table: each new
@@ -629,19 +770,36 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
-    /// Driven-cvar in-sync: flush each driven cvar's commanded table value into
-    /// firmware memory. A never-recorded driven cvar (`Ok(None)`) has nothing to
-    /// flush this tick; an unregistered one (`Err`) is a wiring bug — log it,
-    /// symmetric with the sample side, rather than swallow it.
-    fn in_sync_driven(&mut self, st: &mut StateTable) {
-        for (id, _unit) in &self.driven {
-            match st.current_value(id) {
+    /// Cvar in-sync (flush): write the **fresh** cvars in this member's namespace
+    /// back into firmware memory — the dirty ids
+    /// ([`take_dirty`](StateTable::take_dirty), a command wrote them since the last
+    /// sweep) unioned with the currently-pinned ids
+    /// ([`pinned`](StateTable::pinned), re-asserted every tick because a pin is a
+    /// continuous drive the firmware may overwrite mid-tick), filtered to `cvar`.
+    /// This is the production path a route takes to reach firmware memory. Single-
+    /// threaded sim ⇒ an entry differs from memory iff it was command-written, so
+    /// flushing fresh ≡ flushing all, done sparsely. `Ok(None)` (never recorded)
+    /// has nothing to flush; `Err` is a wiring bug — logged, not swallowed.
+    fn in_sync_cvars(&mut self, st: &mut StateTable) {
+        // Fresh (command-dirtied) cvars in my namespace, plus my pinned cvars.
+        let mut flush: Vec<SignalId> = st
+            .take_dirty(&self.name)
+            .into_iter()
+            .filter(|id| id.sig_type() == "cvar")
+            .collect();
+        for id in st.pinned(&self.name) {
+            if (id.sig_type() == "cvar") && !flush.contains(&id) {
+                flush.push(id);
+            }
+        }
+        for id in flush {
+            match st.current_value(&id) {
                 Ok(Some(v)) => self.backend.write_cvar(id.name(), v),
                 Ok(None) => {}
                 Err(e) => st.log(
                     LogLevel::Warning,
                     &self.name,
-                    format!("driven cvar flush {id} failed: {e}"),
+                    format!("cvar flush {id} failed: {e}"),
                 ),
             }
         }
@@ -671,17 +829,23 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
-    /// Sampled-cvar out-sync: read each sampled cvar out of firmware memory and
-    /// record it into the historian; on a record error log a Warning rather than
-    /// swallow it.
-    fn out_sync_sampled(&mut self, st: &mut StateTable) {
-        for (id, _unit) in &self.sampled {
-            let v = self.backend.read_cvar(id.name());
-            if let Err(e) = st.record(id, v) {
+    /// Cvar out-sync (sweep): read **every** cached cvar leaf out of firmware
+    /// memory and [`record_mirror`](StateTable::record_mirror) it — the automatic
+    /// whole-namespace mirror. Reads through the pre-resolved handle (hot path;
+    /// no DWARF re-resolution per tick), falling back to the string path only for
+    /// a backend that yields no handles. `record_mirror` does not mark dirty and
+    /// is ignored on a pinned entry, so the sweep never un-pins the view.
+    fn out_sync_cvars(&mut self, st: &mut StateTable) {
+        for (id, read) in &self.cvar_leaves {
+            let v = match read {
+                CvarRead::Resolved(h) => self.backend.read_cvar_resolved(*h),
+                CvarRead::Path(p) => self.backend.read_cvar(p),
+            };
+            if let Err(e) = st.record_mirror(id, v) {
                 st.log(
                     LogLevel::Warning,
                     &self.name,
-                    format!("cvar sample record {id} failed: {e}"),
+                    format!("cvar mirror {id} failed: {e}"),
                 );
             }
         }
@@ -698,34 +862,31 @@ impl<'b> FirmwareMember<'b> {
 /// `sig_type` is a new variant here, never a new phase.
 ///
 /// **Direction is a property of the mechanism, not of a Signal** — there is no
-/// direction metadata anywhere on a signal. `DrivenCvars` is in-only,
-/// `SampledCvars` is out-only, `Ports` is behaviorally both (one collective
-/// binding over the backend's port state; the point is the phase structure, not
-/// one binding per port).
+/// direction metadata anywhere on a signal. `Cvars` is behaviorally both (in:
+/// flush the fresh/pinned cvars into memory; out: sweep the whole leaf list back
+/// into the mirror), as is `Ports` (in: apply registrations + fill input caches;
+/// out: drain writes) — one collective binding each over the backend's state; the
+/// point is the phase structure, not one binding per signal.
 #[derive(Clone, Copy)]
 enum Binding {
-    /// Driven cvars (in-only): flush commanded table values into firmware memory.
-    DrivenCvars,
-    /// Sampled cvars (out-only): sample firmware memory into the historian.
-    SampledCvars,
+    /// Cvars (in + out): flush fresh/pinned cvars into memory; sweep the mirror out.
+    Cvars,
     /// Ports (in + out): apply registrations + fill input caches; drain writes.
     Ports,
 }
 
 impl Binding {
     /// Every binding, in deterministic in-sync/out-sync order. `Ports` precedes
-    /// `DrivenCvars` so port registrations + cache fill happen first (matching
-    /// the historical sequence; the two are independent — different backend
-    /// state). Out-sync runs the same order (`Ports` drain before `SampledCvars`
-    /// sample); the empty halves are no-ops.
-    const ALL: [Binding; 3] = [Binding::Ports, Binding::DrivenCvars, Binding::SampledCvars];
+    /// `Cvars` so port registrations + cache fill happen first (matching the
+    /// historical sequence; the two are independent — different backend state).
+    /// Out-sync runs the same order (`Ports` drain before the `Cvars` sweep).
+    const ALL: [Binding; 2] = [Binding::Ports, Binding::Cvars];
 
     /// Run this binding's in-sync half (table → firmware), if any.
     fn in_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
         match self {
             Binding::Ports => fm.in_sync_ports(st),
-            Binding::DrivenCvars => fm.in_sync_driven(st),
-            Binding::SampledCvars => {}
+            Binding::Cvars => fm.in_sync_cvars(st),
         }
     }
 
@@ -733,8 +894,7 @@ impl Binding {
     fn out_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
         match self {
             Binding::Ports => fm.out_sync_ports(st),
-            Binding::SampledCvars => fm.out_sync_sampled(st),
-            Binding::DrivenCvars => {}
+            Binding::Cvars => fm.out_sync_cvars(st),
         }
     }
 }
@@ -769,10 +929,15 @@ impl Member for FirmwareMember<'_> {
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
-            // Register both mirror lists. Idempotent: a re-enable re-registers
-            // identically as a no-op.
-            for (id, unit) in self.driven.iter().chain(self.sampled.iter()) {
-                let _ = st.register(id.clone(), unit.as_deref());
+            if !self.leaves_cached {
+                self.enumerate_and_register(st);
+            } else {
+                // Re-enable: re-register the cached leaves idempotently (a re-enable
+                // does not re-enumerate — the namespace is fixed for the member's
+                // life until a real boot-from-reset lands).
+                for (id, _) in &self.cvar_leaves {
+                    let _ = st.register(id.clone(), None);
+                }
             }
             // Ports registered before this member existed (typically during
             // `sil_fw_start`, which the driver calls before adding the member)
@@ -783,6 +948,58 @@ impl Member for FirmwareMember<'_> {
         }
         // FUTURE: reload the DLL (boot-from-reset) on re-enable; today enable only
         // gates advance (the engine skips a disabled member's tick).
+    }
+}
+
+impl FirmwareMember<'_> {
+    /// Enumerate the firmware's traceable cvar leaves once (exclusion policy +
+    /// includes applied), register each under this member's namespace, and cache
+    /// the resolved leaf list for the sweep. Reports the registered-leaf count (and
+    /// what the policy dropped) as an Info log so the number is visible.
+    fn enumerate_and_register(&mut self, st: &mut StateTable) {
+        let en = self.backend.enumerate_cvars(self.array_threshold, &self.includes);
+        for (path, handle) in en.leaves {
+            if self.excludes.iter().any(|ex| path.starts_with(ex)) {
+                continue;
+            }
+            match SignalId::new("cvar", &self.name, &path, None) {
+                Ok(id) => match st.register(id.clone(), None) {
+                    Ok(()) => {
+                        let read = match handle {
+                            Some(h) => CvarRead::Resolved(h),
+                            None => CvarRead::Path(path),
+                        };
+                        self.cvar_leaves.push((id, read));
+                    }
+                    Err(e) => st.log(
+                        LogLevel::Warning,
+                        &self.name,
+                        format!("cvar {id} register failed: {e}"),
+                    ),
+                },
+                Err(e) => st.log(
+                    LogLevel::Warning,
+                    &self.name,
+                    format!("cvar path {path:?} yields an invalid signal id: {e}"),
+                ),
+            }
+        }
+        self.leaves_cached = true;
+        st.log(
+            LogLevel::Info,
+            &self.name,
+            format!(
+                "auto-registered {} cvar leaves ({} arrays excluded, {} leaves skipped{})",
+                self.cvar_leaves.len(),
+                en.excluded_arrays,
+                en.skipped_leaves,
+                if en.capped {
+                    ", SAFETY CAP HIT"
+                } else {
+                    ""
+                }
+            ),
+        );
     }
 }
 
@@ -874,12 +1091,27 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    /// A pure-Rust [`Backend`] with no DLL, used to prove the trait is
-    /// object-safe and usable behind `dyn`/`Box` without touching real firmware.
+    /// A pure-Rust [`Backend`] with no DLL: a configurable cvar "memory" plus an
+    /// enumerable leaf list, used to prove the member/mirror semantics without a
+    /// real firmware image. Logs every `write_cvar` path so a test can assert the
+    /// flush is **sparse** (only fresh/pinned cvars, not the whole namespace).
     #[derive(Default)]
     struct MockBackend {
         ticks: RefCell<u64>,
         cvars: RefCell<HashMap<String, Value>>,
+        leaves: Vec<String>,
+        writes: RefCell<Vec<String>>,
+    }
+
+    impl MockBackend {
+        /// A backend whose enumeration yields exactly `leaves` (each read via the
+        /// string-path fallback — the mock hands out no fast-read handles).
+        fn with_leaves(leaves: &[&str]) -> Self {
+            Self {
+                leaves: leaves.iter().map(|s| (*s).to_string()).collect(),
+                ..Default::default()
+            }
+        }
     }
 
     impl Backend for MockBackend {
@@ -894,8 +1126,19 @@ mod tests {
                 .unwrap_or(Value::U32(0))
         }
         fn write_cvar(&self, path: &str, v: &Value) {
+            self.writes.borrow_mut().push(path.to_string());
             self.cvars.borrow_mut().insert(path.to_string(), v.clone());
         }
+        fn enumerate_cvars(&self, _threshold: usize, _includes: &[String]) -> CvarEnumeration {
+            CvarEnumeration {
+                leaves: self.leaves.iter().map(|p| (p.clone(), None)).collect(),
+                ..CvarEnumeration::default()
+            }
+        }
+    }
+
+    fn id(s: &str) -> SignalId {
+        SignalId::parse(s).unwrap()
     }
 
     #[test]
@@ -909,23 +1152,25 @@ mod tests {
     }
 
     #[test]
-    fn firmware_member_advances_firmware_and_samples_cvars() {
-        let be = MockBackend::default();
+    fn firmware_member_auto_mirrors_the_cvar_namespace() {
+        // No per-signal declaration: the member enumerates + registers the whole
+        // (mock) namespace at enable and sweeps it into the historian each tick.
+        let be = MockBackend::with_leaves(&["counter"]);
         be.write_cvar("counter", &Value::U32(7));
 
-        let id = SignalId::new("cvar", "dut", "counter", None).unwrap();
+        let cid = id("cvar:dut:counter");
         let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        fm.sample_cvar(id.clone(), Some("counts"));
 
         let mut st = StateTable::new();
-        fm.set_enabled(true, &mut st); // registers the cvar signal
+        fm.set_enabled(true, &mut st); // enumerates + registers cvar:dut:counter
+        assert_eq!(fm.cvar_leaf_count(), 1);
         assert_eq!(st.len(), 1);
 
-        // One full period -> one firmware tick + one sample.
+        // One full period -> one firmware tick + one mirror sweep.
         st.set_time(1_000);
         fm.advance(1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
-        assert_eq!(st.current_value(&id).unwrap(), Some(&Value::U32(7)));
+        assert_eq!(st.current_value(&cid).unwrap(), Some(&Value::U32(7)));
 
         // A sub-period advance accumulates but does not tick the firmware.
         fm.advance(500, &mut st);
@@ -936,32 +1181,107 @@ mod tests {
     }
 
     #[test]
-    fn firmware_member_flushes_driven_cvars_before_ticking() {
-        // The drive side: the table entry's value is flushed into firmware memory
-        // before advance_tick each firmware tick. A route/test records the entry;
-        // this member pushes it in.
-        let be = MockBackend::default();
-        let id = SignalId::new("cvar", "dut", "sensor_in", None).unwrap();
+    fn firmware_member_flushes_fresh_cvars_before_ticking() {
+        // The flush side: a command-written (dirty) cvar entry is pushed into
+        // firmware memory before advance_tick. A route/test records the entry; the
+        // member flushes the fresh id — no per-signal `drive` declaration.
+        let be = MockBackend::with_leaves(&["sensor_in"]);
+        let sid = id("cvar:dut:sensor_in");
         let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        fm.drive_cvar(id.clone(), Some("counts"));
 
         let mut st = StateTable::new();
-        fm.set_enabled(true, &mut st); // registers the driven cvar signal
+        fm.set_enabled(true, &mut st); // auto-registers cvar:dut:sensor_in
         assert_eq!(st.len(), 1);
 
         // Command a value into the table entry (as a route would), then advance.
         st.set_time(1_000);
-        st.record(&id, Value::U32(42)).unwrap();
+        st.record(&sid, Value::U32(42)).unwrap();
         fm.advance(1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
-        // Firmware memory now mirrors the commanded table value.
         assert_eq!(be.read_cvar("sensor_in"), Value::U32(42));
 
         // Re-command; the next tick flushes the new value.
         st.set_time(2_000);
-        st.record(&id, Value::U32(7)).unwrap();
+        st.record(&sid, Value::U32(7)).unwrap();
         fm.advance(1_000, &mut st);
         assert_eq!(be.read_cvar("sensor_in"), Value::U32(7));
+    }
+
+    #[test]
+    fn flush_is_sparse_only_fresh_ids_written() {
+        // The single-threaded flush≡all invariant, proven sparse: with three
+        // mirrored leaves, only the ONE command-written entry is flushed; the
+        // untouched two are never written back, yet all three still mirror.
+        let be = MockBackend::with_leaves(&["a", "b", "c"]);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+
+        let a = id("cvar:dut:a");
+        st.set_time(1_000);
+        st.record(&a, Value::U32(1)).unwrap(); // command only `a`
+        be.writes.borrow_mut().clear();
+        fm.advance(1_000, &mut st);
+        assert_eq!(&*be.writes.borrow(), &["a".to_string()]); // sparse: just `a`
+        // The untouched entries still mirror (swept out of memory).
+        assert_eq!(st.current_value(&id("cvar:dut:b")).unwrap(), Some(&Value::U32(0)));
+
+        // A tick with no fresh command writes nothing at all.
+        be.writes.borrow_mut().clear();
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert!(be.writes.borrow().is_empty(), "untouched entries are not flushed");
+    }
+
+    #[test]
+    fn pinned_cvar_flushes_every_tick() {
+        // An override on a cvar is a continuous drive: the pin re-asserts the
+        // pinned value into firmware memory EVERY tick, even without a fresh
+        // command (the firmware may overwrite it mid-tick).
+        let be = MockBackend::with_leaves(&["p"]);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+
+        let p = id("cvar:dut:p");
+        st.set_time(1_000);
+        st.record(&p, Value::U32(50)).unwrap();
+        st.set_override(&p, true).unwrap(); // pin at 50
+
+        be.writes.borrow_mut().clear();
+        fm.advance(1_000, &mut st);
+        assert_eq!(be.read_cvar("p"), Value::U32(50));
+
+        // Next tick, no fresh command: the pin still flushes.
+        be.writes.borrow_mut().clear();
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!(&*be.writes.borrow(), &["p".to_string()]);
+    }
+
+    #[test]
+    fn auto_registration_is_idempotent_across_re_enable() {
+        let be = MockBackend::with_leaves(&["x", "y"]);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        assert_eq!((st.len(), fm.cvar_leaf_count()), (2, 2));
+
+        // Disable then re-enable: no re-enumeration, no duplicate registration.
+        fm.set_enabled(false, &mut st);
+        fm.set_enabled(true, &mut st);
+        assert_eq!((st.len(), fm.cvar_leaf_count()), (2, 2));
+    }
+
+    #[test]
+    fn exclude_prefix_drops_a_subtree() {
+        let be = MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        fm.exclude("drop");
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        assert_eq!(fm.cvar_leaf_count(), 1); // only keep.a survives
+        assert_eq!(st.current_value(&id("cvar:dut:keep.a")).unwrap(), None);
     }
 
     #[test]

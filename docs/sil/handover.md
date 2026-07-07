@@ -60,10 +60,14 @@ sw/sil/
                             execution/test-double seam FirmwareMember drives.
                             Auto-derives the ASLR anchor from export∩DWARF (no
                             hardcoded symbol). Also FirmwareMember: a firmware
-                            instance wrapped as a Member — flushes driven cvars into
-                            fw memory (drive_cvar) + samples sampled cvars out
-                            (sample_cvar) around advance_tick; the ONLY thing that
-                            touches fw memory (routes never do).
+                            instance wrapped as a Member — AUTO-mirrors the whole
+                            traceable cvar namespace (enumerated from DWARF at
+                            enable, array-size exclusion policy + exclude/include),
+                            flushing fresh/pinned cvars into fw memory + sweeping the
+                            whole mirror back out around advance_tick; the ONLY thing
+                            that touches fw memory (routes never do). dwarf.rs gained
+                            leaf enumeration; state_table.rs a dirty set +
+                            record_mirror/take_dirty/pinned.
     src/member.rs           Member trait (the one seam the engine drives everything
                             through: name/advance(dt,st)/set_enabled) + vsig_id +
                             RampModel reference model member. Members register their
@@ -214,6 +218,24 @@ docs/sil/*.md            the design (see "Design docs" below)
   `Firmware` handle, and `Backend` is internal execution/test-double plumbing
   (lifecycle `start`/`shutdown` are now inherent `Firmware` methods, off the
   trait). voyant unit tests 58 -> 59; sanity suite all PASS.
+
+- **Whole-namespace cvar mirror (2026-07-07):** collapsed the explicit
+  `drive_cvar`/`sample_cvar` declarations (both **deleted**) into **automatic
+  whole-namespace cvar mirroring** — the documented D12 end-state. At enable a
+  `FirmwareMember` enumerates every traceable leaf from DWARF (`dwarf.rs`
+  `enumerate_leaves`: recurse structs, expand arrays, **default array-size
+  threshold 32** to drop stacks/heap/512-byte buffers, multi-dim/pointer skip,
+  depth/leaf cap) and registers `cvar:<member>:<leaf>` for each, caching a resolved
+  address/type handle per leaf. Out-sync **sweeps** them all memory→table
+  (`record_mirror`) each tick; in-sync **flush is sparse** — a State Table **dirty
+  set** (`record`/`force_record`/pin mark dirty, `record_mirror` does not) drained
+  per-source (`take_dirty`) ∪ pinned ids, filtered to `cvar`. A pinned cvar
+  re-asserts every tick (fault-injection drive); a mirror record on a pinned entry
+  is ignored (never un-pins). `exclude(prefix)`/`include(path)` tune the policy
+  (the suite `include`s the one 256-byte-buffer SPI MISO byte it drives). Sweep
+  cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
+  workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
+  mirror-accuracy check on `HW_ADC_data.tickCounter` — no declaration).
 
 ## What's next (prioritized)
 

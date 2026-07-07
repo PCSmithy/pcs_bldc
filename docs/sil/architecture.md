@@ -195,11 +195,16 @@ the internal, crate-private `Backend` seam (§3.2) — which demotes from "the
 firmware seam" to internal plumbing behind the member. It is constructed with an
 explicit instance **`name`** (not derived from the DLL — two boards may run the
 same image as distinct members) and a firmware tick period; its `advance`
-accumulates sim time and, per elapsed firmware-tick period, **flushes** its *driven*
-`cvar`s into firmware memory (`drive_cvar` — the commanded table value, e.g. a route
-destination), runs one `advance_tick`, then **samples** its *sampled* `cvar`s back
-out into the table (`sample_cvar`). It is the **only** thing that touches firmware
-memory — routes never do (they are table-mediated; see
+accumulates sim time and, per elapsed firmware-tick period, **flushes** the *fresh*
+(route-/test-/pin-written) `cvar`s in its namespace into firmware memory, runs one
+`advance_tick`, then **sweeps** its whole cvar leaf list back out into the table
+(`record_mirror`). The cvar mirror is **automatic** — the member enumerates the
+firmware's traceable namespace from DWARF at enable (minus a built-in
+array-size/pointer exclusion policy; `exclude`/`include` tune it) and mirrors it
+with **no per-signal declarations** (the D12 end-state). The flush is sparse (a
+State Table **dirty set** tracks command writes; a pinned cvar re-asserts every
+tick). It is the **only** thing that touches firmware memory — routes never do
+(they are table-mediated; see
 [`state-route-tables.md`](state-route-tables.md) §2). Lifecycle (`start`/`shutdown`)
 stays an explicit call on the concrete `Firmware` handle the driver holds.
 Multi-firmware is simply multiple `FirmwareMember`s, each syncing through its own
@@ -211,7 +216,7 @@ over the control ABI (`sil_fw_setHooks`, before `sil_fw_start`; the null-safe
 `SIL_ports` C helper wraps it, so hookless standalone/unit-test runs are
 unchanged). Ports carry **native-format** values (volts stay volts; the driver
 owns conversion to its C representation), and their I/O is **cache-mediated**
-exactly like the cvar mirror lists — the member fills every port's input cache
+exactly like the cvar mirror — the member fills every port's input cache
 from the table before each `advance_tick` and drains the port-write buffer back
 into the table after it, so C never touches the State Table mid-tick. The C side
 names only `{sig_type, local, unit}`; the member prefixes its instance name. The
@@ -259,10 +264,10 @@ latency model). Each step:
 3. **For each enabled member, in registration order:** re-resolve the enabled
    **zero-latency** routes in topological order with fresh reads (forward dataflow,
    zero added latency), then advance the member. This is **table-only**: routes move
-   values between entries and never touch a backend; the firmware member flushes its
-   routed `cvar` destinations into firmware memory and samples outputs back out
-   inside its own advance (`sil_fw_advance_tick` runs to quiescence — race-free, the
-   firmware is quiescent here, D1).
+   values between entries and never touch a backend; the firmware member flushes the
+   fresh (route-written) `cvar` destinations into firmware memory and sweeps its
+   whole cvar mirror back out inside its own advance (`sil_fw_advance_tick` runs to
+   quiescence — race-free, the firmware is quiescent here, D1).
 4. Append changed signals to the State Table historian (change-logged,
    per-signal timeseries — D12); run test asserts/injection (ad-hoc State
    Table reads/writes). The `Engine` holds **no backend handle** — it touches

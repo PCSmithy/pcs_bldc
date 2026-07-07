@@ -114,15 +114,46 @@ exist.
   with the D5 comms work).
 - **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
   State Table mid-tick. Per firmware tick the member runs **three fixed phases**
-  over its signal *bindings* (ports, driven cvars, sampled cvars — each an
-  optional in-half and/or out-half): **in-sync → `advance_tick` → out-sync**.
-  In-sync (table → firmware): apply pending registrations then fill **every**
-  port's *input cache* from the entry's current value (never driven → `None` → C
-  read returns false → driver fallback), and flush driven cvars in. `advance_tick`
-  (C reads caches, buffers writes). Out-sync (firmware → table): drain the
-  *output buffer* into the table, and sample sampled cvars out. A future
-  transport `sig_type` is a new binding with its own halves — the phase sequence
-  never changes, and direction stays on the binding mechanism, never on a signal.
+  over its signal *bindings* (ports, cvars — each an optional in-half and/or
+  out-half): **in-sync → `advance_tick` → out-sync**. In-sync (table → firmware):
+  apply pending port registrations then fill **every** port's *input cache* from
+  the entry's current value (never driven → `None` → C read returns false →
+  driver fallback), and flush the **fresh** cvars in (below). `advance_tick` (C
+  reads caches, buffers writes). Out-sync (firmware → table): drain the *output
+  buffer* into the table, and **sweep the whole cvar leaf list** back into the
+  mirror. A future transport `sig_type` is a new binding with its own halves —
+  the phase sequence never changes, and direction stays on the binding mechanism,
+  never on a signal.
+- **The cvar mirror is automatic and accurate — no per-signal declarations.**
+  The firmware member enumerates its traceable leaves once (at enable) and
+  registers `cvar:<member>:<leaf>` for each; the out-sync **sweep** records every
+  one memory→table each tick (`record_mirror`), so the cvar namespace is a live
+  mirror of firmware memory. There is no `drive`/`sample` list — the whole
+  namespace is traced by default (the D12 end-state). Epsilon dedup + retention
+  keep the historian bounded despite the full sweep. For performance the sweep
+  reads through **pre-resolved handles** (address/type cached at enable), never
+  re-resolving DWARF per tick.
+- **In-sync flush is sparse — only the *fresh* cvars.** The State Table marks a
+  **dirty set**: `record` / `force_record` (route, test, model output) and a pin
+  (`set_override(id, true)`) mark the id dirty; the mirror sweep (`record_mirror`)
+  does **not**. Each tick the member flushes its namespace's dirty ids
+  (`take_dirty`, source-scoped) ∪ its pinned ids, filtered to `cvar`. This is
+  sound because the sim is single-threaded: between one tick's sweep and the
+  next tick's flush no firmware code runs, so a table entry differs from memory
+  **iff** the framework command-wrote it — "flush fresh" ≡ "flush all", done
+  cheaply. A **pinned cvar flushes every tick** (a pin is a continuous drive the
+  firmware may overwrite mid-tick, so it is re-asserted each tick — the fault-
+  injection semantics of `set_override` on a cvar), and a mirror record on a
+  pinned entry is **ignored** exactly like a command `record`, so the sweep can
+  never un-pin the view.
+- **Exclusion policy (built-in).** Enumeration expands nested struct members and
+  array elements to scalar leaves, but an array with more than a size threshold
+  (**default 32**) is excluded whole — this drops FreeRTOS task stacks, `ucHeap`,
+  512-byte scratch buffers, etc. Multi-dimensional and unknown-length arrays, and
+  non-data leaves (pointers, functions, opaque aggregates), are skipped too; a
+  depth/leaf-count safety cap guards pathological DWARF. A firmware member can
+  `exclude(prefix)` a noisy subtree or `include(path)` a specific over-threshold
+  leaf it needs to drive (e.g. one byte of a 256-byte SPI injection buffer).
 - **Input vs output is behavioral, not metadata.** Input ports carry commanded
   values (table → cache → C read); output ports carry firmware-produced values
   (C write → table). A signal has no direction metadata — the same port may do
@@ -171,10 +202,12 @@ Design rules:
   *entry*, and that is all. Moving a value between two entries is always a
   table-only act, because a `cvar` entry is the table's *mirror* of firmware
   memory and a `vsig` entry *abides* in the framework. **Members sync their own
-  mirrors** on their own clock: a `FirmwareMember` **flushes** its *driven* `cvar`
-  entries into firmware memory (and **samples** its *sampled* ones back out) around
-  its firmware tick; a model reads a routed `vsig` input straight from the entry.
-  The route is indifferent to which — no bespoke firmware code moves data.
+  mirrors** on their own clock: a `FirmwareMember` **flushes** the *fresh* (route-/
+  test-/pin-written) `cvar` entries in its namespace into firmware memory and
+  **sweeps** its whole leaf list back out around its firmware tick; a model reads
+  a routed `vsig` input straight from the entry. The route is indifferent to which —
+  no bespoke firmware code moves data. A route driving a `cvar` marks it dirty, so
+  the consuming firmware member flushes it the same tick.
 - **A destination is any registered signal of any `sig_type`.** A `cvar`
   destination (model output → a firmware sensor input, flushed by the consuming
   firmware member) and a `vsig` destination (a model input, read by the consuming
@@ -242,9 +275,9 @@ per tick:
   4. for each ENABLED member, in registration order:
        a. evaluate the enabled ZERO-latency routes in topological order with FRESH
           reads (a→b→c resolves fully, reading values produced earlier this tick)
-       b. member.advance(dt)   (a firmware member: flush driven cvars → advance_tick
-                                → sample sampled cvars; a model: read inputs, step,
-                                push outputs)
+       b. member.advance(dt)   (a firmware member: flush fresh/pinned cvars →
+                                advance_tick → sweep the whole cvar mirror out; a
+                                model: read inputs, step, push outputs)
   5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
 ```
 
@@ -252,10 +285,10 @@ Why this is correct:
 
 - **Mutual exclusion holds.** Propagation is a pure State Table operation — it
   records between *entries* and never touches firmware memory. The firmware member
-  syncs memory (flush driven `cvar` entries in, sample outputs back out) inside its
-  own advance while the firmware is quiescent ([`ffi-boundary.md`](ffi-boundary.md)
-  §5), so reading firmware-*output* statics and writing firmware-*input* statics is
-  race-free.
+  syncs memory (flush the fresh `cvar` entries in, sweep the whole mirror back out)
+  inside its own advance while the firmware is quiescent
+  ([`ffi-boundary.md`](ffi-boundary.md) §5), so reading firmware-*output* statics
+  and writing firmware-*input* statics is race-free.
 - **Zero forward latency.** Re-evaluating the full zero-latency DAG (in topo order)
   before *each* member is semantically identical to per-member incoming-route
   resolution — routes are pure copies and `record` dedups unchanged values — but far
@@ -330,9 +363,13 @@ One namespace, one access path, zero firmware-side data code.
 - ~~**Model-update ordering** vs per-hop latency.~~ **Resolved (§3):** per-route
   latency (0 forward / 1 delayed ZOH cut); forward flow resolves fully each tick in
   topological order along member registration order, validated at step time.
-- **Auto-registration scope:** register *all* DWARF statics (incl. FreeRTOS/HAL
-  internals) or filter to a project allowlist for a tidier namespace? (Full
-  namespace is cheap; filtering is cosmetic.)
+- ~~**Auto-registration scope:** register *all* DWARF statics or filter to a
+  project allowlist?~~ **Resolved:** the firmware member mirrors the **whole
+  traceable namespace** by default (every scalar/enum leaf under every static),
+  minus a built-in exclusion policy (array-size threshold drops stacks/heap/large
+  buffers; pointers/functions/multi-dim skipped). Per-member `exclude(prefix)` /
+  `include(path)` tune it; a general symbol/pattern trace filter is a later
+  cosmetic addition ([`signal-trace.md`](signal-trace.md) §9).
 - **Entry keying / path syntax** for nested members and array elements.
 - ~~**Model registration API** (Rust): how models declare their entries.~~
   **Resolved:** open registration — a member registers its entries directly on the

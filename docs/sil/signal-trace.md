@@ -67,6 +67,15 @@ FreeRTOS task stacks** (`StackType_t[]` arrays that churn every tick — huge an
 meaningless to historian). Implemented as a default array-size cap, shipped
 from the start.
 
+**Implemented (whole-namespace mirror, no declarations).** The firmware member
+enumerates every traceable leaf from DWARF at enable (scalars, recursed struct
+members, expanded array elements) and sweeps them all memory→table each tick —
+the cvar namespace is an automatic, accurate mirror of firmware memory. The
+built-in exclusion is a **default array-size threshold of 32** (arrays larger are
+skipped whole, dropping stacks / `ucHeap` / 512-byte buffers), plus multi-dim /
+unknown-length arrays and non-data leaves. Per-member `exclude(prefix)` /
+`include(path)` tune it. See [`state-route-tables.md`](state-route-tables.md) §1.
+
 - A general **user-facing trace filter** (exclude by symbol / pattern) is a
   later addition; the built-in stack/large-array exclusion is the only one
   needed up front.

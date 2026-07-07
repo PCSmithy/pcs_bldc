@@ -82,6 +82,14 @@ pub struct StateTable {
     current: HashMap<SignalId, Value>,
     /// Signals whose `record` is ignored (injection pin).
     overrides: HashSet<SignalId>,
+    /// **Command-write dirty set.** Ids a framework command wrote this cycle
+    /// (`record` / `force_record` / pin via `set_override`) — as opposed to a
+    /// mirror sweep (`record_mirror`), which never marks dirty. A firmware member
+    /// drains its own namespace's dirt each tick to know which `cvar`s to flush
+    /// back into firmware memory. Deduped by id (a per-tick re-command of the same
+    /// signal stays one entry), so it is bounded by the distinct-signal count, not
+    /// tick count.
+    dirty: HashSet<SignalId>,
     /// Signals that have had samples evicted (so `value_at` can report OutOfWindow).
     evicted: HashSet<SignalId>,
     /// Current sim time (microseconds); the timestamp for `record` and `log`.
@@ -109,6 +117,7 @@ impl StateTable {
             changes: HashMap::new(),
             current: HashMap::new(),
             overrides: HashSet::new(),
+            dirty: HashSet::new(),
             evicted: HashSet::new(),
             current_time_us: 0,
             logs: LogRing::new(config.log_capacity),
@@ -148,12 +157,41 @@ impl StateTable {
         Ok(())
     }
 
-    /// Record a value at the current time. Skips if the signal is overridden or
-    /// the value is unchanged (within epsilon). Errors if not registered.
+    /// Record a **command-written** value at the current time (route, test, or
+    /// model output). Marks the signal dirty so its owning member re-flushes it.
+    /// Skips the historian append if overridden or unchanged (within epsilon), but
+    /// the dirty mark stands whenever the command actually applied (an unchanged
+    /// re-command still means "the framework is driving this," so the value must be
+    /// re-asserted into firmware memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
+        self.record_inner(id, value, true)
+    }
+
+    /// Record a **mirror** value (a firmware member's end-of-tick sweep of its
+    /// memory into the table). Identical dedup/historian/override behavior to
+    /// [`record`](Self::record) — a pinned entry ignores it exactly as it ignores a
+    /// command `record`, so a sweep can never un-pin the view — but it does **not**
+    /// mark the signal dirty (the table is only tracking what memory already holds,
+    /// not commanding a write back into it).
+    pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
+        self.record_inner(id, value, false)
+    }
+
+    fn record_inner(
+        &mut self,
+        id: &SignalId,
+        value: Value,
+        command: bool,
+    ) -> Result<(), TableError> {
         self.ensure(id)?;
         if self.overrides.contains(id) {
+            // Pinned: both command and mirror records are ignored (the pin holds
+            // the current view). A pinned entry is re-asserted via the pinned-flush
+            // union, not via record.
             return Ok(());
+        }
+        if command {
+            self.dirty.insert(id.clone());
         }
         if let Some(cur) = self.current.get(id) {
             if cur.approx_eq(&value, self.epsilon_for(id)) {
@@ -164,9 +202,11 @@ impl StateTable {
         Ok(())
     }
 
-    /// Record unconditionally (bypasses change-detection and overrides).
+    /// Record unconditionally (bypasses change-detection and overrides). Counts as
+    /// a command write (marks the signal dirty).
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         self.ensure(id)?;
+        self.dirty.insert(id.clone());
         self.append(id, value);
         Ok(())
     }
@@ -201,15 +241,51 @@ impl StateTable {
         Ok(Some(&dq[idx - 1].1))
     }
 
-    /// Pin/unpin a signal (overridden signals ignore `record`).
+    /// Pin/unpin a signal (overridden signals ignore `record`). Pinning marks the
+    /// signal dirty: a pin is a continuous drive, so the pinned value must be
+    /// asserted into firmware memory from the next tick onward (and every tick
+    /// after — see [`pinned`](Self::pinned)). Unpinning does not mark dirty; the
+    /// signal simply resumes being mirrored.
     pub fn set_override(&mut self, id: &SignalId, on: bool) -> Result<(), TableError> {
         self.ensure(id)?;
         if on {
             self.overrides.insert(id.clone());
+            self.dirty.insert(id.clone());
         } else {
             self.overrides.remove(id);
         }
         Ok(())
+    }
+
+    /// Remove and return the dirty ids whose `<source>` segment equals `source`
+    /// (a member drains its **own** namespace; other members' dirt is left in
+    /// place for their own drain). Deterministic order (sorted by id string).
+    pub fn take_dirty(&mut self, source: &str) -> Vec<SignalId> {
+        let mut mine: Vec<SignalId> = Vec::new();
+        self.dirty.retain(|id| {
+            if id.source() == source {
+                mine.push(id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        mine.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        mine
+    }
+
+    /// The currently-pinned (overridden) ids whose `<source>` segment equals
+    /// `source`, for the per-tick pinned-flush union (a pin re-asserts every tick,
+    /// even when not freshly dirty). Deterministic order.
+    pub fn pinned(&self, source: &str) -> Vec<SignalId> {
+        let mut ids: Vec<SignalId> = self
+            .overrides
+            .iter()
+            .filter(|id| id.source() == source)
+            .cloned()
+            .collect();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        ids
     }
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
@@ -429,6 +505,71 @@ mod tests {
         assert_eq!(st.dropped_logs(), 3);
         assert_eq!(st.logs().front().unwrap().message, "m3");
         assert_eq!(st.logs().back().unwrap().message, "m4");
+    }
+
+    #[test]
+    fn command_record_marks_dirty_mirror_does_not() {
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+
+        // A mirror record does NOT mark dirty.
+        st.set_time(1_000);
+        st.record_mirror(&a, Value::U32(5)).unwrap();
+        assert!(st.take_dirty("dut").is_empty());
+        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+
+        // A command record marks dirty (drained exactly once).
+        st.set_time(2_000);
+        st.record(&a, Value::U32(9)).unwrap();
+        assert_eq!(st.take_dirty("dut"), vec![a.clone()]);
+        assert!(st.take_dirty("dut").is_empty());
+
+        // Even a deduped (unchanged) command re-marks dirty: the driver keeps
+        // re-asserting a routed value every tick.
+        st.set_time(3_000);
+        st.record(&a, Value::U32(9)).unwrap(); // unchanged -> no historian append
+        assert_eq!(st.changes(&a).unwrap().len(), 2);
+        assert_eq!(st.take_dirty("dut"), vec![a]);
+    }
+
+    #[test]
+    fn pinned_ignores_mirror_and_flushes_every_tick() {
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record_mirror(&a, Value::U32(5)).unwrap();
+
+        // Pin at 5; it enters the pinned set (and is dirty once).
+        st.set_override(&a, true).unwrap();
+        assert_eq!(st.pinned("dut"), vec![a.clone()]);
+
+        // A mirror record on a pinned entry is ignored — the sweep cannot un-pin
+        // the view.
+        st.set_time(2_000);
+        st.record_mirror(&a, Value::U32(99)).unwrap();
+        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+
+        // The pin persists across take_dirty drains: it must flush EVERY tick.
+        st.take_dirty("dut");
+        assert_eq!(st.pinned("dut"), vec![a]);
+    }
+
+    #[test]
+    fn take_dirty_is_source_scoped() {
+        let mut st = StateTable::new();
+        let a = id("cvar:board_a:x");
+        let b = id("cvar:board_b:y");
+        st.register(a.clone(), None).unwrap();
+        st.register(b.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record(&a, Value::U32(1)).unwrap();
+        st.record(&b, Value::U32(2)).unwrap();
+
+        // Draining board_a leaves board_b's dirt in place.
+        assert_eq!(st.take_dirty("board_a"), vec![a]);
+        assert_eq!(st.take_dirty("board_b"), vec![b]);
     }
 
     #[test]

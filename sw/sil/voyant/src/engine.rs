@@ -275,7 +275,7 @@ impl<'b> Engine<'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backend, FirmwareMember};
+    use crate::backend::{Backend, CvarEnumeration, FirmwareMember};
     use crate::member::{vsig_id, RampModel};
     use crate::signal::Value;
     use crate::state_table::TableError;
@@ -292,6 +292,16 @@ mod tests {
         log: RefCell<Vec<String>>,
         ticks: Cell<u32>,
         cvars: RefCell<HashMap<String, Value>>,
+        leaves: Vec<String>,
+    }
+
+    impl MockBackend {
+        fn with_leaves(leaves: &[&str]) -> Self {
+            Self {
+                leaves: leaves.iter().map(|s| (*s).to_string()).collect(),
+                ..Default::default()
+            }
+        }
     }
 
     impl Backend for MockBackend {
@@ -310,6 +320,12 @@ mod tests {
         fn write_cvar(&self, path: &str, v: &Value) {
             self.log.borrow_mut().push(format!("write:{path}"));
             self.cvars.borrow_mut().insert(path.to_string(), v.clone());
+        }
+        fn enumerate_cvars(&self, _threshold: usize, _includes: &[String]) -> CvarEnumeration {
+            CvarEnumeration {
+                leaves: self.leaves.iter().map(|p| (p.clone(), None)).collect(),
+                ..CvarEnumeration::default()
+            }
         }
     }
 
@@ -385,13 +401,14 @@ mod tests {
         // order [model, firmware] makes it hold — the model records its vsig, the
         // firmware member's pre-advance zero-latency pass records it into the cvar
         // entry, and the firmware member flushes it.
-        let be = MockBackend::default();
+        let be = MockBackend::with_leaves(&["sensor_in"]);
         let mut eng = Engine::new(1_000);
         eng.add_member(Box::new(RampModel::new("ramp", 1000.0, None)));
-        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
-        fw.drive_cvar(cvar("sensor_in"), None);
+        let fw = FirmwareMember::with_backend("fw", &be, 1_000);
         eng.add_member(Box::new(fw));
-        eng.add_route(vsig_id("ramp", "value").unwrap(), cvar("sensor_in"))
+        // The auto-mirrored cvar is registered under the member's own name ("fw").
+        let sensor_in = SignalId::new("cvar", "fw", "sensor_in", None).unwrap();
+        eng.add_route(vsig_id("ramp", "value").unwrap(), sensor_in)
             .unwrap();
 
         eng.step().unwrap();
@@ -405,12 +422,10 @@ mod tests {
 
     #[test]
     fn time_advances_by_tick_period() {
-        let be = MockBackend::default();
+        let be = MockBackend::with_leaves(&["counter"]);
         let mut eng = Engine::new(1_000);
-        let id = cvar("counter");
-        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
-        fw.sample_cvar(id.clone(), None);
-        eng.add_member(Box::new(fw));
+        let id = SignalId::new("cvar", "fw", "counter", None).unwrap();
+        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -445,12 +460,10 @@ mod tests {
 
     #[test]
     fn samples_registered_cvars_into_historian() {
-        let be = MockBackend::default();
+        let be = MockBackend::with_leaves(&["ramp_counter"]);
         let mut eng = Engine::new(1_000);
-        let id = cvar("ramp_counter");
-        let mut fw = FirmwareMember::with_backend("fw", &be, 1_000);
-        fw.sample_cvar(id.clone(), Some("counts"));
-        eng.add_member(Box::new(fw));
+        let id = SignalId::new("cvar", "fw", "ramp_counter", None).unwrap();
+        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
 
         for _ in 0..3 {
             eng.step().unwrap();

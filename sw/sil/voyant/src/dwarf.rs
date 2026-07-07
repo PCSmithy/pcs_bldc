@@ -87,6 +87,31 @@ pub(crate) enum Leaf {
     Enum(usize),
 }
 
+/// The result of a whole-namespace leaf enumeration ([`DwarfMap::enumerate_leaves`]).
+/// `paths` are traceable scalar/enum leaves in the resolver's path syntax
+/// (`var.member[i].field`); the counters report what the exclusion policy dropped.
+#[derive(Default)]
+pub(crate) struct LeafEnumeration {
+    /// Every traceable leaf path (scalars, expanded struct members + array
+    /// elements), sorted deterministically by top-level variable then walk order.
+    pub paths: Vec<String>,
+    /// Arrays skipped whole: over the element-count threshold (and not
+    /// include-forced), multi-dimensional, or of unknown length.
+    pub excluded_arrays: usize,
+    /// Leaves skipped because their type is not a traceable scalar/enum (pointer,
+    /// function, opaque/forward-declared aggregate, unsupported base type).
+    pub skipped_leaves: usize,
+    /// A recursion depth / leaf-budget safety cap was hit (walk truncated).
+    pub capped: bool,
+}
+
+/// Recursion depth safety cap (nested struct/array). Firmware aggregates are
+/// shallow; this only guards against pathological/looping DWARF.
+const ENUM_DEPTH_CAP: u32 = 64;
+/// Leaf-count safety cap: stop enumerating well before any realistic namespace
+/// would exhaust memory. Hitting it sets [`LeafEnumeration::capped`].
+const ENUM_LEAF_BUDGET: usize = 200_000;
+
 /// An enumeration type: its underlying byte size + numeric-value → name map.
 #[derive(Default)]
 struct EnumInfo {
@@ -104,6 +129,11 @@ struct Maps {
     underlying: HashMap<usize, usize>,
     /// array type offset -> element type offset
     arrays: HashMap<usize, usize>,
+    /// array type offset -> its per-dimension element counts (one entry per
+    /// `DW_TAG_subrange_type` child, in source order). Leaf enumeration uses this
+    /// to size and expand an array; the single-index resolver only handles the
+    /// 1-D case, so multi-dimensional arrays are enumeration-excluded.
+    array_dims: HashMap<usize, Vec<u64>>,
     /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
     /// base type offset -> (DW_ATE encoding, byte size)
@@ -186,6 +216,100 @@ impl DwarfMap {
         Some((addr, leaf))
     }
 
+    /// Enumerate **every traceable leaf** under every firmware `static`: scalars,
+    /// recursively-expanded struct/union members, and expanded array elements,
+    /// each as a path in the resolver's syntax (`var.member[i].field`) so
+    /// [`resolve`](Self::resolve) accepts it verbatim.
+    ///
+    /// **Exclusion policy.** An array with more than `threshold` elements is
+    /// skipped whole (this naturally drops task stacks, `ucHeap`, and large
+    /// scratch buffers) — *unless* an `include` prefix reaches into it, which
+    /// forces just the reached element(s). Multi-dimensional and unknown-length
+    /// arrays are skipped whole (the single-index resolver only handles 1-D).
+    /// Non-scalar leaves (pointers, functions, opaque aggregates) are skipped and
+    /// counted. A depth / leaf-budget cap guards against pathological DWARF.
+    pub(crate) fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
+        let mut ctx = EnumCtx {
+            threshold,
+            includes,
+            out: Vec::new(),
+            excluded_arrays: 0,
+            skipped_leaves: 0,
+            capped: false,
+        };
+        // Deterministic top-level order.
+        let mut names: Vec<&String> = self.0.vars.keys().collect();
+        names.sort();
+        for name in names {
+            let (_addr, ty) = self.0.vars[name];
+            self.walk_leaves(name.clone(), ty, 0, &mut ctx);
+        }
+        LeafEnumeration {
+            paths: ctx.out,
+            excluded_arrays: ctx.excluded_arrays,
+            skipped_leaves: ctx.skipped_leaves,
+            capped: ctx.capped,
+        }
+    }
+
+    /// Recursive leaf walk for [`enumerate_leaves`](Self::enumerate_leaves).
+    fn walk_leaves(&self, path: String, ty: usize, depth: u32, ctx: &mut EnumCtx) {
+        if ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET) {
+            ctx.capped = ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET);
+            return;
+        }
+        let ty = self.peel(ty);
+
+        // Struct / union: recurse members in offset order (deterministic).
+        if let Some(members) = self.0.members.get(&ty) {
+            let mut ms: Vec<(&String, &(u64, usize))> = members.iter().collect();
+            ms.sort_by_key(|(name, (off, _))| (*off, (*name).clone()));
+            for (name, (_off, mty)) in ms {
+                self.walk_leaves(format!("{path}.{name}"), *mty, depth + 1, ctx);
+            }
+            return;
+        }
+
+        // Array: expand elements, applying the threshold / include policy.
+        if let Some(&elem) = self.0.arrays.get(&ty) {
+            let n = match self.0.array_dims.get(&ty) {
+                Some(dims) if (dims.len() == 1) && (dims[0] > 0) => dims[0],
+                _ => {
+                    // Multi-dimensional or unknown length: not indexable by the
+                    // single-index resolver, so exclude whole.
+                    ctx.excluded_arrays += 1;
+                    return;
+                }
+            };
+            let over = (n as usize) > ctx.threshold;
+            if over && !wanted(&path, ctx.includes) {
+                ctx.excluded_arrays += 1;
+                return;
+            }
+            let elem = self.peel(elem);
+            for i in 0..n {
+                let child = format!("{path}[{i}]");
+                // On a force-expanded over-threshold array, keep only the
+                // element(s) an include actually reaches.
+                if over && !wanted(&child, ctx.includes) {
+                    continue;
+                }
+                self.walk_leaves(child, elem, depth + 1, ctx);
+                if ctx.capped {
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Leaf: a traceable scalar or enum, else a skipped non-data type.
+        if self.0.enums.contains_key(&ty) || self.scalar_kind(ty).is_some() {
+            ctx.out.push(path);
+        } else {
+            ctx.skipped_leaves += 1;
+        }
+    }
+
     /// The byte size of an enum type.
     pub(crate) fn enum_size(&self, off: usize) -> Option<u64> {
         self.0.enums.get(&off).map(|e| e.size)
@@ -253,6 +377,33 @@ impl DwarfMap {
     }
 }
 
+/// Mutable state threaded through the recursive leaf walk.
+struct EnumCtx<'a> {
+    threshold: usize,
+    includes: &'a [String],
+    out: Vec<String>,
+    excluded_arrays: usize,
+    skipped_leaves: usize,
+    capped: bool,
+}
+
+/// Whether `x` names an ancestor-or-equal of `y` in the path syntax: `y == x`,
+/// or `y` continues `x` with a `.member` or `[index]` step.
+fn is_ancestor_or_eq(x: &str, y: &str) -> bool {
+    (y == x)
+        || (y.len() > x.len() && y.starts_with(x) && matches!(y.as_bytes()[x.len()], b'.' | b'['))
+}
+
+/// Whether the include list "wants" `path`: some include is an ancestor of
+/// `path` (include the whole subtree) **or** `path` is an ancestor of some
+/// include (descend toward a specifically-included leaf). Drives the
+/// over-threshold array force-expand.
+fn wanted(path: &str, includes: &[String]) -> bool {
+    includes
+        .iter()
+        .any(|inc| is_ancestor_or_eq(inc, path) || is_ancestor_or_eq(path, inc))
+}
+
 fn collect_unit(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
@@ -304,6 +455,20 @@ fn collect_unit(
             gimli::DW_TAG_array_type => {
                 if let (Some(g), Some(elem)) = (goff, type_goff(unit, entry)) {
                     maps.arrays.insert(g, elem);
+                    // Ensure a dims vec exists even for a 0-subrange (flexible)
+                    // array, so enumeration treats it as unknown-length.
+                    maps.array_dims.entry(g).or_default();
+                }
+            }
+            gimli::DW_TAG_subrange_type => {
+                // A subrange is a dimension of its enclosing array_type; append
+                // its element count (in source order) to that array's dims.
+                if let Some(&(_, parent, ptag)) = stack.last() {
+                    if ptag == gimli::DW_TAG_array_type {
+                        if let Some(len) = subrange_len(entry) {
+                            maps.array_dims.entry(parent).or_default().push(len);
+                        }
+                    }
                 }
             }
             gimli::DW_TAG_base_type => {
@@ -404,6 +569,21 @@ fn encoding(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u8> {
     }
 }
 
+/// An array dimension's element count from a `DW_TAG_subrange_type`:
+/// `DW_AT_count` directly, else `DW_AT_upper_bound + 1`. `None` for an
+/// unbounded (flexible) array member.
+fn subrange_len(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
+    if let Some(c) = entry.attr_value(gimli::DW_AT_count).ok().flatten() {
+        return c.udata_value();
+    }
+    entry
+        .attr_value(gimli::DW_AT_upper_bound)
+        .ok()
+        .flatten()?
+        .udata_value()
+        .map(|u| u + 1)
+}
+
 /// An enumerator's `DW_AT_const_value` as an i64 (signed first, else unsigned).
 fn const_value(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<i64> {
     let v = entry.attr_value(gimli::DW_AT_const_value).ok().flatten()?;
@@ -425,5 +605,88 @@ fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
             }
             Some((&seg[..b], indices))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a synthetic [`DwarfMap`] exercising the leaf walk without a real DLL:
+    /// a scalar `n`, a struct `s { a; arr[3]; big[100] }`, and a 2-D `grid[2][3]`.
+    fn synthetic() -> DwarfMap {
+        let mut m = Maps::default();
+        // base u32 @10
+        m.base.insert(10, (gimli::DW_ATE_unsigned.0, 4));
+        m.sizes.insert(10, 4);
+        // small array @20 (elem u32, 3 elems)
+        m.arrays.insert(20, 10);
+        m.array_dims.insert(20, vec![3]);
+        // big array @30 (elem u32, 100 elems — over threshold)
+        m.arrays.insert(30, 10);
+        m.array_dims.insert(30, vec![100]);
+        // 2-D array @40 (elem u32, 2x3 — multi-dim)
+        m.arrays.insert(40, 10);
+        m.array_dims.insert(40, vec![2, 3]);
+        // struct S @100 { a@0:u32, arr@4:arr20, big@8:arr30 }
+        let mut members = HashMap::new();
+        members.insert("a".to_string(), (0u64, 10usize));
+        members.insert("arr".to_string(), (4, 20));
+        members.insert("big".to_string(), (8, 30));
+        m.members.insert(100, members);
+        // vars
+        m.vars.insert("n".to_string(), (0x1000, 10));
+        m.vars.insert("s".to_string(), (0x2000, 100));
+        m.vars.insert("grid".to_string(), (0x3000, 40));
+        DwarfMap(m)
+    }
+
+    #[test]
+    fn enumerates_scalars_structs_arrays_with_threshold() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &[]);
+        assert_eq!(
+            en.paths,
+            vec![
+                "n".to_string(),
+                "s.a".to_string(),
+                "s.arr[0]".to_string(),
+                "s.arr[1]".to_string(),
+                "s.arr[2]".to_string(),
+            ]
+        );
+        // grid (multi-dim) + s.big (over threshold) both excluded whole.
+        assert_eq!(en.excluded_arrays, 2);
+        assert_eq!(en.skipped_leaves, 0);
+        assert!(!en.capped);
+    }
+
+    #[test]
+    fn include_forces_a_single_over_threshold_element() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &["s.big[1]".to_string()]);
+        // Exactly the one included element joins; the rest of big stays excluded.
+        assert!(en.paths.contains(&"s.big[1]".to_string()));
+        assert!(!en.paths.contains(&"s.big[0]".to_string()));
+        assert!(!en.paths.contains(&"s.big[2]".to_string()));
+        // Only grid remains excluded now (big was force-expanded).
+        assert_eq!(en.excluded_arrays, 1);
+    }
+
+    #[test]
+    fn include_whole_array_prefix_expands_all_elements() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &["s.big".to_string()]);
+        let big_leaves = en.paths.iter().filter(|p| p.starts_with("s.big[")).count();
+        assert_eq!(big_leaves, 100);
+    }
+
+    #[test]
+    fn ancestor_predicate() {
+        assert!(is_ancestor_or_eq("a.b", "a.b"));
+        assert!(is_ancestor_or_eq("a.b", "a.b.c"));
+        assert!(is_ancestor_or_eq("a.b", "a.b[0]"));
+        assert!(!is_ancestor_or_eq("a.b", "a.bc")); // not a boundary
+        assert!(!is_ancestor_or_eq("a.b.c", "a.b"));
     }
 }

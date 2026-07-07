@@ -76,6 +76,19 @@ of statics every tick.
 Bake the **pluggable change-detector seam** now (naive-scan ↔ dirty-page); gate
 first, add dirty-tracking when it profiles hot.
 
+**The whole-namespace mirror sweep is exactly this workload.** The firmware
+member now mirrors every traceable cvar leaf memory→table each tick (naive scan,
+[`signal-trace.md`](signal-trace.md) §4) — this is what the dirty-page lever will
+optimize. Two mitigations already hold: the sweep reads through **pre-resolved
+address/type handles** (cached at enable — no per-tick DWARF re-resolution), and
+the in-sync **flush is sparse** (only the command-dirtied + pinned cvars, via the
+State Table dirty set, never the whole namespace). Measured on the pcs_bldc DLL:
+**~430 cvar leaves** swept per tick (the built-in array-size exclusion drops the
+task stacks / heap / 512-byte buffers that would otherwise dominate). The sweep
+itself is a small fraction of a firmware advance today (the FreeRTOS tick + task
+switches dominate the measured µs/advance); dirty-page tracking is the lever when
+the naive scan profiles hot.
+
 ## 6. Lever 5 — zero-alloc hot loop
 
 No `malloc` per tick. Preallocate everything; historian append = bump-pointer
