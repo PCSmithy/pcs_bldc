@@ -73,7 +73,13 @@ fi
 
 # 1. Native firmware -> build/<DLL_DIR>/src/$LIBNAME
 echo "==> [1/3] Building native firmware (shared library, $DLL_FLAVOR)"
-bash "$HERE/build_native.sh" "${BUILD_OPT[@]}" "${FWD_ARGS[@]}"
+# The debug flavor leaves BUILD_OPT empty, and a plain no-args run leaves
+# FWD_ARGS empty. On macOS's bash 3.2, expanding an empty array as
+# "${arr[@]}" under `set -u` (nounset) aborts with "unbound variable"
+# (bash 4.4+ on Linux/Windows tolerates it). The ${arr[@]+"${arr[@]}"} guard
+# expands to the quoted elements when the array is non-empty and to nothing
+# when empty — portable across all three CI shells.
+bash "$HERE/build_native.sh" ${BUILD_OPT[@]+"${BUILD_OPT[@]}"} ${FWD_ARGS[@]+"${FWD_ARGS[@]}"}
 
 LIB="$ROOT/build/$DLL_DIR/src/$LIBNAME"
 if [ ! -f "$LIB" ]; then
