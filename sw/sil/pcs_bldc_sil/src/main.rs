@@ -242,19 +242,27 @@ fn diag_per_tick_table(fw: &Firmware) {
 
     println!("\n-- DIAG: per-tick firmware scheduling table (PCS_SIL_DIAG=1) --");
     println!("         DLL flavor: {}", std::env::var("PCS_SIL_DLL_FLAVOR").unwrap_or_else(|_| "unknown".into()));
-    println!("         {:>4}  {:>10}  {:>11}  {:>8}  {:>8}  {:>6}  {:>7}",
-             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb");
+    // t10.* are white-box probes captured inside task_10ms's delay cycle (main.c):
+    // lwIn = lastWake entering vTaskDelayUntil, lwOut = lastWake it wrote back
+    // (should be lwIn+10), tick = the tick task_10ms actually resumed on (should
+    // equal lwOut for a true 10-tick block).
+    println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}  {:>7}  {:>7}  {:>7}",
+             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb",
+             "t10.lwIn", "t10.lwOut", "t10.tick");
     // Row 0 = post-boot baseline (all tasks just blocked; no tick applied yet).
     // Rows 1.. = state after each raw firmware tick.
     for i in 0..=TICKS {
-        println!("         {:>4}  {:>10}  {:>11}  {:>8}  {:>8}  {:>6}  {:>7}",
+        println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}  {:>7}  {:>7}  {:>7}",
                  i,
                  rd("xTickCount"),
                  rd("xNextTaskUnblockTime"),
                  rd("task1msRuns"),
                  rd("task10msRuns"),
                  rd("telemRuns"),
-                 rd("taskUsbRuns"));
+                 rd("taskUsbRuns"),
+                 rd("dbg_t10_lwIn"),
+                 rd("dbg_t10_lwOut"),
+                 rd("dbg_t10_tick"));
         if i < TICKS {
             fw.advance_tick();
         }

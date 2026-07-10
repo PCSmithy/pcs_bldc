@@ -147,6 +147,25 @@ static volatile uint32_t task200msRuns;
 static volatile uint32_t taskUsbRuns;
 static volatile uint32_t telemRuns;
 
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+// TEMPORARY (macOS aarch64 multi-tick cadence hunt): white-box probes into the
+// task_10ms delay cycle, captured each iteration and DWARF-read by the SIL diag
+// table (PCS_SIL_DIAG=1). They pin down whether vTaskDelayUntil's own inputs
+// diverge on aarch64 (lastWake not preserved / arithmetic) vs the kernel
+// unblocking too early (delayed-list). SIM-only, observational. Remove with the
+// diag once the anomaly is understood.
+//   *_lwIn  : lastWake as seen entering vTaskDelayUntil (== *_lwOut of prev iter
+//             if the task-local survived the block);
+//   *_lwOut : lastWake after the call (the xTimeToWake the API wrote back;
+//             should be *_lwIn + 10);
+//   *_tick  : xTaskGetTickCount() right after the call returns (the tick the
+//             task actually resumed on; should equal *_lwOut for a true 10-tick
+//             block — if it trails by ~9, the block collapsed / early unblock).
+volatile uint32_t dbg_t10_lwIn;
+volatile uint32_t dbg_t10_lwOut;
+volatile uint32_t dbg_t10_tick;
+#endif
+
 // Fold one body execution's duration into the task's window max.
 static void profileUpdate(profileTask_E task, uint32_t durationUs)
 {
@@ -204,7 +223,14 @@ static void task_10ms(void * params)
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        dbg_t10_lwIn = (uint32_t)lastWake;   // lastWake entering the delay
+#endif
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10U));
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        dbg_t10_lwOut = (uint32_t)lastWake;              // lastWake the API wrote back
+        dbg_t10_tick  = (uint32_t)xTaskGetTickCount();   // tick we actually resumed on
+#endif
         task10msRuns++;
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
