@@ -18,6 +18,12 @@ jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # TEMPORARY (macOS aarch64 multi-tick cadence hunt): make the SIL suite print
+    # its white-box per-tick scheduling table so CI's macOS runner acts as a
+    # remote debugger. Remove once the anomaly is diagnosed. See main.rs
+    # `diag_per_tick_table` and docs/sil/backlog.md.
+    env:
+      PCS_SIL_DIAG: 1
     strategy:
       fail-fast: false
       matrix:

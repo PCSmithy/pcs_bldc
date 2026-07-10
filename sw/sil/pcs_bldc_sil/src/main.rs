@@ -18,6 +18,16 @@
 //! drained and printed at the end.
 //!
 //! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
+//!
+//! Env vars:
+//! - `PCS_SIL_DLL_FLAVOR` — label printed in the performance report (set by
+//!   `tools/run_sil.sh`).
+//! - `PCS_SIL_DIAG=1` — after boot, print a white-box per-tick scheduling table
+//!   (FreeRTOS `xTickCount`, `xNextTaskUnblockTime`, and the per-task heartbeat
+//!   counters, all read by DWARF straight from firmware memory). Print-only —
+//!   it advances the shared firmware handle like any other check, so the delta
+//!   bands the checks assert are unaffected. Exists to turn a CI runner into a
+//!   remote debugger for the macOS aarch64 multi-tick cadence anomaly.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -128,6 +138,10 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // --- Optional white-box diagnostic (PCS_SIL_DIAG=1) ---------------------
+    // Print-only; advances the shared firmware handle like any check would.
+    diag_per_tick_table(&fw);
+
     // --- Check 2: all four real tasks advance -------------------------------
     println!("\n-- 2. all four real FreeRTOS tasks advance --");
     check_tasks_advance(&fw, &mut rep);
@@ -187,6 +201,66 @@ fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// White-box per-tick scheduling table, gated by `PCS_SIL_DIAG=1` (no-op
+/// otherwise). Straight after boot, advance the firmware one raw tick at a time
+/// and, each tick, DWARF-read the FreeRTOS kernel's own view — `xTickCount` and
+/// `xNextTaskUnblockTime` (the earliest tick any blocked task is scheduled to
+/// wake) — alongside the per-task heartbeat counters. This is our remote
+/// debugger for the macOS aarch64 anomaly where multi-tick delays collapse:
+/// - if `xTickCount` advances by 1/tick but `xNextTaskUnblockTime` sits at
+///   `xTickCount+1` every tick (and every counter climbs each tick), the block
+///   times themselves are wrong (kernel/port bug — the delayed-list wake values
+///   are being computed or stored as ~1 tick);
+/// - if the counters climb but `xNextTaskUnblockTime` looks sane (e.g. +10 for
+///   the 10 ms task), the anomaly is in how the suite reads the counters, not in
+///   the firmware's scheduling (DWARF/address resolution).
+///
+/// Print-only: it advances the shared `fw` handle exactly as the checks do
+/// (each check reads its own `before`/`after` deltas), so it does not perturb
+/// any pass/fail band. Reads are panic-guarded so a firmware built without a
+/// given static degrades that column to `n/a` rather than aborting the suite.
+fn diag_per_tick_table(fw: &Firmware) {
+    if std::env::var("PCS_SIL_DIAG").ok().as_deref() != Some("1") {
+        return;
+    }
+    const TICKS: u32 = 15;
+
+    // Silence the default panic hook for the duration: a missing DWARF symbol
+    // makes `read_cvar` panic, which we catch below and render as "n/a" — we do
+    // not want the backtrace spew for an expected, handled miss.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let rd = |path: &str| -> String {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fw.read_cvar(path)))
+            .ok()
+            .and_then(|v| v_u64(&v))
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "n/a".into())
+    };
+
+    println!("\n-- DIAG: per-tick firmware scheduling table (PCS_SIL_DIAG=1) --");
+    println!("         DLL flavor: {}", std::env::var("PCS_SIL_DLL_FLAVOR").unwrap_or_else(|_| "unknown".into()));
+    println!("         {:>4}  {:>10}  {:>11}  {:>8}  {:>8}  {:>6}  {:>7}",
+             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb");
+    // Row 0 = post-boot baseline (all tasks just blocked; no tick applied yet).
+    // Rows 1.. = state after each raw firmware tick.
+    for i in 0..=TICKS {
+        println!("         {:>4}  {:>10}  {:>11}  {:>8}  {:>8}  {:>6}  {:>7}",
+                 i,
+                 rd("xTickCount"),
+                 rd("xNextTaskUnblockTime"),
+                 rd("task1msRuns"),
+                 rd("task10msRuns"),
+                 rd("telemRuns"),
+                 rd("taskUsbRuns"));
+        if i < TICKS {
+            fw.advance_tick();
+        }
+    }
+
+    std::panic::set_hook(prev_hook);
 }
 
 /// Read the four per-task heartbeat counters, advance ~50 ticks **through the

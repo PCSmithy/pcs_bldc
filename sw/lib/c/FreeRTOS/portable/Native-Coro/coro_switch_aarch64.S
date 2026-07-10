@@ -16,12 +16,15 @@
 #  define SYM(x) x
 #endif
 
+/* CORO_FRAME_BYTES — shared with coro.c so the frame size cannot drift. */
+#include "coro_frame.h"
+
     .text
 
     .global SYM(coro_asm_swap)
     .p2align 2
 SYM(coro_asm_swap):
-    sub  sp, sp, #160
+    sub  sp, sp, #CORO_FRAME_BYTES
     stp  x19, x20, [sp, #0]
     stp  x21, x22, [sp, #16]
     stp  x23, x24, [sp, #32]
@@ -45,7 +48,7 @@ SYM(coro_asm_swap):
     ldp  d10, d11, [sp, #112]
     ldp  d12, d13, [sp, #128]
     ldp  d14, d15, [sp, #144]
-    add  sp, sp, #160
+    add  sp, sp, #CORO_FRAME_BYTES
     ret
 
     .global SYM(coro_asm_trampoline)
