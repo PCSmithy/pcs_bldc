@@ -1,49 +1,27 @@
 //! # voyant — clairvoyant software-in-the-loop
 //!
 //! A generic, firmware-agnostic framework for running cross-compiled embedded
-//! firmware in a deterministic virtual world, with total white-box visibility
-//! into its state. A project's own instantiation crate instantiates voyant by
-//! implementing its trait seams and supplying its firmware, models, and routes;
-//! nothing here is specific to any one board.
+//! firmware in a deterministic virtual world with white-box visibility into its
+//! state. A project's instantiation crate supplies the firmware, models, and
+//! routes; nothing here is board-specific.
 //!
 //! Modules:
-//! - [`signal`] — [`SignalId`] (`sig_type:source:name[:modifier]`) + the common
-//!   [`Value`] currency.
-//! - [`state_table`] — the [`StateTable`]: signal registry + per-signal
-//!   change-logged history + current cache + injection overrides + retention
-//!   (state-route-tables.md; the State Table *is* the historian, D12). Pure
-//!   data — no FFI.
-//! - `backend` — [`Firmware`], the public firmware handle: the control ABI +
-//!   the cvar sample-resolver (read/write firmware statics as [`Value`] by DWARF
-//!   path, the only unsafe/DWARF part), plus the port-registration seam
-//!   (signals a firmware's sim HW drivers register at runtime through a hook
-//!   vtable, carried in native units and cache-mediated around each tick — a
-//!   "port" is just an ordinary Signal the firmware syncs from C; the word is
-//!   firmware-member vocabulary, not a voyant primitive). And
-//!   [`FirmwareMember`]: a firmware instance wrapped as a [`Member`], syncing
-//!   cvar mirrors and port caches around its firmware tick. An internal
-//!   `Backend` trait is the execution / test-double seam `FirmwareMember` drives
-//!   (mock backends stand in for a DLL in unit tests); [`Member`] is the public
-//!   seam.
-//! - [`member`] — the [`Member`] trait, the single seam the [`Engine`] drives
-//!   every participant through (register signals on the table, push outputs, read
-//!   routed inputs), plus [`RampModel`], voyant's reference model member, and the
-//!   [`vsig_id`] helper.
-//! - [`route`] — the [`RouteTable`]: declarative `source → destination`
-//!   transport with per-route latency (0 = same-tick forward dataflow, 1 = the
-//!   delayed ZOH cut), step-time validation, and per-route suspend/resume for
-//!   fault injection (state-route-tables.md §2–§3).
-//! - [`engine`] — the [`Engine`]: the sim clock + step loop that owns the State
-//!   Table / Route Table / members and advances the whole system one tick at a
-//!   time in the canonical order — delayed routes from a pre-tick snapshot, then
-//!   per member the zero-latency DAG resolved fresh in topo order + advance
-//!   (state-route-tables.md §3). It holds no backend handle — each firmware member
-//!   drives its own backend.
-//! - [`log`] — the unified log system: [`LogLevel`] / [`LogEntry`] + the
-//!   drop-oldest [`LogRing`] the [`StateTable`] stamps with sim time.
+//! - [`signal`] — [`SignalId`] (`sig_type:source:name[:modifier]`) + the [`Value`] currency.
+//! - [`state_table`] — the [`StateTable`]: signal registry + change-logged history +
+//!   overrides + retention. Pure data, no FFI (it *is* the historian, D12).
+//! - `backend` — [`Firmware`] (public handle: control ABI + DWARF cvar resolver, the
+//!   only unsafe part) and [`FirmwareMember`] (a firmware wrapped as a [`Member`]). A
+//!   "port" is just a Signal the firmware syncs from C — firmware-member vocabulary,
+//!   not a voyant primitive. The internal `Backend` trait is the test-double seam.
+//! - [`member`] — the [`Member`] trait (the one seam the [`Engine`] drives), plus
+//!   [`RampModel`] and [`vsig_id`].
+//! - [`route`] — the [`RouteTable`]: `source → destination` transport with per-route
+//!   latency (0 = same-tick, 1 = delayed ZOH cut) and suspend/resume for fault injection.
+//! - [`engine`] — the [`Engine`]: sim clock + step loop owning table/routes/members,
+//!   advancing one tick at a time. Holds no backend handle — each firmware member drives its own.
+//! - [`log`] — [`LogLevel`] / [`LogEntry`] + the drop-oldest [`LogRing`].
 //!
-//! Run modes (fast / realtime pacing) are a thin wrapper over [`Engine::step`]
-//! and land in a later chunk.
+//! Run modes (fast / realtime pacing) wrap [`Engine::step`] and land in a later chunk.
 
 mod backend;
 mod dwarf;

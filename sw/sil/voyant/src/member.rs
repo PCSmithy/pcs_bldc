@@ -1,62 +1,39 @@
-//! The [`Member`] trait — the single seam through which the engine drives every
-//! executable participant in the sim — plus the `vsig` helper and [`RampModel`],
-//! voyant's reference model member.
+//! The [`Member`] trait — the single seam the engine drives every executable
+//! participant through — plus the `vsig` helper and [`RampModel`], voyant's
+//! reference model member. See `docs/sil/state-route-tables.md`.
 //!
 //! ## The member model
 //!
-//! Every executable thing in the sim (a firmware instance, a plant/peer model, a
-//! future native app) is a [`Member`]. The [`Engine`](crate::engine::Engine)
-//! interacts with members *only* through this trait: it advances them in
-//! registration order and toggles their enable state.
-//!
-//! There is deliberately **no `signals()` declaration and no pull-based `read()`**.
-//! A member instead treats the [`StateTable`] as a live workspace:
-//!
-//! - It **registers** its signals as a runtime act directly on the table (inside
-//!   [`set_enabled`](Member::set_enabled) / [`advance`](Member::advance)).
-//! - It **pushes** its outputs via [`StateTable::record`] during
-//!   [`advance`](Member::advance).
-//! - It reads routed inputs via [`StateTable::current_value`].
-//!
-//! Registration is *open*: any member may register a signal of any `sig_type`
-//! (`cvar`, `vsig`, a future transport type) at any time, and nothing infers a
-//! member's kind from the `sig_type` it registers. The `sig_type` names only the
-//! signal's *backing regime*; the State Table is the flat, member-agnostic signal
-//! registry (`docs/sil/state-route-tables.md`).
+//! Every executable thing (firmware instance, plant/peer model, future native app)
+//! is a [`Member`]; the [`Engine`](crate::engine::Engine) drives it *only* through
+//! this trait. There is no `signals()` declaration and no pull-based `read()` — a
+//! member treats the [`StateTable`] as a live workspace: it **registers** its signals
+//! on the table, **pushes** outputs via [`StateTable::record`], and reads routed
+//! inputs via [`StateTable::current_value`]. Registration is open (any `sig_type`,
+//! any time); the `sig_type` names only the backing regime, not the member's kind.
 //!
 //! ## Member discipline (convention, not enforcement)
 //!
 //! First-party members are trusted to stay in their lane:
+//! - Record only signals under **its own `<source>` namespace**
+//!   ([`name`](Member::name)); read only its own outputs + routed inputs.
+//! - **Never** call [`StateTable::set_time`] or mutate table config (retention/epsilon).
+//! - **All cross-member coupling flows through routes**, never by reaching into
+//!   another member's signals.
 //!
-//! - A member records only signals under **its own `<source>` namespace**
-//!   ([`name`](Member::name)), and reads only *its own* signals — its outputs and
-//!   the routed inputs targeting it.
-//! - A member **never calls [`StateTable::set_time`]** and never mutates table
-//!   configuration (retention / epsilon).
-//! - **All cross-member coupling flows through routes**, never through one member
-//!   reaching into another's signals.
-//!
-//! Driver / scenario code (e.g. the sanity suite) is **exempt** — deliberate
-//! cross-member injection and sim-time control is exactly its job, and it
-//! legitimately needs the full table.
-//!
-//! This is convention by design, not enforcement: members are first-party trusted
-//! code and the driver needs the whole table, so a narrowed, per-member table view
-//! would only add friction today. The planned escalation, *if* scripted members
-//! (Python bindings) ever change the trust model, is to hand a member an enforced
-//! narrowed view instead of the full table.
+//! Driver / scenario code (the sanity suite) is **exempt** — cross-member injection
+//! and sim-time control is its job. This stays convention, not enforcement: a
+//! narrowed per-member view would only add friction today. Escalation, *if* scripted
+//! members (Python) ever change the trust model, is to hand an enforced narrowed view.
 //!
 //! ## Registration order is a design surface
 //!
-//! The [`Engine`](crate::engine::Engine) advances members in **registration order**,
-//! and forward (zero-latency) route dataflow is resolved along that order. So the
-//! order you add members is a deliberate design choice: **order members along the
-//! signal flow** (producer before consumer). You do not have to get it right by
-//! inspection — the engine's step-time validator tells you when you get it wrong: a
-//! zero-latency route that reads a value a later-ordered member has not produced yet
-//! is a backward/feedback edge, and the validator names it and asks you to either
-//! declare that route delayed (the ZOH cut) or reorder the members. See
-//! [`state-route-tables.md`](../state-route-tables.md) §3.
+//! The engine advances members in **registration order** and resolves forward
+//! (zero-latency) dataflow along it, so ordering is deliberate: **put producer
+//! before consumer**. You need not get it right by inspection — a zero-latency route
+//! reading a value a later member has not produced yet is a backward/feedback edge,
+//! and the step-time validator names it and asks you to declare that route delayed
+//! (the ZOH cut) or reorder the members.
 
 use crate::log::LogLevel;
 use crate::signal::{ParseError, SignalId, Value};
@@ -79,25 +56,15 @@ pub trait Member {
     /// no un-seeded RNG.
     fn advance(&mut self, dt_us: u64, st: &mut StateTable);
 
-    /// Enable or disable the member. The engine calls `set_enabled(true, st)` when
-    /// the member is added (members start enabled) and again on any re-enable.
+    /// Enable or disable the member. The engine calls `set_enabled(true, st)` at add
+    /// (members start enabled) and on any re-enable. Registering signals here is the
+    /// tidy convention, not a mandate — registration is legal any time, and idempotent
+    /// (re-enable is a benign no-op). Enable only *gates advance* today: a disabled
+    /// member's [`advance`](Member::advance) is skipped while sim time flows and its
+    /// signals hold their last value.
     ///
-    /// Registering signals here is the **typical convention**, not a mandate:
-    /// registration is legal **at any time during runtime** — any member, any
-    /// `sig_type`, mid-[`advance`](Member::advance) included (a member may add a
-    /// signal it just discovered it needs, or a firmware member re-derive its cvars
-    /// across a reboot). `set_enabled(true)` is simply the common, tidy place to do
-    /// it. Registration is idempotent, so a re-enable is a benign no-op on
-    /// already-registered signals.
-    ///
-    /// Enable only *gates advance* today: the engine skips a disabled member's
-    /// [`advance`](Member::advance) while sim time keeps flowing, and the member's
-    /// signals hold their last recorded value.
-    ///
-    /// FUTURE: member-kind-specific re-enable *depth* — a firmware member could
-    /// reload its DLL (boot-from-reset), a model reinit its integration state — is
-    /// not implemented. For now `set_enabled(false, _)` need do nothing beyond
-    /// letting the engine gate the member out.
+    /// FUTURE: re-enable *depth* (a firmware member reloading its DLL, a model
+    /// reinitializing) is not implemented; `set_enabled(false, _)` need do nothing.
     fn set_enabled(&mut self, on: bool, st: &mut StateTable);
 }
 
@@ -106,14 +73,10 @@ pub fn vsig_id(source: &str, local: &str) -> Result<SignalId, ParseError> {
     SignalId::new("vsig", source, local, None)
 }
 
-/// A reference model [`Member`]: a linear ramp source, for exercising the `vsig`
-/// backing in tests and demos. Exposes one signal, `value`, that advances at a
-/// fixed slope per second of sim time. Deterministic, no dependencies — real plant
-/// models live on the instantiation side.
-///
-/// It registers its `vsig` in [`set_enabled(true)`](Member::set_enabled) (the
-/// engine calls that when the member is added) and pushes a record each
-/// [`advance`](Member::advance).
+/// A reference model [`Member`]: a linear ramp source for exercising the `vsig`
+/// backing in tests and demos. Exposes one signal, `value`, advancing at a fixed
+/// slope per second of sim time. Deterministic — real plant models live on the
+/// instantiation side.
 pub struct RampModel {
     name: String,
     unit: Option<String>,
@@ -149,9 +112,8 @@ impl Member for RampModel {
     fn advance(&mut self, dt_us: u64, st: &mut StateTable) {
         self.elapsed_us += dt_us;
         self.value = self.slope_per_s * (self.elapsed_us as f64) / 1e6;
-        // Registered in set_enabled(true) at add-time, so this cannot fail in
-        // normal operation; on error log a Warning (keeps advance infallible and
-        // deterministic) rather than swallow it.
+        // Registered at enable, so this cannot fail normally; on error log a Warning
+        // (keeps advance infallible) rather than swallow it.
         let id = self.value_id();
         if let Err(e) = st.record(&id, Value::F64(self.value)) {
             st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));

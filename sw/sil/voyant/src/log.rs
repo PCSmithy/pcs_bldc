@@ -1,17 +1,10 @@
 //! The unified log system: a bounded, sim-time-stamped ring of [`LogEntry`]s.
 //!
-//! Logging is a first-class, framework-wide channel that lives on the
-//! [`StateTable`](crate::state_table::StateTable): a member (or the driver) calls
-//! [`StateTable::log`](crate::state_table::StateTable::log) and the table stamps
-//! the entry with its *current sim time*, so members can neither fake a timestamp
-//! nor perturb behaviour — logging is pure observation and never feeds back into
-//! the sim (determinism, D7, is untouched).
-//!
-//! The backing store is a [`LogRing`]: a drop-oldest [`VecDeque`] with a
-//! configurable capacity and a running **dropped count**, so truncation under a
-//! log storm is visible rather than silent. The driver drains it with
-//! [`take_logs`](crate::state_table::StateTable::take_logs) and may peek it with
-//! [`logs`](crate::state_table::StateTable::logs).
+//! Owned by the [`StateTable`](crate::state_table::StateTable), which stamps each
+//! entry with the current sim time — members can't fake a timestamp or perturb
+//! behaviour (pure observation; determinism D7 untouched). The backing [`LogRing`]
+//! is drop-oldest with a running dropped-count, so truncation under a log storm is
+//! visible rather than silent.
 
 use std::collections::VecDeque;
 use std::fmt;

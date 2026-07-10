@@ -1,96 +1,74 @@
-//! The Route Table: declarative `source → destination` transport with a settled
-//! **per-route latency** model — zero-latency (default) forward dataflow plus an
-//! explicit one-tick delayed edge for the sample/actuation (ZOH) cut of a feedback
-//! loop (see `docs/sil/state-route-tables.md` §3).
+//! The Route Table: declarative `source → destination` transport with a **per-route
+//! latency** model — zero-latency (default) forward dataflow plus an explicit
+//! one-tick delayed edge for the ZOH sample/actuation cut of a feedback loop (see
+//! `docs/sil/state-route-tables.md` §2–§3).
 //!
-//! A [`Route`] copies one State Table value to another; the list of routes is the
-//! system's signal-flow wiring (state-route-tables.md §2). Routes are **pure typed
-//! transport** — they copy a value, never transform it; any conversion (amps→counts,
-//! angle→SPI frame) belongs in a model [`Member`](crate::member::Member), not a
-//! route.
+//! A [`Route`] copies one State Table value to another; the route list is the
+//! system's signal-flow wiring. Routes are **pure typed transport** — never a
+//! transform; any conversion (amps→counts, angle→SPI frame) belongs in a model
+//! [`Member`](crate::member::Member), not a route.
 //!
 //! ## Per-route latency (0 or 1)
 //!
-//! Each route carries a `latency` in **engine ticks**: `0` (default, via
-//! [`add`](RouteTable::add)) or `1` (via [`add_with_latency`](RouteTable::add_with_latency)).
-//! The type is a `u32` so higher latencies are *representable* later, but anything
-//! `> 1` is rejected today ([`RouteError::UnsupportedLatency`]).
+//! Each route carries a `latency` in engine ticks: `0` ([`add`](RouteTable::add)) or
+//! `1` ([`add_with_latency`](RouteTable::add_with_latency)). The `u32` type leaves
+//! room for higher values, but anything `> 1` is rejected today
+//! ([`RouteError::UnsupportedLatency`]).
 //!
-//! - A **zero-latency route** is forward dataflow: it copies the source's value as
-//!   produced **this same tick** (fresh reads, resolved in topological order — a
-//!   chain `a→b→c` resolves fully in one tick).
-//! - A **delayed (latency-1) route** models the real ZOH sample/actuation boundary:
-//!   its destination receives the source value **as of the end of the previous
-//!   tick**. Discrete sim serializes concurrent physics, so every feedback cycle
-//!   needs exactly one tick of separation somewhere; the delayed edge is where that
-//!   cut is made explicit and physical.
+//! - **Zero-latency** = forward dataflow: copies the source value produced **this
+//!   same tick** (fresh reads, topo order — a chain `a→b→c` resolves in one tick).
+//! - **Delayed (latency-1)** = the ZOH boundary: the destination gets the source's
+//!   **end-of-previous-tick** value. This is the one tick of separation every
+//!   feedback cycle needs, made explicit and physical.
 //!
 //! ## Table-mediated (routes never touch a backend)
 //!
-//! Propagation is a **pure State Table operation**: it reads source *entries* and
-//! writes destination *entries*, and that is all. It takes **no backend** — a
-//! route moves a value between two table entries and nothing else. This mirrors the
-//! backing model: a `cvar` entry is the table's *mirror* of firmware memory, and a
-//! `vsig` entry *abides* in the framework, so moving values between entries is
-//! always a table-only act. Members then sync their own mirrors on their own clock —
-//! a [`FirmwareMember`](crate::backend::FirmwareMember) flushes the *fresh*
-//! (route-/test-/pin-written) cvar entries in its namespace into firmware memory
-//! and sweeps its whole cvar mirror back out around its `advance_tick`; a model
-//! reads a routed `vsig` input via [`StateTable::current_value`]. A route driving a
-//! cvar marks it dirty, so the consuming member flushes it that tick.
+//! Propagation is a **pure State Table operation**: it reads source entries and
+//! writes destination entries — no backend. Members then sync their own mirrors on
+//! their own clock: a [`FirmwareMember`](crate::backend::FirmwareMember) flushes the
+//! fresh cvar entries in its namespace into firmware memory and sweeps its mirror
+//! back out around `advance_tick` (a route driving a cvar marks it dirty, so the
+//! member flushes it that tick); a model reads a routed `vsig` via
+//! [`StateTable::current_value`].
 //!
-//! Because a destination is written via [`StateTable::record`], it participates in
-//! the historian *and* honours [`StateTable::set_override`]: pinning a destination
-//! entry makes `record` a no-op, so a route cannot drive it — **fault injection
-//! composes with routing at zero extra mechanism.**
+//! Because a destination is written via [`StateTable::record`], it honours
+//! [`StateTable::set_override`]: pinning a destination makes `record` a no-op, so
+//! **fault injection composes with routing at zero extra mechanism**.
 //!
-//! ## Any registered destination
-//!
-//! A destination is **any registered signal of any `sig_type`** — a `cvar` (model
-//! output → firmware sensor input, flushed by the consuming firmware member) or a
-//! `vsig` (a model input, read by the consuming model in its advance). There is no
-//! per-`sig_type` restriction: the table is a flat, member-agnostic registry.
+//! A destination may be **any registered signal of any `sig_type`** — the table is a
+//! flat, member-agnostic registry, no per-`sig_type` restriction.
 //!
 //! ## Add at runtime; validity is checked at step
 //!
-//! [`add`](RouteTable::add) is **permissive** about endpoints — a route may be
-//! authored before its signals are registered, and removed at any time
-//! ([`remove`](RouteTable::remove)); [`suspend`](RouteTable::suspend) /
-//! [`resume`](RouteTable::resume) toggle a route without removing it. The framework
-//! does not *prevent* invalid wiring; the [`Engine`](crate::engine::Engine)
-//! **fails loudly** at the next `step` via [`validate`](RouteTable::validate) (the
-//! wiring checkpoint, below) and propagation errors on an unregistered endpoint.
+//! Authoring is **permissive**: a route may be added before its endpoints register
+//! and removed/suspended/resumed anytime. The framework does not prevent invalid
+//! wiring; the [`Engine`](crate::engine::Engine) **fails loudly** at the next `step`
+//! via [`validate`](RouteTable::validate), and propagation errors on an unregistered
+//! endpoint.
 //!
 //! ## Validation ([`validate`](RouteTable::validate))
 //!
-//! Given the members' names in **registration order**, `validate` enforces three
-//! rules and returns the zero-latency routes in the topological order propagation
-//! needs:
+//! Given member names in **registration order**, `validate` enforces three rules and
+//! returns the zero-latency routes in propagation's topological order:
 //!
-//! 1. **Single driver.** Two *enabled* routes with the same destination is a wiring
-//!    bug ([`RouteError::MultiDriver`]). Suspended routes are exempt — a
-//!    fault-injection swap (suspend one, resume another) stays legal.
-//! 2. **Zero-latency graph acyclic** (enabled zero-latency routes only). A cycle is
-//!    an ill-posed algebraic loop ([`RouteError::Cycle`]); break it by declaring one
-//!    edge delayed.
-//! 3. **Forward flow.** Each signal gets an *availability index*: `own(s)` is the
-//!    registration index of the member named by `s`'s `<source>` segment (or `-1`
-//!    for a driver-owned signal, available before any member advances). Availability
-//!    propagates through the zero-latency DAG in topological order —
-//!    `avail(s) = max(own(s), max avail(src) over enabled zero-latency routes into s)`.
-//!    For every enabled zero-latency route whose destination is owned by a member,
-//!    `avail(src) < ownerIndex(dst)` must hold *strictly* — otherwise the value is
-//!    consumed before its producer runs, a feedback/backward edge (a same-member
-//!    zero-latency loop is a silent delay). Such a route errors
-//!    ([`RouteError::BackwardRoute`]): declare it delayed, or reorder the members.
+//! 1. **Single driver.** Two *enabled* routes on one destination is a bug
+//!    ([`RouteError::MultiDriver`]); suspended routes are exempt (fault-injection swap).
+//! 2. **Zero-latency acyclic** ([`RouteError::Cycle`]); break a loop by delaying one edge.
+//! 3. **Forward flow.** Each signal's *availability index* `own(s)` is the reg index
+//!    of the member owning `s`'s `<source>` (`-1` = driver-owned, available first),
+//!    propagated through the DAG in topo order:
+//!    `avail(s) = max(own(s), max avail(src) into s)`. For a zero-latency route into a
+//!    member-owned destination, `avail(src) < ownerIndex(dst)` must hold strictly —
+//!    else the value is consumed before its producer runs (a backward/feedback edge; a
+//!    same-member loop is a silent delay), erroring [`RouteError::BackwardRoute`]:
+//!    declare it delayed or reorder the members.
 //!
 //! ## Suspend / resume (fault injection)
 //!
-//! Each route has an `enabled` flag. [`suspend`](RouteTable::suspend) cuts a route so
-//! its destination stops being driven; a test then writes that destination directly
-//! (or pins it via [`StateTable::set_override`]) to inject a fault, and
-//! [`resume`](RouteTable::resume) restores normal driving. A suspended route is
-//! simply skipped by propagation and exempt from validation.
+//! [`suspend`](RouteTable::suspend) cuts a route so its destination stops being
+//! driven — a test then writes/pins that destination to inject a fault, and
+//! [`resume`](RouteTable::resume) restores it. A suspended route is skipped by
+//! propagation and exempt from validation.
 //!
 //! [`StateTable::set_override`]: crate::state_table::StateTable::set_override
 //! [`StateTable::current_value`]: crate::state_table::StateTable::current_value
@@ -114,22 +92,14 @@ struct Route {
     dst: SignalId,
     latency: u32,
     enabled: bool,
-    /// Cached dense State Table indices of `src` / `dst` (Tier-2 fast lane).
-    /// Resolved lazily on first propagation after the endpoints register and
-    /// memoized — within **one** table indices are append-only and never change, so
-    /// a cached `Some` can never go stale *for that table*; an unresolved endpoint
-    /// stays `None` and retries (preserving the unregistered-endpoint error). The
-    /// cell is per-route, so removing a route drops its cache and a fresh route
-    /// starts unresolved.
-    ///
-    /// The append-only invariant holds only per-table: a cached index is meaningful
-    /// solely against the `StateTable` it was resolved from. `propagate*` is public
-    /// and takes any `&mut StateTable`, so a `RouteTable` propagated against a second
-    /// table would apply table-A indices to table-B signals — a silent wrong-signal
-    /// read/write. On every cache **hit** [`resolve_endpoint`] therefore verifies the
-    /// index still names the expected endpoint in the passed table (one indexed
-    /// [`StateTable::id_at`] equality per endpoint) and fails loud with
-    /// [`RouteError::TableMismatch`] on a mismatch.
+    /// Cached dense State Table indices of `src` / `dst` (Tier-2 fast lane), resolved
+    /// lazily and memoized. Indices are append-only *within one table*, so a cached
+    /// `Some` never goes stale for that table (an unresolved endpoint stays `None` and
+    /// retries, preserving the unregistered-endpoint error); the per-route cell drops
+    /// on removal. But the invariant is per-table and `propagate*` takes any table — so
+    /// on every cache **hit** [`resolve_endpoint`] verifies the index still names this
+    /// endpoint ([`StateTable::id_at`]) and fails loud with
+    /// [`RouteError::TableMismatch`], never silently applying table-A indices to table-B.
     src_idx: Cell<Option<usize>>,
     dst_idx: Cell<Option<usize>>,
 }
@@ -155,16 +125,11 @@ pub enum RouteError {
     Table(#[from] TableError),
 }
 
-/// Resolve a route endpoint to its dense State Table index, memoizing the result
-/// in `cell`. Within one table indices are append-only (never reused), so a cached
-/// `Some` stays valid *for that table*; an unregistered endpoint yields
-/// [`TableError::UnknownSignal`] (matching the old `current_value` existence check)
-/// and is retried next call.
-///
-/// On a cache **hit** the memoized index is verified against `st`: because
-/// `propagate*` accepts any table, a cache filled from table A would otherwise
-/// silently apply A's indices to B's signals. If the index no longer names `id` in
-/// `st` (a different table, or one too small for the index), this fails loud with
+/// Resolve a route endpoint to its dense State Table index, memoizing in `cell`.
+/// Indices are append-only within a table, so a cached `Some` stays valid for it; an
+/// unregistered endpoint yields [`TableError::UnknownSignal`] and retries next call.
+/// On a cache **hit** the index is verified against `st` (guarding against one
+/// `RouteTable` propagated across two tables): a mismatch fails loud with
 /// [`RouteError::TableMismatch`] rather than reading/writing the wrong signal.
 fn resolve_endpoint(
     cell: &Cell<Option<usize>>,
@@ -277,14 +242,11 @@ impl RouteTable {
         Ok(order)
     }
 
-    /// Propagate every enabled **delayed** (latency-1) route once, **snapshot-then-
-    /// write** on the State Table: snapshot all delayed sources (each holding its
-    /// end-of-previous-tick value, since this runs before any member advances), then
-    /// record all delayed destinations. Called once at tick start.
-    ///
-    /// Both endpoints must be registered (symmetric); a registered-but-never-recorded
-    /// source has nothing to copy and is silently skipped; a pinned destination
-    /// absorbs the record as a no-op.
+    /// Propagate every enabled **delayed** (latency-1) route once, snapshot-then-write:
+    /// snapshot all delayed sources (each holding its end-of-previous-tick value, as
+    /// this runs before any member advances), then record all destinations. Both
+    /// endpoints must be registered; a never-recorded source is skipped; a pinned
+    /// destination absorbs the record as a no-op.
     pub fn propagate_delayed(&self, st: &mut StateTable) -> Result<(), RouteError> {
         let mut pending: Vec<(usize, Value)> = Vec::new();
         for route in self.routes.iter().filter(|r| r.enabled && (r.latency > 0)) {
@@ -303,16 +265,11 @@ impl RouteTable {
         Ok(())
     }
 
-    /// Propagate the enabled **zero-latency** routes once, in the topological `order`
-    /// returned by [`validate`](Self::validate), with **fresh reads**: each route
-    /// reads its source's current value and records its destination immediately, so a
-    /// chain `a→b→c` resolves fully in one call (later routes see values produced by
-    /// earlier ones this same tick).
-    ///
-    /// The engine re-runs this before *each* member's advance, so a member always
-    /// sees the fully-resolved forward dataflow. (Re-evaluating the whole DAG per
-    /// member is `M×R` copies — a flagged perf seam; fine at current scale, see
-    /// `docs/sil/performance.md`.) Endpoint-registration and override rules match
+    /// Propagate the enabled **zero-latency** routes once in the topological `order`
+    /// from [`validate`](Self::validate), with **fresh reads**: a chain `a→b→c`
+    /// resolves fully in one call (later routes see earlier ones' values this tick).
+    /// The engine re-runs this before *each* member's advance (`M×R` copies — a flagged
+    /// perf seam, `docs/sil/performance.md`). Registration/override rules match
     /// [`propagate_delayed`](Self::propagate_delayed).
     pub fn propagate_zero_latency(
         &self,
@@ -447,15 +404,11 @@ impl RouteTable {
         Ok((ranks, order))
     }
 
-    /// Forward-flow availability check (module docs, rule 3).
-    ///
-    /// `order` is the zero-latency route indices in the topological order
-    /// [`validate`](Self::validate) computed; the availability fold **must**
-    /// walk it in that order, not route-insertion order — a chain of ≥2 unowned
-    /// intermediates authored anti-topologically otherwise under-propagates and
-    /// lets a transitively-backward route slip through. Single-driver guarantees
-    /// each signal has ≤1 incoming route, so one topo-ordered pass reaches the
-    /// fixpoint. `topo_rank` covers exactly the signals in that DAG.
+    /// Forward-flow availability check (module docs, rule 3). The fold **must** walk
+    /// `order` (topological), not route-insertion order — an anti-topologically
+    /// authored chain of ≥2 unowned intermediates otherwise under-propagates and lets
+    /// a transitively-backward route slip through. Single-driver gives each signal ≤1
+    /// incoming route, so one topo pass reaches the fixpoint.
     fn check_forward_flow(
         &self,
         member_names: &[&str],

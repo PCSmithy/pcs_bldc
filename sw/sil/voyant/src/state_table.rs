@@ -1,17 +1,12 @@
 //! The State Table: signal registry + per-signal change-logged history +
 //! current-value cache + injection overrides + bounded retention.
 //!
-//! This is *pure data* — no FFI, no DWARF. It is fed by [`StateTable::record`]
-//! (a sampler reads a backing's live value and records it here) and queried by
+//! Pure data — no FFI, no DWARF. Fed by [`StateTable::record`], queried by
 //! [`StateTable::current_value`] (O(1)) / [`StateTable::value_at`] (O(log n),
-//! zero-order-hold). Each signal owns its own change-log ([D12]: the State
-//! Table *is* the historian).
-//!
-//! Change-logging: a `record` is stored only when the value differs from the
-//! current cached value by more than the signal's epsilon (default 1e-3 for
-//! floats; exact for everything else). Overridden signals ignore `record` (the
-//! injection pin). Retention evicts old samples per a time window (fast mode
-//! sets it to unbounded; realtime keeps a window).
+//! zero-order-hold). Each signal *is* its own historian (D12): a record is stored
+//! only when the value moves past the signal's epsilon (default 1e-3 for floats;
+//! exact otherwise). Overridden signals ignore `record` (the injection pin).
+//! Retention evicts old samples by time window (unbounded in fast mode).
 
 use crate::log::{LogEntry, LogLevel, LogRing};
 use crate::signal::{SignalId, Value};
@@ -54,10 +49,9 @@ impl Default for StateTableConfig {
 }
 
 /// A dense **typed sub-column**: parallel deques of ascending timestamps and
-/// native values (`times[i]` is when the signal became `vals[i]`). Front-evicted
-/// as a pair. This is the storage the columnar historian uses for the hot scalar
-/// case — 8 B/sample of time plus `size_of::<T>()` of value, versus the old
-/// `(u64, Value)` pair's ~40 B (`Value` is a ~32 B tagged union).
+/// native values (`times[i]` is when the signal became `vals[i]`), front-evicted
+/// as a pair. The hot scalar storage — 8 B + `size_of::<T>()` per sample vs the
+/// old `(u64, Value)` pair's ~40 B.
 struct TypedCol<T> {
     times: VecDeque<u64>,
     vals: VecDeque<T>,
@@ -80,8 +74,7 @@ impl<T: Copy> TypedCol<T> {
         self.vals.push_back(v);
     }
 
-    /// The most-recent value (the column tail), for the native epsilon-dedup
-    /// compare — no `Value` construction.
+    /// The most-recent value (column tail), for the native epsilon-dedup compare.
     fn tail(&self) -> Option<T> {
         self.vals.back().copied()
     }
@@ -105,12 +98,10 @@ impl<T: Copy> TypedCol<T> {
 }
 
 /// One signal's **columnar historian**. The kind is fixed at the first record and
-/// is then immutable: scalar `Value` variants get a dedicated dense [`TypedCol`];
-/// `Enum`/`Bytes` live in the boxed `(time_us, Value)` column. A later record whose
-/// variant does not match the established kind is a **bug** (one signal has exactly
-/// one type for its lifetime), so [`Column::push_value`] rejects it — there is no
-/// type migration. Scalars are the 99% hot case, so the hybrid keeps them dense
-/// while never dropping the structured minority.
+/// immutable thereafter: scalar variants get a dense [`TypedCol`]; `Enum`/`Bytes`
+/// live in the boxed `(time_us, Value)` column. A later record of a mismatched
+/// variant is a bug (one signal has exactly one type for its lifetime), rejected by
+/// [`Column::push_value`] — no migration. Scalars are the 99% hot case.
 enum Column {
     /// No record yet — kind undetermined.
     Empty,
@@ -120,9 +111,8 @@ enum Column {
     U32(TypedCol<u32>),
     U64(TypedCol<u64>),
     Bool(TypedCol<bool>),
-    /// Boxed column for structured signals. Seeded to a specific variant
-    /// (`Enum` **or** `Bytes`) at the first record and strict per-variant
-    /// thereafter — `Enum` and `Bytes` are distinct types under the one-type rule.
+    /// Structured signals (`Enum`/`Bytes`). Seeded to one variant at first record
+    /// and strict thereafter — they are distinct types under the one-type rule.
     Boxed(VecDeque<(u64, Value)>),
 }
 
@@ -178,16 +168,12 @@ impl Column {
         }
     }
 
-    /// Append a `Value` sample at `t`. On an empty column this fixes the kind; on a
-    /// column whose kind **matches** the value's variant it appends and returns
-    /// `Ok(())`. A value whose variant does not match the established kind is a
-    /// **bug** — one signal has exactly one `Value` type for its lifetime — so it is
-    /// rejected with `Err((column_kind, offending_variant))` (both `&'static` names,
-    /// for the caller's [`TableError::TypeMismatch`]); the column is left untouched.
-    /// Never panics, never migrates, never coerces.
-    ///
-    /// `Boxed` columns are strict per structured variant: an `Enum`-seeded column
-    /// rejects a `Bytes` record and vice versa (they are distinct types).
+    /// Append a `Value` at `t`. Empty → fixes the kind; matching kind → appends. A
+    /// variant that does not match the established kind is a bug (one signal has
+    /// exactly one type for its lifetime) and is rejected with
+    /// `Err((column_kind, offending_variant))`, column left untouched — never
+    /// panics, migrates, or coerces. `Boxed` is strict per structured variant (an
+    /// `Enum`-seeded column rejects `Bytes` and vice versa).
     fn push_value(&mut self, t: u64, value: Value) -> Result<(), (&'static str, &'static str)> {
         match self {
             Column::Empty => {
@@ -237,9 +223,7 @@ impl Column {
                 v => Err(("Bool", value_variant_name(&v))),
             },
             Column::Boxed(dq) => {
-                // Strict per structured variant: the established kind is the variant
-                // of the existing entries (all identical under the one-type rule; the
-                // deque is never empty once seeded).
+                // Established kind = the existing entries' variant (never empty once seeded).
                 let established = boxed_kind_name(dq);
                 let matches = matches!(
                     (established, &value),
@@ -313,9 +297,8 @@ impl Column {
     }
 }
 
-/// The established structured kind of a (non-empty, seeded) boxed column —
-/// `"Enum"` or `"Bytes"` — for the type-mismatch error. All entries share the
-/// variant under the one-type rule, so the tail's variant is authoritative.
+/// The structured kind (`"Enum"`/`"Bytes"`) of a seeded boxed column, for the
+/// type-mismatch error. All entries share the variant, so the tail is authoritative.
 fn boxed_kind_name(dq: &VecDeque<(u64, Value)>) -> &'static str {
     match dq.back() {
         Some((_, Value::Bytes(_))) => "Bytes",
@@ -362,39 +345,30 @@ pub enum TableError {
 }
 
 pub struct StateTable {
-    /// Registered signals, in insertion order. The [`IndexSet`] yields a **stable
-    /// dense index** per signal (append-only — a signal is never removed, so its
-    /// index never changes), which is the key for all hot per-signal storage below
-    /// (Tier-2 dense-index fast lane): the string-keyed public API resolves an id to
-    /// its index once ([`resolve_index`](Self::resolve_index)) and delegates to the
-    /// `*_at` index-keyed internals, keeping per-record string hashing off hot paths.
+    /// Registered signals in insertion order. The [`IndexSet`] gives each signal a
+    /// **stable dense index** (append-only — never removed), the key for all hot
+    /// per-signal storage below. The string-keyed API resolves an id to its index
+    /// once ([`resolve_index`](Self::resolve_index)) and delegates to the `*_at`
+    /// internals, keeping per-record string hashing off hot paths.
     signals: IndexSet<SignalId>,
     /// Optional per-signal unit string (metadata; cold — set only at register).
     units: HashMap<SignalId, String>,
-    /// Per-signal **columnar historian**, indexed by signal index: each signal's
-    /// timestamped samples as a typed [`Column`] (scalar variants get a dense
-    /// `times`/`vals` pair of deques; `Enum`/`Bytes` signals use a boxed
-    /// `(time_us, Value)` deque). Ascending, front-evicted; the column's value kind
-    /// is fixed at the FIRST record and immutable thereafter (a later variant
-    /// mismatch is a bug, rejected with [`TableError::TypeMismatch`]).
+    /// Per-signal **columnar historian**, by signal index (scalar → dense
+    /// [`TypedCol`], `Enum`/`Bytes` → boxed deque). Ascending, front-evicted; kind
+    /// is fixed at the FIRST record and immutable (a later mismatch is rejected with
+    /// [`TableError::TypeMismatch`]).
     columns: Vec<Column>,
-    /// Current value cache, indexed by signal index (O(1) latest; `None` = never
-    /// recorded).
+    /// Current value cache, by signal index (O(1) latest; `None` = never recorded).
     current: Vec<Option<Value>>,
-    /// Resolved change-detection epsilon, indexed by signal index (the per-signal
-    /// override from config, else the global epsilon — resolved once at register so
-    /// the hot `record` path never hashes the config map).
+    /// Resolved change-detection epsilon, by signal index (per-signal override else
+    /// global — resolved at register so the hot `record` path never hashes config).
     epsilon: Vec<f64>,
-    /// Signals whose `record` is ignored (injection pin), by signal index. A sparse
-    /// set: membership check is a cheap `usize` hash, and iteration (for
-    /// [`pinned`](Self::pinned)) walks only the pinned few, not all signals.
+    /// Signals whose `record` is ignored (injection pin), by signal index.
     overrides: HashSet<usize>,
-    /// **Command-write dirty set**, by signal index. Indices a framework command
-    /// wrote this cycle (`record` / `force_record` / pin via `set_override`) — as
-    /// opposed to a mirror sweep (`record_mirror`), which never marks dirty. A
-    /// firmware member drains its own namespace's dirt each tick to know which
-    /// `cvar`s to flush back into firmware memory. Deduped by index, so it is
-    /// bounded by the distinct-signal count, not tick count.
+    /// **Command-write dirty set**, by signal index: indices a framework command
+    /// wrote this cycle (`record` / `force_record` / pin) — *not* mirror sweeps
+    /// (`record_mirror`). A firmware member drains its own namespace's dirt each
+    /// tick to know which `cvar`s to flush back into firmware memory.
     dirty: HashSet<usize>,
     /// Signal indices that have had samples evicted (so `value_at` can report
     /// OutOfWindow).
@@ -412,33 +386,29 @@ impl Default for StateTable {
     }
 }
 
-/// Generate a crate-internal **typed mirror-record fast lane** for one scalar
-/// column kind (`record_mirror_<t>_at`). It compares the incoming native value
-/// against the column tail directly — **no `Value` construction on the compare
-/// path** — appends natively on a change, and keeps the `current` cache and
-/// retention identical to the generic [`StateTable::record_mirror_at`]. On a
-/// column of a *different* kind it defers to the generic path, which rejects the
-/// record with [`TableError::TypeMismatch`] (one signal has exactly one type for
-/// its lifetime — a wrong-kind record is a bug). `$eq` is the epsilon-dedup
-/// predicate for this kind (float: absolute deadband; discrete: exact).
+/// Generate a **typed mirror-record fast lane** (`record_mirror_<t>_at`) for one
+/// scalar kind: compare the native value against the column tail directly (no
+/// `Value` construction), append on change, keep `current`/retention identical to
+/// [`StateTable::record_mirror_at`]. A wrong-kind column defers to the generic
+/// path, which rejects it ([`TableError::TypeMismatch`] — one type per signal).
+/// `$eq` is the dedup predicate (float: absolute deadband; discrete: exact).
 macro_rules! typed_mirror_lane {
     ($name:ident, $t:ty, $variant:ident, $eq:expr) => {
         pub(crate) fn $name(&mut self, idx: usize, x: $t) -> Result<(), TableError> {
             if self.overrides.contains(&idx) {
-                return Ok(()); // pinned: mirror records are ignored (the pin holds the view)
+                return Ok(()); // pinned: mirror records ignored
             }
             match &self.columns[idx] {
                 Column::$variant(c) => {
                     if let Some(prev) = c.tail() {
                         let eq: fn($t, $t, f64) -> bool = $eq;
                         if eq(prev, x, self.epsilon[idx]) {
-                            return Ok(()); // within epsilon of the tail -> deduped
+                            return Ok(()); // within epsilon -> deduped
                         }
                     }
                 }
                 Column::Empty => {}
-                // A different existing kind: defer to the generic path, which
-                // rejects the wrong-kind record with TableError::TypeMismatch.
+                // Different kind: defer to the generic path, which rejects it.
                 _ => {
                     return self.record_inner(idx, Value::$variant(x), false);
                 }
@@ -488,11 +458,10 @@ impl StateTable {
 
     /// Register a signal (optionally with a unit).
     ///
-    /// **Idempotent**: re-registering an existing id with *identical* unit metadata
-    /// is a benign no-op — a member (e.g. a firmware instance across a reboot)
-    /// legitimately re-registers its signals, and a signal's history spans member
-    /// lifetimes, so the entry (and its change-log) must be preserved. Re-registering
-    /// with a *conflicting* unit is a wiring bug and errors ([`TableError::ConflictingUnit`]).
+    /// **Idempotent**: re-registering with an *identical* unit is a benign no-op — a
+    /// member (e.g. firmware across a reboot) re-registers its signals, and history
+    /// spans member lifetimes, so the entry + change-log are preserved. A
+    /// *conflicting* unit is a wiring bug ([`TableError::ConflictingUnit`]).
     pub fn register(&mut self, id: SignalId, unit: Option<&str>) -> Result<(), TableError> {
         if self.signals.contains(&id) {
             let existing = self.units.get(&id).map(String::as_str);
@@ -508,16 +477,15 @@ impl StateTable {
         if let Some(u) = unit {
             self.units.insert(id.clone(), u.to_string());
         }
-        // Resolve the change-detection epsilon once, so the hot `record` path never
-        // hashes the per-signal config map.
+        // Resolve epsilon once, so the hot `record` path never hashes config.
         let eps = self
             .config
             .signal_epsilon
             .get(&id)
             .copied()
             .unwrap_or(self.config.epsilon);
-        // Push the dense slots BEFORE inserting into the index set, so the new
-        // signal's index (== the pre-push length) lines up with its slot.
+        // Push dense slots BEFORE inserting into the index set: the new signal's
+        // index (== pre-push length) must line up with its slot.
         self.columns.push(Column::Empty);
         self.current.push(None);
         self.epsilon.push(eps);
@@ -526,62 +494,52 @@ impl StateTable {
     }
 
     /// Resolve a signal id to its stable dense index, or `None` if unregistered.
-    /// The crate-internal key for the index-keyed hot-path entry points
-    /// ([`record_mirror_at`](Self::record_mirror_at) / [`record_at`](Self::record_at)
-    /// / [`current_value_at`](Self::current_value_at)); consumers resolve **once**
-    /// (at registration / route validation) and then avoid per-tick string hashing.
+    /// Consumers resolve **once** (at registration / route validation) and then use
+    /// the index-keyed hot paths, avoiding per-tick string hashing.
     pub(crate) fn resolve_index(&self, id: &SignalId) -> Option<usize> {
         self.signals.get_index_of(id)
     }
 
-    /// The signal registered at dense index `idx`, or `None` if `idx` is out of
-    /// range. The inverse of [`resolve_index`](Self::resolve_index): it lets a
-    /// consumer that memoized an index (route propagation's endpoint cache) verify
-    /// that index still names the *expected* signal in **this** table — the guard
-    /// against one `RouteTable` being propagated against a different `StateTable`.
+    /// The signal at dense index `idx`, or `None` if out of range. Inverse of
+    /// [`resolve_index`](Self::resolve_index): lets a consumer that memoized an index
+    /// verify it still names the *expected* signal in **this** table (guards against
+    /// a `RouteTable` propagated against a different `StateTable`).
     pub(crate) fn id_at(&self, idx: usize) -> Option<&SignalId> {
         self.signals.get_index(idx)
     }
 
-    /// Record a **command-written** value at the current time (route, test, or
-    /// model output). Marks the signal dirty so its owning member re-flushes it.
-    /// Skips the historian append if overridden or unchanged (within epsilon), but
-    /// the dirty mark stands whenever the command actually applied (an unchanged
-    /// re-command still means "the framework is driving this," so the value must be
+    /// Record a **command-written** value (route, test, or model output) at the
+    /// current time. Marks the signal dirty. Skips the historian append if overridden
+    /// or unchanged, but the dirty mark stands whenever the command applied (an
+    /// unchanged re-command still means the framework is driving it, so it must be
     /// re-asserted into firmware memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, true)
     }
 
-    /// Record a **mirror** value (a firmware member's end-of-tick sweep of its
-    /// memory into the table). Identical dedup/historian/override behavior to
-    /// [`record`](Self::record) — a pinned entry ignores it exactly as it ignores a
-    /// command `record`, so a sweep can never un-pin the view — but it does **not**
-    /// mark the signal dirty (the table is only tracking what memory already holds,
-    /// not commanding a write back into it).
+    /// Record a **mirror** value (a firmware member's end-of-tick sweep of memory
+    /// into the table). Same dedup/historian/override as [`record`](Self::record) — a
+    /// pin still ignores it, so a sweep can't un-pin the view — but does **not** mark
+    /// dirty (tracking what memory already holds, not commanding a write back).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, false)
     }
 
-    /// **Index-keyed mirror record** — the mirror-sweep hot path. Identical
-    /// semantics to [`record_mirror`](Self::record_mirror) (dedup / override / no
-    /// dirty mark) but keyed by a pre-resolved dense index, so the whole-namespace
-    /// sweep never hashes a `SignalId` string. `idx` must come from
-    /// [`resolve_index`](Self::resolve_index) (i.e. a registered signal).
+    /// **Index-keyed mirror record** — the sweep hot path. Like
+    /// [`record_mirror`](Self::record_mirror) but keyed by a pre-resolved dense index
+    /// (from [`resolve_index`](Self::resolve_index)), so the sweep never hashes a
+    /// `SignalId`.
     pub(crate) fn record_mirror_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         self.record_inner(idx, value, false)
     }
 
-    // **Typed mirror-record fast lanes** — the sweep's scalar decode path. Each
-    // takes a native scalar (never a boxed `Value`) so the ~30–60 changing leaves
-    // per tick compare against the column tail and append natively, with no `Value`
-    // enum construction on the compare-only path. Behaviorally identical to
-    // `record_mirror_at(idx, Value::<Variant>(x))` (see the fast-lane-equivalence
-    // unit test), including rejecting a wrong-kind column with
-    // `TableError::TypeMismatch`. Enum/Bytes leaves have no fast lane — they go
-    // through `record_mirror_at`.
+    // **Typed mirror-record fast lanes** — the sweep's scalar decode path. Each takes
+    // a native scalar (no boxed `Value`) so changing leaves compare against the column
+    // tail and append natively, no `Value` construction on the compare path.
+    // Behaviorally identical to `record_mirror_at(idx, Value::<V>(x))`, including the
+    // wrong-kind `TypeMismatch`. Enum/Bytes leaves have no fast lane.
     typed_mirror_lane!(record_mirror_f32_at, f32, F32, |a, b, e| ((a as f64) - (b as f64)).abs() <= e);
     typed_mirror_lane!(record_mirror_f64_at, f64, F64, |a, b, e| (a - b).abs() <= e);
     typed_mirror_lane!(record_mirror_i32_at, i32, I32, |a, b, _e| a == b);
@@ -589,19 +547,17 @@ impl StateTable {
     typed_mirror_lane!(record_mirror_u64_at, u64, U64, |a, b, _e| a == b);
     typed_mirror_lane!(record_mirror_bool_at, bool, Bool, |a, b, _e| a == b);
 
-    /// **Index-keyed command record** — the route-propagation hot path. Identical
-    /// semantics to [`record`](Self::record) (dedup / override / marks dirty) but
-    /// keyed by a pre-resolved dense index. `idx` must come from
-    /// [`resolve_index`](Self::resolve_index).
+    /// **Index-keyed command record** — the route-propagation hot path. Like
+    /// [`record`](Self::record) but keyed by a pre-resolved dense index (from
+    /// [`resolve_index`](Self::resolve_index)).
     pub(crate) fn record_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         self.record_inner(idx, value, true)
     }
 
     fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {
         if self.overrides.contains(&idx) {
-            // Pinned: both command and mirror records are ignored (the pin holds
-            // the current view). A pinned entry is re-asserted via the pinned-flush
-            // union, not via record.
+            // Pinned: command and mirror records both ignored; the pin holds the view
+            // and is re-asserted via the pinned-flush union, not via record.
             return Ok(());
         }
         if command {
@@ -623,9 +579,8 @@ impl StateTable {
         self.append(idx, value)
     }
 
-    /// Current (last-recorded) value, O(1). `None` if never recorded. Returns **by
-    /// value** — columnar storage cannot hand out a `&Value`, and the `current`
-    /// cache holds an owned `Value` (its semantics are unchanged, D12).
+    /// Current (last-recorded) value, O(1). `None` if never recorded. Returned **by
+    /// value** — columnar storage can't hand out a `&Value` (D12 semantics intact).
     pub fn current_value(&self, id: &SignalId) -> Result<Option<Value>, TableError> {
         let idx = self.ensure(id)?;
         Ok(self.current[idx].clone())
@@ -662,11 +617,9 @@ impl StateTable {
         }
     }
 
-    /// Pin/unpin a signal (overridden signals ignore `record`). Pinning marks the
-    /// signal dirty: a pin is a continuous drive, so the pinned value must be
-    /// asserted into firmware memory from the next tick onward (and every tick
-    /// after — see [`pinned`](Self::pinned)). Unpinning does not mark dirty; the
-    /// signal simply resumes being mirrored.
+    /// Pin/unpin a signal (a pinned signal ignores `record`). Pinning marks dirty: a
+    /// pin is a continuous drive, re-asserted into firmware memory every tick (see
+    /// [`pinned`](Self::pinned)). Unpinning does not mark dirty.
     pub fn set_override(&mut self, id: &SignalId, on: bool) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         if on {
@@ -682,9 +635,8 @@ impl StateTable {
     /// (a member drains its **own** namespace; other members' dirt is left in
     /// place for their own drain). Deterministic order (sorted by id string).
     pub fn take_dirty(&mut self, source: &str) -> Vec<SignalId> {
-        // Collect the dirty indices whose signal belongs to `source`, remove them,
-        // then materialize the ids (deterministic, sorted). The dirty set is small
-        // (distinct signals command-written this cycle), so this stays cheap.
+        // Dirty indices belonging to `source`, removed then materialized as ids
+        // (deterministic, sorted). The dirty set is small, so this stays cheap.
         let mine_idx: Vec<usize> = self
             .dirty
             .iter()
@@ -719,19 +671,16 @@ impl StateTable {
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
     /// **Materializing**: columnar storage has no `(u64, Value)` deque to borrow, so
-    /// this reconstructs owned `(time, Value)` pairs from the typed column (a cold
-    /// dump/inspection path, not a hot one). `None` if the signal is unregistered;
-    /// an empty `Vec` if registered but never recorded.
+    /// it reconstructs owned pairs (a cold path). `None` if unregistered; empty `Vec`
+    /// if registered but never recorded.
     pub fn changes(&self, id: &SignalId) -> Option<Vec<(u64, Value)>> {
         self.signals.get_index_of(id).map(|idx| self.columns[idx].to_pairs())
     }
 
-    /// Emit a log entry, stamped with the table's **current sim time**. The
-    /// caller supplies only the severity, a `source` tag (a member name, or a
-    /// driver tag), and a message — never the timestamp, so members cannot fake
-    /// sim time and logging can never perturb behaviour (determinism, D7). The
-    /// ring drops the oldest entry when full (see [`take_logs`](Self::take_logs)
-    /// / [`dropped_logs`](Self::dropped_logs)).
+    /// Emit a log entry stamped with the table's **current sim time** — the caller
+    /// supplies only severity, a `source` tag, and a message, never the timestamp, so
+    /// members can't fake sim time or perturb behaviour (determinism, D7). The ring
+    /// drops the oldest entry when full.
     pub fn log(&mut self, level: LogLevel, source: &str, message: impl Into<String>) {
         self.logs.push(LogEntry {
             time_us: self.current_time_us,
@@ -779,10 +728,9 @@ impl StateTable {
 
     fn append(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         let t = self.current_time_us;
-        // Append into the typed column. A variant that does not match the column's
-        // established kind is a bug (one signal has exactly one type for its
-        // lifetime), so it is rejected — the column and the `current` cache are left
-        // untouched (fail loud, corrupt nothing) and the caller surfaces the error.
+        // Append into the typed column. A variant mismatching the column's kind is a
+        // bug (one type per signal), rejected with column + `current` untouched (fail
+        // loud, corrupt nothing); the caller surfaces the error.
         match self.columns[idx].push_value(t, value.clone()) {
             Ok(()) => {
                 self.current[idx] = Some(value);
@@ -800,8 +748,8 @@ impl StateTable {
     /// Drop samples older than the retention window, keeping the one sample that
     /// is still "active" at the cutoff (ZOH needs it).
     fn evict(&mut self, idx: usize) {
-        // Per-signal retention override (if any) is keyed by id — resolve the
-        // window first, then mutate the dense slots (disjoint borrows).
+        // Per-signal retention override (keyed by id) else global; resolve the window
+        // first, then mutate the dense slots (disjoint borrows).
         let window = {
             let id = self.signals.get_index(idx).unwrap();
             self.config

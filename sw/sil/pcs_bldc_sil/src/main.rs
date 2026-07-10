@@ -1,31 +1,21 @@
 //! pcs_bldc SIL sanity suite (and demo).
 //!
-//! Loads this board's firmware shared library, drives it over the control ABI, and proves —
-//! purely through white-box DWARF read/write of firmware statics — that the REAL
-//! firmware runs on the native scheduler: all four FreeRTOS tasks advance, the
-//! State Table historian works, and one end-to-end data path
-//! (task_1ms -> IO_AS5048 -> HW_SPI(sim) -> telemetryTask -> IO_serial ->
-//! HW_USB(sim capture)) carries an injected encoder reading out as Teleplot text.
+//! Loads this board's firmware shared library and proves — purely through white-box
+//! DWARF read/write of firmware statics — that the REAL firmware runs on the native
+//! scheduler: all four FreeRTOS tasks advance, the State Table historian works, and
+//! one end-to-end path (task_1ms -> IO_AS5048 -> HW_SPI(sim) -> telemetryTask ->
+//! IO_serial -> HW_USB(sim capture)) carries an injected encoder reading out as
+//! Teleplot text.
 //!
-//! All checks that exercise the sim now drive the firmware through the
-//! [`voyant::Engine`] step loop (the sim clock): each `step` advances sim time,
-//! advances models, propagates routes (table→table), runs the firmware, and
-//! samples registered cvars into the historian. The engine is the suite's first
-//! real consumer. Only checks 1/7 (backend lifecycle) stay below the engine.
-//!
-//! Each check prints PASS/FAIL; the process exits nonzero if any check fails, so
-//! `tools/run_sil.sh` catches regressions. No firmware `_sim_*` API is called —
-//! all injection/inspection is DWARF white-box (the sim drivers' statics are the
-//! future State Table signals). It also exercises the model + Route Table seams on
-//! the **real production path**: a model's `vsig` is routed into a firmware `cvar`
-//! entry, a [`FirmwareMember`] flushes that entry into firmware memory, and the
-//! value is read back — with suspend/resume proving per-route fault-injection
-//! gating. The **port seam** is exercised end to end too: the sim ADC driver's
-//! runtime-registered input ports carry a model's voltage (native format) into
-//! the driver, which converts volts -> counts itself, while an undriven
-//! neighbor input keeps its synthetic ramp. Warnings/errors logged into the
-//! State Table during the run are drained and printed at the end
-//! (informational).
+//! Sim-exercising checks drive the firmware through the [`voyant::Engine`] step loop
+//! (advance time, advance models, propagate routes, run firmware, sample cvars); only
+//! the backend-lifecycle checks (boot, shutdown) stay below the engine. Each check
+//! prints PASS/FAIL and the process exits nonzero on any failure so
+//! `tools/run_sil.sh` catches regressions. It also exercises the model + Route Table
+//! seams on the real production path (model `vsig` → route → firmware `cvar` flush,
+//! with suspend/resume) and the **port seam** end to end (sim ADC input ports carry a
+//! model's volts, converted to counts by the driver). Logged warnings/errors are
+//! drained and printed at the end.
 //!
 //! Usage: `cargo run -p pcs_bldc_sil -- [path-to-firmware-shared-lib]`
 
@@ -426,12 +416,10 @@ fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
-/// A minimal integer "sensor" model for the route demo: one `counts` signal that
-/// steps by a fixed amount each tick. It emits [`Value::U32`] so a route can drive
-/// a firmware `uint32_t` static with no type conversion — voyant's [`RampModel`]
-/// is `F64`, and a float→counts conversion is a *sensor model*'s job (deferred to
-/// Phase 3), not a route's (routes are pure copies). Board-specific models like
-/// this live on the instantiation side, per architecture.md §7.
+/// A minimal integer "sensor" model for the route demo: one `counts` signal stepping
+/// a fixed amount each tick. Emits [`Value::U32`] so a route drives a firmware
+/// `uint32_t` with no conversion (routes are pure copies; float→counts is a sensor
+/// model's job). Board-specific models live on the instantiation side.
 struct CountsRampModel {
     name: String,
     step: u32,
@@ -470,26 +458,15 @@ impl Member for CountsRampModel {
     }
 }
 
-/// Prove the Route Table end-to-end against the real firmware **on the engine**,
-/// exercising the real production path: a model's `vsig` is recorded, a route
-/// propagates it table→table into a firmware `cvar` entry, and a
-/// [`FirmwareMember`] flushes that entry into firmware memory before `advance_tick`
-/// — the Phase-3 shape (plant output into a firmware sensor input). Suspend/resume
-/// gates the route.
+/// Prove the Route Table end-to-end on the engine via the real production path: a
+/// model's `vsig` is routed table→table into a firmware `cvar` entry, and the
+/// [`FirmwareMember`] flushes it into memory before `advance_tick` (plant output →
+/// firmware sensor input). Suspend/resume gates the route.
 ///
-/// The destination is the SPI sim's per-channel `injectedRx[0]` byte — a firmware
-/// input the firmware *reads* (in `HW_SPI_private_fillRx`, when delivering a
-/// crafted MISO response) but **never writes**, so a value flushed just before
-/// `advance_tick` survives the tick and can be asserted afterward. (The old
-/// destination, an ADC `counts[]` static, was overwritten by the firmware's own
-/// ADC ramp each tick — which is exactly why the check formerly had to read
-/// *between* propagate and advance_tick; table-mediated propagation folds the flush
-/// inside the firmware member's advance, so that dodge is gone.) The model steps by
-/// 25 to stay within the byte's range.
-///
-/// Member order `[model, firmware]` gives zero-lag tracking: the model records its
-/// vsig, the pre-firmware `propagate` records it into the cvar entry, and the
-/// firmware member flushes it in the same step.
+/// The destination is the SPI sim's `injectedRx[0]` byte — a firmware input the
+/// firmware *reads* but never writes, so a flushed value survives the tick and can be
+/// asserted after. Member order `[model, firmware]` gives zero-lag tracking; the model
+/// steps by 25 to stay within the byte.
 fn check_route_table(fw: &Firmware, rep: &mut Report) {
     const STEP: u32 = 25; // stays within a u8 destination byte
     let src = vsig_id("sensor", "counts").expect("valid vsig id");
@@ -614,20 +591,15 @@ impl Member for LoopModel {
     }
 }
 
-/// Prove the settled per-route latency design end-to-end against the real firmware,
-/// as a genuine **two-member feedback loop**:
-///
+/// Prove the per-route latency design as a genuine **two-member feedback loop**:
 /// - forward (zero-latency): the model's `out` drives the firmware's SPI-sim input
-///   byte `HW_SPI_data.channels[0].injectedRx[0]` (a cvar the firmware *reads* but
-///   never writes, so a flushed value survives the tick);
-/// - backward (DELAYED, the explicit ZOH cut): the firmware counter
-///   `task1msRuns` routes back into the model's `in`.
+///   byte (read but never written, so a flushed value survives the tick);
+/// - backward (DELAYED, the ZOH cut): the firmware counter `task1msRuns` → model `in`.
 ///
-/// The member order is `[model, firmware]`, so the backward firmware→model edge is a
-/// backward edge in registration order: the validator **rejects** it while it is
-/// zero-latency, and accepts it once declared delayed. We catch that step error,
-/// fix the wiring **live** (rewire-at-runtime), then assert the exact deterministic
-/// sequence the delayed loop produces.
+/// With member order `[model, firmware]`, the backward edge is backward in
+/// registration order: the validator rejects it while zero-latency, accepts it once
+/// delayed. We catch the step error, rewire **live**, then assert the exact
+/// deterministic sequence.
 fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     let out = vsig_id("loop_model", "out").expect("valid vsig id");
     let inp = vsig_id("loop_model", "in").expect("valid vsig id");
@@ -728,17 +700,12 @@ impl Member for VoltsModel {
     }
 }
 
-/// Prove the **port seam** end to end on the idiomatic native-format path: the
-/// sim ADC driver registered one input port per enabled input (during
-/// `sil_fw_start`, via the control-ABI hook vtable), local names from the
-/// channel config's per-input name strings (`ADC1_IN1`, ..., unit V). A model
-/// member emits a *voltage*; a zero-latency route carries it — volts, native
-/// format, member to member — into the firmware's port entry
-/// `vsig:pcs_bldc:ADC1_IN6`; the [`FirmwareMember`] caches it for the C side;
-/// and the sim ADC driver converts volts -> counts with its own numBits/vref
-/// parameters (the conversion lives where real hardware does it). DWARF-read
-/// the counts static and assert the exact quantization; a NEIGHBORING undriven
-/// input must keep the synthetic ramp (the fallback, proven in the same run).
+/// Prove the **port seam** end to end on the native-format path: the sim ADC driver
+/// registered one input port per enabled input (during `sil_fw_start`). A model emits
+/// a *voltage*; a zero-latency route carries it (native volts, member to member) into
+/// the firmware's port entry `vsig:pcs_bldc:ADC1_IN6`; the [`FirmwareMember`] caches it
+/// for C; and the driver converts volts -> counts with its own numBits/vref. Assert the
+/// exact quantization, and that a NEIGHBORING undriven input keeps its ramp (the fallback).
 fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     const VOLTS: f64 = 1.234;
     // ADC1 regular input 6 (port ADC1_IN6) is driven; input 1 stays undriven.
@@ -840,22 +807,16 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
-/// Phase-isolated performance report (informational — **not** pass/fail). Times
-/// three phases, each averaged over `N` ticks after a warm-up, and prints
-/// µs/tick + implied ×realtime for the full step. `std::time` is fine here —
-/// this is driver code, not sim-deterministic state (voyant core stays
-/// wall-clock-free). The phases isolate where the per-tick cost lives:
+/// Phase-isolated performance report (informational — **not** pass/fail). Times each
+/// phase over `N` ticks after a warm-up and prints µs/tick + ×realtime. `std::time` is
+/// fine here — driver code, not sim-deterministic state. The phases isolate the cost:
+///   1. firmware `advance_tick()` alone (no engine machinery);
+///   2. full engine `step()` (a model + a `FirmwareMember` + a route);
+///   3. empty engine `step()` (the engine's floor);
+///   4. derived (`full - firmware`) — sweep+flush+ports+routes+table, not measured directly.
 ///
-///   1. **firmware `advance_tick()` alone** — a raw loop, no engine machinery.
-///   2. **full engine `step()`** — the standard suite wiring (a model + a
-///      `FirmwareMember` mirroring the whole cvar namespace + a route).
-///   3. **empty engine `step()`** — no members, no routes: the engine's own floor.
-///   4. **derived** (`full - firmware`) ≈ sweep + flush + ports + routes + table
-///      cost — *derived*, not measured directly.
-///
-/// The report names which Rust profile built the driver (`cfg!(debug_assertions)`)
-/// and which optimization built the DLL (`PCS_SIL_DLL_FLAVOR`, set by run_sil.sh),
-/// so a copied-out table is self-describing.
+/// The report names the Rust profile and DLL flavor (`PCS_SIL_DLL_FLAVOR`) so a
+/// copied-out table is self-describing.
 fn report_performance(fw: &Firmware) {
     const WARMUP: u64 = 100;
     const N: u64 = 1000;

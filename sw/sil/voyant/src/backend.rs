@@ -1,18 +1,16 @@
-//! The firmware member and its execution seam. [`Firmware`] is the public
-//! firmware handle: it loads the shared library, drives it over the control ABI
+//! The firmware member and its execution seam. [`Firmware`] is the public handle:
+//! it loads the shared library, drives it over the control ABI
 //! (`start`/`advance_tick`/`shutdown`), and is the **cvar sample-resolver** —
-//! reading a firmware `static` (any width) and coercing it into the logical
-//! [`Value`], and writing a [`Value`] back into firmware memory. [`FirmwareMember`]
-//! wraps it as a [`Member`], the public seam the engine drives everything through.
+//! reading/writing a firmware `static` (any width) as a logical [`Value`].
+//! [`FirmwareMember`] wraps it as a [`Member`], the public seam the engine drives.
 //!
 //! The `Backend` trait is **internal plumbing**: the execution / test-double seam
-//! [`FirmwareMember`] drives around each tick (so unit-test mock backends can prove
-//! member/engine semantics without a real DLL). It is not a public architectural
-//! seam — [`Member`] is.
+//! [`FirmwareMember`] drives around each tick (so mock backends prove member/engine
+//! semantics without a real DLL) — not a public seam ([`Member`] is).
 //!
-//! This is the in-process boundary from `docs/sil/ffi-boundary.md`, and the
-//! only firmware-coupled (unsafe / DWARF) part of the framework; the State Table
-//! itself is pure data, fed by this resolver.
+//! This is the in-process boundary from `docs/sil/ffi-boundary.md`, the only
+//! firmware-coupled (unsafe / DWARF) part of the framework; the State Table is pure
+//! data fed by this resolver.
 
 use crate::dwarf::{DwarfMap, Leaf, Scalar};
 use crate::log::LogLevel;
@@ -26,23 +24,16 @@ use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
 use std::path::Path;
 
-/// The **internal execution seam** [`FirmwareMember`] drives one firmware
-/// instance through **around each tick**: `advance_tick`, white-box `cvar`
-/// read/write by path, and the port registration seam. This is crate plumbing,
-/// **not** a public architectural seam — [`Member`] is the public seam, and
-/// [`FirmwareMember`] (wrapping the concrete [`Firmware`]) is the firmware kind
-/// of member. The trait exists so in-crate unit tests can stand up **mock
-/// backends** that prove [`FirmwareMember`]/engine semantics without a real
-/// firmware DLL.
+/// The **internal execution seam** [`FirmwareMember`] drives one firmware instance
+/// through around each tick: `advance_tick`, white-box `cvar` read/write by path, and
+/// the port registration seam. Crate plumbing, **not** a public seam ([`Member`] is);
+/// it exists so in-crate tests can stand up **mock backends** without a real DLL.
 ///
-/// Lifecycle (`start`/`shutdown`) is deliberately **off** the trait: it is not
-/// driven by the member/engine but called explicitly on the concrete
-/// [`Firmware`] handle the driver holds (see [`Firmware::start`] /
-/// [`Firmware::shutdown`]). Construction (loading the artifact) is likewise
-/// backend-specific and stays off the trait — see [`Firmware::load`].
+/// Lifecycle (`start`/`shutdown`) and construction ([`Firmware::load`]) stay **off**
+/// the trait — called explicitly on the concrete [`Firmware`] handle the driver holds.
 ///
-/// All methods take `&self`: a backend mutates *external* state (the firmware's
-/// own memory / execution), not the Rust handle, so it needs no `&mut`.
+/// All methods take `&self`: a backend mutates *external* state (firmware memory /
+/// execution), not the Rust handle.
 pub(crate) trait Backend {
     /// Advance one sim tick (run the firmware to its next quiescence).
     fn advance_tick(&self);
@@ -55,65 +46,55 @@ pub(crate) trait Backend {
     /// injection (the write side of the `cvar` backing).
     fn write_cvar(&self, path: &str, v: &Value);
 
-    /// Enumerate this firmware's traceable `cvar` leaves for whole-namespace
-    /// mirroring — every scalar/enum leaf under every firmware `static` (nested
-    /// struct members + array elements expanded), with the exclusion policy
-    /// (array-size `threshold`, `includes` overrides) applied. Each leaf carries an
-    /// optional pre-resolved [`CvarHandle`] fast-read token so the per-tick sweep
-    /// never re-resolves DWARF (see [`read_cvar_resolved`](Self::read_cvar_resolved)).
-    /// Default: an empty enumeration (a backend with no DWARF has no cvar leaves).
+    /// Enumerate this firmware's traceable `cvar` leaves (every scalar/enum leaf under
+    /// every `static`, nested members + array elements expanded), with the exclusion
+    /// policy (array-size `threshold`, `includes`) applied. Each leaf carries an
+    /// optional pre-resolved [`CvarHandle`] so the per-tick sweep never re-resolves
+    /// DWARF. Default: empty (a backend with no DWARF has no leaves).
     fn enumerate_cvars(&self, threshold: usize, includes: &[String]) -> CvarEnumeration {
         let _ = (threshold, includes);
         CvarEnumeration::default()
     }
 
-    /// Fast-read a leaf previously handed out by [`enumerate_cvars`](Self::enumerate_cvars)
-    /// via its resolved [`CvarHandle`] — the sweep's hot path, bypassing path
-    /// parsing / DWARF lookup. Only called with a handle this backend produced;
-    /// the default is unreachable (a backend that yields no handles never gets one
-    /// back).
+    /// Fast-read a leaf via its [`CvarHandle`] — the sweep's hot path, bypassing path
+    /// parsing / DWARF lookup. Only called with a handle this backend produced; the
+    /// default is unreachable.
     fn read_cvar_resolved(&self, handle: CvarHandle) -> Value {
         let _ = handle;
         unreachable!("backend produced no cvar handles but was asked to read one")
     }
 
-    /// Fast-read a leaf as a **native scalar** ([`ScalarSample`]) — the sweep's
-    /// typed decode path, feeding the State Table's typed mirror-record fast lanes
-    /// so a changing scalar leaf never constructs a `Value` on the way into the
-    /// columnar historian. The default wraps [`read_cvar_resolved`](Self::read_cvar_resolved)
-    /// as [`ScalarSample::Boxed`], so a backend that only decodes to `Value` (e.g. a
-    /// test mock) still works — the box merely lands in the generic record path.
-    /// A real firmware overrides this to decode natively (see [`Firmware`]).
+    /// Fast-read a leaf as a **native scalar** ([`ScalarSample`]) — the typed-decode
+    /// path feeding the State Table's typed fast lanes, so a changing scalar leaf never
+    /// constructs a `Value`. The default wraps [`read_cvar_resolved`](Self::read_cvar_resolved)
+    /// as [`ScalarSample::Boxed`] (a `Value`-only backend still works via the generic
+    /// path); a real firmware overrides to decode natively.
     fn read_cvar_scalar(&self, handle: CvarHandle) -> ScalarSample {
         ScalarSample::Boxed(self.read_cvar_resolved(handle))
     }
 
-    /// The **memory layout** of a resolved leaf: its runtime address and byte
-    /// size. Used by the [`FirmwareMember`]'s Tier-1 shadow sweep to group leaves
-    /// into contiguous memory ranges and `memcmp` them against a shadow buffer.
-    /// Only called with a handle this backend produced; the default is unreachable
-    /// (a backend that yields no handles yields no layouts either — it falls back
-    /// to the per-leaf string-path sweep).
+    /// The **memory layout** of a resolved leaf (runtime address + byte size), used by
+    /// the Tier-1 shadow sweep to group leaves into contiguous ranges. Only called with
+    /// a handle this backend produced; the default is unreachable (a handle-less backend
+    /// falls back to the string-path sweep).
     fn cvar_layout(&self, handle: CvarHandle) -> (u64, usize) {
         let _ = handle;
         unreachable!("backend produced no cvar handles but was asked for a layout")
     }
 
     /// Whether `shadow.len()` bytes of **live** firmware memory at `addr` equal
-    /// `shadow` — the shadow sweep's per-range fast path (no copy: most ranges are
-    /// unchanged each tick, so a bare `memcmp` avoids the bulk read entirely). Same
-    /// address discipline / safety as [`read_range`](Self::read_range).
+    /// `shadow` — the shadow sweep's per-range fast path (a bare `memcmp` avoids the
+    /// bulk read for unchanged ranges). Same address discipline as
+    /// [`read_range`](Self::read_range).
     fn range_eq(&self, addr: u64, shadow: &[u8]) -> bool {
         let _ = (addr, shadow);
         unreachable!("backend produced no cvar layouts but was asked to compare a range")
     }
 
-    /// Copy `buf.len()` bytes of **live** firmware memory starting at `addr` into
-    /// `buf` — the shadow sweep's bulk read (only for a range that changed).
-    /// `addr`/`len` derive strictly from resolved leaf layouts
-    /// ([`cvar_layout`](Self::cvar_layout)), so the range lies within real firmware
-    /// statics (see the `FirmwareMember` safety note). Default is unreachable (only
-    /// backends yielding layouts get called).
+    /// Copy `buf.len()` bytes of **live** firmware memory at `addr` into `buf` — the
+    /// shadow sweep's bulk read (only for a changed range). `addr`/`len` derive from
+    /// resolved leaf layouts ([`cvar_layout`](Self::cvar_layout)), so the range lies
+    /// within real firmware statics. Default is unreachable.
     fn read_range(&self, addr: u64, buf: &mut [u8]) {
         let _ = (addr, buf);
         unreachable!("backend produced no cvar layouts but was asked to read a range")
@@ -121,21 +102,16 @@ pub(crate) trait Backend {
 
     // --- ports (the C→Rust runtime registration seam) ----------------------
     //
-    // Firmware members expose **ports**: signals their sim HW drivers register
-    // with the framework at runtime through the control-ABI hook vtable, in
-    // NATIVE units (volts stay volts; the driver owns any conversion to its
-    // C-memory representation — the conversion lives where real hardware does
-    // it). Port I/O is **cache-mediated** exactly like the driven/sampled cvar
-    // lists — the C side never touches the State Table mid-tick: reads come
-    // from an input cache the member fills before each firmware tick, and
-    // writes land in an output buffer the member drains after. Defaults are
-    // no-ops so a backend without ports needs no code.
+    // Firmware members expose **ports**: signals their sim HW drivers register at
+    // runtime through the control-ABI hook vtable, in NATIVE units (the driver owns
+    // any conversion, where real hardware does it). Port I/O is **cache-mediated** —
+    // the C side never touches the State Table mid-tick: reads come from an input
+    // cache the member fills before each tick, writes land in an output buffer it
+    // drains after. Defaults are no-ops so a portless backend needs no code.
 
-    /// Port definitions registered so far, from index `from` (a caller-held
-    /// cursor) onward. Definitions are **append-only** with sequential
-    /// handles, so a consumer applies `port_defs_since(cursor)` and advances
-    /// its cursor by the returned length; a fresh consumer (cursor 0) sees
-    /// every port ever registered.
+    /// Port definitions registered from index `from` onward. Definitions are
+    /// **append-only** with sequential handles, so a consumer applies
+    /// `port_defs_since(cursor)` and advances its cursor by the returned length.
     fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
         let _ = from;
         Vec::new()
@@ -163,13 +139,11 @@ pub(crate) trait Backend {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CvarHandle(usize);
 
-/// A leaf decoded as a **native scalar**, for the sweep's typed record fast lane
-/// ([`Backend::read_cvar_scalar`]). The scalar variants carry the value with no
-/// `Value` enum wrap; [`ScalarSample::Boxed`] holds anything non-scalar (an enum
-/// leaf reads as its symbolic [`Value::Enum`]) or the default backend's wrapped
-/// `Value`. The variant widths mirror [`scalar_to_value`]'s coercion (signed →
-/// `I32`, small unsigned → `U32`, …) so the typed column a leaf lands in is the
-/// same one the generic path would have chosen.
+/// A leaf decoded as a **native scalar** for the sweep's typed fast lane
+/// ([`Backend::read_cvar_scalar`]): scalar variants carry the value unwrapped;
+/// [`ScalarSample::Boxed`] holds anything non-scalar (an enum leaf's symbolic
+/// [`Value::Enum`]) or a default backend's `Value`. Variant widths mirror
+/// [`scalar_to_value`]'s coercion so a leaf lands in the same typed column either path.
 pub(crate) enum ScalarSample {
     F32(f32),
     F64(f64),
@@ -668,64 +642,43 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error
     Err("no usable ASLR anchor: no exported global appears in DWARF".into())
 }
 
-/// A firmware instance as a [`Member`]: the "firmware kind" of member. It borrows
-/// a concrete [`Firmware`] and drives it through the internal `Backend` seam
-/// (per-tick `advance_tick` + DWARF `cvar`/port I/O) on the sim clock, and it is
-/// the **only** thing that touches firmware memory —
-/// routes never do (they are table-mediated; see [`RouteTable`](crate::route::RouteTable)).
+/// A firmware instance as a [`Member`]. Borrows a concrete [`Firmware`] and drives
+/// it through the internal `Backend` seam on the sim clock; it is the **only** thing
+/// that touches firmware memory (routes are table-mediated). The instance `name` is
+/// explicit, **not** derived from the DLL, so two boards can run one image as
+/// distinct members.
 ///
-/// Constructed with an explicit instance `name` — **not** derived from the DLL, so
-/// two boards can run the same firmware image as distinct members — and a firmware
-/// tick period. Each [`advance`](Member::advance) accumulates sim time and, per
-/// full firmware-tick period elapsed, runs **three fixed phases** over its signal
-/// [`Binding`]s. Ports are Signals, cvars are Signals, a future transport entry
-/// will be a Signal; each binding contributes an optional in-sync and/or out-sync
-/// half, and the phase sequence never restructures as new `sig_type`s arrive:
+/// Each [`advance`](Member::advance) accumulates sim time and, per full firmware-tick
+/// period, runs **three fixed phases** over its signal [`Binding`]s (ports are
+/// Signals, cvars are Signals, a future transport will be too). Each binding
+/// contributes an optional in-sync and/or out-sync half; the sequence never
+/// restructures as new `sig_type`s arrive:
 ///
-/// 1. **In-sync (table → firmware).** Every binding's inbound half, in order:
-///    - *Ports* — apply pending port registrations (each new `PortDef` the
-///      backend accumulated becomes a table entry `{sig_type}:{member}:{local}`,
-///      idempotent, this member prefixing its own instance name), then fill
-///      **every** registered port's input cache from its entry's current value
-///      (`set_port_input`; never driven → `None` → the firmware's `readSignal`
-///      reports false and the driver falls back). Input ports carry commanded
-///      values (table → cache → C read).
-///    - *Cvars (flush)* — flush the **fresh** cvars back into firmware memory:
-///      the ids in this member's namespace that a command wrote since the last
-///      sweep ([`take_dirty`](StateTable::take_dirty)) plus its currently-pinned
-///      ids ([`pinned`](StateTable::pinned), re-asserted every tick). The sim is
-///      single-threaded, so between one tick's sweep and the next tick's flush no
-///      firmware code runs — a table entry differs from memory **iff** the
-///      framework command-wrote it, so "flush fresh" ≡ "flush all", done sparsely.
-/// 2. **Tick.** `advance_tick` runs the firmware to quiescence — C reads the
-///    input caches and buffers any `writeSignal` output.
-/// 3. **Out-sync (firmware → table).** Every binding's outbound half, in order:
-///    - *Ports* — drain the output buffer (`drain_port_writes`), recording each
-///      value into its port's entry. Output ports carry firmware-produced values
-///      (C write → table). The same port may do both halves — the table is the
-///      rendezvous; **no direction metadata exists on a signal** (direction is a
-///      property of the binding mechanism).
-///    - *Cvars (sweep)* — sweep the cached resolved leaf list, reading **every**
-///      registered cvar leaf out of firmware memory and
-///      [`record_mirror`](StateTable::record_mirror)-ing it into the historian, so
-///      the cvar namespace is an accurate, automatic mirror of firmware memory
-///      (epsilon dedup + retention manage growth). The sweep reads through
-///      pre-resolved handles — it never re-resolves DWARF per tick.
+/// 1. **In-sync (table → firmware)**, each binding's inbound half:
+///    - *Ports* — apply pending registrations, then fill every port's input cache
+///      from its entry (never driven → `None` → `readSignal` false → driver falls back).
+///    - *Cvars (flush)* — write the **fresh** cvars (command-dirtied
+///      [`take_dirty`](StateTable::take_dirty) ∪ pinned [`pinned`](StateTable::pinned))
+///      into memory. Single-threaded ⇒ an entry differs from memory iff command-written,
+///      so "flush fresh" ≡ "flush all", done sparsely.
+/// 2. **Tick** — `advance_tick` runs the firmware to quiescence (C reads input caches,
+///    buffers `writeSignal` output).
+/// 3. **Out-sync (firmware → table)**, each binding's outbound half:
+///    - *Ports* — drain the output buffer into each port's entry.
+///    - *Cvars (sweep)* — read **every** registered leaf out of memory and
+///      [`record_mirror`](StateTable::record_mirror) it, so the cvar namespace is an
+///      automatic mirror (through pre-resolved handles — no per-tick DWARF).
 ///
-/// A future serial-transport `sig_type` is simply a **new [`Binding`] variant**
-/// with its own in/out halves; the three-phase sequence above is unchanged. Port
-/// I/O is cache-mediated end to end — deterministic, with **no mid-tick State
-/// Table access from C** (mirroring how the cvar mirror syncs firmware memory).
+/// **Direction is a property of the binding mechanism, not of a Signal** — the table
+/// is the rendezvous, no direction metadata on a signal. A future transport `sig_type`
+/// is just a new [`Binding`] variant; the three phases are unchanged. Port I/O is
+/// cache-mediated with **no mid-tick State Table access from C**.
 ///
-/// The cvar leaf list is enumerated + registered when the member is enabled (the
-/// whole traceable namespace, minus the exclusion policy — see
-/// [`exclude`](Self::exclude) / [`include`](Self::include)); **pending port
-/// registrations are also applied there**, so ports registered during
-/// `sil_fw_start` become table entries as soon as the member is added to an
-/// engine (else at its next advance). Lifecycle (`start` / `shutdown`) stays on
-/// the concrete [`Firmware`] handle the driver holds and calls explicitly
-/// (FUTURE: re-enable would reload the DLL, i.e. boot-from-reset — not
-/// implemented here).
+/// The cvar leaf list is enumerated + registered at enable (whole namespace minus the
+/// exclusion policy — [`exclude`](Self::exclude) / [`include`](Self::include));
+/// **pending ports are applied there too**, so ports registered during `sil_fw_start`
+/// become entries as soon as the member is added. Lifecycle stays on the [`Firmware`]
+/// handle (FUTURE: re-enable would reload the DLL — not implemented).
 ///
 /// [`RouteTable`]: crate::route::RouteTable
 pub struct FirmwareMember<'b> {
@@ -734,11 +687,9 @@ pub struct FirmwareMember<'b> {
     tick_period_us: u64,
     /// Sim time accumulated toward the next firmware tick.
     accum_us: u64,
-    /// The resolved cvar leaf list swept memory→table each tick: `(id, read
-    /// token)`. Enumerated + cached once at enable (the whole traceable namespace
-    /// minus excludes), so the sweep never re-resolves DWARF. The id's `name`
-    /// segment is the DWARF path. This is the canonical id list (re-registered on
-    /// re-enable); the Tier-1 sweep structures below are derived from it.
+    /// The canonical cvar leaf list `(id, read token)`, enumerated + cached at enable
+    /// (whole namespace minus excludes). The id's `name` segment is the DWARF path;
+    /// the Tier-1 sweep structures below are derived from this.
     cvar_leaves: Vec<(SignalId, CvarRead)>,
     /// **Tier-1 shadow sweep** — resolved (fast-read) leaves, sorted by address,
     /// grouped into `ranges`. The per-tick out-sync `memcmp`s live memory against
@@ -968,16 +919,11 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
-    /// Cvar in-sync (flush): write the **fresh** cvars in this member's namespace
-    /// back into firmware memory — the dirty ids
-    /// ([`take_dirty`](StateTable::take_dirty), a command wrote them since the last
-    /// sweep) unioned with the currently-pinned ids
-    /// ([`pinned`](StateTable::pinned), re-asserted every tick because a pin is a
-    /// continuous drive the firmware may overwrite mid-tick), filtered to `cvar`.
-    /// This is the production path a route takes to reach firmware memory. Single-
-    /// threaded sim ⇒ an entry differs from memory iff it was command-written, so
-    /// flushing fresh ≡ flushing all, done sparsely. `Ok(None)` (never recorded)
-    /// has nothing to flush; `Err` is a wiring bug — logged, not swallowed.
+    /// Cvar in-sync (flush): write the **fresh** `cvar`s in this member's namespace
+    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty))
+    /// ∪ pinned ([`pinned`](StateTable::pinned), re-asserted each tick as a continuous
+    /// drive). The production path a route takes to reach memory. Single-threaded ⇒
+    /// flushing fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
     fn in_sync_cvars(&mut self, st: &mut StateTable) {
         // Fresh (command-dirtied) cvars in my namespace, plus my pinned cvars.
         let mut flush: Vec<SignalId> = st
@@ -1034,19 +980,15 @@ impl<'b> FirmwareMember<'b> {
     /// Cvar out-sync (sweep): mirror firmware memory into the table — the automatic
     /// whole-namespace mirror, made **O(changed bytes)** by the Tier-1 shadow.
     ///
-    /// For each contiguous range, `read_range` bulk-copies live memory into a
-    /// scratch buffer and `memcmp`s it against the range's shadow; on a match the
-    /// whole range is skipped (no decode). On a mismatch, each changed
-    /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly the leaves overlapping it
-    /// (via the pre-resolved fast-read handle) and records them by dense index
-    /// ([`record_mirror_at`](StateTable::record_mirror_at) — no string hash, no
-    /// dirty mark, ignored on a pin). The shadow then absorbs the changed bytes: it
-    /// mirrors MEMORY, not the table, so it advances even where the table dedups or
-    /// a pin ignores the record. The first sweep after (re)enable is **cold** —
-    /// every chunk counts as changed — so the table gets a full baseline.
-    ///
-    /// String-path leaves (a backend with no fast-read handles, e.g. a test mock)
-    /// have no memory layout, so they fall back to the per-leaf read/record loop.
+    /// Per contiguous range: `read_range` copies live memory and `memcmp`s it against
+    /// the shadow; an unchanged range is skipped. On a mismatch, each changed
+    /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly its overlapping leaves and records
+    /// them by dense index ([`record_mirror_at`](StateTable::record_mirror_at) — no
+    /// hash, no dirty mark, ignored on a pin). The shadow mirrors MEMORY (not the
+    /// table), so it advances even where the table dedups or a pin ignores the record.
+    /// The first sweep after (re)enable is **cold** (every chunk changed) for a full
+    /// baseline. String-path leaves (a handle-less backend, e.g. a mock) fall back to
+    /// the per-leaf read/record loop.
     fn out_sync_cvars(&mut self, st: &mut StateTable) {
         // Fallback: leaves with no resolved layout (string-path backends).
         for pl in &self.path_leaves {
@@ -1090,14 +1032,11 @@ impl<'b> FirmwareMember<'b> {
                         if stamp[li] != gen {
                             stamp[li] = gen;
                             let leaf = &resolved[li];
-                            // Typed decode → typed mirror fast lane: a changing
-                            // scalar leaf records natively, never boxing through
-                            // `Value`. Enum/other leaves ride the boxed lane.
+                            // Typed decode → typed fast lane (scalars record natively;
+                            // enum/other ride the boxed lane).
                             let idx = leaf.table_idx;
-                            // A wrong-kind record is a bug (a firmware static does not
-                            // change C type); it errors rather than migrating. Surface
-                            // it as a Warning attributed to this member — visible in the
-                            // log dump, without aborting the whole sweep.
+                            // A wrong-kind record is a bug (a static's C type is fixed):
+                            // log a Warning rather than abort the sweep.
                             let res = match backend.read_cvar_scalar(leaf.handle) {
                                 ScalarSample::F32(x) => st.record_mirror_f32_at(idx, x),
                                 ScalarSample::F64(x) => st.record_mirror_f64_at(idx, x),
@@ -1125,21 +1064,16 @@ impl<'b> FirmwareMember<'b> {
     }
 }
 
-/// One **firmware-side signal binding** — a mechanism that mirror-syncs a class
-/// of signals between the State Table and firmware memory around a tick. Ports
-/// are Signals, cvars are Signals, a future serial-transport entry will be a
-/// Signal; each such mechanism contributes an optional **in-sync** half (table →
-/// firmware, run before `advance_tick`) and/or an optional **out-sync** half
-/// (firmware → table, run after). The [`advance`](FirmwareMember::advance) loop
-/// is fixed at three phases — **in-sync → tick → out-sync** — and a new
-/// `sig_type` is a new variant here, never a new phase.
+/// One **firmware-side signal binding** — a mechanism that mirror-syncs a class of
+/// signals between the State Table and firmware memory around a tick. Each contributes
+/// an optional **in-sync** half (table → firmware, before `advance_tick`) and/or an
+/// **out-sync** half (firmware → table, after). The [`advance`](FirmwareMember::advance)
+/// loop is fixed at three phases — **in-sync → tick → out-sync** — and a new `sig_type`
+/// is a new variant here, never a new phase.
 ///
-/// **Direction is a property of the mechanism, not of a Signal** — there is no
-/// direction metadata anywhere on a signal. `Cvars` is behaviorally both (in:
-/// flush the fresh/pinned cvars into memory; out: sweep the whole leaf list back
-/// into the mirror), as is `Ports` (in: apply registrations + fill input caches;
-/// out: drain writes) — one collective binding each over the backend's state; the
-/// point is the phase structure, not one binding per signal.
+/// **Direction is a property of the mechanism, not of a Signal.** Both `Cvars` and
+/// `Ports` are behaviorally in + out — one collective binding each over the backend's
+/// state; the point is the phase structure, not one binding per signal.
 #[derive(Clone, Copy)]
 enum Binding {
     /// Cvars (in + out): flush fresh/pinned cvars into memory; sweep the mirror out.
@@ -1178,11 +1112,8 @@ impl Member for FirmwareMember<'_> {
     }
 
     fn advance(&mut self, dt_us: u64, st: &mut StateTable) {
-        // Run a firmware tick for each full period elapsed (usually exactly one
-        // when the engine tick == the firmware tick). Each tick runs three
-        // fixed phases over every signal binding (see [`Binding`]): in-sync
-        // (table -> firmware) → advance_tick → out-sync (firmware -> table).
-        // All mirror-synced — C never touches the table.
+        // One firmware tick per full period elapsed (usually exactly one). Each runs
+        // three fixed phases over every binding (see [`Binding`]); C never touches the table.
         self.accum_us += dt_us;
         while self.accum_us >= self.tick_period_us {
             self.accum_us -= self.tick_period_us;
@@ -1190,8 +1121,7 @@ impl Member for FirmwareMember<'_> {
             for binding in Binding::ALL {
                 binding.in_sync(self, st);
             }
-            // Phase 2 — tick: run the firmware to quiescence (C reads the input
-            // caches, buffers its writes).
+            // Phase 2 — tick: run the firmware to quiescence.
             self.backend.advance_tick();
             // Phase 3 — out-sync: every binding's firmware → table half.
             for binding in Binding::ALL {
@@ -1205,20 +1135,16 @@ impl Member for FirmwareMember<'_> {
             if !self.leaves_cached {
                 self.enumerate_and_register(st);
             } else {
-                // Re-enable: re-register the cached leaves idempotently (a re-enable
-                // does not re-enumerate — the namespace is fixed for the member's
-                // life until a real boot-from-reset lands). Force a cold sweep so the
-                // table re-baselines against firmware memory.
+                // Re-enable re-registers the cached leaves idempotently (no
+                // re-enumerate) and forces a cold sweep to re-baseline the table.
                 for (id, _) in &self.cvar_leaves {
                     let _ = st.register(id.clone(), None);
                 }
                 self.shadow_cold = true;
             }
-            // Ports registered before this member existed (typically during
-            // `sil_fw_start`, which the driver calls before adding the member)
-            // become table entries here — i.e. immediately at add_member — so
-            // routes into them are valid from the first engine step. Later
-            // registrations apply at the member's next advance.
+            // Ports registered before this member existed (during `sil_fw_start`)
+            // become table entries here — immediately at add_member — so routes into
+            // them are valid from the first step. Later ones apply at next advance.
             self.apply_pending_ports(st);
         }
         // FUTURE: reload the DLL (boot-from-reset) on re-enable; today enable only

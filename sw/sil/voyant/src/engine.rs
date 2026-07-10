@@ -1,65 +1,47 @@
-//! The sim clock + step loop: the engine that ties the parts together.
-//!
-//! [`Engine`] owns the [`StateTable`], the [`RouteTable`], and a list of
-//! [`Member`]s (every executable participant — firmware instances, plant/peer
-//! models, future native apps), and advances the whole system one tick at a time
-//! with [`step`](Engine::step). It is the "sim core" the design docs describe
-//! (`architecture.md` §5, `state-route-tables.md` §3), and it drives members
-//! *only* through the [`Member`] trait — an **engine of members**, agnostic to
-//! what any member actually is.
+//! The sim clock + step loop. [`Engine`] owns the [`StateTable`], the
+//! [`RouteTable`], and the [`Member`]s, and advances the whole system one tick at a
+//! time with [`step`](Engine::step), driving members *only* through the [`Member`]
+//! trait. See `architecture.md` §5, `state-route-tables.md` §3.
 //!
 //! ## The canonical tick order (settled)
 //!
-//! Discrete sim serializes concurrent physics, so every feedback cycle needs
-//! exactly one tick of separation somewhere. The design makes that cut explicit and
-//! physical — a **delayed (latency-1) route** models the real ZOH sample/actuation
-//! boundary — while forward dataflow (zero-latency routes) has **zero** added
-//! latency. Each [`step`](Engine::step):
+//! Discrete sim serializes concurrent physics, so every feedback cycle needs exactly
+//! one tick of separation — a **delayed (latency-1) route** is that explicit ZOH cut,
+//! while forward (zero-latency) dataflow has no added latency. Each [`step`](Engine::step):
 //!
-//! 1. **Advance sim time** — `now += tick_period`, monotonic and wall-clock-free
-//!    (D7/D9); [`StateTable::set_time`] stamps every record this tick.
-//! 2. **Validate the wiring if dirty** (see below). A cached invalid verdict is
-//!    re-raised from `step` until the wiring is fixed.
-//! 3. **Evaluate delayed routes once**, from a snapshot taken *before any member
-//!    advances* ([`RouteTable::propagate_delayed`]): each delayed destination
-//!    receives its source value **as of the end of the previous tick**.
-//! 4. **For each enabled member, in registration order:** re-evaluate the enabled
-//!    **zero-latency** routes in topological order with fresh reads
-//!    ([`RouteTable::propagate_zero_latency`]) — a chain `a→b→c` resolves fully this
-//!    same tick — then **`member.advance(dt, st)`**. The member reads its routed
-//!    inputs, steps, and pushes its outputs (a firmware member also flushes its
-//!    *driven* cvars into firmware memory, runs `advance_tick`, and samples its
-//!    cvars back out here).
+//! 1. **Advance sim time** — `now += tick_period` (monotonic, wall-clock-free, D7/D9);
+//!    [`StateTable::set_time`] stamps every record this tick.
+//! 2. **Validate the wiring if dirty** (below); a cached invalid verdict re-raises
+//!    each step until fixed.
+//! 3. **Delayed routes once**, from a snapshot taken *before any member advances*
+//!    ([`RouteTable::propagate_delayed`]): each destination gets its source's
+//!    end-of-previous-tick value.
+//! 4. **Each enabled member, in registration order:** re-resolve the zero-latency
+//!    routes in topo order with fresh reads ([`RouteTable::propagate_zero_latency`]) —
+//!    a chain `a→b→c` resolves this same tick — then `member.advance(dt, st)` (a
+//!    firmware member also flushes driven cvars, ticks, and samples cvars back out).
 //!
-//! Re-running the full zero-latency DAG before each member is semantically identical
-//! to per-member incoming-route resolution (routes are pure copies and `record`
-//! dedups unchanged values) and far simpler. The `M×R` copy cost is a flagged perf
-//! seam — fine at current scale; `docs/sil/performance.md` owns later optimization.
-//!
-//! Disabled members are skipped while sim time keeps flowing (their signals hold
-//! their last value); see [`set_member_enabled`](Engine::set_member_enabled).
+//! Re-running the whole zero-latency DAG per member is semantically identical to
+//! per-member resolution (routes are pure copies, `record` dedups) and far simpler;
+//! the `M×R` copy cost is a flagged perf seam (`docs/sil/performance.md`). Disabled
+//! members are skipped while sim time flows (signals hold their last value).
 //!
 //! ## Step-time validation (dirty-flag cached)
 //!
-//! Wiring mutations (route add/remove/suspend/resume, member add, member
-//! enable/disable) set a **dirty flag**; the next `step` revalidates
-//! ([`RouteTable::validate`]) only when dirty, else reuses the cached verdict and
-//! the cached zero-latency topological order. Rewiring at any time stays legal —
-//! a validation failure surfaces at the *next* step, loudly, as an
-//! [`EngineError::Route`] naming the offending route (single-driver, zero-latency
-//! acyclicity, forward-flow; see [`RouteTable::validate`]). Member **registration
-//! order is a design surface**: order members along the signal flow, and the
-//! validator tells you when a route needs to be delayed or the members reordered.
+//! Any wiring mutation sets a **dirty flag**; the next `step` revalidates only when
+//! dirty, else reuses the cached verdict + zero-latency topo order. Rewiring anytime
+//! is legal — a failure surfaces loudly at the *next* step as an
+//! [`EngineError::Route`] (single-driver, acyclicity, forward-flow; see
+//! [`RouteTable::validate`]). **Registration order is a design surface**: order
+//! members along the signal flow; the validator says when a route needs to be delayed
+//! or the members reordered.
 //!
 //! ## No backend handle (routes are table-mediated)
 //!
-//! The engine touches **only** members, routes, and the table — it holds **no
-//! backend borrow**. Route propagation is a pure State Table
-//! operation: it records values between table entries and nothing more. Each
-//! firmware instance lives inside its own
-//! [`FirmwareMember`](crate::FirmwareMember) and drives *its own* backend, so
-//! multi-firmware is simply multiple `FirmwareMember`s, each flushing/sampling
-//! through its own backend, all peers in one engine.
+//! The engine holds **no backend borrow** — propagation is a pure State Table
+//! operation. Each firmware instance lives in its own
+//! [`FirmwareMember`](crate::FirmwareMember) driving its own backend, so
+//! multi-firmware is just multiple `FirmwareMember`s peering in one engine.
 
 use crate::log::LogEntry;
 use crate::member::Member;
@@ -83,14 +65,10 @@ pub enum EngineError {
     Route(#[from] RouteError),
 }
 
-/// The sim clock + step loop. Owns the State Table (the historian), the Route
-/// Table, and the members — and **nothing else**: it holds no backend handle (see
-/// the module "No backend handle" note). Each firmware member drives its own
-/// backend, so a caller can keep its own `&Firmware` for ad-hoc white-box
-/// injection / inspection alongside the engine without contending with it.
-///
-/// The `'b` lifetime bounds the members (a [`FirmwareMember`](crate::FirmwareMember)
-/// borrows its backend for `'b`); it no longer appears on the engine's own fields.
+/// The sim clock + step loop. Owns the State Table, Route Table, and members, and
+/// holds no backend handle — so a caller can keep its own `&Firmware` for ad-hoc
+/// white-box injection alongside the engine. `'b` bounds the members (a
+/// [`FirmwareMember`](crate::FirmwareMember) borrows its backend for `'b`).
 pub struct Engine<'b> {
     state: StateTable,
     routes: RouteTable,
@@ -133,11 +111,9 @@ impl<'b> Engine<'b> {
     }
 
     /// Add a member. Members **start enabled**: the engine calls
-    /// [`Member::set_enabled(true)`](Member::set_enabled) now, which is where the
-    /// member registers its signals on the State Table. Advance order is
-    /// registration order (deterministic, D7) — an explicit design surface for
-    /// forward flow (see the module "Step-time validation" note). Marks the wiring
-    /// dirty.
+    /// [`Member::set_enabled(true)`](Member::set_enabled) now (where it registers its
+    /// signals). Advance order is registration order (D7) — a design surface for
+    /// forward flow. Marks the wiring dirty.
     pub fn add_member(&mut self, mut member: Box<dyn Member + 'b>) {
         member.set_enabled(true, &mut self.state);
         self.members.push(MemberEntry {
@@ -148,10 +124,9 @@ impl<'b> Engine<'b> {
     }
 
     /// Enable or disable a member by name. A disabled member's advance is skipped
-    /// each step (its signals hold their last value); re-enabling calls
-    /// [`Member::set_enabled(true)`](Member::set_enabled) again (idempotently
-    /// re-registering its signals). Returns whether a member of that name was found;
-    /// marks the wiring dirty when it was.
+    /// (signals hold their last value); re-enabling re-invokes
+    /// [`Member::set_enabled(true)`](Member::set_enabled) idempotently. Returns
+    /// whether the member was found; marks the wiring dirty when it was.
     pub fn set_member_enabled(&mut self, name: &str, on: bool) -> bool {
         if let Some(entry) = self.members.iter_mut().find(|e| e.member.name() == name) {
             entry.enabled = on;

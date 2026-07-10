@@ -1,16 +1,12 @@
 //! DWARF reader: resolve a firmware variable path to its **link-time address**
 //! and **scalar leaf type**, by parsing the DLL's `.debug_*` sections.
 //!
-//! Reaches *any* `static` (not just exported symbols) — the State Table needs
-//! this (ffi-boundary.md §4). Built with `object` (PE + sections) + `gimli`
-//! (DWARF). The native firmware is `-g -O0`, so every static keeps a real
-//! address and aggregates keep their layout.
-//!
-//! Supports: top-level/static variables (`DW_OP_addr`), struct/union member
-//! offsets, **array indexing** (`a[i].b[j]`), typedef/const/volatile
-//! pass-through, and base/enum scalar kinds (signed/unsigned/float/bool).
-//! Not yet: pointer-chasing. Name collisions (function-local statics) are
-//! last-wins until the State Table adds qualified paths.
+//! Reaches *any* `static`, not just exported symbols (ffi-boundary.md §4), via
+//! `object` (PE) + `gimli` (DWARF); native firmware is `-g -O0` so statics keep
+//! real addresses and aggregate layout. Supports top-level statics, struct/union
+//! members, array indexing (`a[i].b[j]`), typedef/const/volatile pass-through, and
+//! base/enum scalars. Not yet: pointer-chasing. Name collisions (function-local
+//! statics) are last-wins.
 
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -129,10 +125,9 @@ struct Maps {
     underlying: HashMap<usize, usize>,
     /// array type offset -> element type offset
     arrays: HashMap<usize, usize>,
-    /// array type offset -> its per-dimension element counts (one entry per
-    /// `DW_TAG_subrange_type` child, in source order). Leaf enumeration uses this
-    /// to size and expand an array; the single-index resolver only handles the
-    /// 1-D case, so multi-dimensional arrays are enumeration-excluded.
+    /// array type offset -> per-dimension element counts (one per
+    /// `DW_TAG_subrange_type` child, source order). The single-index resolver only
+    /// handles 1-D, so multi-dimensional arrays are enumeration-excluded.
     array_dims: HashMap<usize, Vec<u64>>,
     /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
@@ -221,13 +216,11 @@ impl DwarfMap {
     /// each as a path in the resolver's syntax (`var.member[i].field`) so
     /// [`resolve`](Self::resolve) accepts it verbatim.
     ///
-    /// **Exclusion policy.** An array with more than `threshold` elements is
-    /// skipped whole (this naturally drops task stacks, `ucHeap`, and large
-    /// scratch buffers) — *unless* an `include` prefix reaches into it, which
-    /// forces just the reached element(s). Multi-dimensional and unknown-length
-    /// arrays are skipped whole (the single-index resolver only handles 1-D).
-    /// Non-scalar leaves (pointers, functions, opaque aggregates) are skipped and
-    /// counted. A depth / leaf-budget cap guards against pathological DWARF.
+    /// **Exclusion policy.** An array over `threshold` elements is skipped whole
+    /// (drops task stacks, `ucHeap`, large scratch buffers) — unless an `include`
+    /// prefix reaches into it, forcing just the reached element(s). Multi-dimensional
+    /// and unknown-length arrays are skipped whole (resolver is 1-D only). Non-scalar
+    /// leaves (pointers, functions, opaque aggregates) are skipped and counted.
     pub(crate) fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
         let mut ctx = EnumCtx {
             threshold,
