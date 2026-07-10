@@ -55,8 +55,14 @@ done
 
 if [ "$PROFILE" = "release" ]; then
   DLL_DIR="native-fw-release"
-  DLL_FLAVOR="-O3 -flto -g (release)"
-  BUILD_OPT=(--opt -O3 --lto --no-test)   # the SIL suite is the check for the opt DLL
+  # LTO is gated to Windows in native.cmake (Linux/macOS keep -O3 without -flto;
+  # see the CMAKE_HOST_WIN32 gate + docs/sil/backlog.md). Name the flavor by OS so
+  # the perf report is honest about where LTO actually applies.
+  case "$(uname -s)" in
+    Darwin|Linux) DLL_FLAVOR="-O3 -g (release)" ;;
+    *)            DLL_FLAVOR="-O3 -flto -g (release)" ;;
+  esac
+  BUILD_OPT=(--opt -O3 --lto --no-test)   # --lto is a no-op off Windows (cmake gate); the SIL suite is the check for the opt DLL
   CARGO_PROFILE=(--release)
 else
   DLL_DIR="native-fw"

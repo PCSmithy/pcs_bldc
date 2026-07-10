@@ -275,3 +275,11 @@ unchanged). Same suite / method, release Rust, **1 ms sim tick, 429 cvar leaves*
 realtime)**. The voyant-side rows (sweep+flush, model+route) are unchanged work and
 move only with run-to-run variance; the derived Rust cost is untouched by the DLL
 flags. Debug flavor stays `-O0 -g` (430 leaves), all sanity checks PASS.
+
+**LTO is Windows-only (2026-07-10).** The `-flto` half of this flavor applies on
+**Windows (MinGW/GNU) only** — the `native.cmake` `PCS_LTO` flags are gated behind
+`CMAKE_HOST_WIN32`. On Linux the GNU `-flto` ELF `.so` links but emits an **empty
+DWARF map** (gimli reads 0 DIEs → the SIL reader finds no anchor), and macOS `gcc`
+is Apple clang (no `-ffat-lto-objects`/plugin), so both keep `-O3` without LTO.
+The Linux LTO+DWARF investigation is deferred (`backlog.md`); these perf numbers
+are the Windows release flavor.

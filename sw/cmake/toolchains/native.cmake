@@ -52,20 +52,22 @@ add_compile_options(
 # (already PIC) and MinGW (ignored).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(PCS_LTO)
-  # LTO flags are applied ONLY under a GNU driver (MinGW on Windows, gcc on
-  # Linux). -ffat-lto-objects is GCC-specific, and the fat objects it keeps are
-  # what let the SHARED-library link's -Wl,--whole-archive fw_hw and
-  # -Wl,--export-all-symbols still see concrete symbols (the LTO plugin can't
-  # export from bytecode-only objects) and what keep the DWARF-read firmware
-  # statics alive. macOS's `gcc` is Apple clang, which has neither that flag nor
-  # that plugin model, so the guard drops LTO there — the release SIL DLL still
-  # builds at ${PCS_OPT_LEVEL}, just without LTO. Gated via a generator
-  # expression, not if(CMAKE_C_COMPILER_ID ...), because the compiler id is not
-  # yet known when this toolchain file is first read. -flto/-ffat-lto-objects on
-  # compile and -flto on link (LTO needs it in both places); no -ffast-math, so
-  # FP semantics are unchanged. NOTE: verified on MinGW; Linux GCC is expected to
-  # work but only CI on that platform can confirm — non-GNU never sees the flags.
+if(PCS_LTO AND CMAKE_HOST_WIN32)
+  # LTO is gated to Windows (MinGW/GNU) ONLY — the one platform where it is
+  # verified end-to-end (the -O3 -flto -ffat-lto-objects DLL loads and its DWARF
+  # reads clean). Evidence over hope for the other two hosts:
+  #   - Linux (GNU): the -flto ELF .so links, but gimli parses ZERO DIEs from it
+  #     (empty DWARF map -> the SIL reader finds no ASLR anchor / statics). See
+  #     docs/sil/backlog.md ("investigate GCC LTO DWARF emission on ELF").
+  #   - macOS: `gcc` is Apple clang, which has neither -ffat-lto-objects nor the
+  #     GCC LTO plugin model, so the fat-object trick does not apply.
+  # So Linux/macOS release keeps -O3 (no -flto); only Windows adds LTO. The gate
+  # is host-level (CMAKE_HOST_WIN32 is known at toolchain-parse time, and the
+  # native toolchain targets the host); the $<...:GNU> genexp still guards the
+  # flags so a non-GNU driver never sees them. -ffat-lto-objects keeps concrete
+  # machine-code symbols so the SHARED library's -Wl,--whole-archive fw_hw /
+  # -Wl,--export-all-symbols and the DWARF-read statics survive LTO. -flto on
+  # compile and link (LTO needs both); no -ffast-math, so FP semantics unchanged.
   add_compile_options(
     $<$<C_COMPILER_ID:GNU>:-flto>
     $<$<C_COMPILER_ID:GNU>:-ffat-lto-objects>

@@ -52,6 +52,33 @@ comprehensive cross-module SIL tests. No other consumers exist (nothing in
 `sw/sil/` or `sw/fw/` uses `_sim_*` except a mention in
 `sw/fw/src/hw/sim/_placeholder.c`).
 
+## Investigate GCC LTO DWARF emission on ELF (Linux `.so` reads 0 DIEs)
+
+**When:** whenever the Linux SIL flavor wants LTO's ~30% firmware speedup back
+(today it runs `-O3` without `-flto`, so it is only ~30% slower on the firmware
+half of a step — a non-blocking gap).
+
+**What we saw (PR #2, run 3):** the release SIL DLL built with `-O3 -flto
+-ffat-lto-objects -g` links fine on Linux (GNU gcc), the `.so` loads, and its
+250 exports resolve — but gimli parses **0 DWARF variables and 0 DWARF
+functions** from it (`no usable ASLR anchor ... 250 exports, 0 DWARF variables,
+0 DWARF functions`). The identical flags on Windows (MinGW, same GCC major)
+produce a clean DWARF map. So GCC's LTO code-gen is emitting DWARF that gimli
+cannot read on ELF (or emitting none for the merged program), even with
+`-ffat-lto-objects`.
+
+**Interim fix (2026-07-10):** LTO is gated to Windows only (`CMAKE_HOST_WIN32` in
+`sw/cmake/toolchains/native.cmake`); Linux/macOS release keeps `-O3` without
+`-flto`, which reads clean. macOS never had LTO (Apple clang lacks
+`-ffat-lto-objects`).
+
+**To investigate:** whether GCC-on-ELF needs `-ffat-lto-objects` *plus* a
+`-flto`-aware objcopy/debug-link step; whether the fat objects' `.debug_*`
+survive the LTO link or are dropped for the GIMPLE'd units; whether `-flto=auto`
++ `-g3` or `-gdwarf-4` changes what lands in the `.so`; and whether gimli needs
+the fat-object debug sections pointed at explicitly. Compare a `-flto` vs
+non-`-flto` `.so`'s `.debug_info` with `readelf --debug-dump=info`.
+
 ## Future feature: native debugger (VSCode) attached to in-the-loop firmware
 
 **Idea (owner, 2026-07-09):** run voyant with firmware in the loop, connected
