@@ -442,7 +442,7 @@ fn collect_unit(
         match tag {
             gimli::DW_TAG_variable => {
                 if let (Some(name), Some(addr), Some(ty)) =
-                    (die_name(dwarf, unit, entry), die_addr(entry), type_goff(unit, entry))
+                    (die_name(dwarf, unit, entry), die_addr(dwarf, unit, entry), type_goff(unit, entry))
                 {
                     maps.vars.insert(name, (addr, ty));
                 }
@@ -550,17 +550,71 @@ fn die_name(
     Some(s.to_string_lossy().into_owned())
 }
 
-/// Address from a `DW_OP_addr` location expression (the only form statics use).
-fn die_addr(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
+/// Link-time address of a static from its `DW_AT_location` expression.
+///
+/// The location must be a single-address `DW_AT_location` exprloc; anything else
+/// (a frame-relative/register local, a loclist, a composite `DW_OP_piece`) yields
+/// `None`, so only real statics enter the map. The expression is **fully
+/// evaluated** rather than pattern-matched on its first op:
+///
+/// * ELF/PE (GCC) emit one `DW_OP_addr <final-addr>` per static.
+/// * A macOS `.dSYM` (dsymutil) relocates debug-map statics as
+///   `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>` — several statics sharing
+///   one relocation anchor, distinguished only by the trailing offset. Reading
+///   just the leading `DW_OP_addr` collapsed every such static onto the anchor's
+///   address (the Mach-O same-TU collapse this reader now fixes).
+///
+/// Evaluating the whole expression covers both: a lone `DW_OP_addr` still yields
+/// that address (ELF/PE unchanged), while `+ DW_OP_plus_uconst` is honored
+/// (Mach-O correct). `DW_OP_addrx` (DWARF 5 indexed) is resolved via `.debug_addr`.
+fn die_addr(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<u64> {
     match entry.attr_value(gimli::DW_AT_location).ok().flatten()? {
-        gimli::AttributeValue::Exprloc(expr) => {
-            let bytes = expr.0.slice();
-            if bytes.len() >= 9 && bytes[0] == gimli::constants::DW_OP_addr.0 {
-                Some(u64::from_le_bytes(bytes[1..9].try_into().ok()?))
-            } else {
-                None
+        gimli::AttributeValue::Exprloc(expr) => eval_static_addr(dwarf, unit, expr),
+        _ => None,
+    }
+}
+
+/// Evaluate a DWARF location expression to a single absolute address, or `None`
+/// if it is not a plain static address (needs a frame base, a register, memory,
+/// TLS, or resolves to a composite of pieces). Handles `DW_OP_addr`
+/// (`RequiresRelocatedAddress` — resumed unchanged, since our DWARF addresses are
+/// already final) and `DW_OP_addrx` (`RequiresIndexedAddress` — resolved through
+/// `.debug_addr`); arithmetic ops such as `DW_OP_plus_uconst` are applied by the
+/// evaluator itself.
+fn eval_static_addr(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    expr: gimli::Expression<Slice>,
+) -> Option<u64> {
+    let mut eval = expr.evaluation(unit.encoding());
+    let mut result = eval.evaluate().ok()?;
+    loop {
+        match result {
+            gimli::EvaluationResult::Complete => break,
+            // DW_OP_addr: the reader supplies the (already-final) address back.
+            gimli::EvaluationResult::RequiresRelocatedAddress(addr) => {
+                result = eval.resume_with_relocated_address(addr).ok()?;
             }
+            // DW_OP_addrx: pull the address out of `.debug_addr` by index.
+            gimli::EvaluationResult::RequiresIndexedAddress { index, .. } => {
+                let addr = dwarf.address(unit, index).ok()?;
+                result = eval.resume_with_indexed_address(addr).ok()?;
+            }
+            // Anything else (frame base, register, memory, TLS, ...) is not a
+            // static's link address — skip this DIE.
+            _ => return None,
         }
+    }
+    // A static resolves to exactly one whole-object piece at an address.
+    match eval.result().as_slice() {
+        [piece] => match piece.location {
+            gimli::Location::Address { address } => Some(address),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -671,6 +725,44 @@ impl DwarfMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: on macOS a `.dSYM` relocates same-TU file-scope statics as
+    /// `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>`, several sharing one
+    /// anchor. The reader must evaluate the whole expression (not just the leading
+    /// `DW_OP_addr`), else the group collapses onto the anchor's address. The
+    /// fixture is the real arm64 dSYM DWARF from CI (~214 KB, `tests/fixtures/`);
+    /// these five `static uint32_t` counters in `sw/fw/src/main.c` collapsed onto
+    /// two addresses before the fix (four onto `0x14008`, `taskUsbRuns` onto
+    /// `0x14000`). Their true, distinct addresses:
+    fn macho_dsym_static_addresses() -> Vec<(&'static str, u64)> {
+        vec![
+            ("taskUsbRuns", 0x14000),
+            ("task1msRuns", 0x14008),
+            ("task10msRuns", 0x1400c),
+            ("telemRuns", 0x14010),
+            ("task200msRuns", 0x14014),
+        ]
+    }
+
+    #[test]
+    fn macho_dsym_same_tu_statics_do_not_collapse() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/macho_static_collapse.dSYM.dwarf");
+        let bytes = std::fs::read(&path).expect("read dSYM DWARF fixture");
+        let map = DwarfMap::parse(&bytes).expect("parse dSYM DWARF");
+
+        let expected = macho_dsym_static_addresses();
+        // Each collapsing static resolves to its own true address (the
+        // DW_OP_plus_uconst addend applied, not dropped).
+        for (name, addr) in &expected {
+            assert_eq!(map.var_addr(name), Some(*addr), "{name} address");
+        }
+        // And no two of them alias — the collapse would violate this.
+        let mut addrs: Vec<u64> = expected.iter().map(|(_, a)| *a).collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        assert_eq!(addrs.len(), expected.len(), "static addresses must be distinct");
+    }
 
     #[test]
     fn func_addr_looks_up_subprogram_low_pc() {
