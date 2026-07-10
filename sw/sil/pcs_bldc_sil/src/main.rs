@@ -242,6 +242,21 @@ fn diag_per_tick_table(fw: &Firmware) {
 
     println!("\n-- DIAG: per-tick firmware scheduling table (PCS_SIL_DIAG=1) --");
     println!("         DLL flavor: {}", std::env::var("PCS_SIL_DLL_FLAVOR").unwrap_or_else(|_| "unknown".into()));
+
+    // Resolved runtime addresses of the statics the table reads. If two distinct
+    // statics collapse to one address here, their reads alias — a per-variable
+    // DWARF-resolution fault (suspected for file-scope `static`s on Mach-O),
+    // NOT a firmware/scheduling bug. `dbg_t10_*` are non-`static` (external
+    // linkage) controls; the counters are file-scope `static`.
+    println!("         resolved addresses (watch for collisions):");
+    for p in [
+        "xTickCount", "task1msRuns", "task10msRuns", "telemRuns",
+        "task200msRuns", "taskUsbRuns", "dbg_t10_lwIn", "dbg_t10_lwOut", "dbg_t10_tick",
+    ] {
+        let a = fw.resolve_addr(p).map(|a| format!("{a:#018x}")).unwrap_or_else(|| "n/a".into());
+        println!("           {p:<16} {a}");
+    }
+
     // t10.* are white-box probes captured inside task_10ms's delay cycle (main.c):
     // lwIn = lastWake entering vTaskDelayUntil, lwOut = lastWake it wrote back
     // (should be lwIn+10), tick = the tick task_10ms actually resumed on (should

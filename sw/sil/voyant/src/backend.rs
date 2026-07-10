@@ -409,6 +409,17 @@ impl Firmware {
         (link.wrapping_add(self.slide) as *mut u8, leaf)
     }
 
+    /// Resolve a cvar path to its runtime address (DWARF link address + ASLR
+    /// slide), or `None` if the path is not in DWARF. Diagnostic aid: exposes
+    /// the resolved address so a caller can detect when two *distinct* statics
+    /// collapse to the *same* address — a per-variable DWARF-resolution fault
+    /// (observed for file-scope `static`s on Mach-O). Does not read memory.
+    pub fn resolve_addr(&self, path: &str) -> Option<usize> {
+        self.dwarf
+            .resolve(path)
+            .map(|(link, _)| link.wrapping_add(self.slide) as usize)
+    }
+
     // --- white-box lifecycle + cvar access (the public firmware handle) -----
     //
     // These are the operations a driver reaches for while holding `&Firmware`
