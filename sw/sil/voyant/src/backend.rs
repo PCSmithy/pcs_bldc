@@ -678,16 +678,29 @@ fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<(String, AnchorKind),
 /// testable without a real object image: try every export against DWARF variables
 /// first, then (only if none matched) against DWARF functions. Returns the chosen
 /// symbol name + which DWARF map holds its link address.
+///
+/// **Name normalization:** each export name is matched directly, then with ONE
+/// leading underscore stripped. Mach-O decorates every C symbol with a leading
+/// underscore in the export table (`_sil_fw_start`) while DWARF holds the source
+/// name (`sil_fw_start`), so a direct match can never happen there. Unconditional
+/// (not cfg-gated): a stripped-name match is unambiguous and harmless on PE/ELF,
+/// whose C exports are undecorated. On a stripped match the returned name is the
+/// **stripped (DWARF) name** — also the correct name for the runtime lookup,
+/// because `dlsym` on macOS takes the undecorated name and adds the underscore
+/// itself.
 fn select_anchor<'a>(
     export_names: impl Iterator<Item = &'a str> + Clone,
     dwarf: &DwarfMap,
 ) -> Option<(String, AnchorKind)> {
-    for name in export_names.clone() {
+    // The candidate DWARF names one export offers: itself, then (if decorated)
+    // the Mach-O underscore-stripped form.
+    let candidates = |name: &'a str| [Some(name), name.strip_prefix('_')].into_iter().flatten();
+    for name in export_names.clone().flat_map(candidates) {
         if dwarf.var_addr(name).is_some() {
             return Some((name.to_string(), AnchorKind::Var));
         }
     }
-    for name in export_names {
+    for name in export_names.flat_map(candidates) {
         if dwarf.func_addr(name).is_some() {
             return Some((name.to_string(), AnchorKind::Func));
         }
@@ -1530,6 +1543,35 @@ mod tests {
         // count-carrying diagnostic error).
         let dw = DwarfMap::for_anchor_test(&[], &[]);
         assert!(select_anchor(exports.iter().copied(), &dw).is_none());
+    }
+
+    #[test]
+    fn anchor_strips_macho_leading_underscore() {
+        // Mach-O export tables decorate C symbols with a leading underscore
+        // (`_g_var`, `_sil_fw_start`) while DWARF holds the source names, so only
+        // the stripped form can match. The returned name must be the STRIPPED
+        // (DWARF) name — dlsym on macOS expects the undecorated name.
+        let exports = ["_sil_fw_start", "_g_var"];
+
+        // Variable strategy through the stripped form.
+        let dw = DwarfMap::for_anchor_test(&[("g_var", 0x100)], &[("sil_fw_start", 0x200)]);
+        let (name, kind) = select_anchor(exports.iter().copied(), &dw).unwrap();
+        assert_eq!(name, "g_var");
+        assert_eq!(kind, AnchorKind::Var);
+
+        // Function fallback through the stripped form (the macOS failure mode:
+        // no exported name matches a DWARF variable even after stripping).
+        let dw = DwarfMap::for_anchor_test(&[], &[("sil_fw_start", 0x200)]);
+        let (name, kind) = select_anchor(exports.iter().copied(), &dw).unwrap();
+        assert_eq!(name, "sil_fw_start");
+        assert_eq!(kind, AnchorKind::Func);
+
+        // A direct (undecorated) match still wins as before — stripping is an
+        // additional candidate, not a replacement.
+        let dw = DwarfMap::for_anchor_test(&[("_g_var", 0x100)], &[]);
+        let (name, kind) = select_anchor(exports.iter().copied(), &dw).unwrap();
+        assert_eq!(name, "_g_var");
+        assert_eq!(kind, AnchorKind::Var);
     }
 
     #[test]
