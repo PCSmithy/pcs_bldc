@@ -97,6 +97,7 @@
 
 use crate::signal::{SignalId, Value};
 use crate::state_table::{StateTable, TableError};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use thiserror::Error;
 
@@ -113,6 +114,24 @@ struct Route {
     dst: SignalId,
     latency: u32,
     enabled: bool,
+    /// Cached dense State Table indices of `src` / `dst` (Tier-2 fast lane).
+    /// Resolved lazily on first propagation after the endpoints register and
+    /// memoized — within **one** table indices are append-only and never change, so
+    /// a cached `Some` can never go stale *for that table*; an unresolved endpoint
+    /// stays `None` and retries (preserving the unregistered-endpoint error). The
+    /// cell is per-route, so removing a route drops its cache and a fresh route
+    /// starts unresolved.
+    ///
+    /// The append-only invariant holds only per-table: a cached index is meaningful
+    /// solely against the `StateTable` it was resolved from. `propagate*` is public
+    /// and takes any `&mut StateTable`, so a `RouteTable` propagated against a second
+    /// table would apply table-A indices to table-B signals — a silent wrong-signal
+    /// read/write. On every cache **hit** [`resolve_endpoint`] therefore verifies the
+    /// index still names the expected endpoint in the passed table (one indexed
+    /// [`StateTable::id_at`] equality per endpoint) and fails loud with
+    /// [`RouteError::TableMismatch`] on a mismatch.
+    src_idx: Cell<Option<usize>>,
+    dst_idx: Cell<Option<usize>>,
 }
 
 /// Errors from route authoring, validation, and propagation.
@@ -130,8 +149,42 @@ pub enum RouteError {
     Cycle { dst: SignalId },
     #[error("route {src} -> {dst} needs latency (feedback/backward edge) or reorder members")]
     BackwardRoute { src: SignalId, dst: SignalId },
+    #[error("route endpoint {signal}: cached index does not match this StateTable — one RouteTable must not be propagated against different tables")]
+    TableMismatch { signal: SignalId },
     #[error("route endpoint: {0}")]
     Table(#[from] TableError),
+}
+
+/// Resolve a route endpoint to its dense State Table index, memoizing the result
+/// in `cell`. Within one table indices are append-only (never reused), so a cached
+/// `Some` stays valid *for that table*; an unregistered endpoint yields
+/// [`TableError::UnknownSignal`] (matching the old `current_value` existence check)
+/// and is retried next call.
+///
+/// On a cache **hit** the memoized index is verified against `st`: because
+/// `propagate*` accepts any table, a cache filled from table A would otherwise
+/// silently apply A's indices to B's signals. If the index no longer names `id` in
+/// `st` (a different table, or one too small for the index), this fails loud with
+/// [`RouteError::TableMismatch`] rather than reading/writing the wrong signal.
+fn resolve_endpoint(
+    cell: &Cell<Option<usize>>,
+    st: &StateTable,
+    id: &SignalId,
+) -> Result<usize, RouteError> {
+    if let Some(i) = cell.get() {
+        // Guard: the cached index must still name THIS endpoint in THIS table.
+        return match st.id_at(i) {
+            Some(actual) if actual == id => Ok(i),
+            _ => Err(RouteError::TableMismatch { signal: id.clone() }),
+        };
+    }
+    match st.resolve_index(id) {
+        Some(i) => {
+            cell.set(Some(i));
+            Ok(i)
+        }
+        None => Err(RouteError::Table(TableError::UnknownSignal(id.clone()))),
+    }
 }
 
 /// A flat list of routes. Pure data + explicit [`validate`](Self::validate) /
@@ -180,6 +233,8 @@ impl RouteTable {
             dst,
             latency,
             enabled: true,
+            src_idx: Cell::new(None),
+            dst_idx: Cell::new(None),
         });
         Ok(())
     }
@@ -231,16 +286,16 @@ impl RouteTable {
     /// source has nothing to copy and is silently skipped; a pinned destination
     /// absorbs the record as a no-op.
     pub fn propagate_delayed(&self, st: &mut StateTable) -> Result<(), RouteError> {
-        let mut pending: Vec<(&SignalId, Value)> = Vec::new();
+        let mut pending: Vec<(usize, Value)> = Vec::new();
         for route in self.routes.iter().filter(|r| r.enabled && (r.latency > 0)) {
-            let value = st.current_value(&route.src)?.cloned(); // source registered?
-            st.current_value(&route.dst)?; // destination registered? (value unused)
-            if let Some(v) = value {
-                pending.push((&route.dst, v));
+            let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
+            let didx = resolve_endpoint(&route.dst_idx, st, &route.dst)?; // destination registered?
+            if let Some(v) = st.current_value_at(sidx).cloned() {
+                pending.push((didx, v));
             }
         }
-        for (dst, value) in pending {
-            st.record(dst, value)?;
+        for (didx, value) in pending {
+            st.record_at(didx, value);
         }
         Ok(())
     }
@@ -263,10 +318,10 @@ impl RouteTable {
     ) -> Result<(), RouteError> {
         for &ri in order {
             let route = &self.routes[ri];
-            let value = st.current_value(&route.src)?.cloned(); // source registered?
-            st.current_value(&route.dst)?; // destination registered?
-            if let Some(v) = value {
-                st.record(&route.dst, v)?;
+            let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
+            let didx = resolve_endpoint(&route.dst_idx, st, &route.dst)?; // destination registered?
+            if let Some(v) = st.current_value_at(sidx).cloned() {
+                st.record_at(didx, v);
             }
         }
         Ok(())
@@ -792,5 +847,87 @@ mod tests {
             rt.propagate_zero_latency(&mut st, &order).unwrap();
             assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::F64(tick as f64)));
         }
+    }
+
+    #[test]
+    fn propagating_against_a_second_table_fails_loud_and_writes_nothing() {
+        // Table A: src@0, dst@1. Propagate once so the route memoizes those indices.
+        let mut a = StateTable::new();
+        let src = register_cvar(&mut a, "src", Value::U32(7));
+        let dst = cvar("dst");
+        register_dst(&mut a, &dst);
+        let mut rt = RouteTable::new();
+        rt.add(src.clone(), dst.clone()).unwrap();
+        let order = plan(&rt);
+        a.set_time(1_000);
+        rt.propagate_zero_latency(&mut a, &order).unwrap();
+        assert_eq!(a.current_value(&dst).unwrap(), Some(&Value::U32(7)));
+
+        // Table B: the SAME dense indices (0, 1) map to DIFFERENT signals. The
+        // route's cached idx 0/1 now name B's signals, not its own endpoints —
+        // exactly the misuse: one RouteTable propagated against two tables.
+        let mut b = StateTable::new();
+        let b0 = register_cvar(&mut b, "other0", Value::U32(100));
+        let b1 = register_cvar(&mut b, "other1", Value::U32(200));
+
+        // Must fail loud on the index-cache mismatch, not silently write B[0]/B[1].
+        b.set_time(2_000);
+        assert!(matches!(
+            rt.propagate_zero_latency(&mut b, &order),
+            Err(RouteError::TableMismatch { .. })
+        ));
+        // B is untouched: values unchanged and no new historian sample recorded.
+        assert_eq!(b.current_value(&b0).unwrap(), Some(&Value::U32(100)));
+        assert_eq!(b.current_value(&b1).unwrap(), Some(&Value::U32(200)));
+        assert_eq!(b.changes(&b0).unwrap().len(), 1);
+        assert_eq!(b.changes(&b1).unwrap().len(), 1);
+
+        // The delayed path shares the same guard (resolve_endpoint): a delayed
+        // route caches against A, then the same misuse against B fails loud too.
+        let mut a2 = StateTable::new();
+        let dsrc = register_cvar(&mut a2, "dsrc", Value::U32(3));
+        let ddst = cvar("ddst");
+        register_dst(&mut a2, &ddst);
+        let mut drt = RouteTable::new();
+        drt.add_with_latency(dsrc.clone(), ddst.clone(), 1).unwrap();
+        a2.set_time(1_000);
+        drt.propagate_delayed(&mut a2).unwrap(); // memoize dsrc@0, ddst@1
+
+        let mut b2 = StateTable::new();
+        let c0 = register_cvar(&mut b2, "z0", Value::U32(1));
+        let c1 = register_cvar(&mut b2, "z1", Value::U32(2));
+        b2.set_time(2_000);
+        assert!(matches!(
+            drt.propagate_delayed(&mut b2),
+            Err(RouteError::TableMismatch { .. })
+        ));
+        assert_eq!(b2.changes(&c0).unwrap().len(), 1);
+        assert_eq!(b2.changes(&c1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cached_indices_survive_later_registrations_on_the_same_table() {
+        // The benign case the guard must NOT break: indices are append-only within
+        // a table, so registering more signals after caching leaves cached routes
+        // resolving to the right endpoints.
+        let mut st = StateTable::new();
+        let src = register_cvar(&mut st, "src", Value::U32(1));
+        let dst = cvar("dst");
+        register_dst(&mut st, &dst);
+        let mut rt = RouteTable::new();
+        rt.add(src.clone(), dst.clone()).unwrap();
+        let order = plan(&rt);
+
+        st.set_time(1_000);
+        rt.propagate_zero_latency(&mut st, &order).unwrap(); // caches src@0, dst@1
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
+
+        // Grow the table AFTER caching; the cached indices stay valid.
+        register_cvar(&mut st, "later0", Value::U32(50));
+        register_cvar(&mut st, "later1", Value::U32(60));
+        st.set_time(2_000);
+        st.force_record(&src, Value::U32(2)).unwrap();
+        rt.propagate_zero_latency(&mut st, &order).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(2)));
     }
 }

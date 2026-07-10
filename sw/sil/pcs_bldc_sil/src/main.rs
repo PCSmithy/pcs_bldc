@@ -170,9 +170,9 @@ fn main() -> ExitCode {
     println!("\n-- 9. cvar mirror accuracy (auto-derived, no declaration) --");
     check_mirror_accuracy(&fw, &mut rep);
 
-    // --- Sweep-cost measurement (informational) -----------------------------
-    println!("\n-- sweep cost (whole-namespace mirror) --");
-    measure_sweep_cost(&fw);
+    // --- Performance report (phase-isolated, informational) -----------------
+    println!("\n-- performance report (phase-isolated, informational) --");
+    report_performance(&fw);
 
     // --- Check 10: shutdown -------------------------------------------------
     println!("\n-- 10. shutdown --");
@@ -836,27 +836,111 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
-/// Measure the per-tick cost of the whole-namespace mirror sweep and report the
-/// registered-leaf count + µs/advance-tick. `std::time` is fine here — this is
-/// driver code, not sim-deterministic state (voyant core stays wall-clock-free).
-fn measure_sweep_cost(fw: &Firmware) {
-    let mut st = StateTable::new();
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    fwm.set_enabled(true, &mut st); // enumerate + register the whole namespace
-    let leaves = fwm.cvar_leaf_count();
+/// Phase-isolated performance report (informational — **not** pass/fail). Times
+/// three phases, each averaged over `N` ticks after a warm-up, and prints
+/// µs/tick + implied ×realtime for the full step. `std::time` is fine here —
+/// this is driver code, not sim-deterministic state (voyant core stays
+/// wall-clock-free). The phases isolate where the per-tick cost lives:
+///
+///   1. **firmware `advance_tick()` alone** — a raw loop, no engine machinery.
+///   2. **full engine `step()`** — the standard suite wiring (a model + a
+///      `FirmwareMember` mirroring the whole cvar namespace + a route).
+///   3. **empty engine `step()`** — no members, no routes: the engine's own floor.
+///   4. **derived** (`full - firmware`) ≈ sweep + flush + ports + routes + table
+///      cost — *derived*, not measured directly.
+///
+/// The report names which Rust profile built the driver (`cfg!(debug_assertions)`)
+/// and which optimization built the DLL (`PCS_SIL_DLL_FLAVOR`, set by run_sil.sh),
+/// so a copied-out table is self-describing.
+fn report_performance(fw: &Firmware) {
+    const WARMUP: u64 = 100;
+    const N: u64 = 1000;
 
-    const N: u64 = 200;
-    let start = Instant::now();
-    for i in 1..=N {
-        st.set_time(i * TICK_US);
-        fwm.advance(TICK_US, &mut st);
+    // Registered-leaf count: enable a throwaway member on a scratch table.
+    let leaves = {
+        let mut st = StateTable::new();
+        let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+        fwm.set_enabled(true, &mut st);
+        fwm.cvar_leaf_count()
+    };
+
+    // (1) Firmware tick alone — raw advance_tick loop, no engine machinery.
+    let fw_us = time_avg_us(WARMUP, N, || fw.advance_tick());
+
+    // (2) Full engine step — the standard suite wiring: a model drives a firmware
+    //     input cvar through a route while the FirmwareMember mirrors the whole
+    //     namespace each tick (mirrors check_route_table).
+    let full_us = {
+        const STEP: u32 = 25; // stays within the u8 destination byte
+        let src = vsig_id("sensor", "counts").expect("valid vsig id");
+        let dst = SignalId::new("cvar", SOURCE, "HW_SPI_data.channels[0].injectedRx[0]", None)
+            .expect("valid cvar id");
+        let mut eng = Engine::new(TICK_US);
+        eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
+        let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+        fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
+        eng.add_member(Box::new(fwm));
+        eng.add_route(src, dst).expect("add route");
+        time_avg_us(WARMUP, N, || {
+            eng.step().expect("engine step");
+        })
+    };
+
+    // (3) Firmware-member-only step — a lone FirmwareMember mirroring the whole
+    //     namespace (no model, no route): isolates the Tier-1 shadow sweep + sparse
+    //     flush from the model/route overhead the full step adds.
+    let sweep_us = {
+        let mut eng = Engine::new(TICK_US);
+        eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+        time_avg_us(WARMUP, N, || {
+            eng.step().expect("engine step");
+        })
+    };
+
+    // (4) Empty engine floor — no members, no routes: the engine's own per-step cost.
+    let floor_us = {
+        let mut eng = Engine::new(TICK_US);
+        time_avg_us(WARMUP, N, || {
+            eng.step().expect("engine step");
+        })
+    };
+
+    // (5) Derived — everything the full step adds over a bare firmware tick.
+    let derived_us = full_us - fw_us;
+    // Sweep-only cost over a bare firmware tick, and what model+route add on top.
+    let sweep_over_fw_us = sweep_us - fw_us;
+    let model_route_us = full_us - sweep_us;
+
+    let rust_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let dll_flavor = std::env::var("PCS_SIL_DLL_FLAVOR")
+        .unwrap_or_else(|_| "unknown (build via tools/run_sil.sh)".into());
+    // ×realtime = sim-time-per-tick / wall-time-per-tick = TICK_US / (µs/tick).
+    let xrt = |us: f64| (TICK_US as f64) / us;
+
+    println!("         Rust profile: {rust_profile}    firmware DLL: {dll_flavor}");
+    println!("         {leaves} cvar leaves mirrored/tick    (sim tick = {TICK_US} µs, avg over {N} ticks)");
+    println!("         phase                              µs/tick   ×realtime");
+    println!("         firmware advance_tick alone        {fw_us:>7.2}   {:>6.1}×", xrt(fw_us));
+    println!("         full engine step (measured)        {full_us:>7.2}   {:>6.1}×", xrt(full_us));
+    println!("         firmware-member step (sweep+flush) {sweep_us:>7.2}   {:>6.1}×", xrt(sweep_us));
+    println!("         empty engine step (floor)          {floor_us:>7.2}");
+    println!("         derived: full - firmware           {derived_us:>7.2}   (sweep+flush+ports+routes+table)");
+    println!("           of which shadow sweep+flush      {sweep_over_fw_us:>7.2}   (member step - firmware)");
+    println!("           of which model+route+propagate   {model_route_us:>7.2}   (full step - member step)");
+}
+
+/// Warm up `body` for `warmup` iterations, then time `n` more and return the
+/// mean wall-clock µs per iteration. Driver-side only (voyant core is
+/// wall-clock-free).
+fn time_avg_us(warmup: u64, n: u64, mut body: impl FnMut()) -> f64 {
+    for _ in 0..warmup {
+        body();
     }
-    let per_tick_us = (start.elapsed().as_nanos() as f64) / (N as f64) / 1000.0;
-    println!(
-        "         {leaves} cvar leaves swept/tick; {per_tick_us:.2} µs/advance-tick over {N} ticks\n\
-         \x20        (includes the firmware advance_tick; the sweep is the trace-everything workload\n\
-         \x20         performance.md Lever 4's dirty-page scan optimizes)"
-    );
+    let start = Instant::now();
+    for _ in 0..n {
+        body();
+    }
+    (start.elapsed().as_nanos() as f64) / (n as f64) / 1000.0
 }
 
 /// Read the sim USB TX capture buffer (txLen + tx[] bytes) by DWARF and decode

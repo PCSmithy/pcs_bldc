@@ -77,6 +77,37 @@ pub(crate) trait Backend {
         unreachable!("backend produced no cvar handles but was asked to read one")
     }
 
+    /// The **memory layout** of a resolved leaf: its runtime address and byte
+    /// size. Used by the [`FirmwareMember`]'s Tier-1 shadow sweep to group leaves
+    /// into contiguous memory ranges and `memcmp` them against a shadow buffer.
+    /// Only called with a handle this backend produced; the default is unreachable
+    /// (a backend that yields no handles yields no layouts either — it falls back
+    /// to the per-leaf string-path sweep).
+    fn cvar_layout(&self, handle: CvarHandle) -> (u64, usize) {
+        let _ = handle;
+        unreachable!("backend produced no cvar handles but was asked for a layout")
+    }
+
+    /// Whether `shadow.len()` bytes of **live** firmware memory at `addr` equal
+    /// `shadow` — the shadow sweep's per-range fast path (no copy: most ranges are
+    /// unchanged each tick, so a bare `memcmp` avoids the bulk read entirely). Same
+    /// address discipline / safety as [`read_range`](Self::read_range).
+    fn range_eq(&self, addr: u64, shadow: &[u8]) -> bool {
+        let _ = (addr, shadow);
+        unreachable!("backend produced no cvar layouts but was asked to compare a range")
+    }
+
+    /// Copy `buf.len()` bytes of **live** firmware memory starting at `addr` into
+    /// `buf` — the shadow sweep's bulk read (only for a range that changed).
+    /// `addr`/`len` derive strictly from resolved leaf layouts
+    /// ([`cvar_layout`](Self::cvar_layout)), so the range lies within real firmware
+    /// statics (see the `FirmwareMember` safety note). Default is unreachable (only
+    /// backends yielding layouts get called).
+    fn read_range(&self, addr: u64, buf: &mut [u8]) {
+        let _ = (addr, buf);
+        unreachable!("backend produced no cvar layouts but was asked to read a range")
+    }
+
     // --- ports (the C→Rust runtime registration seam) ----------------------
     //
     // Firmware members expose **ports**: signals their sim HW drivers register
@@ -433,6 +464,16 @@ impl Firmware {
         }
     }
 
+    /// The byte size of a resolved [`Leaf`] — a scalar's fixed width, or an enum's
+    /// DWARF `byte_size`. Backs [`cvar_layout`](Backend::cvar_layout) so the shadow
+    /// sweep can size each leaf's footprint in memory.
+    fn leaf_size(&self, leaf: Leaf) -> usize {
+        match leaf {
+            Leaf::Scalar(kind) => scalar_byte_size(kind),
+            Leaf::Enum(off) => self.dwarf.enum_size(off).unwrap() as usize,
+        }
+    }
+
     /// Enumerate traceable `cvar` leaves (via [`DwarfMap::enumerate_leaves`]) and
     /// resolve each to a cached [`CvarHandle`] (runtime addr + leaf type) so the
     /// per-tick mirror sweep never re-resolves DWARF. A leaf the enumerator emitted
@@ -523,6 +564,33 @@ impl Backend for Firmware {
     fn read_cvar_resolved(&self, handle: CvarHandle) -> Value {
         let (p, leaf) = self.cvar_cache.borrow()[handle.0];
         self.read_leaf(p, leaf)
+    }
+
+    fn cvar_layout(&self, handle: CvarHandle) -> (u64, usize) {
+        let (p, leaf) = self.cvar_cache.borrow()[handle.0];
+        (p as u64, self.leaf_size(leaf))
+    }
+
+    fn range_eq(&self, addr: u64, shadow: &[u8]) -> bool {
+        // SAFETY: see `read_range` — the span lies within loaded firmware statics
+        // and the firmware is quiescent. We form a shared `&[u8]` over initialized
+        // bytes we never mutate and only compare it.
+        let live = unsafe { std::slice::from_raw_parts(addr as *const u8, shadow.len()) };
+        live == shadow
+    }
+
+    fn read_range(&self, addr: u64, buf: &mut [u8]) {
+        // SAFETY: `addr..addr+buf.len()` lies inside the firmware's own
+        // `.data`/`.bss`: the range spans from the lowest to the highest resolved
+        // leaf address in a contiguity group (leaves are real statics at
+        // DWARF-resolved runtime addresses), merged only across small gaps, so
+        // every byte — including inter-static padding in a gap — is backed by the
+        // loaded image and readable. The firmware is quiescent (single-threaded;
+        // no firmware code runs during out-sync), and the read is a plain byte copy
+        // (no aliasing of a typed reference).
+        unsafe {
+            std::ptr::copy_nonoverlapping(addr as *const u8, buf.as_mut_ptr(), buf.len());
+        }
     }
 
     fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
@@ -630,8 +698,31 @@ pub struct FirmwareMember<'b> {
     /// The resolved cvar leaf list swept memory→table each tick: `(id, read
     /// token)`. Enumerated + cached once at enable (the whole traceable namespace
     /// minus excludes), so the sweep never re-resolves DWARF. The id's `name`
-    /// segment is the DWARF path.
+    /// segment is the DWARF path. This is the canonical id list (re-registered on
+    /// re-enable); the Tier-1 sweep structures below are derived from it.
     cvar_leaves: Vec<(SignalId, CvarRead)>,
+    /// **Tier-1 shadow sweep** — resolved (fast-read) leaves, sorted by address,
+    /// grouped into `ranges`. The per-tick out-sync `memcmp`s live memory against
+    /// each range's shadow and re-decodes only the leaves in changed chunks, making
+    /// the sweep O(changed bytes) instead of O(leaves).
+    resolved: Vec<SweptLeaf>,
+    /// Contiguous memory ranges over [`resolved`](Self::resolved), each with its own
+    /// shadow buffer + chunk→leaf map.
+    ranges: Vec<ShadowRange>,
+    /// Reusable scratch buffer (sized to the largest range) the sweep reads live
+    /// memory into before comparing — avoids a per-tick allocation.
+    scratch: Vec<u8>,
+    /// Per-`resolved`-leaf "decoded this sweep" stamp (deduping a leaf that spans
+    /// two changed chunks), compared against [`sweep_gen`](Self::sweep_gen).
+    visit_stamp: Vec<u32>,
+    /// Monotonic sweep counter stamped into [`visit_stamp`](Self::visit_stamp).
+    sweep_gen: u32,
+    /// First sweep after (re)enable treats the whole shadow as changed (cold), so
+    /// the table gets a full baseline.
+    shadow_cold: bool,
+    /// Leaves read via the **string path** (a backend that yields no fast-read
+    /// handles, e.g. a test mock) — swept one-by-one, outside the shadow machinery.
+    path_leaves: Vec<PathLeaf>,
     /// Whether [`cvar_leaves`](Self::cvar_leaves) has been enumerated (guards the
     /// one-time enumeration across re-enables — re-enable only re-registers).
     leaves_cached: bool,
@@ -644,11 +735,53 @@ pub struct FirmwareMember<'b> {
     /// Force-includes: paths/prefixes pulled in despite the array threshold. See
     /// [`include`](Self::include).
     includes: Vec<String>,
-    /// Ports this member has applied to the table: `(handle, id)`, in
-    /// registration order (deterministic iteration).
-    ports: Vec<(i32, SignalId)>,
+    /// Ports this member has applied to the table, in registration order
+    /// (deterministic iteration).
+    ports: Vec<PortBinding>,
     /// How many of the backend's port defs this member has consumed.
     port_cursor: usize,
+}
+
+/// One resolved cvar leaf carried by the Tier-1 shadow sweep: where it lives in
+/// firmware memory, how to read it, and where it records into the table.
+struct SweptLeaf {
+    /// Dense State Table index (resolved once at registration — no per-tick hash).
+    table_idx: usize,
+    /// Backend fast-read token (decodes the leaf's value).
+    handle: CvarHandle,
+    /// Runtime address (for range grouping / chunk mapping).
+    addr: u64,
+    /// Byte size in memory.
+    size: usize,
+}
+
+/// A contiguous span of firmware memory covering one or more resolved leaves,
+/// mirrored by a `shadow` byte buffer. Each tick the sweep `memcmp`s live memory
+/// against `shadow`; every changed [`SHADOW_CHUNK`]-byte chunk re-decodes exactly
+/// the leaves overlapping it.
+struct ShadowRange {
+    /// Runtime address of the first byte the shadow mirrors.
+    base: u64,
+    /// The last-seen bytes of `[base, base+shadow.len())` — mirrors MEMORY, not the
+    /// table (updated even where the table dedups or a pin ignores the record).
+    shadow: Vec<u8>,
+    /// Per chunk, the `resolved`-indices of leaves overlapping that chunk (a leaf
+    /// straddling a chunk edge appears in every chunk it touches).
+    chunk_leaves: Vec<Vec<usize>>,
+}
+
+/// A cvar leaf swept via the string-path fallback (no fast-read handle).
+struct PathLeaf {
+    table_idx: usize,
+    path: String,
+}
+
+/// One port a firmware member has applied to the table.
+struct PortBinding {
+    /// C-side handle (index into the backend's port state).
+    handle: i32,
+    /// Dense State Table index (resolved once — no per-tick hash on the cache fill).
+    table_idx: usize,
 }
 
 /// How a swept cvar leaf is read each tick: a pre-resolved backend fast-read
@@ -658,6 +791,17 @@ enum CvarRead {
     Resolved(CvarHandle),
     Path(String),
 }
+
+/// Tier-1 shadow-sweep chunk size (bytes). A range's shadow is compared against
+/// live memory one chunk at a time to localize which leaves changed; 64 B matches
+/// a cache line and keeps each range's chunk→leaf map small.
+const SHADOW_CHUNK: usize = 64;
+/// Max gap (bytes) between two consecutive resolved leaves still merged into one
+/// contiguous shadow range. Small enough that the large unmirrored buffers sitting
+/// between statics break the chain (so a range never spans them), large enough that
+/// a struct's traced fields — separated only by padding or untraced members — share
+/// one range.
+const SHADOW_MERGE_GAP: u64 = 64;
 
 /// Default array-element-count exclusion threshold (owner default): any array
 /// with more than this many elements is excluded whole from the cvar mirror. This
@@ -686,6 +830,13 @@ impl<'b> FirmwareMember<'b> {
             tick_period_us,
             accum_us: 0,
             cvar_leaves: Vec::new(),
+            resolved: Vec::new(),
+            ranges: Vec::new(),
+            scratch: Vec::new(),
+            visit_stamp: Vec::new(),
+            sweep_gen: 0,
+            shadow_cold: true,
+            path_leaves: Vec::new(),
             leaves_cached: false,
             array_threshold: DEFAULT_ARRAY_THRESHOLD,
             excludes: Vec::new(),
@@ -736,7 +887,15 @@ impl<'b> FirmwareMember<'b> {
         for def in defs {
             match SignalId::new(&def.sig_type, &self.name, &def.local, None) {
                 Ok(id) => match st.register(id.clone(), def.unit.as_deref()) {
-                    Ok(()) => self.ports.push((def.handle, id)),
+                    Ok(()) => {
+                        // Resolve the dense table index once, so the per-tick input
+                        // cache fill never hashes the id.
+                        let table_idx = st.resolve_index(&id).expect("just registered");
+                        self.ports.push(PortBinding {
+                            handle: def.handle,
+                            table_idx,
+                        });
+                    }
                     Err(e) => st.log(
                         LogLevel::Warning,
                         &self.name,
@@ -764,9 +923,9 @@ impl<'b> FirmwareMember<'b> {
     /// fill, so both live in this one half.
     fn in_sync_ports(&mut self, st: &mut StateTable) {
         self.apply_pending_ports(st);
-        for (handle, id) in &self.ports {
-            let v = st.current_value(id).ok().flatten().and_then(value_to_f64);
-            self.backend.set_port_input(*handle, v);
+        for port in &self.ports {
+            let v = st.current_value_at(port.table_idx).and_then(value_to_f64);
+            self.backend.set_port_input(port.handle, v);
         }
     }
 
@@ -793,13 +952,18 @@ impl<'b> FirmwareMember<'b> {
             }
         }
         for id in flush {
-            match st.current_value(&id) {
-                Ok(Some(v)) => self.backend.write_cvar(id.name(), v),
-                Ok(None) => {}
-                Err(e) => st.log(
+            // The flush set is sparse (command-dirtied + pinned), so resolving each
+            // id's index here is cheap; `current_value_at` then avoids re-hashing.
+            match st.resolve_index(&id) {
+                Some(idx) => {
+                    if let Some(v) = st.current_value_at(idx) {
+                        self.backend.write_cvar(id.name(), v);
+                    }
+                }
+                None => st.log(
                     LogLevel::Warning,
                     &self.name,
-                    format!("cvar flush {id} failed: {e}"),
+                    format!("cvar flush {id} failed: unknown signal"),
                 ),
             }
         }
@@ -810,16 +974,8 @@ impl<'b> FirmwareMember<'b> {
     /// this member never applied is dropped with a Warning.
     fn out_sync_ports(&mut self, st: &mut StateTable) {
         for (handle, value) in self.backend.drain_port_writes() {
-            match self.ports.iter().find(|(h, _)| *h == handle) {
-                Some((_, id)) => {
-                    if let Err(e) = st.record(id, Value::F64(value)) {
-                        st.log(
-                            LogLevel::Warning,
-                            &self.name,
-                            format!("port write record {id} failed: {e}"),
-                        );
-                    }
-                }
+            match self.ports.iter().find(|p| p.handle == handle) {
+                Some(port) => st.record_at(port.table_idx, Value::F64(value)),
                 None => st.log(
                     LogLevel::Warning,
                     &self.name,
@@ -829,26 +985,77 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
-    /// Cvar out-sync (sweep): read **every** cached cvar leaf out of firmware
-    /// memory and [`record_mirror`](StateTable::record_mirror) it — the automatic
-    /// whole-namespace mirror. Reads through the pre-resolved handle (hot path;
-    /// no DWARF re-resolution per tick), falling back to the string path only for
-    /// a backend that yields no handles. `record_mirror` does not mark dirty and
-    /// is ignored on a pinned entry, so the sweep never un-pins the view.
+    /// Cvar out-sync (sweep): mirror firmware memory into the table — the automatic
+    /// whole-namespace mirror, made **O(changed bytes)** by the Tier-1 shadow.
+    ///
+    /// For each contiguous range, `read_range` bulk-copies live memory into a
+    /// scratch buffer and `memcmp`s it against the range's shadow; on a match the
+    /// whole range is skipped (no decode). On a mismatch, each changed
+    /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly the leaves overlapping it
+    /// (via the pre-resolved fast-read handle) and records them by dense index
+    /// ([`record_mirror_at`](StateTable::record_mirror_at) — no string hash, no
+    /// dirty mark, ignored on a pin). The shadow then absorbs the changed bytes: it
+    /// mirrors MEMORY, not the table, so it advances even where the table dedups or
+    /// a pin ignores the record. The first sweep after (re)enable is **cold** —
+    /// every chunk counts as changed — so the table gets a full baseline.
+    ///
+    /// String-path leaves (a backend with no fast-read handles, e.g. a test mock)
+    /// have no memory layout, so they fall back to the per-leaf read/record loop.
     fn out_sync_cvars(&mut self, st: &mut StateTable) {
-        for (id, read) in &self.cvar_leaves {
-            let v = match read {
-                CvarRead::Resolved(h) => self.backend.read_cvar_resolved(*h),
-                CvarRead::Path(p) => self.backend.read_cvar(p),
-            };
-            if let Err(e) = st.record_mirror(id, v) {
-                st.log(
-                    LogLevel::Warning,
-                    &self.name,
-                    format!("cvar mirror {id} failed: {e}"),
-                );
+        // Fallback: leaves with no resolved layout (string-path backends).
+        for pl in &self.path_leaves {
+            let v = self.backend.read_cvar(&pl.path);
+            st.record_mirror_at(pl.table_idx, v);
+        }
+
+        if self.ranges.is_empty() {
+            return;
+        }
+        self.sweep_gen = self.sweep_gen.wrapping_add(1);
+        let gen = self.sweep_gen;
+        let cold = self.shadow_cold;
+        let backend = self.backend;
+        // Move the reusable buffers out so the range loop can hold a `&mut` to
+        // `self.ranges` while still touching scratch/visit_stamp/resolved.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut stamp = std::mem::take(&mut self.visit_stamp);
+        let resolved = &self.resolved;
+
+        for range in &mut self.ranges {
+            let len = range.shadow.len();
+            // Range-level fast path: unchanged whole range → skip with a bare
+            // memcmp against live memory (no copy). Most ranges are unchanged each
+            // tick, so this is the common case.
+            if !cold && backend.range_eq(range.base, &range.shadow) {
+                continue;
+            }
+            // Changed (or cold): pull the live bytes in and localize per chunk.
+            let buf = &mut scratch[..len];
+            backend.read_range(range.base, buf);
+            let nchunks = range.chunk_leaves.len();
+            for c in 0..nchunks {
+                let cs = c * SHADOW_CHUNK;
+                let ce = (cs + SHADOW_CHUNK).min(len);
+                if cold || buf[cs..ce] != range.shadow[cs..ce] {
+                    for &li in &range.chunk_leaves[c] {
+                        // Dedup a leaf that straddles two changed chunks.
+                        if stamp[li] != gen {
+                            stamp[li] = gen;
+                            let leaf = &resolved[li];
+                            let v = backend.read_cvar_resolved(leaf.handle);
+                            st.record_mirror_at(leaf.table_idx, v);
+                        }
+                    }
+                    // The shadow mirrors MEMORY: absorb the changed bytes
+                    // unconditionally (independent of what the table did).
+                    range.shadow[cs..ce].copy_from_slice(&buf[cs..ce]);
+                }
             }
         }
+
+        self.scratch = scratch;
+        self.visit_stamp = stamp;
+        self.shadow_cold = false;
     }
 }
 
@@ -934,10 +1141,12 @@ impl Member for FirmwareMember<'_> {
             } else {
                 // Re-enable: re-register the cached leaves idempotently (a re-enable
                 // does not re-enumerate — the namespace is fixed for the member's
-                // life until a real boot-from-reset lands).
+                // life until a real boot-from-reset lands). Force a cold sweep so the
+                // table re-baselines against firmware memory.
                 for (id, _) in &self.cvar_leaves {
                     let _ = st.register(id.clone(), None);
                 }
+                self.shadow_cold = true;
             }
             // Ports registered before this member existed (typically during
             // `sil_fw_start`, which the driver calls before adding the member)
@@ -985,6 +1194,9 @@ impl FirmwareMember<'_> {
             }
         }
         self.leaves_cached = true;
+        // Build the Tier-1 shadow-sweep structures from the freshly-registered
+        // leaves (resolve indices, group into ranges, allocate shadows).
+        self.build_shadow(st);
         st.log(
             LogLevel::Info,
             &self.name,
@@ -1001,6 +1213,82 @@ impl FirmwareMember<'_> {
             ),
         );
     }
+
+    /// Build the Tier-1 shadow-sweep structures from the enumerated cvar leaves:
+    /// resolve each leaf's dense table index; split fast-read (resolved) leaves from
+    /// string-path leaves; sort the resolved by address; group them into contiguous
+    /// ranges (merging across gaps ≤ [`SHADOW_MERGE_GAP`]); and allocate the shadow
+    /// and scratch buffers. Marks the shadow cold so the first sweep baselines the
+    /// table.
+    fn build_shadow(&mut self, st: &StateTable) {
+        let backend = self.backend;
+        let mut resolved: Vec<SweptLeaf> = Vec::new();
+        let mut path: Vec<PathLeaf> = Vec::new();
+        for (id, read) in &self.cvar_leaves {
+            let table_idx = st.resolve_index(id).expect("leaf just registered");
+            match read {
+                CvarRead::Resolved(h) => {
+                    let (addr, size) = backend.cvar_layout(*h);
+                    resolved.push(SweptLeaf {
+                        table_idx,
+                        handle: *h,
+                        addr,
+                        size,
+                    });
+                }
+                CvarRead::Path(p) => path.push(PathLeaf {
+                    table_idx,
+                    path: p.clone(),
+                }),
+            }
+        }
+        resolved.sort_by_key(|l| l.addr);
+        let ranges = build_ranges(&resolved);
+        let scratch_len = ranges.iter().map(|r| r.shadow.len()).max().unwrap_or(0);
+        self.visit_stamp = vec![0u32; resolved.len()];
+        self.scratch = vec![0u8; scratch_len];
+        self.resolved = resolved;
+        self.ranges = ranges;
+        self.path_leaves = path;
+        self.shadow_cold = true;
+    }
+}
+
+/// Group address-sorted resolved leaves into contiguous shadow ranges: a new range
+/// starts whenever the next leaf begins more than [`SHADOW_MERGE_GAP`] bytes past
+/// the current range's end. Each range records, per [`SHADOW_CHUNK`]-byte chunk, the
+/// indices (into `leaves`) of the leaves overlapping that chunk — a leaf straddling
+/// a chunk edge is listed under every chunk it touches. Deterministic: input is
+/// address-sorted, output is in ascending address order.
+fn build_ranges(leaves: &[SweptLeaf]) -> Vec<ShadowRange> {
+    let mut ranges: Vec<ShadowRange> = Vec::new();
+    let mut i = 0;
+    while i < leaves.len() {
+        let start = leaves[i].addr;
+        let mut end = leaves[i].addr + leaves[i].size as u64;
+        let mut j = i + 1;
+        while (j < leaves.len()) && (leaves[j].addr <= (end + SHADOW_MERGE_GAP)) {
+            end = end.max(leaves[j].addr + (leaves[j].size as u64));
+            j += 1;
+        }
+        let span = (end - start) as usize;
+        let nchunks = span.div_ceil(SHADOW_CHUNK);
+        let mut chunk_leaves: Vec<Vec<usize>> = vec![Vec::new(); nchunks];
+        for (k, leaf) in leaves.iter().enumerate().take(j).skip(i) {
+            let first = ((leaf.addr - start) as usize) / SHADOW_CHUNK;
+            let last = (((leaf.addr + (leaf.size as u64) - 1) - start) as usize) / SHADOW_CHUNK;
+            for cl in chunk_leaves.iter_mut().take(last + 1).skip(first) {
+                cl.push(k);
+            }
+        }
+        ranges.push(ShadowRange {
+            base: start,
+            shadow: vec![0u8; span],
+            chunk_leaves,
+        });
+        i = j;
+    }
+    ranges
 }
 
 /// Coerce a table [`Value`] into the port seam's `f64` currency (`double`
@@ -1040,6 +1328,17 @@ unsafe fn write_uint(p: *mut u8, size: u64, v: u64) {
         4 => (p as *mut u32).write_unaligned(v as u32),
         8 => (p as *mut u64).write_unaligned(v),
         _ => panic!("unsupported enum size {size}"),
+    }
+}
+
+/// The byte width of a firmware [`Scalar`] leaf — the size the shadow sweep reads
+/// and compares for that leaf.
+fn scalar_byte_size(kind: Scalar) -> usize {
+    match kind {
+        Scalar::U8 | Scalar::I8 | Scalar::Bool => 1,
+        Scalar::U16 | Scalar::I16 => 2,
+        Scalar::U32 | Scalar::I32 | Scalar::F32 => 4,
+        Scalar::U64 | Scalar::I64 | Scalar::F64 => 8,
     }
 }
 
@@ -1478,5 +1777,193 @@ mod tests {
         unsafe { port_write_signal(ctx, h, 7.25) };
         unsafe { port_write_signal(ctx, h2, -1.0) };
         assert_eq!(state.inner.borrow().writes, vec![(0, 7.25), (1, -1.0)]);
+    }
+
+    // --- Tier-1 shadow sweep -------------------------------------------------
+
+    /// A backend with a byte-array "firmware memory" and `u32` leaves at fixed
+    /// offsets, exposing the shadow-sweep primitives (`cvar_layout`/`range_eq`/
+    /// `read_range`/`read_cvar_resolved`). It counts decodes per leaf so a test can
+    /// assert *which* leaves the sweep re-decoded. Leaf addresses are byte offsets
+    /// into `mem` (the sweep treats them opaquely).
+    struct ShadowLeaf {
+        path: String,
+        off: usize,
+    }
+
+    struct ShadowMock {
+        mem: RefCell<Vec<u8>>,
+        leaves: Vec<ShadowLeaf>,
+        decodes: RefCell<Vec<u32>>,
+    }
+
+    impl ShadowMock {
+        fn new(size: usize, leaves: &[(&str, usize)]) -> Self {
+            Self {
+                mem: RefCell::new(vec![0u8; size]),
+                leaves: leaves
+                    .iter()
+                    .map(|(p, o)| ShadowLeaf {
+                        path: (*p).to_string(),
+                        off: *o,
+                    })
+                    .collect(),
+                decodes: RefCell::new(vec![0u32; leaves.len()]),
+            }
+        }
+        fn set_u32(&self, off: usize, v: u32) {
+            self.mem.borrow_mut()[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        fn set_byte(&self, off: usize, b: u8) {
+            self.mem.borrow_mut()[off] = b;
+        }
+        fn decodes(&self, i: usize) -> u32 {
+            self.decodes.borrow()[i]
+        }
+    }
+
+    impl Backend for ShadowMock {
+        fn advance_tick(&self) {}
+        fn read_cvar(&self, _path: &str) -> Value {
+            Value::U32(0)
+        }
+        fn write_cvar(&self, _path: &str, _v: &Value) {}
+        fn enumerate_cvars(&self, _threshold: usize, _includes: &[String]) -> CvarEnumeration {
+            CvarEnumeration {
+                leaves: self
+                    .leaves
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.path.clone(), Some(CvarHandle(i))))
+                    .collect(),
+                ..CvarEnumeration::default()
+            }
+        }
+        fn read_cvar_resolved(&self, handle: CvarHandle) -> Value {
+            self.decodes.borrow_mut()[handle.0] += 1;
+            let off = self.leaves[handle.0].off;
+            let mem = self.mem.borrow();
+            Value::U32(u32::from_le_bytes(mem[off..off + 4].try_into().unwrap()))
+        }
+        fn cvar_layout(&self, handle: CvarHandle) -> (u64, usize) {
+            (self.leaves[handle.0].off as u64, 4)
+        }
+        fn range_eq(&self, addr: u64, shadow: &[u8]) -> bool {
+            let off = addr as usize;
+            let mem = self.mem.borrow();
+            mem[off..off + shadow.len()] == *shadow
+        }
+        fn read_range(&self, addr: u64, buf: &mut [u8]) {
+            let off = addr as usize;
+            let mem = self.mem.borrow();
+            buf.copy_from_slice(&mem[off..off + buf.len()]);
+        }
+    }
+
+    #[test]
+    fn shadow_sweep_cold_records_all_then_localizes_a_changed_chunk() {
+        // One range [0,76): a@0 (chunk0), b@62 (spans chunk0/chunk1 — 62..66),
+        // c@72 (chunk1). Merge gap keeps them in one range; chunk size is 64.
+        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        be.set_u32(0, 10);
+        be.set_u32(62, 20);
+        be.set_u32(72, 30);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+
+        // Cold sweep: every leaf decoded once and baselined into the table.
+        st.set_time(1_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (1, 1, 1));
+        for (p, v) in [("a", 10u32), ("b", 20), ("c", 30)] {
+            assert_eq!(
+                st.current_value(&id(&format!("cvar:dut:{p}"))).unwrap(),
+                Some(&Value::U32(v))
+            );
+        }
+
+        // Change a byte inside chunk0 (part of `a`). Only chunk0's leaves re-decode:
+        // a + b (b straddles the chunk edge); c (chunk1 only) is NOT touched.
+        be.set_u32(0, 11);
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (2, 2, 1));
+        // a changed -> re-recorded; b decoded but unchanged -> historian did not grow.
+        assert_eq!(st.current_value(&id("cvar:dut:a")).unwrap(), Some(&Value::U32(11)));
+        assert_eq!(st.changes(&id("cvar:dut:b")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn shadow_sweep_boundary_leaf_caught_from_its_far_chunk() {
+        // b@62 spans chunk0 (62,63) and chunk1 (64,65). Change ONLY a chunk1 byte
+        // of b: chunk0 stays equal, chunk1 changes -> b (via chunk1) and c decode,
+        // a (chunk0 only) does not. Proves a boundary leaf is caught from either
+        // chunk it overlaps.
+        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        be.set_u32(0, 10);
+        be.set_u32(62, 20);
+        be.set_u32(72, 30);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        st.set_time(1_000);
+        fm.advance(1_000, &mut st); // cold: (1,1,1)
+
+        be.set_byte(65, 0xAA); // chunk1 byte of b only
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (1, 2, 2));
+        // b's value changed -> re-recorded (two change-log entries now).
+        assert_eq!(st.changes(&id("cvar:dut:b")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn shadow_sweep_splits_ranges_across_large_gaps() {
+        // a@0 and b@200 are farther apart than the merge gap -> two independent
+        // ranges. A change in a's range must not re-decode b.
+        let be = ShadowMock::new(256, &[("a", 0), ("b", 200)]);
+        be.set_u32(0, 1);
+        be.set_u32(200, 2);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        st.set_time(1_000);
+        fm.advance(1_000, &mut st); // cold: both decoded once
+
+        be.set_u32(0, 5); // touch only a's range
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!(be.decodes(0), 2);
+        assert_eq!(be.decodes(1), 1); // b's range untouched -> not decoded
+    }
+
+    #[test]
+    fn shadow_mirrors_memory_not_the_table_under_a_pin() {
+        // The shadow tracks MEMORY even where the table pin ignores the record:
+        // after memory changes under a pin, the leaf decodes exactly once (the tick
+        // it changed) and not again on a subsequent unchanged tick — the shadow
+        // absorbed the change despite the table holding the pinned value.
+        let be = ShadowMock::new(16, &[("a", 0)]);
+        be.set_u32(0, 10);
+        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        let a = id("cvar:dut:a");
+        st.set_time(1_000);
+        fm.advance(1_000, &mut st); // cold: a=10, decode=1
+        assert_eq!(be.decodes(0), 1);
+
+        st.set_override(&a, true).unwrap(); // pin at 10
+        be.set_u32(0, 77); // memory changes under the pin
+        st.set_time(2_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!(be.decodes(0), 2); // chunk changed -> decoded
+        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(10))); // pin holds
+
+        // Memory now stable: the shadow was updated to 77, so no re-decode.
+        st.set_time(3_000);
+        fm.advance(1_000, &mut st);
+        assert_eq!(be.decodes(0), 2);
     }
 }

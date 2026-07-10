@@ -23,9 +23,18 @@ find_program(NATIVE_CXX g++ REQUIRED)
 set(CMAKE_C_COMPILER   "${NATIVE_C}")
 set(CMAKE_CXX_COMPILER "${NATIVE_CXX}")
 
+# Optimization level. -O0 is the default: it keeps the dev/test flow (Unity,
+# debugging) source-faithful. Override at configure time without editing this
+# file (mirrors the embedded toolchain's PCS_OPT_LEVEL knob):
+#   -DPCS_OPT_LEVEL=-O2   optimized (SIL performance runs; tools/run_sil.sh default)
+# -g is ALWAYS kept: the SIL framework reads firmware statics by DWARF, so debug
+# info must survive at every opt level (statics stay exported via
+# --export-all-symbols, so the optimizer cannot eliminate them either).
+set(PCS_OPT_LEVEL "-O0" CACHE STRING "Optimization level for the native build")
+
 add_compile_options(
   -Wall -Wextra -Wpedantic
-  -g -O0
+  -g ${PCS_OPT_LEVEL}
 )
 
 # The firmware links as a SHARED library (SIL). On Linux/ELF that requires all

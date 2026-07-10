@@ -1,6 +1,6 @@
 # SIL bring-up — handover
 
-Last updated: 2026-07-05. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-07-09. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
 `roadmap.md` in this folder.
 
@@ -24,9 +24,19 @@ io/dev/app modules as embedded (see "What's done").
 ## Build & run
 
 ```bash
-tools/run_sil.sh            # build firmware DLL + voyant, run the sanity suite
+tools/run_sil.sh            # RELEASE (default): -O2 -g firmware DLL + --release voyant, run the sanity suite
+tools/run_sil.sh --debug    # DEBUG: -O0 -g DLL + debug voyant (dev/introspection; slower, source-faithful)
 tools/run_sil.sh --clean    # wipe the native build dir first
 ```
+
+**Default is optimized on both sides** — the suite's performance numbers are only
+meaningful optimized. Release and debug use separate build dirs
+(`build/native-fw-release` vs `build/native-fw`) and cargo target dirs, so they
+coexist. The dev/test flow (`tools/build_native.sh`, Unity) stays `-O0 -g`; the
+`-O2` level rides a `PCS_OPT_LEVEL` cache knob in `native.cmake` (mirrors the ARM
+toolchain's). The suite prints a phase-isolated **performance report** at the end
+(firmware tick / full step / engine floor / derived); see the dated baseline in
+`performance.md` §11.
 
 The suite loads the firmware DLL, drives it over the control ABI, and runs
 named PASS/FAIL checks (exit nonzero on any failure): boot; all four real
@@ -236,6 +246,20 @@ docs/sil/*.md            the design (see "Design docs" below)
   cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
   workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
   mirror-accuracy check on `HW_ADC_data.tickCounter` — no declaration).
+
+- **Sweep perf — Tier 1 + Tier 2 (2026-07-09):** the whole-namespace mirror sweep
+  went from a naive per-leaf scan to a **shadow-snapshot `memcmp` sweep** (Tier 1:
+  resolved leaves grouped into address ranges → 64 B chunks with per-range shadow
+  buffers; per tick each range is `memcmp`d against live memory and only changed
+  chunks re-decode their leaves — O(changed bytes)) over a **dense-index State
+  Table fast lane** (Tier 2: hot per-signal storage is index-keyed `Vec`/`usize`
+  sets; sweep/route/port hot paths resolve their index once and use
+  `record_mirror_at`/`record_at`/`current_value_at`, so no hot path hashes a
+  `SignalId` — public string API unchanged). **Full engine step 54 → ~9.3 µs
+  (18× → ~107× realtime)**, meeting the owner target (≤10 µs). voyant unit tests
+  70 → 74 (4 shadow-sweep tests); sanity suite (release + debug) all PASS, behavior
+  identical. See `performance.md` §5 (levers marked implemented) + §12 (after
+  table).
 
 ## What's next (prioritized)
 

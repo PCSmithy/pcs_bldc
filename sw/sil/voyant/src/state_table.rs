@@ -72,26 +72,39 @@ pub enum TableError {
 }
 
 pub struct StateTable {
-    /// Registered signals, in insertion order (stable iteration / columnar dump).
+    /// Registered signals, in insertion order. The [`IndexSet`] yields a **stable
+    /// dense index** per signal (append-only — a signal is never removed, so its
+    /// index never changes), which is the key for all hot per-signal storage below
+    /// (Tier-2 dense-index fast lane): the string-keyed public API resolves an id to
+    /// its index once ([`resolve_index`](Self::resolve_index)) and delegates to the
+    /// `*_at` index-keyed internals, keeping per-record string hashing off hot paths.
     signals: IndexSet<SignalId>,
-    /// Optional per-signal unit string (metadata).
+    /// Optional per-signal unit string (metadata; cold — set only at register).
     units: HashMap<SignalId, String>,
-    /// Per-signal change-log: `(time_us, value)`, ascending, front-evicted.
-    changes: HashMap<SignalId, VecDeque<(u64, Value)>>,
-    /// Current value cache (O(1) latest).
-    current: HashMap<SignalId, Value>,
-    /// Signals whose `record` is ignored (injection pin).
-    overrides: HashSet<SignalId>,
-    /// **Command-write dirty set.** Ids a framework command wrote this cycle
-    /// (`record` / `force_record` / pin via `set_override`) — as opposed to a
-    /// mirror sweep (`record_mirror`), which never marks dirty. A firmware member
-    /// drains its own namespace's dirt each tick to know which `cvar`s to flush
-    /// back into firmware memory. Deduped by id (a per-tick re-command of the same
-    /// signal stays one entry), so it is bounded by the distinct-signal count, not
-    /// tick count.
-    dirty: HashSet<SignalId>,
-    /// Signals that have had samples evicted (so `value_at` can report OutOfWindow).
-    evicted: HashSet<SignalId>,
+    /// Per-signal change-log, indexed by signal index: `(time_us, value)`,
+    /// ascending, front-evicted.
+    changes: Vec<VecDeque<(u64, Value)>>,
+    /// Current value cache, indexed by signal index (O(1) latest; `None` = never
+    /// recorded).
+    current: Vec<Option<Value>>,
+    /// Resolved change-detection epsilon, indexed by signal index (the per-signal
+    /// override from config, else the global epsilon — resolved once at register so
+    /// the hot `record` path never hashes the config map).
+    epsilon: Vec<f64>,
+    /// Signals whose `record` is ignored (injection pin), by signal index. A sparse
+    /// set: membership check is a cheap `usize` hash, and iteration (for
+    /// [`pinned`](Self::pinned)) walks only the pinned few, not all signals.
+    overrides: HashSet<usize>,
+    /// **Command-write dirty set**, by signal index. Indices a framework command
+    /// wrote this cycle (`record` / `force_record` / pin via `set_override`) — as
+    /// opposed to a mirror sweep (`record_mirror`), which never marks dirty. A
+    /// firmware member drains its own namespace's dirt each tick to know which
+    /// `cvar`s to flush back into firmware memory. Deduped by index, so it is
+    /// bounded by the distinct-signal count, not tick count.
+    dirty: HashSet<usize>,
+    /// Signal indices that have had samples evicted (so `value_at` can report
+    /// OutOfWindow).
+    evicted: HashSet<usize>,
     /// Current sim time (microseconds); the timestamp for `record` and `log`.
     current_time_us: u64,
     /// Sim-time-stamped, bounded log ring (drop-oldest; see [`LogRing`]).
@@ -114,8 +127,9 @@ impl StateTable {
         Self {
             signals: IndexSet::new(),
             units: HashMap::new(),
-            changes: HashMap::new(),
-            current: HashMap::new(),
+            changes: Vec::new(),
+            current: Vec::new(),
+            epsilon: Vec::new(),
             overrides: HashSet::new(),
             dirty: HashSet::new(),
             evicted: HashSet::new(),
@@ -152,9 +166,39 @@ impl StateTable {
         if let Some(u) = unit {
             self.units.insert(id.clone(), u.to_string());
         }
-        self.changes.insert(id.clone(), VecDeque::new());
+        // Resolve the change-detection epsilon once, so the hot `record` path never
+        // hashes the per-signal config map.
+        let eps = self
+            .config
+            .signal_epsilon
+            .get(&id)
+            .copied()
+            .unwrap_or(self.config.epsilon);
+        // Push the dense slots BEFORE inserting into the index set, so the new
+        // signal's index (== the pre-push length) lines up with its slot.
+        self.changes.push(VecDeque::new());
+        self.current.push(None);
+        self.epsilon.push(eps);
         self.signals.insert(id);
         Ok(())
+    }
+
+    /// Resolve a signal id to its stable dense index, or `None` if unregistered.
+    /// The crate-internal key for the index-keyed hot-path entry points
+    /// ([`record_mirror_at`](Self::record_mirror_at) / [`record_at`](Self::record_at)
+    /// / [`current_value_at`](Self::current_value_at)); consumers resolve **once**
+    /// (at registration / route validation) and then avoid per-tick string hashing.
+    pub(crate) fn resolve_index(&self, id: &SignalId) -> Option<usize> {
+        self.signals.get_index_of(id)
+    }
+
+    /// The signal registered at dense index `idx`, or `None` if `idx` is out of
+    /// range. The inverse of [`resolve_index`](Self::resolve_index): it lets a
+    /// consumer that memoized an index (route propagation's endpoint cache) verify
+    /// that index still names the *expected* signal in **this** table — the guard
+    /// against one `RouteTable` being propagated against a different `StateTable`.
+    pub(crate) fn id_at(&self, idx: usize) -> Option<&SignalId> {
+        self.signals.get_index(idx)
     }
 
     /// Record a **command-written** value at the current time (route, test, or
@@ -164,7 +208,9 @@ impl StateTable {
     /// re-command still means "the framework is driving this," so the value must be
     /// re-asserted into firmware memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
-        self.record_inner(id, value, true)
+        let idx = self.ensure(id)?;
+        self.record_inner(idx, value, true);
+        Ok(())
     }
 
     /// Record a **mirror** value (a firmware member's end-of-tick sweep of its
@@ -174,62 +220,80 @@ impl StateTable {
     /// mark the signal dirty (the table is only tracking what memory already holds,
     /// not commanding a write back into it).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
-        self.record_inner(id, value, false)
+        let idx = self.ensure(id)?;
+        self.record_inner(idx, value, false);
+        Ok(())
     }
 
-    fn record_inner(
-        &mut self,
-        id: &SignalId,
-        value: Value,
-        command: bool,
-    ) -> Result<(), TableError> {
-        self.ensure(id)?;
-        if self.overrides.contains(id) {
+    /// **Index-keyed mirror record** — the mirror-sweep hot path. Identical
+    /// semantics to [`record_mirror`](Self::record_mirror) (dedup / override / no
+    /// dirty mark) but keyed by a pre-resolved dense index, so the whole-namespace
+    /// sweep never hashes a `SignalId` string. `idx` must come from
+    /// [`resolve_index`](Self::resolve_index) (i.e. a registered signal).
+    pub(crate) fn record_mirror_at(&mut self, idx: usize, value: Value) {
+        self.record_inner(idx, value, false);
+    }
+
+    /// **Index-keyed command record** — the route-propagation hot path. Identical
+    /// semantics to [`record`](Self::record) (dedup / override / marks dirty) but
+    /// keyed by a pre-resolved dense index. `idx` must come from
+    /// [`resolve_index`](Self::resolve_index).
+    pub(crate) fn record_at(&mut self, idx: usize, value: Value) {
+        self.record_inner(idx, value, true);
+    }
+
+    fn record_inner(&mut self, idx: usize, value: Value, command: bool) {
+        if self.overrides.contains(&idx) {
             // Pinned: both command and mirror records are ignored (the pin holds
             // the current view). A pinned entry is re-asserted via the pinned-flush
             // union, not via record.
-            return Ok(());
+            return;
         }
         if command {
-            self.dirty.insert(id.clone());
+            self.dirty.insert(idx);
         }
-        if let Some(cur) = self.current.get(id) {
-            if cur.approx_eq(&value, self.epsilon_for(id)) {
-                return Ok(());
+        if let Some(cur) = &self.current[idx] {
+            if cur.approx_eq(&value, self.epsilon[idx]) {
+                return;
             }
         }
-        self.append(id, value);
-        Ok(())
+        self.append(idx, value);
     }
 
     /// Record unconditionally (bypasses change-detection and overrides). Counts as
     /// a command write (marks the signal dirty).
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
-        self.ensure(id)?;
-        self.dirty.insert(id.clone());
-        self.append(id, value);
+        let idx = self.ensure(id)?;
+        self.dirty.insert(idx);
+        self.append(idx, value);
         Ok(())
     }
 
     /// Current (last-recorded) value, O(1). `None` if never recorded.
     pub fn current_value(&self, id: &SignalId) -> Result<Option<&Value>, TableError> {
-        self.ensure(id)?;
-        Ok(self.current.get(id))
+        let idx = self.ensure(id)?;
+        Ok(self.current[idx].as_ref())
+    }
+
+    /// Index-keyed current value (route propagation / port-cache fill hot paths).
+    /// `idx` must come from [`resolve_index`](Self::resolve_index).
+    pub(crate) fn current_value_at(&self, idx: usize) -> Option<&Value> {
+        self.current[idx].as_ref()
     }
 
     /// Value in effect at `time_us` (zero-order hold: the last sample at or
     /// before it), O(log n). `None` if before the first sample and nothing was
     /// evicted; `OutOfWindow` if it fell out of the retained window.
     pub fn value_at(&self, id: &SignalId, time_us: u64) -> Result<Option<&Value>, TableError> {
-        self.ensure(id)?;
-        let dq = &self.changes[id];
+        let si = self.ensure(id)?;
+        let dq = &self.changes[si];
         if dq.is_empty() {
             return Ok(None);
         }
         let idx = dq.partition_point(|&(t, _)| t <= time_us);
         if idx == 0 {
             // Requested time precedes all retained samples.
-            if self.evicted.contains(id) {
+            if self.evicted.contains(&si) {
                 return Err(TableError::OutOfWindow {
                     signal: id.clone(),
                     requested_tick: time_us,
@@ -247,12 +311,12 @@ impl StateTable {
     /// after — see [`pinned`](Self::pinned)). Unpinning does not mark dirty; the
     /// signal simply resumes being mirrored.
     pub fn set_override(&mut self, id: &SignalId, on: bool) -> Result<(), TableError> {
-        self.ensure(id)?;
+        let idx = self.ensure(id)?;
         if on {
-            self.overrides.insert(id.clone());
-            self.dirty.insert(id.clone());
+            self.overrides.insert(idx);
+            self.dirty.insert(idx);
         } else {
-            self.overrides.remove(id);
+            self.overrides.remove(&idx);
         }
         Ok(())
     }
@@ -261,15 +325,22 @@ impl StateTable {
     /// (a member drains its **own** namespace; other members' dirt is left in
     /// place for their own drain). Deterministic order (sorted by id string).
     pub fn take_dirty(&mut self, source: &str) -> Vec<SignalId> {
-        let mut mine: Vec<SignalId> = Vec::new();
-        self.dirty.retain(|id| {
-            if id.source() == source {
-                mine.push(id.clone());
-                false
-            } else {
-                true
-            }
-        });
+        // Collect the dirty indices whose signal belongs to `source`, remove them,
+        // then materialize the ids (deterministic, sorted). The dirty set is small
+        // (distinct signals command-written this cycle), so this stays cheap.
+        let mine_idx: Vec<usize> = self
+            .dirty
+            .iter()
+            .copied()
+            .filter(|&idx| self.signals.get_index(idx).is_some_and(|id| id.source() == source))
+            .collect();
+        for idx in &mine_idx {
+            self.dirty.remove(idx);
+        }
+        let mut mine: Vec<SignalId> = mine_idx
+            .iter()
+            .map(|&idx| self.signals.get_index(idx).unwrap().clone())
+            .collect();
         mine.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         mine
     }
@@ -281,6 +352,7 @@ impl StateTable {
         let mut ids: Vec<SignalId> = self
             .overrides
             .iter()
+            .filter_map(|&idx| self.signals.get_index(idx))
             .filter(|id| id.source() == source)
             .cloned()
             .collect();
@@ -290,7 +362,7 @@ impl StateTable {
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
     pub fn changes(&self, id: &SignalId) -> Option<&VecDeque<(u64, Value)>> {
-        self.changes.get(id)
+        self.signals.get_index_of(id).map(|idx| &self.changes[idx])
     }
 
     /// Emit a log entry, stamped with the table's **current sim time**. The
@@ -337,50 +409,45 @@ impl StateTable {
 
     // --- internals -------------------------------------------------------
 
-    fn ensure(&self, id: &SignalId) -> Result<(), TableError> {
-        if self.signals.contains(id) {
-            Ok(())
-        } else {
-            Err(TableError::UnknownSignal(id.clone()))
-        }
+    /// Resolve a signal to its dense index, or [`TableError::UnknownSignal`].
+    fn ensure(&self, id: &SignalId) -> Result<usize, TableError> {
+        self.signals
+            .get_index_of(id)
+            .ok_or_else(|| TableError::UnknownSignal(id.clone()))
     }
 
-    fn epsilon_for(&self, id: &SignalId) -> f64 {
-        self.config
-            .signal_epsilon
-            .get(id)
-            .copied()
-            .unwrap_or(self.config.epsilon)
-    }
-
-    fn append(&mut self, id: &SignalId, value: Value) {
+    fn append(&mut self, idx: usize, value: Value) {
         let t = self.current_time_us;
-        self.current.insert(id.clone(), value.clone());
-        self.changes.get_mut(id).unwrap().push_back((t, value));
-        self.evict(id);
+        self.current[idx] = Some(value.clone());
+        self.changes[idx].push_back((t, value));
+        self.evict(idx);
     }
 
     /// Drop samples older than the retention window, keeping the one sample that
     /// is still "active" at the cutoff (ZOH needs it).
-    fn evict(&mut self, id: &SignalId) {
-        let window = self
-            .config
-            .signal_retention
-            .get(id)
-            .copied()
-            .or(self.config.retention);
+    fn evict(&mut self, idx: usize) {
+        // Per-signal retention override (if any) is keyed by id — resolve the
+        // window first, then mutate the dense slots (disjoint borrows).
+        let window = {
+            let id = self.signals.get_index(idx).unwrap();
+            self.config
+                .signal_retention
+                .get(id)
+                .copied()
+                .or(self.config.retention)
+        };
         let Some(window) = window else { return };
         let cutoff = self
             .current_time_us
             .saturating_sub(window.as_micros() as u64);
-        let dq = self.changes.get_mut(id).unwrap();
+        let dq = &mut self.changes[idx];
         let mut dropped = false;
         while dq.len() > 1 && dq[1].0 <= cutoff {
             dq.pop_front();
             dropped = true;
         }
         if dropped {
-            self.evicted.insert(id.clone());
+            self.evicted.insert(idx);
         }
     }
 }

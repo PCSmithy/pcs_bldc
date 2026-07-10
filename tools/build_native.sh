@@ -3,13 +3,21 @@
 # Used for SIL builds and unit testing.
 #
 # Usage:
-#   tools/build_native.sh [<source-subdir>]
+#   tools/build_native.sh [<source-subdir>] [--opt <-Oflag>] [--no-test]
 #
 # Defaults to sw/fw (the firmware project — pulls sw/lib/c in via
 # add_subdirectory, so all lib unit tests run too). Pass `sw/lib/c`
 # explicitly for a lib-only build.
 #
-# Build output lives in build/native-<basename>/. Re-running is
+# --opt <-Oflag>  optimization level for the native build (default -O0, the
+#                 dev/test flow). Passed to native.cmake as PCS_OPT_LEVEL. A
+#                 non-default level builds into a SEPARATE dir so the optimized
+#                 and -O0 artifacts coexist (tools/run_sil.sh uses -O2 for its
+#                 optimized SIL DLL).
+# --no-test       skip ctest (used for the SIL DLL build — the SIL suite is the
+#                 check there, not the Unity tests).
+#
+# Build output lives in build/native-<basename>[<-opt-suffix>]/. Re-running is
 # incremental; pass --clean to wipe the build dir first.
 
 set -euo pipefail
@@ -19,28 +27,45 @@ TOOLCHAIN="${REPO_ROOT}/sw/cmake/toolchains/native.cmake"
 
 CLEAN=0
 SOURCE_SUBDIR=""
-for arg in "$@"; do
-  case "$arg" in
-    --clean) CLEAN=1 ;;
-    -*)      echo "Unknown flag: $arg" >&2; exit 2 ;;
-    *)       SOURCE_SUBDIR="$arg" ;;
+OPT="-O0"
+RUN_TESTS=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --clean)   CLEAN=1 ;;
+    --no-test) RUN_TESTS=0 ;;
+    --opt)     shift; OPT="${1:?--opt needs a value}" ;;
+    -*)        echo "Unknown flag: $1" >&2; exit 2 ;;
+    *)         SOURCE_SUBDIR="$1" ;;
   esac
+  shift
 done
 SOURCE_SUBDIR="${SOURCE_SUBDIR:-sw/fw}"
-BUILD_DIR="${REPO_ROOT}/build/native-$(basename "${SOURCE_SUBDIR}")"
+
+# A non-default opt level gets its own build dir so optimized and -O0 artifacts
+# never clobber each other (e.g. build/native-fw vs build/native-fw-release).
+BUILD_SUFFIX=""
+if [ "${OPT}" != "-O0" ]; then
+  BUILD_SUFFIX="-release"
+fi
+BUILD_DIR="${REPO_ROOT}/build/native-$(basename "${SOURCE_SUBDIR}")${BUILD_SUFFIX}"
 
 if [ "${CLEAN}" -eq 1 ] && [ -d "${BUILD_DIR}" ]; then
   echo "==> Removing ${BUILD_DIR}"
   rm -rf "${BUILD_DIR}"
 fi
 
-echo "==> Configuring (native, ${SOURCE_SUBDIR})"
+echo "==> Configuring (native, ${SOURCE_SUBDIR}, ${OPT})"
 cmake -S "${REPO_ROOT}/${SOURCE_SUBDIR}" -B "${BUILD_DIR}" \
       -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}"
+      -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
+      -DPCS_OPT_LEVEL="${OPT}"
 
 echo "==> Building"
 cmake --build "${BUILD_DIR}"
 
-echo "==> Running tests"
-ctest --test-dir "${BUILD_DIR}" --output-on-failure
+if [ "${RUN_TESTS}" -eq 1 ]; then
+  echo "==> Running tests"
+  ctest --test-dir "${BUILD_DIR}" --output-on-failure
+else
+  echo "==> Skipping tests (--no-test)"
+fi

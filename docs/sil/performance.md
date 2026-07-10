@@ -84,10 +84,46 @@ address/type handles** (cached at enable — no per-tick DWARF re-resolution), a
 the in-sync **flush is sparse** (only the command-dirtied + pinned cvars, via the
 State Table dirty set, never the whole namespace). Measured on the pcs_bldc DLL:
 **~430 cvar leaves** swept per tick (the built-in array-size exclusion drops the
-task stacks / heap / 512-byte buffers that would otherwise dominate). The sweep
-itself is a small fraction of a firmware advance today (the FreeRTOS tick + task
-switches dominate the measured µs/advance); dirty-page tracking is the lever when
-the naive scan profiles hot.
+task stacks / heap / 512-byte buffers that would otherwise dominate).
+Phase-isolated measurement (§11) shows the **sweep dominates a full engine step**:
+a bare firmware `advance_tick` is only ~4 µs, while the whole-namespace mirror +
+flush + routes add ~45 µs on top — so **gated / dirty-page scanning is the
+highest-value next lever**, exactly as this section predicts (an earlier note here
+had it backwards, having measured the sweep folded into an *unoptimized*
+`advance` and mistaken it for firmware cost).
+
+**Implemented — Tier 1 + Tier 2 (2026-07-09).** The naive per-leaf scan is
+replaced by two composed optimizations, taking the full step **49 → ~9 µs
+(>100× realtime)**:
+
+- **Tier 1 — shadow-snapshot `memcmp` sweep** (`backend.rs` / `FirmwareMember`).
+  At enable, the resolved leaves are sorted by address and grouped into contiguous
+  **ranges** (merged across gaps ≤64 B so a struct's traced fields share a range),
+  each subdivided into 64 B **chunks** with a chunk→leaf map and a per-range
+  **shadow buffer**. Per tick, each range is `memcmp`d against its shadow *directly
+  against live memory* (no copy); only a **changed** range is pulled in and
+  localized chunk-by-chunk, re-decoding just the leaves in changed chunks (a leaf
+  straddling a chunk edge is listed under every chunk it overlaps). The shadow
+  mirrors **memory** — updated even where the table dedups or a pin ignores the
+  record — and the first sweep after (re)enable is cold (full baseline). This is
+  the gate this section called for: work is now **O(changed bytes)**, not
+  O(leaves). (The address ranges derive strictly from resolved leaf `addr+size`,
+  so every byte read lies within a real firmware static; see the `read_range`
+  SAFETY note.)
+- **Tier 2 — dense-index State Table fast lane** (`state_table.rs`). The
+  `IndexSet<SignalId>` already yields a stable dense index per signal; the hot
+  per-signal storage (`current`, `changes`, resolved `epsilon`, override/dirty/
+  evicted membership) migrated to index-keyed `Vec`/`HashSet<usize>` storage, and
+  the changed-leaf decode path, route endpoints, and port-cache fill resolve their
+  index **once** (at registration / first propagation) and call the crate-internal
+  `record_mirror_at` / `record_at` / `current_value_at` — so no hot path hashes a
+  `SignalId` string. The public string-keyed API is unchanged (thin
+  resolve-then-delegate wrappers).
+
+Dirty-page tracking (the remaining §5 lever) is now **lower priority** — the
+shadow `memcmp` already reads only the mirrored bytes and re-decodes only the
+changed ones; dirty-page protect-and-fault would mainly cut the residual
+whole-shadow `memcmp` traffic, a smaller win from here.
 
 ## 6. Lever 5 — zero-alloc hot loop
 
@@ -133,3 +169,50 @@ realistic. Without lever 1: ~1× or worse.
   preemption needed (Lever 1 is *sufficient* and faithful in sim-time).
 - **D6** — integrator choice sets the tick count.
 - **D12** — historian cost (§5).
+
+## 11. Measured baseline — Tier 0 (2026-07-09)
+
+Phase-isolated, from the SIL suite's performance report (`pcs_bldc_sil`,
+`report_performance`), averaged over 1000 ticks after warm-up on the dev laptop.
+Two build configurations, **1 ms sim tick**; ×realtime = 1000 µs ÷ (µs/tick).
+~430 cvar leaves mirrored per tick.
+
+| phase                         | debug Rust + -O0 DLL | release Rust + -O2 DLL |
+|-------------------------------|---------------------:|-----------------------:|
+| firmware `advance_tick` alone |        5.9 µs (169×) |          4.1 µs (242×) |
+| full engine `step` (measured) |        496 µs (2.0×) |            49 µs (20×) |
+| empty engine `step` (floor)   |             0.06 µs  |               0.01 µs  |
+| derived (full − firmware)     |              490 µs  |                 45 µs  |
+
+**Findings.** (1) The old "~443 µs/advance" baseline was the *unoptimized* full
+step; building the Rust framework `--release` and the firmware DLL at `-O2 -g`
+takes the full step **496 → 49 µs (~10×)** and the suite to **~20× realtime** with
+no hot-path work. (2) The firmware itself is cheap (~4 µs); the cost lives in
+voyant's **whole-namespace mirror sweep** (the `derived` row), so Tier 1/2 should
+target the historian scan (Lever 4 — gate on "firmware ran" + dirty-page tracking,
+§5), not the firmware. (3) The engine's own per-step overhead is negligible
+(floor ≈ 0). Reproduce with `tools/run_sil.sh` (release) and
+`tools/run_sil.sh --debug`.
+
+## 12. After Tier 1 + Tier 2 (2026-07-09)
+
+Same suite / method, after the shadow-`memcmp` sweep (Tier 1) + dense-index State
+Table (Tier 2). **1 ms sim tick**, ~429 cvar leaves, release Rust + -O2 DLL.
+
+| phase                              | before (Tier 0) | after (Tier 1+2) |
+|------------------------------------|----------------:|-----------------:|
+| firmware `advance_tick` alone      |    4.1 µs (244×) |     ~4.2 µs (237×) |
+| **full engine `step` (measured)**  |     **54 µs (18×)** | **~9.3 µs (107×)** |
+| firmware-member step (sweep+flush) |               —  |     ~7.6 µs (131×) |
+| derived (full − firmware)          |           50 µs  |          ~5.2 µs |
+| ↳ shadow sweep + flush             |               —  |          ~3.3 µs |
+| ↳ model + route + propagate        |               —  |          ~1.8 µs |
+
+**Result: the owner target (full step ≤10 µs, >100× realtime) is met** — full
+step ~9.0–9.4 µs run-to-run (~107× realtime), a **~6× speedup** over Tier 0's
+54 µs. The remaining ~5.2 µs of voyant work splits ~3.3 µs shadow sweep+flush
+(whole-shadow `memcmp` + decode/record of the ~30-60 actually-changing ADC/counter
+leaves) and ~1.8 µs model+route+propagate (the `M×R` zero-latency re-eval + the
+model's per-tick record). Both are now well within the ~6 µs/tick budget; the
+report gained two breakdown rows (`firmware-member step` and the two `of which`
+lines) to keep this attribution live and cheap.
