@@ -73,12 +73,12 @@ fi
 
 # 1. Native firmware -> build/<DLL_DIR>/src/$LIBNAME
 echo "==> [1/3] Building native firmware (shared library, $DLL_FLAVOR)"
-# The debug flavor leaves BUILD_OPT empty, and a plain no-args run leaves
-# FWD_ARGS empty. On macOS's bash 3.2, expanding an empty array as
-# "${arr[@]}" under `set -u` (nounset) aborts with "unbound variable"
+# The debug flavor leaves BUILD_OPT and CARGO_PROFILE empty, and a plain
+# no-args run leaves FWD_ARGS empty. On macOS's bash 3.2, expanding an empty
+# array as "${arr[@]}" under `set -u` (nounset) aborts with "unbound variable"
 # (bash 4.4+ on Linux/Windows tolerates it). The ${arr[@]+"${arr[@]}"} guard
-# expands to the quoted elements when the array is non-empty and to nothing
-# when empty — portable across all three CI shells.
+# (used at every array expansion below) yields the quoted elements when the
+# array is non-empty and nothing when empty — portable across all three shells.
 bash "$HERE/build_native.sh" ${BUILD_OPT[@]+"${BUILD_OPT[@]}"} ${FWD_ARGS[@]+"${FWD_ARGS[@]}"}
 
 LIB="$ROOT/build/$DLL_DIR/src/$LIBNAME"
@@ -89,7 +89,7 @@ fi
 
 # 2. SIL Rust framework
 echo "==> [2/3] Building SIL framework (cargo, $PROFILE)"
-cargo build "${CARGO_PROFILE[@]}" --manifest-path "$SIL_MANIFEST"
+cargo build ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST"
 
 # 3. Run the sim sanity suite. On Windows (MSYS) the Rust binary needs a
 #    Windows-style path for LoadLibrary; cygpath handles that and is a no-op
@@ -100,7 +100,7 @@ LIB_ARG="$(cygpath -m "$LIB" 2>/dev/null || echo "$LIB")"
 echo "==> [3/3] Running SIL sanity suite against $LIB_ARG"
 status=0
 PCS_SIL_DLL_FLAVOR="$DLL_FLAVOR" \
-  cargo run --quiet "${CARGO_PROFILE[@]}" --manifest-path "$SIL_MANIFEST" \
+  cargo run --quiet ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
   -p pcs_bldc_sil -- "$LIB_ARG" || status=$?
 
 if [ "$status" -eq 0 ]; then
