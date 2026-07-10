@@ -29,7 +29,7 @@ pub enum ParseError {
 /// A structured signal identifier: `sig_type:source:name[:modifier]`.
 ///
 /// `:` is the delimiter; the `name` (a DWARF path for `cvar`, e.g.
-/// `HW_ADC_data.channelData[0].counts[6]`) never contains `:`.
+/// `sensor_data.channel[0].counts[6]`) never contains `:`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SignalId(String);
 
@@ -152,10 +152,10 @@ mod tests {
 
     #[test]
     fn parses_cvar_without_modifier() {
-        let id = SignalId::parse("cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]").unwrap();
+        let id = SignalId::parse("cvar:dut:sensor_data.channel[0].counts[6]").unwrap();
         assert_eq!(id.sig_type(), "cvar");
-        assert_eq!(id.source(), "pcs_bldc");
-        assert_eq!(id.name(), "HW_ADC_data.channelData[0].counts[6]");
+        assert_eq!(id.source(), "dut");
+        assert_eq!(id.name(), "sensor_data.channel[0].counts[6]");
         assert_eq!(id.modifier(), None);
     }
 
@@ -184,8 +184,8 @@ mod tests {
 
     #[test]
     fn new_roundtrips() {
-        let id = SignalId::new("cvar", "pcs_bldc", "x.y", None).unwrap();
-        assert_eq!(id.as_str(), "cvar:pcs_bldc:x.y");
+        let id = SignalId::new("cvar", "dut", "x.y", None).unwrap();
+        assert_eq!(id.as_str(), "cvar:dut:x.y");
     }
 
     #[test]

@@ -1,16 +1,12 @@
 //! DWARF reader: resolve a firmware variable path to its **link-time address**
 //! and **scalar leaf type**, by parsing the DLL's `.debug_*` sections.
 //!
-//! Reaches *any* `static` (not just exported symbols) — the State Table needs
-//! this (ffi-boundary.md §4). Built with `object` (PE + sections) + `gimli`
-//! (DWARF). The native firmware is `-g -O0`, so every static keeps a real
-//! address and aggregates keep their layout.
-//!
-//! Supports: top-level/static variables (`DW_OP_addr`), struct/union member
-//! offsets, **array indexing** (`a[i].b[j]`), typedef/const/volatile
-//! pass-through, and base/enum scalar kinds (signed/unsigned/float/bool).
-//! Not yet: pointer-chasing. Name collisions (function-local statics) are
-//! last-wins until the State Table adds qualified paths.
+//! Reaches *any* `static`, not just exported symbols (ffi-boundary.md §4), via
+//! `object` (PE) + `gimli` (DWARF); native firmware is `-g -O0` so statics keep
+//! real addresses and aggregate layout. Supports top-level statics, struct/union
+//! members, array indexing (`a[i].b[j]`), typedef/const/volatile pass-through, and
+//! base/enum scalars. Not yet: pointer-chasing. Name collisions (function-local
+//! statics) are last-wins.
 
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -87,6 +83,31 @@ pub(crate) enum Leaf {
     Enum(usize),
 }
 
+/// The result of a whole-namespace leaf enumeration ([`DwarfMap::enumerate_leaves`]).
+/// `paths` are traceable scalar/enum leaves in the resolver's path syntax
+/// (`var.member[i].field`); the counters report what the exclusion policy dropped.
+#[derive(Default)]
+pub(crate) struct LeafEnumeration {
+    /// Every traceable leaf path (scalars, expanded struct members + array
+    /// elements), sorted deterministically by top-level variable then walk order.
+    pub paths: Vec<String>,
+    /// Arrays skipped whole: over the element-count threshold (and not
+    /// include-forced), multi-dimensional, or of unknown length.
+    pub excluded_arrays: usize,
+    /// Leaves skipped because their type is not a traceable scalar/enum (pointer,
+    /// function, opaque/forward-declared aggregate, unsupported base type).
+    pub skipped_leaves: usize,
+    /// A recursion depth / leaf-budget safety cap was hit (walk truncated).
+    pub capped: bool,
+}
+
+/// Recursion depth safety cap (nested struct/array). Firmware aggregates are
+/// shallow; this only guards against pathological/looping DWARF.
+const ENUM_DEPTH_CAP: u32 = 64;
+/// Leaf-count safety cap: stop enumerating well before any realistic namespace
+/// would exhaust memory. Hitting it sets [`LeafEnumeration::capped`].
+const ENUM_LEAF_BUDGET: usize = 200_000;
+
 /// An enumeration type: its underlying byte size + numeric-value → name map.
 #[derive(Default)]
 struct EnumInfo {
@@ -98,12 +119,22 @@ struct EnumInfo {
 struct Maps {
     /// variable name -> (link address, type's global .debug_info offset)
     vars: HashMap<String, (u64, usize)>,
+    /// function name -> link-time entry address (`DW_AT_low_pc`). Only defining
+    /// subprograms (with a `low_pc`) are recorded; declarations / abstract
+    /// (inlined) instances are skipped. Backs the function-DIE ASLR anchor
+    /// fallback for images (ELF + LTO) whose exported data symbols never appear
+    /// in the DWARF variable map.
+    functions: HashMap<String, u64>,
     /// struct/union type offset -> (member name -> (member offset, member type offset))
     members: HashMap<usize, HashMap<String, (u64, usize)>>,
     /// typedef/const/volatile/restrict offset -> the type it wraps
     underlying: HashMap<usize, usize>,
     /// array type offset -> element type offset
     arrays: HashMap<usize, usize>,
+    /// array type offset -> per-dimension element counts (one per
+    /// `DW_TAG_subrange_type` child, source order). The single-index resolver only
+    /// handles 1-D, so multi-dimensional arrays are enumeration-excluded.
+    array_dims: HashMap<usize, Vec<u64>>,
     /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
     /// base type offset -> (DW_ATE encoding, byte size)
@@ -159,6 +190,23 @@ impl DwarfMap {
         self.0.vars.get(name).map(|&(addr, _)| addr)
     }
 
+    /// Link-time entry address (`DW_AT_low_pc`) of a function. Basis matches
+    /// [`var_addr`](Self::var_addr) — a file-relative vaddr in a PIC image — so the
+    /// same ASLR `slide` (`runtime - link`) applies to either anchor kind.
+    pub(crate) fn func_addr(&self, name: &str) -> Option<u64> {
+        self.0.functions.get(name).copied()
+    }
+
+    /// Count of top-level variables carrying a link address (diagnostics).
+    pub(crate) fn var_count(&self) -> usize {
+        self.0.vars.len()
+    }
+
+    /// Count of defining functions carrying a `low_pc` (diagnostics).
+    pub(crate) fn func_count(&self) -> usize {
+        self.0.functions.len()
+    }
+
     /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
     /// kind). Returns None if any segment, member, index type, or leaf kind is
     /// unknown.
@@ -184,6 +232,98 @@ impl DwarfMap {
             Leaf::Scalar(self.scalar_kind(ty)?)
         };
         Some((addr, leaf))
+    }
+
+    /// Enumerate **every traceable leaf** under every firmware `static`: scalars,
+    /// recursively-expanded struct/union members, and expanded array elements,
+    /// each as a path in the resolver's syntax (`var.member[i].field`) so
+    /// [`resolve`](Self::resolve) accepts it verbatim.
+    ///
+    /// **Exclusion policy.** An array over `threshold` elements is skipped whole
+    /// (drops task stacks, `ucHeap`, large scratch buffers) — unless an `include`
+    /// prefix reaches into it, forcing just the reached element(s). Multi-dimensional
+    /// and unknown-length arrays are skipped whole (resolver is 1-D only). Non-scalar
+    /// leaves (pointers, functions, opaque aggregates) are skipped and counted.
+    pub(crate) fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
+        let mut ctx = EnumCtx {
+            threshold,
+            includes,
+            out: Vec::new(),
+            excluded_arrays: 0,
+            skipped_leaves: 0,
+            capped: false,
+        };
+        // Deterministic top-level order.
+        let mut names: Vec<&String> = self.0.vars.keys().collect();
+        names.sort();
+        for name in names {
+            let (_addr, ty) = self.0.vars[name];
+            self.walk_leaves(name.clone(), ty, 0, &mut ctx);
+        }
+        LeafEnumeration {
+            paths: ctx.out,
+            excluded_arrays: ctx.excluded_arrays,
+            skipped_leaves: ctx.skipped_leaves,
+            capped: ctx.capped,
+        }
+    }
+
+    /// Recursive leaf walk for [`enumerate_leaves`](Self::enumerate_leaves).
+    fn walk_leaves(&self, path: String, ty: usize, depth: u32, ctx: &mut EnumCtx) {
+        if ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET) {
+            ctx.capped = ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET);
+            return;
+        }
+        let ty = self.peel(ty);
+
+        // Struct / union: recurse members in offset order (deterministic).
+        if let Some(members) = self.0.members.get(&ty) {
+            let mut ms: Vec<(&String, &(u64, usize))> = members.iter().collect();
+            ms.sort_by_key(|(name, (off, _))| (*off, (*name).clone()));
+            for (name, (_off, mty)) in ms {
+                self.walk_leaves(format!("{path}.{name}"), *mty, depth + 1, ctx);
+            }
+            return;
+        }
+
+        // Array: expand elements, applying the threshold / include policy.
+        if let Some(&elem) = self.0.arrays.get(&ty) {
+            let n = match self.0.array_dims.get(&ty) {
+                Some(dims) if (dims.len() == 1) && (dims[0] > 0) => dims[0],
+                _ => {
+                    // Multi-dimensional or unknown length: not indexable by the
+                    // single-index resolver, so exclude whole.
+                    ctx.excluded_arrays += 1;
+                    return;
+                }
+            };
+            let over = (n as usize) > ctx.threshold;
+            if over && !wanted(&path, ctx.includes) {
+                ctx.excluded_arrays += 1;
+                return;
+            }
+            let elem = self.peel(elem);
+            for i in 0..n {
+                let child = format!("{path}[{i}]");
+                // On a force-expanded over-threshold array, keep only the
+                // element(s) an include actually reaches.
+                if over && !wanted(&child, ctx.includes) {
+                    continue;
+                }
+                self.walk_leaves(child, elem, depth + 1, ctx);
+                if ctx.capped {
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Leaf: a traceable scalar or enum, else a skipped non-data type.
+        if self.0.enums.contains_key(&ty) || self.scalar_kind(ty).is_some() {
+            ctx.out.push(path);
+        } else {
+            ctx.skipped_leaves += 1;
+        }
     }
 
     /// The byte size of an enum type.
@@ -253,6 +393,33 @@ impl DwarfMap {
     }
 }
 
+/// Mutable state threaded through the recursive leaf walk.
+struct EnumCtx<'a> {
+    threshold: usize,
+    includes: &'a [String],
+    out: Vec<String>,
+    excluded_arrays: usize,
+    skipped_leaves: usize,
+    capped: bool,
+}
+
+/// Whether `x` names an ancestor-or-equal of `y` in the path syntax: `y == x`,
+/// or `y` continues `x` with a `.member` or `[index]` step.
+fn is_ancestor_or_eq(x: &str, y: &str) -> bool {
+    (y == x)
+        || (y.len() > x.len() && y.starts_with(x) && matches!(y.as_bytes()[x.len()], b'.' | b'['))
+}
+
+/// Whether the include list "wants" `path`: some include is an ancestor of
+/// `path` (include the whole subtree) **or** `path` is an ancestor of some
+/// include (descend toward a specifically-included leaf). Drives the
+/// over-threshold array force-expand.
+fn wanted(path: &str, includes: &[String]) -> bool {
+    includes
+        .iter()
+        .any(|inc| is_ancestor_or_eq(inc, path) || is_ancestor_or_eq(path, inc))
+}
+
 fn collect_unit(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
@@ -275,9 +442,19 @@ fn collect_unit(
         match tag {
             gimli::DW_TAG_variable => {
                 if let (Some(name), Some(addr), Some(ty)) =
-                    (die_name(dwarf, unit, entry), die_addr(entry), type_goff(unit, entry))
+                    (die_name(dwarf, unit, entry), die_addr(dwarf, unit, entry), type_goff(unit, entry))
                 {
                     maps.vars.insert(name, (addr, ty));
+                }
+            }
+            gimli::DW_TAG_subprogram => {
+                // Only a defining subprogram carries a `low_pc`; declarations and
+                // abstract (inlined) instances have none and are skipped by the
+                // `die_low_pc` -> None guard. name+low_pc is all the anchor needs.
+                if let (Some(name), Some(addr)) =
+                    (die_name(dwarf, unit, entry), die_low_pc(dwarf, unit, entry))
+                {
+                    maps.functions.insert(name, addr);
                 }
             }
             gimli::DW_TAG_member => {
@@ -304,6 +481,20 @@ fn collect_unit(
             gimli::DW_TAG_array_type => {
                 if let (Some(g), Some(elem)) = (goff, type_goff(unit, entry)) {
                     maps.arrays.insert(g, elem);
+                    // Ensure a dims vec exists even for a 0-subrange (flexible)
+                    // array, so enumeration treats it as unknown-length.
+                    maps.array_dims.entry(g).or_default();
+                }
+            }
+            gimli::DW_TAG_subrange_type => {
+                // A subrange is a dimension of its enclosing array_type; append
+                // its element count (in source order) to that array's dims.
+                if let Some(&(_, parent, ptag)) = stack.last() {
+                    if ptag == gimli::DW_TAG_array_type {
+                        if let Some(len) = subrange_len(entry) {
+                            maps.array_dims.entry(parent).or_default().push(len);
+                        }
+                    }
                 }
             }
             gimli::DW_TAG_base_type => {
@@ -359,17 +550,88 @@ fn die_name(
     Some(s.to_string_lossy().into_owned())
 }
 
-/// Address from a `DW_OP_addr` location expression (the only form statics use).
-fn die_addr(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
+/// Link-time address of a static from its `DW_AT_location` expression.
+///
+/// The location must be a single-address `DW_AT_location` exprloc; anything else
+/// (a frame-relative/register local, a loclist, a composite `DW_OP_piece`) yields
+/// `None`, so only real statics enter the map. The expression is **fully
+/// evaluated** rather than pattern-matched on its first op:
+///
+/// * ELF/PE (GCC) emit one `DW_OP_addr <final-addr>` per static.
+/// * A macOS `.dSYM` (dsymutil) relocates debug-map statics as
+///   `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>` — several statics sharing
+///   one relocation anchor, distinguished only by the trailing offset. Reading
+///   just the leading `DW_OP_addr` collapsed every such static onto the anchor's
+///   address (the Mach-O same-TU collapse this reader now fixes).
+///
+/// Evaluating the whole expression covers both: a lone `DW_OP_addr` still yields
+/// that address (ELF/PE unchanged), while `+ DW_OP_plus_uconst` is honored
+/// (Mach-O correct). `DW_OP_addrx` (DWARF 5 indexed) is resolved via `.debug_addr`.
+fn die_addr(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<u64> {
     match entry.attr_value(gimli::DW_AT_location).ok().flatten()? {
-        gimli::AttributeValue::Exprloc(expr) => {
-            let bytes = expr.0.slice();
-            if bytes.len() >= 9 && bytes[0] == gimli::constants::DW_OP_addr.0 {
-                Some(u64::from_le_bytes(bytes[1..9].try_into().ok()?))
-            } else {
-                None
+        gimli::AttributeValue::Exprloc(expr) => eval_static_addr(dwarf, unit, expr),
+        _ => None,
+    }
+}
+
+/// Evaluate a DWARF location expression to a single absolute address, or `None`
+/// if it is not a plain static address (needs a frame base, a register, memory,
+/// TLS, or resolves to a composite of pieces). Handles `DW_OP_addr`
+/// (`RequiresRelocatedAddress` — resumed unchanged, since our DWARF addresses are
+/// already final) and `DW_OP_addrx` (`RequiresIndexedAddress` — resolved through
+/// `.debug_addr`); arithmetic ops such as `DW_OP_plus_uconst` are applied by the
+/// evaluator itself.
+fn eval_static_addr(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    expr: gimli::Expression<Slice>,
+) -> Option<u64> {
+    let mut eval = expr.evaluation(unit.encoding());
+    let mut result = eval.evaluate().ok()?;
+    loop {
+        match result {
+            gimli::EvaluationResult::Complete => break,
+            // DW_OP_addr: the reader supplies the (already-final) address back.
+            gimli::EvaluationResult::RequiresRelocatedAddress(addr) => {
+                result = eval.resume_with_relocated_address(addr).ok()?;
             }
+            // DW_OP_addrx: pull the address out of `.debug_addr` by index.
+            gimli::EvaluationResult::RequiresIndexedAddress { index, .. } => {
+                let addr = dwarf.address(unit, index).ok()?;
+                result = eval.resume_with_indexed_address(addr).ok()?;
+            }
+            // Anything else (frame base, register, memory, TLS, ...) is not a
+            // static's link address — skip this DIE.
+            _ => return None,
         }
+    }
+    // A static resolves to exactly one whole-object piece at an address.
+    match eval.result().as_slice() {
+        [piece] => match piece.location {
+            gimli::Location::Address { address } => Some(address),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A subprogram's link-time entry address from `DW_AT_low_pc`. Handles both the
+/// DWARF≤4 absolute form (`DW_FORM_addr` → `AttributeValue::Addr`) and the DWARF 5
+/// indexed form (`DW_FORM_addrx` → `DebugAddrIndex`, resolved via `.debug_addr`),
+/// since GCC 15 defaults to DWARF 5. Any other form (or a subprogram without a
+/// `low_pc` — a declaration / abstract instance) yields `None`.
+fn die_low_pc(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<u64> {
+    match entry.attr_value(gimli::DW_AT_low_pc).ok().flatten()? {
+        gimli::AttributeValue::Addr(a) => Some(a),
+        gimli::AttributeValue::DebugAddrIndex(index) => dwarf.address(unit, index).ok(),
         _ => None,
     }
 }
@@ -404,6 +666,21 @@ fn encoding(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u8> {
     }
 }
 
+/// An array dimension's element count from a `DW_TAG_subrange_type`:
+/// `DW_AT_count` directly, else `DW_AT_upper_bound + 1`. `None` for an
+/// unbounded (flexible) array member.
+fn subrange_len(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
+    if let Some(c) = entry.attr_value(gimli::DW_AT_count).ok().flatten() {
+        return c.udata_value();
+    }
+    entry
+        .attr_value(gimli::DW_AT_upper_bound)
+        .ok()
+        .flatten()?
+        .udata_value()
+        .map(|u| u + 1)
+}
+
 /// An enumerator's `DW_AT_const_value` as an i64 (signed first, else unsigned).
 fn const_value(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<i64> {
     let v = entry.attr_value(gimli::DW_AT_const_value).ok().flatten()?;
@@ -425,5 +702,152 @@ fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
             }
             Some((&seg[..b], indices))
         }
+    }
+}
+
+#[cfg(test)]
+impl DwarfMap {
+    /// Build a [`DwarfMap`] with only the var/func address maps populated — for
+    /// anchor-selection tests in other modules (which cannot reach the private
+    /// [`Maps`]). Types are irrelevant to the anchor (only the address delta matters).
+    pub(crate) fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
+        let mut m = Maps::default();
+        for (n, a) in vars {
+            m.vars.insert((*n).to_string(), (*a, 0));
+        }
+        for (n, a) in funcs {
+            m.functions.insert((*n).to_string(), *a);
+        }
+        DwarfMap(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: on macOS a `.dSYM` relocates same-TU file-scope statics as
+    /// `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>`, several sharing one
+    /// anchor. The reader must evaluate the whole expression (not just the leading
+    /// `DW_OP_addr`), else the group collapses onto the anchor's address. The
+    /// fixture is the real arm64 dSYM DWARF from CI (~214 KB, `tests/fixtures/`);
+    /// these five `static uint32_t` counters in `sw/fw/src/main.c` collapsed onto
+    /// two addresses before the fix (four onto `0x14008`, `taskUsbRuns` onto
+    /// `0x14000`). Their true, distinct addresses:
+    fn macho_dsym_static_addresses() -> Vec<(&'static str, u64)> {
+        vec![
+            ("taskUsbRuns", 0x14000),
+            ("task1msRuns", 0x14008),
+            ("task10msRuns", 0x1400c),
+            ("telemRuns", 0x14010),
+            ("task200msRuns", 0x14014),
+        ]
+    }
+
+    #[test]
+    fn macho_dsym_same_tu_statics_do_not_collapse() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/macho_static_collapse.dSYM.dwarf");
+        let bytes = std::fs::read(&path).expect("read dSYM DWARF fixture");
+        let map = DwarfMap::parse(&bytes).expect("parse dSYM DWARF");
+
+        let expected = macho_dsym_static_addresses();
+        // Each collapsing static resolves to its own true address (the
+        // DW_OP_plus_uconst addend applied, not dropped).
+        for (name, addr) in &expected {
+            assert_eq!(map.var_addr(name), Some(*addr), "{name} address");
+        }
+        // And no two of them alias — the collapse would violate this.
+        let mut addrs: Vec<u64> = expected.iter().map(|(_, a)| *a).collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        assert_eq!(addrs.len(), expected.len(), "static addresses must be distinct");
+    }
+
+    #[test]
+    fn func_addr_looks_up_subprogram_low_pc() {
+        let dw = DwarfMap::for_anchor_test(&[("g", 0x10)], &[("sil_fw_start", 0xBEEF)]);
+        assert_eq!(dw.func_addr("sil_fw_start"), Some(0xBEEF));
+        assert_eq!(dw.func_addr("g"), None); // a variable is not a function
+        assert_eq!(dw.func_addr("missing"), None);
+        assert_eq!((dw.var_count(), dw.func_count()), (1, 1));
+    }
+
+    /// Build a synthetic [`DwarfMap`] exercising the leaf walk without a real DLL:
+    /// a scalar `n`, a struct `s { a; arr[3]; big[100] }`, and a 2-D `grid[2][3]`.
+    fn synthetic() -> DwarfMap {
+        let mut m = Maps::default();
+        // base u32 @10
+        m.base.insert(10, (gimli::DW_ATE_unsigned.0, 4));
+        m.sizes.insert(10, 4);
+        // small array @20 (elem u32, 3 elems)
+        m.arrays.insert(20, 10);
+        m.array_dims.insert(20, vec![3]);
+        // big array @30 (elem u32, 100 elems — over threshold)
+        m.arrays.insert(30, 10);
+        m.array_dims.insert(30, vec![100]);
+        // 2-D array @40 (elem u32, 2x3 — multi-dim)
+        m.arrays.insert(40, 10);
+        m.array_dims.insert(40, vec![2, 3]);
+        // struct S @100 { a@0:u32, arr@4:arr20, big@8:arr30 }
+        let mut members = HashMap::new();
+        members.insert("a".to_string(), (0u64, 10usize));
+        members.insert("arr".to_string(), (4, 20));
+        members.insert("big".to_string(), (8, 30));
+        m.members.insert(100, members);
+        // vars
+        m.vars.insert("n".to_string(), (0x1000, 10));
+        m.vars.insert("s".to_string(), (0x2000, 100));
+        m.vars.insert("grid".to_string(), (0x3000, 40));
+        DwarfMap(m)
+    }
+
+    #[test]
+    fn enumerates_scalars_structs_arrays_with_threshold() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &[]);
+        assert_eq!(
+            en.paths,
+            vec![
+                "n".to_string(),
+                "s.a".to_string(),
+                "s.arr[0]".to_string(),
+                "s.arr[1]".to_string(),
+                "s.arr[2]".to_string(),
+            ]
+        );
+        // grid (multi-dim) + s.big (over threshold) both excluded whole.
+        assert_eq!(en.excluded_arrays, 2);
+        assert_eq!(en.skipped_leaves, 0);
+        assert!(!en.capped);
+    }
+
+    #[test]
+    fn include_forces_a_single_over_threshold_element() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &["s.big[1]".to_string()]);
+        // Exactly the one included element joins; the rest of big stays excluded.
+        assert!(en.paths.contains(&"s.big[1]".to_string()));
+        assert!(!en.paths.contains(&"s.big[0]".to_string()));
+        assert!(!en.paths.contains(&"s.big[2]".to_string()));
+        // Only grid remains excluded now (big was force-expanded).
+        assert_eq!(en.excluded_arrays, 1);
+    }
+
+    #[test]
+    fn include_whole_array_prefix_expands_all_elements() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &["s.big".to_string()]);
+        let big_leaves = en.paths.iter().filter(|p| p.starts_with("s.big[")).count();
+        assert_eq!(big_leaves, 100);
+    }
+
+    #[test]
+    fn ancestor_predicate() {
+        assert!(is_ancestor_or_eq("a.b", "a.b"));
+        assert!(is_ancestor_or_eq("a.b", "a.b.c"));
+        assert!(is_ancestor_or_eq("a.b", "a.b[0]"));
+        assert!(!is_ancestor_or_eq("a.b", "a.bc")); // not a boundary
+        assert!(!is_ancestor_or_eq("a.b.c", "a.b"));
     }
 }

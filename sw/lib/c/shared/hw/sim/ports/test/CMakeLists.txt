@@ -1,0 +1,3 @@
+add_executable(test_hw_SIL_ports test_SIL_ports.c)
+target_link_libraries(test_hw_SIL_ports PRIVATE hw_SIL_ports unity)
+add_test(NAME hw_SIL_ports COMMAND test_hw_SIL_ports)

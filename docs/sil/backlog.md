@@ -24,11 +24,16 @@ ADC, ...). Files, as of 2026-07-04:
 - `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 
 **Why it goes:** the SIL (voyant) has white-box DWARF read/write access to all
-firmware memory, plus State Table overrides and (soon) Route Table
-suspend/resume for injection. A hand-written per-driver injection API is a
-redundant seam — extra firmware added to the firmware-under-test in order to
-test the firmware-under-test. Remove it across the board, on every peripheral
-driver.
+firmware memory, plus State Table overrides and Route Table suspend/resume for
+injection. A hand-written per-driver injection API is a redundant seam — extra
+firmware added to the firmware-under-test in order to test the
+firmware-under-test. Remove it across the board, on every peripheral driver.
+
+**Prerequisite met (2026-07-05):** the **port registration seam** now exists
+(`SIL_ports` + `sil_fw_setHooks` + voyant's cache-mediated port state; see
+`state-route-tables.md` §1 "Ports"), giving drivers a sanctioned, native-format
+input/output path — sim `HW_ADC` is the first conversion. Removal itself is
+still parked; drivers migrate to ports as they are converted.
 
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the
@@ -46,3 +51,55 @@ rewrite against proper test-owned stubs/mocks, or retire it in favor of more
 comprehensive cross-module SIL tests. No other consumers exist (nothing in
 `sw/sil/` or `sw/fw/` uses `_sim_*` except a mention in
 `sw/fw/src/hw/sim/_placeholder.c`).
+
+## Investigate GCC LTO DWARF emission on ELF (Linux `.so` reads 0 DIEs)
+
+**When:** whenever the Linux SIL flavor wants LTO's ~30% firmware speedup back
+(today it runs `-O3` without `-flto`, so it is only ~30% slower on the firmware
+half of a step — a non-blocking gap).
+
+**What we saw (PR #2, run 3):** the release SIL DLL built with `-O3 -flto
+-ffat-lto-objects -g` links fine on Linux (GNU gcc), the `.so` loads, and its
+250 exports resolve — but gimli parses **0 DWARF variables and 0 DWARF
+functions** from it (`no usable ASLR anchor ... 250 exports, 0 DWARF variables,
+0 DWARF functions`). The identical flags on Windows (MinGW, same GCC major)
+produce a clean DWARF map. So GCC's LTO code-gen is emitting DWARF that gimli
+cannot read on ELF (or emitting none for the merged program), even with
+`-ffat-lto-objects`.
+
+**Interim fix (2026-07-10):** LTO is gated to Windows only (`CMAKE_HOST_WIN32` in
+`sw/cmake/toolchains/native.cmake`); Linux/macOS release keeps `-O3` without
+`-flto`, which reads clean. macOS never had LTO (Apple clang lacks
+`-ffat-lto-objects`).
+
+**To investigate:** whether GCC-on-ELF needs `-ffat-lto-objects` *plus* a
+`-flto`-aware objcopy/debug-link step; whether the fat objects' `.debug_*`
+survive the LTO link or are dropped for the GIMPLE'd units; whether `-flto=auto`
++ `-g3` or `-gdwarf-4` changes what lands in the `.so`; and whether gimli needs
+the fat-object debug sections pointed at explicitly. Compare a `-flto` vs
+non-`-flto` `.so`'s `.debug_info` with `readelf --debug-dump=info`.
+
+## Future feature: native debugger (VSCode) attached to in-the-loop firmware
+
+**Idea (owner, 2026-07-09):** run voyant with firmware in the loop, connected
+to the VSCode debugger — breakpoints, stepping, variable watches in the C
+firmware source while the sim runs. Realtime-sim flavored: fine to build the
+firmware at `-O0 -g` (the existing `run_sil.sh --debug` flavor), not chasing
+100×+ here.
+
+**Feasibility sketch:** most of this comes free from the architecture. The
+firmware is a native DLL inside the voyant process, so attaching a native
+debugger (MinGW gdb / VSCode `cppdbg`) to that process gives source-level
+breakpoints/stepping/watches in the C today — the DLL carries full DWARF, and
+gdb shows the executing fiber's stack at a breakpoint. The killer property is
+that the sim is single-threaded: **hitting a breakpoint freezes the entire
+virtual world coherently** — motor model, sim time, everything — unlike real
+hardware, where the plant keeps moving while the CPU is halted; and
+determinism means you can replay to the same breakpoint identically.
+
+**To productize (rough):** a `--wait-debugger` / hold mode in the driver +
+VSCode `launch.json` attach configs; a pacing policy that tolerates wall-clock
+stalls (a breakpoint stalls the paced loop — resync rather than sprint on
+resume); docs. Natural host is the **realtime/paced run mode**, so this
+sequences after fast mode + Python bindings (D3) and the realtime dashboard
+(D4), per the owner's ordering.

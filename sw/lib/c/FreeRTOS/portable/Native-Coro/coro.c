@@ -1,30 +1,33 @@
 #include "coro.h"
+#include "coro_frame.h"   /* CORO_FRAME_BYTES / CORO_OFF_* — shared with the .S */
 #include <stdint.h>
 
 /* Assembly backend (coro_switch_<arch>.S). */
 extern void coro_asm_swap( void ** saveSp, void * newSp );
 extern void coro_asm_trampoline( void );
 
-#if defined( __aarch64__ )
-
-/* Saved-frame layout — must match coro_switch_aarch64.S (x19-x30, d8-d15). */
-#define CORO_FRAME_BYTES  160u
-#define CORO_OFF_ENTRY    0u    /* x19 */
-#define CORO_OFF_ARG      8u    /* x20 */
-#define CORO_OFF_RET      88u   /* x30 (link register) */
-
-#elif defined( __x86_64__ )
-
-/* Saved-frame layout — must match coro_switch_x86_64.S (rbp, rbx, r12-r15,
- * then the return address). FRAME_BYTES is 56 so an aligned stack top leaves
- * the trampoline's `call` 16-byte aligned per the System V ABI. */
-#define CORO_FRAME_BYTES  56u
-#define CORO_OFF_ENTRY    24u   /* r12 */
-#define CORO_OFF_ARG      16u   /* r13 */
-#define CORO_OFF_RET      48u   /* return address */
-
-#else
+#if !defined( CORO_FRAME_BYTES )
 #error "Native-Coro: no context-switch backend for this architecture yet"
+#endif
+
+/* The frame geometry lives in coro_frame.h so the C that builds a fresh frame
+ * and the asm that saves/restores it share one source of truth. Guard the
+ * invariants the asm relies on at compile time (these also protect x86_64):
+ *  - 64-bit pointers (each saved slot is one register width);
+ *  - the three coro_init slots are 8-byte aligned and inside the frame;
+ *  - AArch64 keeps the frame 16-aligned; x86-64 keeps it 8 mod 16 by design
+ *    (56 bytes) so the trampoline's `call` lands 16-aligned per System V. */
+_Static_assert( sizeof( void * ) == 8, "coro frame assumes 64-bit pointers" );
+_Static_assert( ( CORO_OFF_ENTRY % 8 ) == 0, "entry slot must be 8-aligned" );
+_Static_assert( ( CORO_OFF_ARG % 8 ) == 0, "arg slot must be 8-aligned" );
+_Static_assert( ( CORO_OFF_RET % 8 ) == 0, "return slot must be 8-aligned" );
+_Static_assert( CORO_OFF_ENTRY < CORO_FRAME_BYTES, "entry slot outside frame" );
+_Static_assert( CORO_OFF_ARG < CORO_FRAME_BYTES, "arg slot outside frame" );
+_Static_assert( CORO_OFF_RET < CORO_FRAME_BYTES, "return slot outside frame" );
+#if defined( __aarch64__ )
+_Static_assert( ( CORO_FRAME_BYTES % 16 ) == 0, "AArch64 frame must be 16-aligned" );
+#elif defined( __x86_64__ )
+_Static_assert( ( CORO_FRAME_BYTES % 16 ) == 8, "x86-64 frame must be 8 mod 16 for call alignment" );
 #endif
 
 static coro_t * coro_running;

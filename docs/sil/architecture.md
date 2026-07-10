@@ -78,24 +78,37 @@ white-box access to firmware state, in two modes:
   (types/addresses), dereferenced in-process. No hand-written accessor per
   signal; the firmware doesn't know it's being simulated.
 
-### 3.2 The execution-backend seam
+### 3.2 The public member seam and the internal execution backend
 
-The framework talks to the firmware through one narrow trait so the
-execution mechanism can evolve without disturbing the core engine, models,
-or modes:
+The framework's one **public** seam onto everything it executes is the
+**`Member`** trait (see "Member model" below): the engine drives firmware
+instances, plant models, and future native apps uniformly through it. Firmware is
+one *kind* of member — a **`FirmwareMember`** wrapping the concrete **`Firmware`**
+handle (native shared lib + DWARF white-box; white-box `read_cvar`/`write_cvar`
+and lifecycle `start`/`shutdown` are inherent methods on that handle).
+
+Behind `FirmwareMember` sits an **internal, crate-private** `Backend` trait — the
+narrow execution seam the member drives *around each tick*:
 
 ```rust
-trait FwBackend {
-    fn init(&mut self);                       // run HW_*_init, create tasks
-    fn advance(&mut self, dt: SimDuration);   // let firmware run for dt of sim time
-    fn read(&self, sym: &str) -> Value;       // white-box read
-    fn write(&mut self, sym: &str, v: Value); // white-box write / injection
+pub(crate) trait Backend {
+    fn advance_tick(&self);                    // let firmware run one tick of sim time
+    fn read_cvar(&self, path: &str) -> Value;  // white-box read
+    fn write_cvar(&self, path: &str, v: &Value); // white-box write / injection
+    // + the port registration seam (defaults to no-ops)
 }
 ```
 
-- `NativeFreeRtos` — the first and primary impl (§4).
+It is **not** a public architectural seam. Its value is the in-crate test double
+(mock backends prove `FirmwareMember`/engine semantics without a firmware DLL),
+and it keeps the door open for a second execution mechanism to slot in behind
+`FirmwareMember` without disturbing the engine, models, or modes. Lifecycle
+(`start`/`shutdown`) and DLL loading are deliberately *off* the trait — they are
+called on the concrete `Firmware` handle the driver holds.
+
+- `Firmware` (native shared lib) — the first and primary backend (§4).
 - `ArmEmu` — a possible later impl (Unicorn/QEMU) for a high-fidelity
-  subset, same trait.
+  subset, same internal trait.
 
 ### 3.3 Open decisions (to resolve)
 
@@ -150,22 +163,122 @@ reimplementation. (Preemption is *cooperative* — faithful in sim-time because
 firmware bursts are instantaneous, with one fidelity trade noted in
 [`freertos-tick.md`](freertos-tick.md) §5.)
 
+## Member model
+
+Everything the sim executes is a **`Member`** — the framework's single, uniform
+seam. The [`Engine`](#5-sim-core-rust) holds a `Vec<Box<dyn Member>>` and drives
+each one *only* through this trait, in registration order (deterministic):
+
+```rust
+pub trait Member {
+    fn name(&self) -> &str;                                  // instance name = <source> of its signals
+    fn advance(&mut self, dt_us: u64, st: &mut StateTable);  // one deterministic step
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable);
+}
+```
+
+Members do **not** declare their signals (`signals()`) and are **not** pulled
+(`read()`). Instead a member treats the State Table as its live workspace: it
+**registers** its signals as a runtime act directly on the table (inside
+`set_enabled(true)` / `advance`), **pushes** its outputs via `StateTable::record`,
+and reads its routed inputs via `StateTable::current_value`. Registration is open
+(see [`state-route-tables.md`](state-route-tables.md) §1): any member may register
+any `sig_type`, and nothing infers a member's kind from what it registers. All
+cross-member coupling flows through **routes**, never one member reaching into
+another's signals (a discipline convention, not enforced — members are first-party
+trusted code; a narrowed per-member table view is the escalation if scripted
+members ever change the trust model).
+
+**The firmware is one *kind* of member.** A **`FirmwareMember`** wraps a concrete
+**`Firmware`** handle (DLL load, lifecycle, DWARF white-box) and drives it through
+the internal, crate-private `Backend` seam (§3.2) — which demotes from "the
+firmware seam" to internal plumbing behind the member. It is constructed with an
+explicit instance **`name`** (not derived from the DLL — two boards may run the
+same image as distinct members) and a firmware tick period; its `advance`
+accumulates sim time and, per elapsed firmware-tick period, **flushes** the *fresh*
+(route-/test-/pin-written) `cvar`s in its namespace into firmware memory, runs one
+`advance_tick`, then **sweeps** its whole cvar leaf list back out into the table
+(`record_mirror`). The cvar mirror is **automatic** — the member enumerates the
+firmware's traceable namespace from DWARF at enable (minus a built-in
+array-size/pointer exclusion policy; `exclude`/`include` tune it) and mirrors it
+with **no per-signal declarations** (the D12 end-state). The flush is sparse (a
+State Table **dirty set** tracks command writes; a pinned cvar re-asserts every
+tick). It is the **only** thing that touches firmware memory — routes never do
+(they are table-mediated; see
+[`state-route-tables.md`](state-route-tables.md) §2). Lifecycle (`start`/`shutdown`)
+stays an explicit call on the concrete `Firmware` handle the driver holds.
+Multi-firmware is simply multiple `FirmwareMember`s, each syncing through its own
+backend.
+
+**Firmware ports.** A firmware member's sim HW drivers can register signals of
+their own at runtime — **ports** — through a hook vtable the framework installs
+over the control ABI (`sil_fw_setHooks`, before `sil_fw_start`; the null-safe
+`SIL_ports` C helper wraps it, so hookless standalone/unit-test runs are
+unchanged). Ports carry **native-format** values (volts stay volts; the driver
+owns conversion to its C representation), and their I/O is **cache-mediated**
+exactly like the cvar mirror — the member fills every port's input cache
+from the table before each `advance_tick` and drains the port-write buffer back
+into the table after it, so C never touches the State Table mid-tick. The C side
+names only `{sig_type, local, unit}`; the member prefixes its instance name. The
+sim `HW_ADC` (one input port per enabled input, volts→counts in the driver,
+synthetic-ramp fallback when undriven) is the first user. See
+[`state-route-tables.md`](state-route-tables.md) §1 "Ports".
+
+**Multi-instance vision.** Firmware instances, plant/peer models, and future native
+apps are all **peers** — members side by side in one engine. The `<source>` segment
+of a signal's id names its producing member, so *N* firmware instances (the
+multi-device stretch goal) and their models coexist in one flat State Table.
+`RampModel` is voyant's reference model member; real plant models (motor, encoder,
+sensors) are instantiation-side members.
+
+**Enable semantics.** Members start enabled when added. The engine **gates** a
+disabled member out — its `advance` is skipped while sim time keeps flowing, and
+its signals hold their last recorded value. `set_enabled` is where a member
+(re-)registers its signals (idempotent). FUTURE: member-kind-specific *re-enable
+depth* — a firmware member reloading its DLL (boot-from-reset), a model reinit'ing
+its integration state — is not implemented; today enable is gating only.
+
+The per-tick order the engine runs — advance sim time → validate wiring if dirty →
+propagate delayed routes from a pre-tick snapshot → for each enabled member:
+resolve the zero-latency route DAG (topo order, fresh reads) then advance — and the
+**settled per-route latency** model (0 forward / 1 delayed ZOH cut) are documented
+in [`state-route-tables.md`](state-route-tables.md) §3. Member registration order is
+a design surface for forward flow; the step-time validator flags a route that needs
+to be delayed or reordered.
+
 ## 5. Sim core (Rust)
 
 One **sim clock** drives a discrete time-step engine at a fixed base `dt`
 (D6; set by model numerical stability, typically finer than the PWM rate, with
 ISRs firing on integer multiples). State flows through the State
 Table; the Route Table moves it (see
-[`state-route-tables.md`](state-route-tables.md)). Each step:
+[`state-route-tables.md`](state-route-tables.md) §3 for the settled per-route
+latency model). Each step:
 
-1. Advance plant models by `dt` (updates their State Table entries).
-2. **Propagate routes** in one uniform pass — snapshot all sources, then write
-   all destinations (sensors into fw-input statics, fw-output statics back to
-   models, together). Race-free: the firmware is quiescent here (D1).
-3. `sil_fw_advance_tick()` — firmware runs to quiescence (D1).
+1. Advance sim time; **validate the wiring if dirty** (acyclic zero-latency graph,
+   forward flow along member order, single-driver) — a bad verdict is raised at
+   this step and cached until fixed.
+2. **Propagate delayed (latency-1) routes** from a snapshot taken before any member
+   advances — each delayed destination gets its source's end-of-previous-tick value
+   (the ZOH cut).
+3. **For each enabled member, in registration order:** re-resolve the enabled
+   **zero-latency** routes in topological order with fresh reads (forward dataflow,
+   zero added latency), then advance the member. This is **table-only**: routes move
+   values between entries and never touch a backend; the firmware member flushes the
+   fresh (route-written) `cvar` destinations into firmware memory and sweeps its
+   whole cvar mirror back out inside its own advance (`sil_fw_advance_tick` runs to
+   quiescence — race-free, the firmware is quiescent here, D1).
 4. Append changed signals to the State Table historian (change-logged,
    per-signal timeseries — D12); run test asserts/injection (ad-hoc State
-   Table reads/writes).
+   Table reads/writes). The `Engine` holds **no backend handle** — it touches
+   only members, routes, and the table.
+
+The State Table also owns a **unified log system**: a bounded, drop-oldest ring of
+`LogEntry { time_us, level, source, message }` that members and the driver append to
+via `StateTable::log(level, source, msg)`. The table stamps each entry with its
+*current sim time* (members cannot fake a timestamp, and logging never feeds back
+into behaviour — determinism is untouched); the driver drains it with `take_logs`.
+The swallowed-`record`-error sites now log a `Warning` instead of dropping the error.
 
 The two run modes are thin wrappers over this loop:
 
@@ -203,10 +316,15 @@ sw/sil/                 Rust cargo workspace
                          firmware backend (control ABI + DWARF white-box), and
                          the State Table, Route Table, sim clock, historian, run
                          modes, plus the trait seams a project implements:
-                           Backend   — load/drive/introspect a firmware
-                           Model     — a plant/peer model (advance + vsigs)
+                           Member    — any executable participant (the engine
+                                       drives everything through this); a model
+                                       member, or a FirmwareMember wrapping the
+                                       concrete Firmware handle. (An internal,
+                                       crate-private Backend trait is the
+                                       test-double seam behind FirmwareMember —
+                                       not something a project implements.)
                            Transport — a comms bus (tx → rx, completion timing)
-                           Scenario  — the project's wiring (models/routes/trace)
+                           Scenario  — the project's wiring (members/routes/trace)
   pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board
                          (motor/encoder/sensor models, firmware config, routes);
                          the binary that runs the sim.

@@ -67,7 +67,10 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   it over the control ABI (`start`/`advance_tick`/`shutdown`), and reads
   `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
   fiber scheduler → task → white-box read.
-- ☐ `FwBackend` trait + `NativeFreeRtos` impl (formalize over the proof-of-life)
+- ☑ **`Backend` trait + `Firmware` impl** — the execution-backend seam
+  (architecture.md §3.2) formalized: `voyant::Backend` (lifecycle
+  `start`/`advance_tick`/`shutdown` + `cvar` read/write by path), with `Firmware`
+  as its first impl. (An ARM-emu backend could be a later impl.)
 - ☑ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap` resolves
   `var.member`, `arr[i]`, nested paths → link address + scalar leaf kind
   (members, array indexing, typedef/const/volatile pass-through, base/enum
@@ -95,13 +98,32 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
     firmware widths ↔ `Value` (the only unsafe/DWARF part).
   - 10 unit tests; demo samples firmware into the table, shows change-log dedup,
     ZOH lookup, and inject-and-react. Next: `vsig` (Model trait), comms, routes.
-- ☐ **Route Table**: `source → destination`, one snapshot-then-write pass/tick,
-  with per-route suspend/resume
+- ☑ **`Model` trait + `vsig` backing** (`voyant::model`) — minimal `Model`
+  (`name`/`signals`/`advance(dt_us)`/`read`) + `ModelSignal`; `register_model` /
+  `record_model` sample a model into the State Table the way cvars are sampled
+  (StateTable stays pure data — the glue lives in `model`, not the table).
+  `RampModel` reference impl; 8 new unit tests; sanity-suite check 5 shows
+  register → advance-with-time → historian record.
+- ☑ **Route Table** (`voyant::route`): `RouteTable` of `source → destination`
+  routes, one **snapshot-then-write** pass/tick (`propagate` snapshots all enabled
+  sources from the State Table cache, then writes all dests — order-independent,
+  one hop/tick). Sources are any entry (`vsig`/`cvar`); `cvar` dests are driven
+  via `Backend::write_cvar` (DWARF path = id `name`). Per-route `suspend`/`resume`
+  for fault injection (pairs with the table `override`); `vsig` dests deferred to
+  a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
+  firmware `cvar`, suspend/resume gating).
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
   registration; port dispatch shim (ISR entry/exit, FromISR/yield)
-- ☐ Sim clock + step loop + **State Table historian** (change-logged,
-  timestamped per-signal series; dump at end-of-run — D12)
+- ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
+  Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
+  advance sim time (monotonic, wall-clock-free) → advance models (registration
+  order) + record vsigs → propagate routes → `advance_tick` → sample registered
+  cvars into the historian. `add_model`/`add_route`/`sample_cvar` registration;
+  model vsig ids + sampled list resolved once (hot loop skips `Model::signals()`).
+  7 unit tests; the sanity suite drives checks 2/3/4/5 through the engine. (The
+  historian itself — the change-logged per-signal series — is the State Table,
+  already done above; end-of-run trace **dump/MDF4 export** remains, D12.)
 - ☐ **Perf seams from the start** (performance.md): zero-alloc hot loop +
   columnar historian buffers; gated discrete work (continuous-integration every
   tick, firmware/routes/algebraic-models/historian-scan gated); pluggable

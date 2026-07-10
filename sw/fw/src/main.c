@@ -710,6 +710,11 @@ void vApplicationIdleHook(void)
 // the SAME HW/app init and the SAME four tasks. The fiber port runs the
 // scheduler to first quiescence and returns.
 
+void sil_fw_setHooks(const SIL_ports_hooks_S * const hooks)
+{
+    SIL_ports_setHooks(hooks);
+}
+
 bool sil_fw_start(void)
 {
     bool ok = prvHwInit();

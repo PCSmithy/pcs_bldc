@@ -52,3 +52,10 @@ jobs:
       # --- native SIL: build the firmware shared lib + drive it white-box --
       - name: Run SIL sanity suite
         run: bash tools/run_sil.sh --clean
+
+      # Debug flavor (-O0, no LTO): covers the other build-matrix cell. On macOS
+      # this also isolates the aarch64 coroutine-port cadence bug — pass at -O0
+      # means optimizer-linked codegen, fail means the asm / arch-dependent C.
+      - name: Run SIL sanity suite (debug flavor)
+        if: ${{ !cancelled() }}
+        run: bash tools/run_sil.sh --clean --debug

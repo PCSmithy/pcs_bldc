@@ -76,12 +76,82 @@ of statics every tick.
 Bake the **pluggable change-detector seam** now (naive-scan ↔ dirty-page); gate
 first, add dirty-tracking when it profiles hot.
 
+**The whole-namespace mirror sweep is exactly this workload.** The firmware
+member now mirrors every traceable cvar leaf memory→table each tick (naive scan,
+[`signal-trace.md`](signal-trace.md) §4) — this is what the dirty-page lever will
+optimize. Two mitigations already hold: the sweep reads through **pre-resolved
+address/type handles** (cached at enable — no per-tick DWARF re-resolution), and
+the in-sync **flush is sparse** (only the command-dirtied + pinned cvars, via the
+State Table dirty set, never the whole namespace). Measured on the pcs_bldc DLL:
+**~430 cvar leaves** swept per tick (the built-in array-size exclusion drops the
+task stacks / heap / 512-byte buffers that would otherwise dominate).
+Phase-isolated measurement (§11) shows the **sweep dominates a full engine step**:
+a bare firmware `advance_tick` is only ~4 µs, while the whole-namespace mirror +
+flush + routes add ~45 µs on top — so **gated / dirty-page scanning is the
+highest-value next lever**, exactly as this section predicts (an earlier note here
+had it backwards, having measured the sweep folded into an *unoptimized*
+`advance` and mistaken it for firmware cost).
+
+**Implemented — Tier 1 + Tier 2 (2026-07-09).** The naive per-leaf scan is
+replaced by two composed optimizations, taking the full step **49 → ~9 µs
+(>100× realtime)**:
+
+- **Tier 1 — shadow-snapshot `memcmp` sweep** (`backend.rs` / `FirmwareMember`).
+  At enable, the resolved leaves are sorted by address and grouped into contiguous
+  **ranges** (merged across gaps ≤64 B so a struct's traced fields share a range),
+  each subdivided into 64 B **chunks** with a chunk→leaf map and a per-range
+  **shadow buffer**. Per tick, each range is `memcmp`d against its shadow *directly
+  against live memory* (no copy); only a **changed** range is pulled in and
+  localized chunk-by-chunk, re-decoding just the leaves in changed chunks (a leaf
+  straddling a chunk edge is listed under every chunk it overlaps). The shadow
+  mirrors **memory** — updated even where the table dedups or a pin ignores the
+  record — and the first sweep after (re)enable is cold (full baseline). This is
+  the gate this section called for: work is now **O(changed bytes)**, not
+  O(leaves). (The address ranges derive strictly from resolved leaf `addr+size`,
+  so every byte read lies within a real firmware static; see the `read_range`
+  SAFETY note.)
+- **Tier 2 — dense-index State Table fast lane** (`state_table.rs`). The
+  `IndexSet<SignalId>` already yields a stable dense index per signal; the hot
+  per-signal storage (`current`, `changes`, resolved `epsilon`, override/dirty/
+  evicted membership) migrated to index-keyed `Vec`/`HashSet<usize>` storage, and
+  the changed-leaf decode path, route endpoints, and port-cache fill resolve their
+  index **once** (at registration / first propagation) and call the crate-internal
+  `record_mirror_at` / `record_at` / `current_value_at` — so no hot path hashes a
+  `SignalId` string. The public string-keyed API is unchanged (thin
+  resolve-then-delegate wrappers).
+
+Dirty-page tracking (the remaining §5 lever) is now **lower priority** — the
+shadow `memcmp` already reads only the mirrored bytes and re-decodes only the
+changed ones; dirty-page protect-and-fault would mainly cut the residual
+whole-shadow `memcmp` traffic, a smaller win from here.
+
 ## 6. Lever 5 — zero-alloc hot loop
 
 No `malloc` per tick. Preallocate everything; historian append = bump-pointer
 into **chunked per-signal columnar buffers**; routes as flat `(src, dst, size)`
 arrays iterated with `memcpy`. Steady-state allocation-free. Easy to design in,
 miserable to retrofit.
+
+**Columnar historian storage — implemented (2026-07-09).** The per-signal
+change-log is now a **typed column** (`times: VecDeque<u64>` + a native value
+deque, kind fixed at first record) with a **boxed `(u64, Value)` column** for
+`Enum`/`Bytes` signals — the D12 storage end-state
+([`signal-trace.md`](signal-trace.md) §1). Scalars store ~12–16 B/sample vs the old
+`(u64, Value)` pair's ~40 B, and the sweep's changed scalar leaves record through
+**typed fast lanes** (`record_mirror_<t>_at`, fed by a native `read_cvar_scalar`
+decode) that compare against the column tail natively — **no `Value` construction
+on the hot record path**. This holds sweep memory + speed roughly flat as Phase-3
+multiplies signal counts and capture lengths (fast-mode retention is unbounded).
+
+**Known seam — `M×R` zero-latency route re-evaluation.** The settled step
+([`state-route-tables.md`](state-route-tables.md) §3) re-resolves the full
+zero-latency route DAG (in cached topological order) before *each* of the `M`
+members, so a member always sees fully-resolved forward dataflow. That is `M×R`
+pure copies per tick where `R` is the zero-latency route count. It is correct and
+simple, and fine at current scale; the optimization (resolve once per tick and let
+each member read its already-final inputs, or per-member incoming-route slices) is
+deferred here — the topo order is already cached across ticks (rebuilt only when the
+wiring is dirty), so only the copies remain.
 
 ## 7. Lever 6 — parallelism (free aggregate throughput)
 
@@ -110,3 +180,106 @@ realistic. Without lever 1: ~1× or worse.
   preemption needed (Lever 1 is *sufficient* and faithful in sim-time).
 - **D6** — integrator choice sets the tick count.
 - **D12** — historian cost (§5).
+
+## 11. Measured baseline — Tier 0 (2026-07-09)
+
+Phase-isolated, from the SIL suite's performance report (`pcs_bldc_sil`,
+`report_performance`), averaged over 1000 ticks after warm-up on the dev laptop.
+Two build configurations, **1 ms sim tick**; ×realtime = 1000 µs ÷ (µs/tick).
+~430 cvar leaves mirrored per tick.
+
+| phase                         | debug Rust + -O0 DLL | release Rust + -O2 DLL |
+|-------------------------------|---------------------:|-----------------------:|
+| firmware `advance_tick` alone |        5.9 µs (169×) |          4.1 µs (242×) |
+| full engine `step` (measured) |        496 µs (2.0×) |            49 µs (20×) |
+| empty engine `step` (floor)   |             0.06 µs  |               0.01 µs  |
+| derived (full − firmware)     |              490 µs  |                 45 µs  |
+
+**Findings.** (1) The old "~443 µs/advance" baseline was the *unoptimized* full
+step; building the Rust framework `--release` and the firmware DLL at `-O2 -g`
+takes the full step **496 → 49 µs (~10×)** and the suite to **~20× realtime** with
+no hot-path work. (2) The firmware itself is cheap (~4 µs); the cost lives in
+voyant's **whole-namespace mirror sweep** (the `derived` row), so Tier 1/2 should
+target the historian scan (Lever 4 — gate on "firmware ran" + dirty-page tracking,
+§5), not the firmware. (3) The engine's own per-step overhead is negligible
+(floor ≈ 0). Reproduce with `tools/run_sil.sh` (release) and
+`tools/run_sil.sh --debug`.
+
+## 12. After Tier 1 + Tier 2 (2026-07-09)
+
+Same suite / method, after the shadow-`memcmp` sweep (Tier 1) + dense-index State
+Table (Tier 2). **1 ms sim tick**, ~429 cvar leaves, release Rust + -O2 DLL.
+
+| phase                              | before (Tier 0) | after (Tier 1+2) |
+|------------------------------------|----------------:|-----------------:|
+| firmware `advance_tick` alone      |    4.1 µs (244×) |     ~4.2 µs (237×) |
+| **full engine `step` (measured)**  |     **54 µs (18×)** | **~9.3 µs (107×)** |
+| firmware-member step (sweep+flush) |               —  |     ~7.6 µs (131×) |
+| derived (full − firmware)          |           50 µs  |          ~5.2 µs |
+| ↳ shadow sweep + flush             |               —  |          ~3.3 µs |
+| ↳ model + route + propagate        |               —  |          ~1.8 µs |
+
+**Result: the owner target (full step ≤10 µs, >100× realtime) is met** — full
+step ~9.0–9.4 µs run-to-run (~107× realtime), a **~6× speedup** over Tier 0's
+54 µs. The remaining ~5.2 µs of voyant work splits ~3.3 µs shadow sweep+flush
+(whole-shadow `memcmp` + decode/record of the ~30-60 actually-changing ADC/counter
+leaves) and ~1.8 µs model+route+propagate (the `M×R` zero-latency re-eval + the
+model's per-tick record). Both are now well within the ~6 µs/tick budget; the
+report gained two breakdown rows (`firmware-member step` and the two `of which`
+lines) to keep this attribution live and cheap.
+
+## 13. After columnar historian (2026-07-09)
+
+Same suite / method, after replacing the per-sample `VecDeque<(u64, Value)>`
+change-log with **per-signal typed columns + a boxed fallback** (§6) and routing
+the sweep's changed scalar leaves through **typed record fast lanes**. **1 ms sim
+tick**, ~429 cvar leaves, release Rust + -O2 DLL.
+
+| phase                              | before (Tier 1+2) | after (columnar) |
+|------------------------------------|------------------:|-----------------:|
+| firmware `advance_tick` alone      |          ~4.2 µs  |         ~4.1 µs  |
+| **full engine `step` (measured)**  |     **~9.0 µs**   |    **~8.9 µs**   |
+| firmware-member step (sweep+flush) |          ~7.3 µs  |         ~7.0 µs  |
+| ↳ shadow sweep + flush             |          ~3.1 µs  |         ~2.8 µs  |
+
+**Result.** The full step holds at ~8.9 µs (~112× realtime) — the target stays
+met. The honest, attributable win is in the **sweep+flush** row (~3.1 → ~2.8 µs,
+run-to-run): the changed scalar leaves now compare natively against the typed
+column tail and store 12–16 B/sample instead of ~40 B, so the per-record work
+shrank. The bigger point is **memory + scaling**: per-sample footprint dropped
+~2.5× (f64: 40 → 16 B) to ~3.3× (u32: 40 → 12 B), which is what keeps unbounded
+fast-mode capture flat as Phase 3 multiplies signals and capture lengths. The one
+public ripple (owner-accepted): `current_value`/`value_at` return `Option<Value>`
+by value and `changes` materializes `Vec<(u64, Value)>` — columnar storage cannot
+hand out a `&Value`.
+
+## 14. Release DLL to -O3 + LTO (2026-07-09)
+
+The release SIL flavor (`tools/run_sil.sh` default) moved from **`-O2 -g`** to
+**`-O3 -flto -g`** for the firmware DLL. `-flto -ffat-lto-objects` is added at
+compile and `-flto` at link via a `PCS_LTO` switch in `native.cmake` (fat objects
+keep concrete machine-code symbols so the SHARED library's `--whole-archive` /
+`--export-all-symbols` and the DWARF-read statics all survive LTO). The `-O0 -g`
+dev/debug flavor and the ARM build are untouched; no `-ffast-math` (FP semantics
+unchanged). Same suite / method, release Rust, **1 ms sim tick, 429 cvar leaves**
+(leaf count unchanged from §13 — LTO did not perturb the DWARF or elide a static).
+
+| phase                              | before (-O2, §13) | after (-O3 -flto) |
+|------------------------------------|------------------:|------------------:|
+| firmware `advance_tick` alone      |          ~4.1 µs  |     ~2.9 µs (run 2.6–3.2) |
+| **full engine `step` (measured)**  |       **~8.9 µs** |     **~7.6 µs (7.5–7.9)** |
+| firmware-member step (sweep+flush) |          ~7.0 µs  |          ~6.1 µs  |
+
+**Result.** The gain is firmware-side, as expected: `advance_tick` **~4.1 → ~2.9 µs
+(~30%)**, which flows through to the full step **~8.9 → ~7.6 µs (~117× → ~132×
+realtime)**. The voyant-side rows (sweep+flush, model+route) are unchanged work and
+move only with run-to-run variance; the derived Rust cost is untouched by the DLL
+flags. Debug flavor stays `-O0 -g` (430 leaves), all sanity checks PASS.
+
+**LTO is Windows-only (2026-07-10).** The `-flto` half of this flavor applies on
+**Windows (MinGW/GNU) only** — the `native.cmake` `PCS_LTO` flags are gated behind
+`CMAKE_HOST_WIN32`. On Linux the GNU `-flto` ELF `.so` links but emits an **empty
+DWARF map** (gimli reads 0 DIEs → the SIL reader finds no anchor), and macOS `gcc`
+is Apple clang (no `-ffat-lto-objects`/plugin), so both keep `-O3` without LTO.
+The Linux LTO+DWARF investigation is deferred (`backlog.md`); these perf numbers
+are the Windows release flavor.
