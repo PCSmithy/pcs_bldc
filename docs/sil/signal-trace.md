@@ -22,6 +22,30 @@ An entry holds both its current value (live access) and a growing vector of
 constant for 10⁶ ticks stores **one** sample — this is what keeps memory
 manageable even when tracing the whole namespace.
 
+**Storage: per-signal typed columns (implemented).** Each signal's change-log is
+a **column** — a dense `times: VecDeque<u64>` plus a native value deque whose kind
+is fixed at the **first** record. Scalars (`bool`/`i32`/`u32`/`u64`/`f32`/`f64`)
+get a dedicated typed column; structured values (`Enum`-with-name, `Bytes`) keep a
+**boxed `(u64, Value)` fallback** column. This hybrid is deliberate — scalars are
+the ~99% hot case, so they store ~12–16 B/sample instead of the ~40 B a
+`(u64, Value)` pair costs (the `Value` tagged union is ~32 B), and the epsilon
+dedup compares the incoming scalar against the column tail **natively** (no `Value`
+construction on the hot sweep path). **One-type rule:** a signal has exactly **one**
+`Value` type for its lifetime — the column's kind is fixed at the first record and
+is immutable thereafter. A later record of a different variant is never a legitimate
+runtime event (a firmware static does not change C type; a route must not wire a
+float source into an int destination); every such path is a **bug**, so the
+framework **fails loud** — the record is rejected with `TableError::TypeMismatch`
+(naming the signal, the column's kind, and the offending variant) and the column is
+left untouched. There is no tolerate-and-migrate: the old policy (Warning + convert
+the column to the boxed fallback) hid wiring bugs and kept mixed-type history, so it
+was removed. The `Enum`/`Bytes` boxed column is **strict per structured variant**
+too — `Enum` and `Bytes` are distinct types, so an `Enum`-seeded column rejects a
+`Bytes` record and vice versa. Consumers handle the error per their blast radius: a
+mis-typed **route** fails the `step()` loud (bubbled through `RouteError::Table`); a
+firmware member's mirror **sweep** logs the mismatch as a Warning (still visible in
+the log dump) and continues.
+
 The dumped table is the complete timeseries history of every traced signal —
 firmware statics, model states, constants — and is the artifact Python test
 evaluations run against.

@@ -24,7 +24,7 @@ io/dev/app modules as embedded (see "What's done").
 ## Build & run
 
 ```bash
-tools/run_sil.sh            # RELEASE (default): -O2 -g firmware DLL + --release voyant, run the sanity suite
+tools/run_sil.sh            # RELEASE (default): -O3 -flto -g firmware DLL + --release voyant, run the sanity suite
 tools/run_sil.sh --debug    # DEBUG: -O0 -g DLL + debug voyant (dev/introspection; slower, source-faithful)
 tools/run_sil.sh --clean    # wipe the native build dir first
 ```
@@ -33,10 +33,12 @@ tools/run_sil.sh --clean    # wipe the native build dir first
 meaningful optimized. Release and debug use separate build dirs
 (`build/native-fw-release` vs `build/native-fw`) and cargo target dirs, so they
 coexist. The dev/test flow (`tools/build_native.sh`, Unity) stays `-O0 -g`; the
-`-O2` level rides a `PCS_OPT_LEVEL` cache knob in `native.cmake` (mirrors the ARM
-toolchain's). The suite prints a phase-isolated **performance report** at the end
-(firmware tick / full step / engine floor / derived); see the dated baseline in
-`performance.md` §11.
+release DLL rides a `PCS_OPT_LEVEL` cache knob (`-O3`) plus a `PCS_LTO` switch
+(`-flto -ffat-lto-objects` compile + `-flto` link) in `native.cmake`, driven by
+`build_native.sh --opt -O3 --lto` (mirrors the ARM toolchain's opt knob). The
+suite prints a phase-isolated **performance report** at the end (firmware tick /
+full step / engine floor / derived); see the dated baseline in `performance.md`
+§11 and the -O3+LTO measurement in §14.
 
 The suite loads the firmware DLL, drives it over the control ABI, and runs
 named PASS/FAIL checks (exit nonzero on any failure): boot; all four real
@@ -260,6 +262,23 @@ docs/sil/*.md            the design (see "Design docs" below)
   70 → 74 (4 shadow-sweep tests); sanity suite (release + debug) all PASS, behavior
   identical. See `performance.md` §5 (levers marked implemented) + §12 (after
   table).
+
+- **Columnar historian — D12 storage end-state (2026-07-09):** the per-signal
+  change-log moved from `VecDeque<(u64, Value)>` to **per-signal typed columns**
+  (`times` + a native scalar deque, kind fixed at first record) with a **boxed
+  `(u64, Value)` column** for `Enum`/`Bytes` signals (strict per structured
+  variant). A signal has exactly one `Value` type for its lifetime, so a later
+  variant mismatch is a **bug**: it is rejected with `TableError::TypeMismatch`
+  (no migration) — a mis-typed route fails `step()` via `RouteError::Table`, a
+  mirror sweep logs a Warning and continues. The sweep's changed scalar leaves
+  record through **typed fast lanes**
+  (`record_mirror_<t>_at` + a native `read_cvar_scalar` decode) that compare the
+  column tail natively — no `Value` on the hot path. Per-sample footprint dropped
+  ~2.5–3.3× (f64 40→16 B, u32 40→12 B); full step ~8.9 µs (~112×), sweep+flush
+  ~3.1→~2.8 µs. **One public ripple (owner-accepted):** `current_value`/`value_at`
+  return `Option<Value>` **by value**, `changes` returns `Option<Vec<(u64, Value)>>`
+  (materializing). voyant unit tests 76 → 83 (7 columnar tests). See
+  `signal-trace.md` §1 + `performance.md` §6/§13.
 
 ## What's next (prioritized)
 

@@ -376,7 +376,7 @@ mod tests {
         }
         fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
             let input = match st.current_value(&self.in_id()).ok().flatten() {
-                Some(Value::U32(x)) => *x,
+                Some(Value::U32(x)) => x,
                 _ => 0,
             };
             self.out = input.wrapping_add(self.step);
@@ -468,7 +468,7 @@ mod tests {
         for _ in 0..3 {
             eng.step().unwrap();
         }
-        assert_eq!(eng.state().current_value(&id).unwrap(), Some(&Value::U32(3)));
+        assert_eq!(eng.state().current_value(&id).unwrap(), Some(Value::U32(3)));
         assert_eq!(eng.state().changes(&id).unwrap().len(), 3);
     }
 
@@ -483,8 +483,8 @@ mod tests {
             eng.step().unwrap();
         }
         assert_eq!(eng.state().changes(&id).unwrap().len(), 5);
-        assert_eq!(eng.state().current_value(&id).unwrap(), Some(&Value::F64(5.0)));
-        assert_eq!(eng.state().value_at(&id, 2_500).unwrap(), Some(&Value::F64(2.0)));
+        assert_eq!(eng.state().current_value(&id).unwrap(), Some(Value::F64(5.0)));
+        assert_eq!(eng.state().value_at(&id, 2_500).unwrap(), Some(Value::F64(2.0)));
     }
 
     #[test]
@@ -546,8 +546,8 @@ mod tests {
         eng.add_route(cvar("b"), cvar("c")).unwrap();
 
         eng.step().unwrap();
-        assert_eq!(eng.state().current_value(&cvar("b")).unwrap(), Some(&Value::U32(9)));
-        assert_eq!(eng.state().current_value(&cvar("c")).unwrap(), Some(&Value::U32(9)));
+        assert_eq!(eng.state().current_value(&cvar("b")).unwrap(), Some(Value::U32(9)));
+        assert_eq!(eng.state().current_value(&cvar("c")).unwrap(), Some(Value::U32(9)));
     }
 
     #[test]
@@ -604,11 +604,11 @@ mod tests {
         for (i, (ea, eb)) in expect.iter().enumerate() {
             eng.step().unwrap();
             let ao = match eng.state().current_value(&a_out).unwrap() {
-                Some(Value::U32(x)) => *x,
+                Some(Value::U32(x)) => x,
                 _ => 0,
             };
             let bo = match eng.state().current_value(&b_out).unwrap() {
-                Some(Value::U32(x)) => *x,
+                Some(Value::U32(x)) => x,
                 _ => 0,
             };
             assert_eq!((ao, bo), (*ea, *eb), "tick {}", i + 1);
@@ -636,7 +636,7 @@ mod tests {
         // Suspend the second driver → the fault-injection swap is legal.
         eng.suspend_route(&cvar("y"), &cvar("dst")).unwrap();
         eng.step().unwrap();
-        assert_eq!(eng.state().current_value(&cvar("dst")).unwrap(), Some(&Value::U32(1)));
+        assert_eq!(eng.state().current_value(&cvar("dst")).unwrap(), Some(Value::U32(1)));
     }
 
     #[test]
@@ -667,7 +667,7 @@ mod tests {
         // Fix the wiring live → next step passes.
         eng.remove_route(&cvar("b"), &cvar("a")).unwrap();
         eng.step().unwrap();
-        assert_eq!(eng.state().current_value(&cvar("b")).unwrap(), Some(&Value::U32(1)));
+        assert_eq!(eng.state().current_value(&cvar("b")).unwrap(), Some(Value::U32(1)));
     }
 
     // --- test-only helpers on the engine ---------------------------------

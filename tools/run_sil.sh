@@ -5,7 +5,7 @@
 # reads its state by symbol).
 #
 # Usage:
-#   tools/run_sil.sh            # RELEASE: -O2 firmware DLL + --release Rust (default)
+#   tools/run_sil.sh            # RELEASE: -O3 -flto firmware DLL + --release Rust (default)
 #   tools/run_sil.sh --debug    # DEBUG:   -O0 firmware DLL + debug Rust (dev/introspection)
 #   tools/run_sil.sh --clean    # wipe the native build dir first
 #
@@ -55,8 +55,8 @@ done
 
 if [ "$PROFILE" = "release" ]; then
   DLL_DIR="native-fw-release"
-  DLL_FLAVOR="-O2 -g (release)"
-  BUILD_OPT=(--opt -O2 --no-test)   # the SIL suite is the check for the opt DLL
+  DLL_FLAVOR="-O3 -flto -g (release)"
+  BUILD_OPT=(--opt -O3 --lto --no-test)   # the SIL suite is the check for the opt DLL
   CARGO_PROFILE=(--release)
 else
   DLL_DIR="native-fw"

@@ -132,6 +132,17 @@ into **chunked per-signal columnar buffers**; routes as flat `(src, dst, size)`
 arrays iterated with `memcpy`. Steady-state allocation-free. Easy to design in,
 miserable to retrofit.
 
+**Columnar historian storage — implemented (2026-07-09).** The per-signal
+change-log is now a **typed column** (`times: VecDeque<u64>` + a native value
+deque, kind fixed at first record) with a **boxed `(u64, Value)` column** for
+`Enum`/`Bytes` signals — the D12 storage end-state
+([`signal-trace.md`](signal-trace.md) §1). Scalars store ~12–16 B/sample vs the old
+`(u64, Value)` pair's ~40 B, and the sweep's changed scalar leaves record through
+**typed fast lanes** (`record_mirror_<t>_at`, fed by a native `read_cvar_scalar`
+decode) that compare against the column tail natively — **no `Value` construction
+on the hot record path**. This holds sweep memory + speed roughly flat as Phase-3
+multiplies signal counts and capture lengths (fast-mode retention is unbounded).
+
 **Known seam — `M×R` zero-latency route re-evaluation.** The settled step
 ([`state-route-tables.md`](state-route-tables.md) §3) re-resolves the full
 zero-latency route DAG (in cached topological order) before *each* of the `M`
@@ -216,3 +227,51 @@ leaves) and ~1.8 µs model+route+propagate (the `M×R` zero-latency re-eval + th
 model's per-tick record). Both are now well within the ~6 µs/tick budget; the
 report gained two breakdown rows (`firmware-member step` and the two `of which`
 lines) to keep this attribution live and cheap.
+
+## 13. After columnar historian (2026-07-09)
+
+Same suite / method, after replacing the per-sample `VecDeque<(u64, Value)>`
+change-log with **per-signal typed columns + a boxed fallback** (§6) and routing
+the sweep's changed scalar leaves through **typed record fast lanes**. **1 ms sim
+tick**, ~429 cvar leaves, release Rust + -O2 DLL.
+
+| phase                              | before (Tier 1+2) | after (columnar) |
+|------------------------------------|------------------:|-----------------:|
+| firmware `advance_tick` alone      |          ~4.2 µs  |         ~4.1 µs  |
+| **full engine `step` (measured)**  |     **~9.0 µs**   |    **~8.9 µs**   |
+| firmware-member step (sweep+flush) |          ~7.3 µs  |         ~7.0 µs  |
+| ↳ shadow sweep + flush             |          ~3.1 µs  |         ~2.8 µs  |
+
+**Result.** The full step holds at ~8.9 µs (~112× realtime) — the target stays
+met. The honest, attributable win is in the **sweep+flush** row (~3.1 → ~2.8 µs,
+run-to-run): the changed scalar leaves now compare natively against the typed
+column tail and store 12–16 B/sample instead of ~40 B, so the per-record work
+shrank. The bigger point is **memory + scaling**: per-sample footprint dropped
+~2.5× (f64: 40 → 16 B) to ~3.3× (u32: 40 → 12 B), which is what keeps unbounded
+fast-mode capture flat as Phase 3 multiplies signals and capture lengths. The one
+public ripple (owner-accepted): `current_value`/`value_at` return `Option<Value>`
+by value and `changes` materializes `Vec<(u64, Value)>` — columnar storage cannot
+hand out a `&Value`.
+
+## 14. Release DLL to -O3 + LTO (2026-07-09)
+
+The release SIL flavor (`tools/run_sil.sh` default) moved from **`-O2 -g`** to
+**`-O3 -flto -g`** for the firmware DLL. `-flto -ffat-lto-objects` is added at
+compile and `-flto` at link via a `PCS_LTO` switch in `native.cmake` (fat objects
+keep concrete machine-code symbols so the SHARED library's `--whole-archive` /
+`--export-all-symbols` and the DWARF-read statics all survive LTO). The `-O0 -g`
+dev/debug flavor and the ARM build are untouched; no `-ffast-math` (FP semantics
+unchanged). Same suite / method, release Rust, **1 ms sim tick, 429 cvar leaves**
+(leaf count unchanged from §13 — LTO did not perturb the DWARF or elide a static).
+
+| phase                              | before (-O2, §13) | after (-O3 -flto) |
+|------------------------------------|------------------:|------------------:|
+| firmware `advance_tick` alone      |          ~4.1 µs  |     ~2.9 µs (run 2.6–3.2) |
+| **full engine `step` (measured)**  |       **~8.9 µs** |     **~7.6 µs (7.5–7.9)** |
+| firmware-member step (sweep+flush) |          ~7.0 µs  |          ~6.1 µs  |
+
+**Result.** The gain is firmware-side, as expected: `advance_tick` **~4.1 → ~2.9 µs
+(~30%)**, which flows through to the full step **~8.9 → ~7.6 µs (~117× → ~132×
+realtime)**. The voyant-side rows (sweep+flush, model+route) are unchanged work and
+move only with run-to-run variance; the derived Rust cost is untouched by the DLL
+flags. Debug flavor stays `-O0 -g` (430 leaves), all sanity checks PASS.

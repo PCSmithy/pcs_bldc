@@ -77,6 +77,17 @@ pub(crate) trait Backend {
         unreachable!("backend produced no cvar handles but was asked to read one")
     }
 
+    /// Fast-read a leaf as a **native scalar** ([`ScalarSample`]) — the sweep's
+    /// typed decode path, feeding the State Table's typed mirror-record fast lanes
+    /// so a changing scalar leaf never constructs a `Value` on the way into the
+    /// columnar historian. The default wraps [`read_cvar_resolved`](Self::read_cvar_resolved)
+    /// as [`ScalarSample::Boxed`], so a backend that only decodes to `Value` (e.g. a
+    /// test mock) still works — the box merely lands in the generic record path.
+    /// A real firmware overrides this to decode natively (see [`Firmware`]).
+    fn read_cvar_scalar(&self, handle: CvarHandle) -> ScalarSample {
+        ScalarSample::Boxed(self.read_cvar_resolved(handle))
+    }
+
     /// The **memory layout** of a resolved leaf: its runtime address and byte
     /// size. Used by the [`FirmwareMember`]'s Tier-1 shadow sweep to group leaves
     /// into contiguous memory ranges and `memcmp` them against a shadow buffer.
@@ -151,6 +162,23 @@ pub(crate) trait Backend {
 /// never inspected outside the backend, so it stays off the public API.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CvarHandle(usize);
+
+/// A leaf decoded as a **native scalar**, for the sweep's typed record fast lane
+/// ([`Backend::read_cvar_scalar`]). The scalar variants carry the value with no
+/// `Value` enum wrap; [`ScalarSample::Boxed`] holds anything non-scalar (an enum
+/// leaf reads as its symbolic [`Value::Enum`]) or the default backend's wrapped
+/// `Value`. The variant widths mirror [`scalar_to_value`]'s coercion (signed →
+/// `I32`, small unsigned → `U32`, …) so the typed column a leaf lands in is the
+/// same one the generic path would have chosen.
+pub(crate) enum ScalarSample {
+    F32(f32),
+    F64(f64),
+    I32(i32),
+    U32(u32),
+    U64(u64),
+    Bool(bool),
+    Boxed(Value),
+}
 
 /// The result of [`Backend::enumerate_cvars`]: the traceable leaves plus what the
 /// exclusion policy dropped (reported once at member enable).
@@ -566,6 +594,17 @@ impl Backend for Firmware {
         self.read_leaf(p, leaf)
     }
 
+    fn read_cvar_scalar(&self, handle: CvarHandle) -> ScalarSample {
+        let (p, leaf) = self.cvar_cache.borrow()[handle.0];
+        // SAFETY: valid firmware address (DWARF + slide); firmware quiescent. A
+        // scalar decodes natively (no `Value`); an enum leaf reads as its symbolic
+        // name and rides the boxed lane.
+        match leaf {
+            Leaf::Scalar(kind) => unsafe { scalar_to_sample(p, kind) },
+            Leaf::Enum(_) => ScalarSample::Boxed(self.read_leaf(p, leaf)),
+        }
+    }
+
     fn cvar_layout(&self, handle: CvarHandle) -> (u64, usize) {
         let (p, leaf) = self.cvar_cache.borrow()[handle.0];
         (p as u64, self.leaf_size(leaf))
@@ -924,7 +963,7 @@ impl<'b> FirmwareMember<'b> {
     fn in_sync_ports(&mut self, st: &mut StateTable) {
         self.apply_pending_ports(st);
         for port in &self.ports {
-            let v = st.current_value_at(port.table_idx).and_then(value_to_f64);
+            let v = st.current_value_at(port.table_idx).as_ref().and_then(value_to_f64);
             self.backend.set_port_input(port.handle, v);
         }
     }
@@ -957,7 +996,7 @@ impl<'b> FirmwareMember<'b> {
             match st.resolve_index(&id) {
                 Some(idx) => {
                     if let Some(v) = st.current_value_at(idx) {
-                        self.backend.write_cvar(id.name(), v);
+                        self.backend.write_cvar(id.name(), &v);
                     }
                 }
                 None => st.log(
@@ -975,7 +1014,14 @@ impl<'b> FirmwareMember<'b> {
     fn out_sync_ports(&mut self, st: &mut StateTable) {
         for (handle, value) in self.backend.drain_port_writes() {
             match self.ports.iter().find(|p| p.handle == handle) {
-                Some(port) => st.record_at(port.table_idx, Value::F64(value)),
+                Some(port) => {
+                    let ti = port.table_idx;
+                    // A type mismatch here is a bug (a port always writes F64); log it
+                    // loud as a Warning, like the other record-error paths.
+                    if let Err(e) = st.record_at(ti, Value::F64(value)) {
+                        st.log(LogLevel::Warning, &self.name, format!("port record failed: {e}"));
+                    }
+                }
                 None => st.log(
                     LogLevel::Warning,
                     &self.name,
@@ -1005,7 +1051,9 @@ impl<'b> FirmwareMember<'b> {
         // Fallback: leaves with no resolved layout (string-path backends).
         for pl in &self.path_leaves {
             let v = self.backend.read_cvar(&pl.path);
-            st.record_mirror_at(pl.table_idx, v);
+            if let Err(e) = st.record_mirror_at(pl.table_idx, v) {
+                st.log(LogLevel::Warning, &self.name, format!("cvar mirror record failed: {e}"));
+            }
         }
 
         if self.ranges.is_empty() {
@@ -1042,8 +1090,26 @@ impl<'b> FirmwareMember<'b> {
                         if stamp[li] != gen {
                             stamp[li] = gen;
                             let leaf = &resolved[li];
-                            let v = backend.read_cvar_resolved(leaf.handle);
-                            st.record_mirror_at(leaf.table_idx, v);
+                            // Typed decode → typed mirror fast lane: a changing
+                            // scalar leaf records natively, never boxing through
+                            // `Value`. Enum/other leaves ride the boxed lane.
+                            let idx = leaf.table_idx;
+                            // A wrong-kind record is a bug (a firmware static does not
+                            // change C type); it errors rather than migrating. Surface
+                            // it as a Warning attributed to this member — visible in the
+                            // log dump, without aborting the whole sweep.
+                            let res = match backend.read_cvar_scalar(leaf.handle) {
+                                ScalarSample::F32(x) => st.record_mirror_f32_at(idx, x),
+                                ScalarSample::F64(x) => st.record_mirror_f64_at(idx, x),
+                                ScalarSample::I32(x) => st.record_mirror_i32_at(idx, x),
+                                ScalarSample::U32(x) => st.record_mirror_u32_at(idx, x),
+                                ScalarSample::U64(x) => st.record_mirror_u64_at(idx, x),
+                                ScalarSample::Bool(x) => st.record_mirror_bool_at(idx, x),
+                                ScalarSample::Boxed(v) => st.record_mirror_at(idx, v),
+                            };
+                            if let Err(e) = res {
+                                st.log(LogLevel::Warning, &self.name, format!("cvar mirror record failed: {e}"));
+                            }
                         }
                     }
                     // The shadow mirrors MEMORY: absorb the changed bytes
@@ -1364,6 +1430,28 @@ unsafe fn scalar_to_value(p: *const u8, kind: Scalar) -> Value {
     }
 }
 
+/// Read a firmware scalar as a native [`ScalarSample`] — the typed-decode twin of
+/// [`scalar_to_value`], with the identical coercion table (signed widths → `I32`,
+/// unsigned → `U32`/`U64`, `I64` narrows to `I32`). Feeds the State Table's typed
+/// mirror fast lanes so a changing scalar leaf never constructs a `Value`.
+///
+/// SAFETY: `p` points at a readable value of `kind`'s size; firmware quiescent.
+unsafe fn scalar_to_sample(p: *const u8, kind: Scalar) -> ScalarSample {
+    match kind {
+        Scalar::U8 => ScalarSample::U32(p.read_unaligned() as u32),
+        Scalar::U16 => ScalarSample::U32((p as *const u16).read_unaligned() as u32),
+        Scalar::U32 => ScalarSample::U32((p as *const u32).read_unaligned()),
+        Scalar::U64 => ScalarSample::U64((p as *const u64).read_unaligned()),
+        Scalar::I8 => ScalarSample::I32((p as *const i8).read_unaligned() as i32),
+        Scalar::I16 => ScalarSample::I32((p as *const i16).read_unaligned() as i32),
+        Scalar::I32 => ScalarSample::I32((p as *const i32).read_unaligned()),
+        Scalar::I64 => ScalarSample::I32((p as *const i64).read_unaligned() as i32),
+        Scalar::F32 => ScalarSample::F32((p as *const f32).read_unaligned()),
+        Scalar::F64 => ScalarSample::F64((p as *const f64).read_unaligned()),
+        Scalar::Bool => ScalarSample::Bool(p.read_unaligned() != 0),
+    }
+}
+
 /// Coerce a logical [`Value`] back into a firmware scalar of `kind` and write.
 ///
 /// SAFETY: `p` points at a writable value of `kind`'s size; firmware quiescent.
@@ -1469,7 +1557,7 @@ mod tests {
         st.set_time(1_000);
         fm.advance(1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
-        assert_eq!(st.current_value(&cid).unwrap(), Some(&Value::U32(7)));
+        assert_eq!(st.current_value(&cid).unwrap(), Some(Value::U32(7)));
 
         // A sub-period advance accumulates but does not tick the firmware.
         fm.advance(500, &mut st);
@@ -1523,7 +1611,7 @@ mod tests {
         fm.advance(1_000, &mut st);
         assert_eq!(&*be.writes.borrow(), &["a".to_string()]); // sparse: just `a`
         // The untouched entries still mirror (swept out of memory).
-        assert_eq!(st.current_value(&id("cvar:dut:b")).unwrap(), Some(&Value::U32(0)));
+        assert_eq!(st.current_value(&id("cvar:dut:b")).unwrap(), Some(Value::U32(0)));
 
         // A tick with no fresh command writes nothing at all.
         be.writes.borrow_mut().clear();
@@ -1687,7 +1775,7 @@ mod tests {
         st.record(&in_id, Value::F64(1.5)).unwrap();
         fm.advance(1_000, &mut st);
         assert_eq!(*mock.seen.borrow(), Some(1.5));
-        assert_eq!(st.current_value(&out_id).unwrap(), Some(&Value::F64(3.0)));
+        assert_eq!(st.current_value(&out_id).unwrap(), Some(Value::F64(3.0)));
     }
 
     #[test]
@@ -1879,7 +1967,7 @@ mod tests {
         for (p, v) in [("a", 10u32), ("b", 20), ("c", 30)] {
             assert_eq!(
                 st.current_value(&id(&format!("cvar:dut:{p}"))).unwrap(),
-                Some(&Value::U32(v))
+                Some(Value::U32(v))
             );
         }
 
@@ -1890,7 +1978,7 @@ mod tests {
         fm.advance(1_000, &mut st);
         assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (2, 2, 1));
         // a changed -> re-recorded; b decoded but unchanged -> historian did not grow.
-        assert_eq!(st.current_value(&id("cvar:dut:a")).unwrap(), Some(&Value::U32(11)));
+        assert_eq!(st.current_value(&id("cvar:dut:a")).unwrap(), Some(Value::U32(11)));
         assert_eq!(st.changes(&id("cvar:dut:b")).unwrap().len(), 1);
     }
 
@@ -1959,7 +2047,7 @@ mod tests {
         st.set_time(2_000);
         fm.advance(1_000, &mut st);
         assert_eq!(be.decodes(0), 2); // chunk changed -> decoded
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(10))); // pin holds
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(10))); // pin holds
 
         // Memory now stable: the shadow was updated to 77, so no re-decode.
         st.set_time(3_000);

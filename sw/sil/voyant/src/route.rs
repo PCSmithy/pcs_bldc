@@ -290,12 +290,15 @@ impl RouteTable {
         for route in self.routes.iter().filter(|r| r.enabled && (r.latency > 0)) {
             let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
             let didx = resolve_endpoint(&route.dst_idx, st, &route.dst)?; // destination registered?
-            if let Some(v) = st.current_value_at(sidx).cloned() {
+            if let Some(v) = st.current_value_at(sidx) {
                 pending.push((didx, v));
             }
         }
         for (didx, value) in pending {
-            st.record_at(didx, value);
+            // A record that mismatches the destination column's established type is a
+            // wiring bug (a route delivering the wrong Value type); it bubbles through
+            // RouteError::Table so the step fails loud instead of corrupting the column.
+            st.record_at(didx, value)?;
         }
         Ok(())
     }
@@ -320,8 +323,10 @@ impl RouteTable {
             let route = &self.routes[ri];
             let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
             let didx = resolve_endpoint(&route.dst_idx, st, &route.dst)?; // destination registered?
-            if let Some(v) = st.current_value_at(sidx).cloned() {
-                st.record_at(didx, v);
+            if let Some(v) = st.current_value_at(sidx) {
+                // A mismatched destination type is a wiring bug — fail the step loud
+                // (RouteError::Table) rather than corrupt the destination column.
+                st.record_at(didx, v)?;
             }
         }
         Ok(())
@@ -574,7 +579,43 @@ mod tests {
 
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(7)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(7)));
+    }
+
+    #[test]
+    fn route_delivering_a_mismatched_type_errors_the_step_and_corrupts_nothing() {
+        // A route wiring a float source into an int-typed destination is a bug: the
+        // destination column is established U32, so recording the F64 must fail the
+        // step loud (RouteError::Table(TypeMismatch)) rather than corrupt the column.
+        let mut st = StateTable::new();
+        let src = register_cvar(&mut st, "src", Value::F64(1.5));
+        let dst = register_cvar(&mut st, "dst", Value::U32(7)); // establishes U32
+        let mut rt = RouteTable::new();
+        rt.add(src, dst.clone()).unwrap();
+        let order = plan(&rt);
+
+        st.set_time(1_000);
+        let err = rt.propagate_zero_latency(&mut st, &order).unwrap_err();
+        assert!(matches!(
+            err,
+            RouteError::Table(TableError::TypeMismatch { column_kind: "U32", offending: "F64", .. })
+        ));
+        // The destination column is untouched: still one U32 sample.
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(7)));
+        assert_eq!(st.changes(&dst).unwrap().len(), 1);
+
+        // The delayed path shares the same record_at guard.
+        let mut st2 = StateTable::new();
+        let dsrc = register_cvar(&mut st2, "dsrc", Value::F64(2.5));
+        let ddst = register_cvar(&mut st2, "ddst", Value::U32(1));
+        let mut drt = RouteTable::new();
+        drt.add_with_latency(dsrc, ddst.clone(), 1).unwrap();
+        st2.set_time(1_000);
+        assert!(matches!(
+            drt.propagate_delayed(&mut st2),
+            Err(RouteError::Table(TableError::TypeMismatch { .. }))
+        ));
+        assert_eq!(st2.changes(&ddst).unwrap().len(), 1);
     }
 
     #[test]
@@ -590,7 +631,7 @@ mod tests {
 
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::F64(1.5)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::F64(1.5)));
     }
 
     #[test]
@@ -605,11 +646,11 @@ mod tests {
         st.set_override(&dst, true).unwrap();
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(0))); // pinned
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(0))); // pinned
 
         st.set_override(&dst, false).unwrap();
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1)));
     }
 
     #[test]
@@ -623,7 +664,7 @@ mod tests {
 
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &plan(&rt)).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1)));
 
         // Suspended → excluded from the plan, destination held.
         rt.suspend(&src, &dst).unwrap();
@@ -631,13 +672,13 @@ mod tests {
         st.set_time(2_000);
         st.force_record(&src, Value::U32(2)).unwrap();
         rt.propagate_zero_latency(&mut st, &plan(&rt)).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1))); // held
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1))); // held
 
         // Resumed → drives again from the source's current value.
         rt.resume(&src, &dst).unwrap();
         st.set_time(3_000);
         rt.propagate_zero_latency(&mut st, &plan(&rt)).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(2)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(2)));
     }
 
     #[test]
@@ -701,8 +742,8 @@ mod tests {
 
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&cvar("b")).unwrap(), Some(&Value::U32(9)));
-        assert_eq!(st.current_value(&c).unwrap(), Some(&Value::U32(9))); // SAME tick
+        assert_eq!(st.current_value(&cvar("b")).unwrap(), Some(Value::U32(9)));
+        assert_eq!(st.current_value(&c).unwrap(), Some(Value::U32(9))); // SAME tick
     }
 
     #[test]
@@ -724,13 +765,13 @@ mod tests {
         // Tick 2: dst receives the tick-1 value (10). Source then becomes 20.
         st.set_time(2_000);
         rt.propagate_delayed(&mut st).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(10)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(10)));
         st.force_record(&src, Value::U32(20)).unwrap();
 
         // Tick 3: dst receives the tick-2 value (20) — exactly one tick of lag.
         st.set_time(3_000);
         rt.propagate_delayed(&mut st).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(20)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(20)));
     }
 
     #[test]
@@ -845,7 +886,7 @@ mod tests {
             st.set_time(tick * 1_000);
             model.advance(1_000, &mut st);
             rt.propagate_zero_latency(&mut st, &order).unwrap();
-            assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::F64(tick as f64)));
+            assert_eq!(st.current_value(&dst).unwrap(), Some(Value::F64(tick as f64)));
         }
     }
 
@@ -861,7 +902,7 @@ mod tests {
         let order = plan(&rt);
         a.set_time(1_000);
         rt.propagate_zero_latency(&mut a, &order).unwrap();
-        assert_eq!(a.current_value(&dst).unwrap(), Some(&Value::U32(7)));
+        assert_eq!(a.current_value(&dst).unwrap(), Some(Value::U32(7)));
 
         // Table B: the SAME dense indices (0, 1) map to DIFFERENT signals. The
         // route's cached idx 0/1 now name B's signals, not its own endpoints —
@@ -877,8 +918,8 @@ mod tests {
             Err(RouteError::TableMismatch { .. })
         ));
         // B is untouched: values unchanged and no new historian sample recorded.
-        assert_eq!(b.current_value(&b0).unwrap(), Some(&Value::U32(100)));
-        assert_eq!(b.current_value(&b1).unwrap(), Some(&Value::U32(200)));
+        assert_eq!(b.current_value(&b0).unwrap(), Some(Value::U32(100)));
+        assert_eq!(b.current_value(&b1).unwrap(), Some(Value::U32(200)));
         assert_eq!(b.changes(&b0).unwrap().len(), 1);
         assert_eq!(b.changes(&b1).unwrap().len(), 1);
 
@@ -920,7 +961,7 @@ mod tests {
 
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap(); // caches src@0, dst@1
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(1)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1)));
 
         // Grow the table AFTER caching; the cached indices stay valid.
         register_cvar(&mut st, "later0", Value::U32(50));
@@ -928,6 +969,6 @@ mod tests {
         st.set_time(2_000);
         st.force_record(&src, Value::U32(2)).unwrap();
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(&Value::U32(2)));
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(2)));
     }
 }

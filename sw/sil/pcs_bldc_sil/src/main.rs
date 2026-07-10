@@ -228,6 +228,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
                 .current_value(id)
                 .ok()
                 .flatten()
+                .as_ref()
                 .and_then(v_u64)
                 .unwrap_or(0)
         })
@@ -278,7 +279,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
         eng.step().expect("engine step");
-        let v = eng.state().current_value(&ramp).ok().flatten().cloned();
+        let v = eng.state().current_value(&ramp).ok().flatten();
         samples.push(v.as_ref().and_then(v_u64).unwrap_or(0));
     }
 
@@ -416,7 +417,7 @@ fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
         eng.step().expect("engine step");
     }
     let n_changes = eng.state().changes(&id).map(|c| c.len()).unwrap_or(0);
-    let last = eng.state().current_value(&id).ok().flatten().cloned();
+    let last = eng.state().current_value(&id).ok().flatten();
     rep.check(
         "vsig advances with sim time and the historian records it",
         (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
@@ -533,6 +534,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
         .current_value(&src)
         .ok()
         .flatten()
+        .as_ref()
         .and_then(v_u64)
         .unwrap_or(0);
     rep.check(
@@ -550,6 +552,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
         .current_value(&src)
         .ok()
         .flatten()
+        .as_ref()
         .and_then(v_u64)
         .unwrap_or(0);
     rep.check(
@@ -594,6 +597,7 @@ impl Member for LoopModel {
             .current_value(&self.in_id())
             .ok()
             .flatten()
+            .as_ref()
             .and_then(v_u64)
             .unwrap_or(0);
         self.out = (input % 200) as u32;
@@ -820,11 +824,11 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
         eng.step().expect("engine step");
-        vals.push(eng.state().current_value(&leaf).ok().flatten().and_then(v_u64));
+        vals.push(eng.state().current_value(&leaf).ok().flatten().as_ref().and_then(v_u64));
     }
     // The mirror at the end of the last tick equals firmware memory now (single-
     // threaded: nothing changed memory between the sweep and this read).
-    let table_now = eng.state().current_value(&leaf).ok().flatten().and_then(v_u64);
+    let table_now = eng.state().current_value(&leaf).ok().flatten().as_ref().and_then(v_u64);
     let mem_now = v_u64(&fw.read_cvar(leaf.name()));
     let tracks = table_now.is_some() && (table_now == mem_now);
     let changed = vals.windows(2).any(|w| w[0] != w[1]);

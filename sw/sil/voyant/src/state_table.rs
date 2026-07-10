@@ -53,6 +53,290 @@ impl Default for StateTableConfig {
     }
 }
 
+/// A dense **typed sub-column**: parallel deques of ascending timestamps and
+/// native values (`times[i]` is when the signal became `vals[i]`). Front-evicted
+/// as a pair. This is the storage the columnar historian uses for the hot scalar
+/// case — 8 B/sample of time plus `size_of::<T>()` of value, versus the old
+/// `(u64, Value)` pair's ~40 B (`Value` is a ~32 B tagged union).
+struct TypedCol<T> {
+    times: VecDeque<u64>,
+    vals: VecDeque<T>,
+}
+
+impl<T: Copy> TypedCol<T> {
+    fn new() -> Self {
+        Self {
+            times: VecDeque::new(),
+            vals: VecDeque::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.times.len()
+    }
+
+    fn push(&mut self, t: u64, v: T) {
+        self.times.push_back(t);
+        self.vals.push_back(v);
+    }
+
+    /// The most-recent value (the column tail), for the native epsilon-dedup
+    /// compare — no `Value` construction.
+    fn tail(&self) -> Option<T> {
+        self.vals.back().copied()
+    }
+
+    /// Drop samples strictly older than `cutoff`, keeping the one sample still
+    /// "active" at the cutoff (ZOH needs it). Returns whether anything dropped.
+    fn evict(&mut self, cutoff: u64) -> bool {
+        let mut dropped = false;
+        while (self.times.len() > 1) && (self.times[1] <= cutoff) {
+            self.times.pop_front();
+            self.vals.pop_front();
+            dropped = true;
+        }
+        dropped
+    }
+
+    /// ZOH partition point: the count of samples at or before `time_us`.
+    fn zoh_index(&self, time_us: u64) -> usize {
+        self.times.partition_point(|&t| t <= time_us)
+    }
+}
+
+/// One signal's **columnar historian**. The kind is fixed at the first record and
+/// is then immutable: scalar `Value` variants get a dedicated dense [`TypedCol`];
+/// `Enum`/`Bytes` live in the boxed `(time_us, Value)` column. A later record whose
+/// variant does not match the established kind is a **bug** (one signal has exactly
+/// one type for its lifetime), so [`Column::push_value`] rejects it — there is no
+/// type migration. Scalars are the 99% hot case, so the hybrid keeps them dense
+/// while never dropping the structured minority.
+enum Column {
+    /// No record yet — kind undetermined.
+    Empty,
+    F32(TypedCol<f32>),
+    F64(TypedCol<f64>),
+    I32(TypedCol<i32>),
+    U32(TypedCol<u32>),
+    U64(TypedCol<u64>),
+    Bool(TypedCol<bool>),
+    /// Boxed column for structured signals. Seeded to a specific variant
+    /// (`Enum` **or** `Bytes`) at the first record and strict per-variant
+    /// thereafter — `Enum` and `Bytes` are distinct types under the one-type rule.
+    Boxed(VecDeque<(u64, Value)>),
+}
+
+/// A zero-order-hold lookup outcome (see [`Column::zoh`]).
+enum Zoh {
+    /// Nothing recorded yet.
+    Empty,
+    /// The requested time precedes the oldest retained sample (its timestamp).
+    Before(u64),
+    /// The value held at the requested time.
+    At(Value),
+}
+
+impl Column {
+    /// Seed an empty column from the incoming value, choosing the column kind by
+    /// its variant (scalars → a typed column; `Enum`/`Bytes` → boxed).
+    fn seed(t: u64, value: Value) -> Column {
+        fn one<T: Copy>(t: u64, x: T) -> TypedCol<T> {
+            let mut c = TypedCol::new();
+            c.push(t, x);
+            c
+        }
+        match value {
+            Value::F32(x) => Column::F32(one(t, x)),
+            Value::F64(x) => Column::F64(one(t, x)),
+            Value::I32(x) => Column::I32(one(t, x)),
+            Value::U32(x) => Column::U32(one(t, x)),
+            Value::U64(x) => Column::U64(one(t, x)),
+            Value::Bool(x) => Column::Bool(one(t, x)),
+            v @ (Value::Enum(_) | Value::Bytes(_)) => {
+                let mut dq = VecDeque::new();
+                dq.push_back((t, v));
+                Column::Boxed(dq)
+            }
+        }
+    }
+
+    /// Materialize the change-log as owned `(time, Value)` pairs (for dump /
+    /// inspection via [`StateTable::changes`]).
+    fn to_pairs(&self) -> Vec<(u64, Value)> {
+        fn zip<T: Copy>(c: &TypedCol<T>, wrap: impl Fn(T) -> Value) -> Vec<(u64, Value)> {
+            c.times.iter().copied().zip(c.vals.iter().copied()).map(|(t, v)| (t, wrap(v))).collect()
+        }
+        match self {
+            Column::Empty => Vec::new(),
+            Column::Boxed(dq) => dq.iter().cloned().collect(),
+            Column::F32(c) => zip(c, Value::F32),
+            Column::F64(c) => zip(c, Value::F64),
+            Column::I32(c) => zip(c, Value::I32),
+            Column::U32(c) => zip(c, Value::U32),
+            Column::U64(c) => zip(c, Value::U64),
+            Column::Bool(c) => zip(c, Value::Bool),
+        }
+    }
+
+    /// Append a `Value` sample at `t`. On an empty column this fixes the kind; on a
+    /// column whose kind **matches** the value's variant it appends and returns
+    /// `Ok(())`. A value whose variant does not match the established kind is a
+    /// **bug** — one signal has exactly one `Value` type for its lifetime — so it is
+    /// rejected with `Err((column_kind, offending_variant))` (both `&'static` names,
+    /// for the caller's [`TableError::TypeMismatch`]); the column is left untouched.
+    /// Never panics, never migrates, never coerces.
+    ///
+    /// `Boxed` columns are strict per structured variant: an `Enum`-seeded column
+    /// rejects a `Bytes` record and vice versa (they are distinct types).
+    fn push_value(&mut self, t: u64, value: Value) -> Result<(), (&'static str, &'static str)> {
+        match self {
+            Column::Empty => {
+                *self = Column::seed(t, value);
+                Ok(())
+            }
+            Column::F32(c) => match value {
+                Value::F32(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("F32", value_variant_name(&v))),
+            },
+            Column::F64(c) => match value {
+                Value::F64(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("F64", value_variant_name(&v))),
+            },
+            Column::I32(c) => match value {
+                Value::I32(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("I32", value_variant_name(&v))),
+            },
+            Column::U32(c) => match value {
+                Value::U32(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("U32", value_variant_name(&v))),
+            },
+            Column::U64(c) => match value {
+                Value::U64(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("U64", value_variant_name(&v))),
+            },
+            Column::Bool(c) => match value {
+                Value::Bool(x) => {
+                    c.push(t, x);
+                    Ok(())
+                }
+                v => Err(("Bool", value_variant_name(&v))),
+            },
+            Column::Boxed(dq) => {
+                // Strict per structured variant: the established kind is the variant
+                // of the existing entries (all identical under the one-type rule; the
+                // deque is never empty once seeded).
+                let established = boxed_kind_name(dq);
+                let matches = matches!(
+                    (established, &value),
+                    ("Enum", Value::Enum(_)) | ("Bytes", Value::Bytes(_))
+                );
+                if matches {
+                    dq.push_back((t, value));
+                    Ok(())
+                } else {
+                    Err((established, value_variant_name(&value)))
+                }
+            }
+        }
+    }
+
+    /// Evict samples older than `cutoff` (ZOH-preserving). Returns whether anything
+    /// was dropped.
+    fn evict(&mut self, cutoff: u64) -> bool {
+        match self {
+            Column::Empty => false,
+            Column::F32(c) => c.evict(cutoff),
+            Column::F64(c) => c.evict(cutoff),
+            Column::I32(c) => c.evict(cutoff),
+            Column::U32(c) => c.evict(cutoff),
+            Column::U64(c) => c.evict(cutoff),
+            Column::Bool(c) => c.evict(cutoff),
+            Column::Boxed(dq) => {
+                let mut dropped = false;
+                while (dq.len() > 1) && (dq[1].0 <= cutoff) {
+                    dq.pop_front();
+                    dropped = true;
+                }
+                dropped
+            }
+        }
+    }
+
+    /// Zero-order-hold lookup: the value in effect at `time_us`.
+    fn zoh(&self, time_us: u64) -> Zoh {
+        fn typed<T: Copy>(c: &TypedCol<T>, time_us: u64, wrap: impl Fn(T) -> Value) -> Zoh {
+            if c.len() == 0 {
+                return Zoh::Empty;
+            }
+            let idx = c.zoh_index(time_us);
+            if idx == 0 {
+                Zoh::Before(c.times[0])
+            } else {
+                Zoh::At(wrap(c.vals[idx - 1]))
+            }
+        }
+        match self {
+            Column::Empty => Zoh::Empty,
+            Column::F32(c) => typed(c, time_us, Value::F32),
+            Column::F64(c) => typed(c, time_us, Value::F64),
+            Column::I32(c) => typed(c, time_us, Value::I32),
+            Column::U32(c) => typed(c, time_us, Value::U32),
+            Column::U64(c) => typed(c, time_us, Value::U64),
+            Column::Bool(c) => typed(c, time_us, Value::Bool),
+            Column::Boxed(dq) => {
+                if dq.is_empty() {
+                    return Zoh::Empty;
+                }
+                let idx = dq.partition_point(|&(t, _)| t <= time_us);
+                if idx == 0 {
+                    Zoh::Before(dq[0].0)
+                } else {
+                    Zoh::At(dq[idx - 1].1.clone())
+                }
+            }
+        }
+    }
+}
+
+/// The established structured kind of a (non-empty, seeded) boxed column —
+/// `"Enum"` or `"Bytes"` — for the type-mismatch error. All entries share the
+/// variant under the one-type rule, so the tail's variant is authoritative.
+fn boxed_kind_name(dq: &VecDeque<(u64, Value)>) -> &'static str {
+    match dq.back() {
+        Some((_, Value::Bytes(_))) => "Bytes",
+        _ => "Enum",
+    }
+}
+
+/// The `Value` variant name, for the type-mismatch error.
+fn value_variant_name(v: &Value) -> &'static str {
+    match v {
+        Value::F32(_) => "F32",
+        Value::F64(_) => "F64",
+        Value::I32(_) => "I32",
+        Value::U32(_) => "U32",
+        Value::U64(_) => "U64",
+        Value::Bool(_) => "Bool",
+        Value::Enum(_) => "Enum",
+        Value::Bytes(_) => "Bytes",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum TableError {
     #[error("unknown signal: {0}")]
@@ -69,6 +353,12 @@ pub enum TableError {
         requested_tick: u64,
         oldest_available: u64,
     },
+    #[error("type mismatch on {signal}: column is {column_kind} but got a {offending} value (one signal has exactly one Value type for its lifetime — this is a wiring/model bug)")]
+    TypeMismatch {
+        signal: SignalId,
+        column_kind: &'static str,
+        offending: &'static str,
+    },
 }
 
 pub struct StateTable {
@@ -81,9 +371,13 @@ pub struct StateTable {
     signals: IndexSet<SignalId>,
     /// Optional per-signal unit string (metadata; cold — set only at register).
     units: HashMap<SignalId, String>,
-    /// Per-signal change-log, indexed by signal index: `(time_us, value)`,
-    /// ascending, front-evicted.
-    changes: Vec<VecDeque<(u64, Value)>>,
+    /// Per-signal **columnar historian**, indexed by signal index: each signal's
+    /// timestamped samples as a typed [`Column`] (scalar variants get a dense
+    /// `times`/`vals` pair of deques; `Enum`/`Bytes` signals use a boxed
+    /// `(time_us, Value)` deque). Ascending, front-evicted; the column's value kind
+    /// is fixed at the FIRST record and immutable thereafter (a later variant
+    /// mismatch is a bug, rejected with [`TableError::TypeMismatch`]).
+    columns: Vec<Column>,
     /// Current value cache, indexed by signal index (O(1) latest; `None` = never
     /// recorded).
     current: Vec<Option<Value>>,
@@ -118,6 +412,54 @@ impl Default for StateTable {
     }
 }
 
+/// Generate a crate-internal **typed mirror-record fast lane** for one scalar
+/// column kind (`record_mirror_<t>_at`). It compares the incoming native value
+/// against the column tail directly — **no `Value` construction on the compare
+/// path** — appends natively on a change, and keeps the `current` cache and
+/// retention identical to the generic [`StateTable::record_mirror_at`]. On a
+/// column of a *different* kind it defers to the generic path, which rejects the
+/// record with [`TableError::TypeMismatch`] (one signal has exactly one type for
+/// its lifetime — a wrong-kind record is a bug). `$eq` is the epsilon-dedup
+/// predicate for this kind (float: absolute deadband; discrete: exact).
+macro_rules! typed_mirror_lane {
+    ($name:ident, $t:ty, $variant:ident, $eq:expr) => {
+        pub(crate) fn $name(&mut self, idx: usize, x: $t) -> Result<(), TableError> {
+            if self.overrides.contains(&idx) {
+                return Ok(()); // pinned: mirror records are ignored (the pin holds the view)
+            }
+            match &self.columns[idx] {
+                Column::$variant(c) => {
+                    if let Some(prev) = c.tail() {
+                        let eq: fn($t, $t, f64) -> bool = $eq;
+                        if eq(prev, x, self.epsilon[idx]) {
+                            return Ok(()); // within epsilon of the tail -> deduped
+                        }
+                    }
+                }
+                Column::Empty => {}
+                // A different existing kind: defer to the generic path, which
+                // rejects the wrong-kind record with TableError::TypeMismatch.
+                _ => {
+                    return self.record_inner(idx, Value::$variant(x), false);
+                }
+            }
+            let t = self.current_time_us;
+            self.current[idx] = Some(Value::$variant(x));
+            match &mut self.columns[idx] {
+                Column::Empty => {
+                    let mut c = TypedCol::new();
+                    c.push(t, x);
+                    self.columns[idx] = Column::$variant(c);
+                }
+                Column::$variant(c) => c.push(t, x),
+                _ => unreachable!("compare arm above already excluded other kinds"),
+            }
+            self.evict(idx);
+            Ok(())
+        }
+    };
+}
+
 impl StateTable {
     pub fn new() -> Self {
         Self::with_config(StateTableConfig::default())
@@ -127,7 +469,7 @@ impl StateTable {
         Self {
             signals: IndexSet::new(),
             units: HashMap::new(),
-            changes: Vec::new(),
+            columns: Vec::new(),
             current: Vec::new(),
             epsilon: Vec::new(),
             overrides: HashSet::new(),
@@ -176,7 +518,7 @@ impl StateTable {
             .unwrap_or(self.config.epsilon);
         // Push the dense slots BEFORE inserting into the index set, so the new
         // signal's index (== the pre-push length) lines up with its slot.
-        self.changes.push(VecDeque::new());
+        self.columns.push(Column::Empty);
         self.current.push(None);
         self.epsilon.push(eps);
         self.signals.insert(id);
@@ -209,8 +551,7 @@ impl StateTable {
     /// re-asserted into firmware memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
-        self.record_inner(idx, value, true);
-        Ok(())
+        self.record_inner(idx, value, true)
     }
 
     /// Record a **mirror** value (a firmware member's end-of-tick sweep of its
@@ -221,8 +562,7 @@ impl StateTable {
     /// not commanding a write back into it).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
-        self.record_inner(idx, value, false);
-        Ok(())
+        self.record_inner(idx, value, false)
     }
 
     /// **Index-keyed mirror record** — the mirror-sweep hot path. Identical
@@ -230,34 +570,49 @@ impl StateTable {
     /// dirty mark) but keyed by a pre-resolved dense index, so the whole-namespace
     /// sweep never hashes a `SignalId` string. `idx` must come from
     /// [`resolve_index`](Self::resolve_index) (i.e. a registered signal).
-    pub(crate) fn record_mirror_at(&mut self, idx: usize, value: Value) {
-        self.record_inner(idx, value, false);
+    pub(crate) fn record_mirror_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
+        self.record_inner(idx, value, false)
     }
+
+    // **Typed mirror-record fast lanes** — the sweep's scalar decode path. Each
+    // takes a native scalar (never a boxed `Value`) so the ~30–60 changing leaves
+    // per tick compare against the column tail and append natively, with no `Value`
+    // enum construction on the compare-only path. Behaviorally identical to
+    // `record_mirror_at(idx, Value::<Variant>(x))` (see the fast-lane-equivalence
+    // unit test), including rejecting a wrong-kind column with
+    // `TableError::TypeMismatch`. Enum/Bytes leaves have no fast lane — they go
+    // through `record_mirror_at`.
+    typed_mirror_lane!(record_mirror_f32_at, f32, F32, |a, b, e| ((a as f64) - (b as f64)).abs() <= e);
+    typed_mirror_lane!(record_mirror_f64_at, f64, F64, |a, b, e| (a - b).abs() <= e);
+    typed_mirror_lane!(record_mirror_i32_at, i32, I32, |a, b, _e| a == b);
+    typed_mirror_lane!(record_mirror_u32_at, u32, U32, |a, b, _e| a == b);
+    typed_mirror_lane!(record_mirror_u64_at, u64, U64, |a, b, _e| a == b);
+    typed_mirror_lane!(record_mirror_bool_at, bool, Bool, |a, b, _e| a == b);
 
     /// **Index-keyed command record** — the route-propagation hot path. Identical
     /// semantics to [`record`](Self::record) (dedup / override / marks dirty) but
     /// keyed by a pre-resolved dense index. `idx` must come from
     /// [`resolve_index`](Self::resolve_index).
-    pub(crate) fn record_at(&mut self, idx: usize, value: Value) {
-        self.record_inner(idx, value, true);
+    pub(crate) fn record_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
+        self.record_inner(idx, value, true)
     }
 
-    fn record_inner(&mut self, idx: usize, value: Value, command: bool) {
+    fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {
         if self.overrides.contains(&idx) {
             // Pinned: both command and mirror records are ignored (the pin holds
             // the current view). A pinned entry is re-asserted via the pinned-flush
             // union, not via record.
-            return;
+            return Ok(());
         }
         if command {
             self.dirty.insert(idx);
         }
         if let Some(cur) = &self.current[idx] {
             if cur.approx_eq(&value, self.epsilon[idx]) {
-                return;
+                return Ok(());
             }
         }
-        self.append(idx, value);
+        self.append(idx, value)
     }
 
     /// Record unconditionally (bypasses change-detection and overrides). Counts as
@@ -265,44 +620,46 @@ impl StateTable {
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.dirty.insert(idx);
-        self.append(idx, value);
-        Ok(())
+        self.append(idx, value)
     }
 
-    /// Current (last-recorded) value, O(1). `None` if never recorded.
-    pub fn current_value(&self, id: &SignalId) -> Result<Option<&Value>, TableError> {
+    /// Current (last-recorded) value, O(1). `None` if never recorded. Returns **by
+    /// value** — columnar storage cannot hand out a `&Value`, and the `current`
+    /// cache holds an owned `Value` (its semantics are unchanged, D12).
+    pub fn current_value(&self, id: &SignalId) -> Result<Option<Value>, TableError> {
         let idx = self.ensure(id)?;
-        Ok(self.current[idx].as_ref())
+        Ok(self.current[idx].clone())
     }
 
     /// Index-keyed current value (route propagation / port-cache fill hot paths).
-    /// `idx` must come from [`resolve_index`](Self::resolve_index).
-    pub(crate) fn current_value_at(&self, idx: usize) -> Option<&Value> {
-        self.current[idx].as_ref()
+    /// `idx` must come from [`resolve_index`](Self::resolve_index). By value (see
+    /// [`current_value`](Self::current_value)).
+    pub(crate) fn current_value_at(&self, idx: usize) -> Option<Value> {
+        self.current[idx].clone()
     }
 
     /// Value in effect at `time_us` (zero-order hold: the last sample at or
-    /// before it), O(log n). `None` if before the first sample and nothing was
-    /// evicted; `OutOfWindow` if it fell out of the retained window.
-    pub fn value_at(&self, id: &SignalId, time_us: u64) -> Result<Option<&Value>, TableError> {
+    /// before it), O(log n), reconstructed **by value** from the typed column.
+    /// `None` if before the first sample and nothing was evicted; `OutOfWindow` if
+    /// it fell out of the retained window.
+    pub fn value_at(&self, id: &SignalId, time_us: u64) -> Result<Option<Value>, TableError> {
         let si = self.ensure(id)?;
-        let dq = &self.changes[si];
-        if dq.is_empty() {
-            return Ok(None);
-        }
-        let idx = dq.partition_point(|&(t, _)| t <= time_us);
-        if idx == 0 {
-            // Requested time precedes all retained samples.
-            if self.evicted.contains(&si) {
-                return Err(TableError::OutOfWindow {
-                    signal: id.clone(),
-                    requested_tick: time_us,
-                    oldest_available: dq[0].0,
-                });
+        match self.columns[si].zoh(time_us) {
+            Zoh::Empty => Ok(None),
+            Zoh::Before(oldest_available) => {
+                // Requested time precedes all retained samples.
+                if self.evicted.contains(&si) {
+                    Err(TableError::OutOfWindow {
+                        signal: id.clone(),
+                        requested_tick: time_us,
+                        oldest_available,
+                    })
+                } else {
+                    Ok(None)
+                }
             }
-            return Ok(None);
+            Zoh::At(v) => Ok(Some(v)),
         }
-        Ok(Some(&dq[idx - 1].1))
     }
 
     /// Pin/unpin a signal (overridden signals ignore `record`). Pinning marks the
@@ -361,8 +718,12 @@ impl StateTable {
     }
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
-    pub fn changes(&self, id: &SignalId) -> Option<&VecDeque<(u64, Value)>> {
-        self.signals.get_index_of(id).map(|idx| &self.changes[idx])
+    /// **Materializing**: columnar storage has no `(u64, Value)` deque to borrow, so
+    /// this reconstructs owned `(time, Value)` pairs from the typed column (a cold
+    /// dump/inspection path, not a hot one). `None` if the signal is unregistered;
+    /// an empty `Vec` if registered but never recorded.
+    pub fn changes(&self, id: &SignalId) -> Option<Vec<(u64, Value)>> {
+        self.signals.get_index_of(id).map(|idx| self.columns[idx].to_pairs())
     }
 
     /// Emit a log entry, stamped with the table's **current sim time**. The
@@ -416,11 +777,24 @@ impl StateTable {
             .ok_or_else(|| TableError::UnknownSignal(id.clone()))
     }
 
-    fn append(&mut self, idx: usize, value: Value) {
+    fn append(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         let t = self.current_time_us;
-        self.current[idx] = Some(value.clone());
-        self.changes[idx].push_back((t, value));
-        self.evict(idx);
+        // Append into the typed column. A variant that does not match the column's
+        // established kind is a bug (one signal has exactly one type for its
+        // lifetime), so it is rejected — the column and the `current` cache are left
+        // untouched (fail loud, corrupt nothing) and the caller surfaces the error.
+        match self.columns[idx].push_value(t, value.clone()) {
+            Ok(()) => {
+                self.current[idx] = Some(value);
+                self.evict(idx);
+                Ok(())
+            }
+            Err((column_kind, offending)) => Err(TableError::TypeMismatch {
+                signal: self.signals.get_index(idx).unwrap().clone(),
+                column_kind,
+                offending,
+            }),
+        }
     }
 
     /// Drop samples older than the retention window, keeping the one sample that
@@ -440,13 +814,7 @@ impl StateTable {
         let cutoff = self
             .current_time_us
             .saturating_sub(window.as_micros() as u64);
-        let dq = &mut self.changes[idx];
-        let mut dropped = false;
-        while dq.len() > 1 && dq[1].0 <= cutoff {
-            dq.pop_front();
-            dropped = true;
-        }
-        if dropped {
+        if self.columns[idx].evict(cutoff) {
             self.evicted.insert(idx);
         }
     }
@@ -476,7 +844,7 @@ mod tests {
         assert_eq!(log.len(), 2);
         assert_eq!(log[0], (1_000, Value::U32(5)));
         assert_eq!(log[1], (4_000, Value::U32(9)));
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(9)));
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(9)));
     }
 
     #[test]
@@ -490,9 +858,9 @@ mod tests {
         st.record(&a, Value::U32(9)).unwrap();
 
         assert_eq!(st.value_at(&a, 500).unwrap(), None); // before first sample
-        assert_eq!(st.value_at(&a, 1_000).unwrap(), Some(&Value::U32(5)));
-        assert_eq!(st.value_at(&a, 2_500).unwrap(), Some(&Value::U32(5))); // held
-        assert_eq!(st.value_at(&a, 9_999).unwrap(), Some(&Value::U32(9)));
+        assert_eq!(st.value_at(&a, 1_000).unwrap(), Some(Value::U32(5)));
+        assert_eq!(st.value_at(&a, 2_500).unwrap(), Some(Value::U32(5))); // held
+        assert_eq!(st.value_at(&a, 9_999).unwrap(), Some(Value::U32(9)));
     }
 
     #[test]
@@ -505,7 +873,7 @@ mod tests {
         st.set_override(&a, true).unwrap();
         st.set_time(2_000);
         st.record(&a, Value::U32(99)).unwrap(); // ignored
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
     }
 
     #[test]
@@ -584,7 +952,7 @@ mod tests {
         st.set_time(1_000);
         st.record_mirror(&a, Value::U32(5)).unwrap();
         assert!(st.take_dirty("dut").is_empty());
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
 
         // A command record marks dirty (drained exactly once).
         st.set_time(2_000);
@@ -616,7 +984,7 @@ mod tests {
         // the view.
         st.set_time(2_000);
         st.record_mirror(&a, Value::U32(99)).unwrap();
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
 
         // The pin persists across take_dirty drains: it must flush EVERY tick.
         st.take_dirty("dut");
@@ -651,7 +1019,7 @@ mod tests {
         st.register(a.clone(), Some("counts")).unwrap(); // idempotent
         assert_eq!(st.len(), 1);
         assert_eq!(st.changes(&a).unwrap().len(), 1);
-        assert_eq!(st.current_value(&a).unwrap(), Some(&Value::U32(5)));
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
         // A conflicting unit is a wiring bug.
         assert!(matches!(
             st.register(a.clone(), Some("volts")),
@@ -662,5 +1030,240 @@ mod tests {
             st.register(a.clone(), None),
             Err(TableError::ConflictingUnit { .. })
         ));
+    }
+
+    // --- columnar historian ------------------------------------------------
+
+    #[test]
+    fn columns_type_by_first_record_across_all_scalar_kinds() {
+        // The column's value kind is fixed at the first record; every scalar
+        // variant round-trips exactly through current_value / changes / value_at.
+        let cases: Vec<(&str, Value)> = vec![
+            ("f32", Value::F32(1.5)),
+            ("f64", Value::F64(2.5)),
+            ("i32", Value::I32(-7)),
+            ("u32", Value::U32(9)),
+            ("u64", Value::U64(1 << 40)),
+            ("bool", Value::Bool(true)),
+        ];
+        for (name, v) in cases {
+            let mut st = StateTable::new();
+            let s = id(&format!("cvar:dut:{name}"));
+            st.register(s.clone(), None).unwrap();
+            st.set_time(1_000);
+            st.record(&s, v.clone()).unwrap();
+            assert_eq!(st.current_value(&s).unwrap(), Some(v.clone()));
+            assert_eq!(st.changes(&s).unwrap(), vec![(1_000, v.clone())]);
+            assert_eq!(st.value_at(&s, 1_000).unwrap(), Some(v));
+        }
+    }
+
+    #[test]
+    fn type_mismatch_on_the_generic_path_errors_and_corrupts_nothing() {
+        // Rule: one signal has exactly one Value type for its lifetime. A later
+        // record of a different variant is a bug — it errors with TypeMismatch and
+        // leaves the column + current cache untouched (fail loud, corrupt nothing).
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record(&a, Value::U32(5)).unwrap();
+        st.set_time(2_000);
+        let err = st.record(&a, Value::F64(1.5)).unwrap_err(); // U32 column, F64 record
+        assert!(matches!(
+            err,
+            TableError::TypeMismatch { column_kind: "U32", offending: "F64", .. }
+        ));
+        // The mismatched record changed nothing: still one sample, still U32.
+        let log = st.changes(&a).unwrap();
+        assert_eq!(log, vec![(1_000, Value::U32(5))]);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
+
+        // A subsequent well-typed record still works.
+        st.set_time(3_000);
+        st.record(&a, Value::U32(9)).unwrap();
+        assert_eq!(st.changes(&a).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn every_typed_fast_lane_errors_on_a_wrong_kind_column() {
+        // Each record_mirror_<t>_at rejects a column of a different established kind
+        // with TypeMismatch (it defers to the generic path, which errors). Seed a
+        // U32 column, then fire every non-U32 lane at it.
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+        let i = st.resolve_index(&a).unwrap();
+        st.set_time(1_000);
+        st.record_mirror_u32_at(i, 5).unwrap(); // seeds U32
+
+        assert!(matches!(st.record_mirror_f32_at(i, 1.0), Err(TableError::TypeMismatch { offending: "F32", .. })));
+        assert!(matches!(st.record_mirror_f64_at(i, 1.0), Err(TableError::TypeMismatch { offending: "F64", .. })));
+        assert!(matches!(st.record_mirror_i32_at(i, 1), Err(TableError::TypeMismatch { offending: "I32", .. })));
+        assert!(matches!(st.record_mirror_u64_at(i, 1), Err(TableError::TypeMismatch { offending: "U64", .. })));
+        assert!(matches!(st.record_mirror_bool_at(i, true), Err(TableError::TypeMismatch { offending: "Bool", .. })));
+        // The matching lane still appends fine.
+        st.set_time(2_000);
+        st.record_mirror_u32_at(i, 9).unwrap();
+        assert_eq!(st.changes(&a).unwrap(), vec![(1_000, Value::U32(5)), (2_000, Value::U32(9))]);
+    }
+
+    #[test]
+    fn boxed_columns_are_strict_per_structured_variant() {
+        // Enum and Bytes are distinct types under the one-type rule: a Boxed column
+        // is seeded to one structured variant and rejects the other (and any scalar).
+        let mut st = StateTable::new();
+        let e = id("cvar:dut:e");
+        st.register(e.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record(&e, Value::Enum("A".into())).unwrap(); // seeds Boxed/Enum
+        st.set_time(2_000);
+        st.record(&e, Value::Enum("B".into())).unwrap(); // same variant -> appends
+        assert_eq!(st.changes(&e).unwrap().len(), 2);
+        // Bytes into an Enum column is a mismatch.
+        assert!(matches!(
+            st.record(&e, Value::Bytes(vec![1])),
+            Err(TableError::TypeMismatch { column_kind: "Enum", offending: "Bytes", .. })
+        ));
+        // A scalar into an Enum column is a mismatch too.
+        assert!(matches!(
+            st.record(&e, Value::U32(1)),
+            Err(TableError::TypeMismatch { column_kind: "Enum", offending: "U32", .. })
+        ));
+
+        // Symmetric: a Bytes-seeded column rejects an Enum.
+        let b = id("cvar:dut:b");
+        st.register(b.clone(), None).unwrap();
+        st.record(&b, Value::Bytes(vec![1, 2])).unwrap();
+        assert!(matches!(
+            st.record(&b, Value::Enum("X".into())),
+            Err(TableError::TypeMismatch { column_kind: "Bytes", offending: "Enum", .. })
+        ));
+
+        // Enum/Bytes into a scalar column is also rejected.
+        let s = id("cvar:dut:s");
+        st.register(s.clone(), None).unwrap();
+        st.record(&s, Value::U32(1)).unwrap();
+        assert!(matches!(
+            st.record(&s, Value::Enum("X".into())),
+            Err(TableError::TypeMismatch { column_kind: "U32", offending: "Enum", .. })
+        ));
+    }
+
+    #[test]
+    fn typed_column_retention_evicts_and_reports_out_of_window() {
+        // Retention eviction + OutOfWindow reporting + ZOH all work on a typed
+        // (U32) column exactly as on the old boxed deque.
+        let cfg = StateTableConfig {
+            retention: Some(Duration::from_micros(2_000)),
+            ..StateTableConfig::default()
+        };
+        let mut st = StateTable::with_config(cfg);
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+        for (t, v) in [(1_000, 1u32), (2_000, 2), (3_000, 3), (4_000, 4)] {
+            st.set_time(t);
+            st.record(&a, Value::U32(v)).unwrap();
+        }
+        // At t=4000, cutoff=2000 → the (1000,1) sample is evicted, keeping the one
+        // active at the cutoff.
+        let log = st.changes(&a).unwrap();
+        assert_eq!(log.len(), 3);
+        assert_eq!(log[0], (2_000, Value::U32(2)));
+        // A lookup before the retained window reports OutOfWindow (evicted).
+        assert!(matches!(
+            st.value_at(&a, 1_500),
+            Err(TableError::OutOfWindow { .. })
+        ));
+        // ZOH within the window still holds the prior sample.
+        assert_eq!(st.value_at(&a, 3_500).unwrap(), Some(Value::U32(3)));
+        assert_eq!(st.value_at(&a, 4_000).unwrap(), Some(Value::U32(4)));
+    }
+
+    #[test]
+    fn boxed_fallback_handles_enum_and_bytes() {
+        // Enum/Bytes are structured (non-scalar) → the boxed fallback column, with
+        // exact-change dedup, ZOH, and current-value all intact.
+        let mut st = StateTable::new();
+        let e = id("cvar:dut:e");
+        st.register(e.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record(&e, Value::Enum("A".into())).unwrap();
+        st.set_time(2_000);
+        st.record(&e, Value::Enum("A".into())).unwrap(); // exact dup -> deduped
+        st.set_time(3_000);
+        st.record(&e, Value::Enum("B".into())).unwrap();
+
+        let log = st.changes(&e).unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0], (1_000, Value::Enum("A".into())));
+        assert_eq!(log[1], (3_000, Value::Enum("B".into())));
+        assert_eq!(st.current_value(&e).unwrap(), Some(Value::Enum("B".into())));
+        assert_eq!(st.value_at(&e, 2_500).unwrap(), Some(Value::Enum("A".into())));
+
+        // Bytes payloads land in the boxed fallback too.
+        let b = id("cvar:dut:b");
+        st.register(b.clone(), None).unwrap();
+        st.set_time(1_000);
+        st.record(&b, Value::Bytes(vec![1, 2, 3])).unwrap();
+        assert_eq!(st.current_value(&b).unwrap(), Some(Value::Bytes(vec![1, 2, 3])));
+    }
+
+    #[test]
+    fn typed_fast_lane_matches_the_generic_path() {
+        // The typed mirror fast lane (record_mirror_<t>_at) must be behaviorally
+        // identical to the generic record_mirror(Value::<T>) path — same dedup,
+        // same historian, same ZOH — for both a float (epsilon deadband) and an
+        // integer (exact) column.
+        let a = id("cvar:dut:a");
+        let mut fast = StateTable::new();
+        let mut slow = StateTable::new();
+        fast.register(a.clone(), None).unwrap();
+        slow.register(a.clone(), None).unwrap();
+        let idx = fast.resolve_index(&a).unwrap();
+        // 1.0005 is within the 1e-3 default epsilon of 1.0 (deduped); the repeated
+        // 2.0 is exact-equal (deduped) — both paths must agree.
+        for (t, x) in [(1_000, 1.0f64), (2_000, 1.0005), (3_000, 2.0), (4_000, 2.0)] {
+            fast.set_time(t);
+            fast.record_mirror_f64_at(idx, x).unwrap();
+            slow.set_time(t);
+            slow.record_mirror(&a, Value::F64(x)).unwrap();
+        }
+        assert_eq!(fast.changes(&a), slow.changes(&a));
+        assert_eq!(fast.current_value(&a).unwrap(), slow.current_value(&a).unwrap());
+        for q in [500u64, 1_000, 1_500, 3_999, 5_000] {
+            assert_eq!(fast.value_at(&a, q).unwrap(), slow.value_at(&a, q).unwrap());
+        }
+
+        // Integer lane (exact dedup).
+        let b = id("cvar:dut:b");
+        let mut fast2 = StateTable::new();
+        let mut slow2 = StateTable::new();
+        fast2.register(b.clone(), None).unwrap();
+        slow2.register(b.clone(), None).unwrap();
+        let bi = fast2.resolve_index(&b).unwrap();
+        for (t, v) in [(1_000, 5u32), (2_000, 5), (3_000, 9)] {
+            fast2.set_time(t);
+            fast2.record_mirror_u32_at(bi, v).unwrap();
+            slow2.set_time(t);
+            slow2.record_mirror(&b, Value::U32(v)).unwrap();
+        }
+        assert_eq!(fast2.changes(&b), slow2.changes(&b));
+        assert_eq!(fast2.current_value(&b).unwrap(), Some(Value::U32(9)));
+    }
+
+    #[test]
+    fn typed_fast_lane_respects_override_pin() {
+        // A pin makes the fast lane a no-op, exactly like the generic mirror path.
+        let mut st = StateTable::new();
+        let a = id("cvar:dut:a");
+        st.register(a.clone(), None).unwrap();
+        let idx = st.resolve_index(&a).unwrap();
+        st.set_time(1_000);
+        st.record_mirror_u32_at(idx, 5).unwrap();
+        st.set_override(&a, true).unwrap();
+        st.set_time(2_000);
+        st.record_mirror_u32_at(idx, 99).unwrap(); // ignored: pinned
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
     }
 }

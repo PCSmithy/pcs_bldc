@@ -206,9 +206,9 @@ mod tests {
         }
         // value 1,2,3,4 all beyond epsilon -> four change-log entries.
         assert_eq!(st.changes(&id).unwrap().len(), 4);
-        assert_eq!(st.current_value(&id).unwrap(), Some(&Value::F64(4.0)));
+        assert_eq!(st.current_value(&id).unwrap(), Some(Value::F64(4.0)));
         // ZOH lookup between records holds the prior sample.
-        assert_eq!(st.value_at(&id, 2_500).unwrap(), Some(&Value::F64(2.0)));
+        assert_eq!(st.value_at(&id, 2_500).unwrap(), Some(Value::F64(2.0)));
     }
 
     #[test]
@@ -221,6 +221,6 @@ mod tests {
         m.advance(1_000_000, &mut st); // 1 s -> value 1.0
         assert_eq!(m.name(), "ramp");
         let id = vsig_id("ramp", "value").unwrap();
-        assert_eq!(st.current_value(&id).unwrap(), Some(&Value::F64(1.0)));
+        assert_eq!(st.current_value(&id).unwrap(), Some(Value::F64(1.0)));
     }
 }
