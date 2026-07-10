@@ -119,6 +119,12 @@ struct EnumInfo {
 struct Maps {
     /// variable name -> (link address, type's global .debug_info offset)
     vars: HashMap<String, (u64, usize)>,
+    /// function name -> link-time entry address (`DW_AT_low_pc`). Only defining
+    /// subprograms (with a `low_pc`) are recorded; declarations / abstract
+    /// (inlined) instances are skipped. Backs the function-DIE ASLR anchor
+    /// fallback for images (ELF + LTO) whose exported data symbols never appear
+    /// in the DWARF variable map.
+    functions: HashMap<String, u64>,
     /// struct/union type offset -> (member name -> (member offset, member type offset))
     members: HashMap<usize, HashMap<String, (u64, usize)>>,
     /// typedef/const/volatile/restrict offset -> the type it wraps
@@ -182,6 +188,23 @@ impl DwarfMap {
     /// Link-time address of a top-level variable.
     pub(crate) fn var_addr(&self, name: &str) -> Option<u64> {
         self.0.vars.get(name).map(|&(addr, _)| addr)
+    }
+
+    /// Link-time entry address (`DW_AT_low_pc`) of a function. Basis matches
+    /// [`var_addr`](Self::var_addr) — a file-relative vaddr in a PIC image — so the
+    /// same ASLR `slide` (`runtime - link`) applies to either anchor kind.
+    pub(crate) fn func_addr(&self, name: &str) -> Option<u64> {
+        self.0.functions.get(name).copied()
+    }
+
+    /// Count of top-level variables carrying a link address (diagnostics).
+    pub(crate) fn var_count(&self) -> usize {
+        self.0.vars.len()
+    }
+
+    /// Count of defining functions carrying a `low_pc` (diagnostics).
+    pub(crate) fn func_count(&self) -> usize {
+        self.0.functions.len()
     }
 
     /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
@@ -424,6 +447,16 @@ fn collect_unit(
                     maps.vars.insert(name, (addr, ty));
                 }
             }
+            gimli::DW_TAG_subprogram => {
+                // Only a defining subprogram carries a `low_pc`; declarations and
+                // abstract (inlined) instances have none and are skipped by the
+                // `die_low_pc` -> None guard. name+low_pc is all the anchor needs.
+                if let (Some(name), Some(addr)) =
+                    (die_name(dwarf, unit, entry), die_low_pc(dwarf, unit, entry))
+                {
+                    maps.functions.insert(name, addr);
+                }
+            }
             gimli::DW_TAG_member => {
                 if let Some(&(_, parent, ptag)) = stack.last() {
                     if matches!(ptag, gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type) {
@@ -532,6 +565,23 @@ fn die_addr(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
     }
 }
 
+/// A subprogram's link-time entry address from `DW_AT_low_pc`. Handles both the
+/// DWARF≤4 absolute form (`DW_FORM_addr` → `AttributeValue::Addr`) and the DWARF 5
+/// indexed form (`DW_FORM_addrx` → `DebugAddrIndex`, resolved via `.debug_addr`),
+/// since GCC 15 defaults to DWARF 5. Any other form (or a subprogram without a
+/// `low_pc` — a declaration / abstract instance) yields `None`.
+fn die_low_pc(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<u64> {
+    match entry.attr_value(gimli::DW_AT_low_pc).ok().flatten()? {
+        gimli::AttributeValue::Addr(a) => Some(a),
+        gimli::AttributeValue::DebugAddrIndex(index) => dwarf.address(unit, index).ok(),
+        _ => None,
+    }
+}
+
 fn type_goff(
     unit: &gimli::Unit<Slice>,
     entry: &gimli::DebuggingInformationEntry<Slice>,
@@ -602,8 +652,34 @@ fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
 }
 
 #[cfg(test)]
+impl DwarfMap {
+    /// Build a [`DwarfMap`] with only the var/func address maps populated — for
+    /// anchor-selection tests in other modules (which cannot reach the private
+    /// [`Maps`]). Types are irrelevant to the anchor (only the address delta matters).
+    pub(crate) fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
+        let mut m = Maps::default();
+        for (n, a) in vars {
+            m.vars.insert((*n).to_string(), (*a, 0));
+        }
+        for (n, a) in funcs {
+            m.functions.insert((*n).to_string(), *a);
+        }
+        DwarfMap(m)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn func_addr_looks_up_subprogram_low_pc() {
+        let dw = DwarfMap::for_anchor_test(&[("g", 0x10)], &[("sil_fw_start", 0xBEEF)]);
+        assert_eq!(dw.func_addr("sil_fw_start"), Some(0xBEEF));
+        assert_eq!(dw.func_addr("g"), None); // a variable is not a function
+        assert_eq!(dw.func_addr("missing"), None);
+        assert_eq!((dw.var_count(), dw.func_count()), (1, 1));
+    }
 
     /// Build a synthetic [`DwarfMap`] exercising the leaf walk without a real DLL:
     /// a scalar `n`, a struct `s { a; arr[3]; big[100] }`, and a 2-D `grid[2][3]`.

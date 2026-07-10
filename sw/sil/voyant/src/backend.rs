@@ -325,15 +325,19 @@ impl Firmware {
 
     /// Load the firmware, optionally pinning the ASLR **anchor** symbol.
     ///
-    /// The slide (`runtime_addr - link_addr`) is computed from one exported data
-    /// global: only the symbol's address is used, never its value, so *any*
-    /// exported global that also appears in DWARF works — only the delta matters.
+    /// The slide (`runtime_addr - link_addr`) is computed from one exported symbol:
+    /// only the symbol's address is used, never its value, so *any* exported symbol
+    /// that also appears in DWARF works — only the delta matters. The link address
+    /// comes from DWARF (a variable's `DW_OP_addr`, or a function's `DW_AT_low_pc`);
+    /// the runtime address from `libloading` — the same basis for both, since a data
+    /// global and a function are equally slid by the loader.
     ///
-    /// When `anchor` is `None` the anchor is auto-derived: the first symbol that is
-    /// both in the DLL's export table (so `libloading` can resolve its runtime
-    /// address) and in the DWARF variable map (so it has a link address) is used.
-    /// Pass `Some(name)` only for exotic images where auto-derivation picks a bad
-    /// symbol.
+    /// When `anchor` is `None` the anchor is auto-derived (see [`derive_anchor`]):
+    /// an exported **variable** in DWARF is preferred, falling back to an exported
+    /// **function** in DWARF (the ELF/LTO case, where the exported data statics are
+    /// absent from the `.dynsym` while the `sil_fw_*` control-ABI functions are
+    /// always exported and always in DWARF). Pass `Some(name)` — a variable *or* a
+    /// function name — only for exotic images where auto-derivation picks badly.
     pub fn load_with_anchor(path: &Path, anchor: Option<&str>) -> Result<Self, Box<dyn Error>> {
         // Read the image bytes for the export-table anchor derivation below; load
         // the DWARF via from_lib_path so macOS (DWARF in a sibling .dSYM, not the
@@ -344,20 +348,27 @@ impl Firmware {
         // SAFETY: loading a trusted, project-built artifact.
         let lib = unsafe { Library::new(path)? };
 
-        let anchor = match anchor {
-            Some(a) => a.to_string(),
+        // Pick the anchor symbol and its kind (which DWARF map holds its link
+        // address). An explicit override may name a variable or a function.
+        let (anchor, kind) = match anchor {
+            Some(a) if dwarf.var_addr(a).is_some() => (a.to_string(), AnchorKind::Var),
+            Some(a) if dwarf.func_addr(a).is_some() => (a.to_string(), AnchorKind::Func),
+            Some(_) => return Err("anchor symbol missing from DWARF".into()),
             None => derive_anchor(&bytes, &dwarf)?,
         };
 
-        let link_anchor = dwarf
-            .var_addr(&anchor)
-            .ok_or("anchor symbol missing from DWARF")?;
+        let link_anchor = match kind {
+            AnchorKind::Var => dwarf.var_addr(&anchor),
+            AnchorKind::Func => dwarf.func_addr(&anchor),
+        }
+        .ok_or("anchor symbol missing from DWARF")?;
         let runtime_anchor = {
             let mut sym_name = anchor.clone().into_bytes();
             sym_name.push(0);
-            // SAFETY: `anchor` names an exported data global; we only take the
-            // symbol's runtime address (never dereference it), so its type is
-            // immaterial — `*mut u8` is just a placeholder pointer type.
+            // SAFETY: `anchor` names an exported symbol (a data global or a
+            // function). We only take the symbol's runtime address (never
+            // dereference / call it), so its type is immaterial — `*mut u8` is just
+            // a placeholder; `libloading` returns the loader's address for either.
             let sym: Symbol<*mut u8> = unsafe { lib.get(&sym_name)? };
             *sym as u64
         };
@@ -626,20 +637,62 @@ impl Backend for Firmware {
     }
 }
 
-/// Auto-derive an ASLR anchor: the first symbol present in **both** the DLL's
-/// export table (so `libloading` can resolve its runtime address) and the DWARF
-/// variable map (so it has a link address). Any such global works — only the
-/// address delta matters, never the value.
-fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<String, Box<dyn Error>> {
+/// Which DWARF map holds a chosen anchor's link address — a variable's
+/// `DW_OP_addr` or a function's `DW_AT_low_pc`. Both share the loader's slide, so
+/// this only selects where the link address is read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnchorKind {
+    Var,
+    Func,
+}
+
+/// Auto-derive an ASLR anchor: the first exported symbol that also appears in
+/// DWARF. **Variables are preferred** (the historical strategy); if none of the
+/// exported symbols is a DWARF variable, fall back to the first exported symbol
+/// that is a DWARF **function** (`sil_fw_*` control-ABI exports are guaranteed
+/// present on every platform and in DWARF, so this cannot come up empty on a
+/// working build). This covers ELF/LTO images whose exported data statics never
+/// reach the `.dynsym` even though they are in DWARF. Any such symbol works —
+/// only the address delta matters, never the value.
+fn derive_anchor(bytes: &[u8], dwarf: &DwarfMap) -> Result<(String, AnchorKind), Box<dyn Error>> {
     let object = object::File::parse(bytes)?;
-    for export in object.exports()? {
-        if let Ok(name) = std::str::from_utf8(export.name()) {
-            if dwarf.var_addr(name).is_some() {
-                return Ok(name.to_string());
-            }
+    let exports = object.exports()?;
+    let names = || {
+        exports
+            .iter()
+            .filter_map(|e| std::str::from_utf8(e.name()).ok())
+    };
+    select_anchor(names(), dwarf).ok_or_else(|| {
+        format!(
+            "no usable ASLR anchor: no exported symbol matches a DWARF variable or function \
+             ({} exports, {} DWARF variables, {} DWARF functions)",
+            exports.len(),
+            dwarf.var_count(),
+            dwarf.func_count(),
+        )
+        .into()
+    })
+}
+
+/// The anchor-selection strategy order, factored out of [`derive_anchor`] so it is
+/// testable without a real object image: try every export against DWARF variables
+/// first, then (only if none matched) against DWARF functions. Returns the chosen
+/// symbol name + which DWARF map holds its link address.
+fn select_anchor<'a>(
+    export_names: impl Iterator<Item = &'a str> + Clone,
+    dwarf: &DwarfMap,
+) -> Option<(String, AnchorKind)> {
+    for name in export_names.clone() {
+        if dwarf.var_addr(name).is_some() {
+            return Some((name.to_string(), AnchorKind::Var));
         }
     }
-    Err("no usable ASLR anchor: no exported global appears in DWARF".into())
+    for name in export_names {
+        if dwarf.func_addr(name).is_some() {
+            return Some((name.to_string(), AnchorKind::Func));
+        }
+    }
+    None
 }
 
 /// A firmware instance as a [`Member`]. Borrows a concrete [`Firmware`] and drives
@@ -1452,6 +1505,31 @@ mod tests {
 
     fn id(s: &str) -> SignalId {
         SignalId::parse(s).unwrap()
+    }
+
+    #[test]
+    fn anchor_prefers_variable_then_falls_back_to_function() {
+        // Exports as the object crate would yield them; both a data global and the
+        // control-ABI function are present in the export table.
+        let exports = ["sil_fw_start", "g_var"];
+
+        // Variable present in DWARF -> variable strategy wins (Windows path).
+        let dw = DwarfMap::for_anchor_test(&[("g_var", 0x100)], &[("sil_fw_start", 0x200)]);
+        let (name, kind) = select_anchor(exports.iter().copied(), &dw).unwrap();
+        assert_eq!(name, "g_var");
+        assert_eq!(kind, AnchorKind::Var);
+
+        // No exported symbol is a DWARF variable (the ELF/LTO case: data statics in
+        // DWARF but absent from .dynsym) -> function fallback picks sil_fw_start.
+        let dw = DwarfMap::for_anchor_test(&[("some_internal_static", 0x100)], &[("sil_fw_start", 0x200)]);
+        let (name, kind) = select_anchor(exports.iter().copied(), &dw).unwrap();
+        assert_eq!(name, "sil_fw_start");
+        assert_eq!(kind, AnchorKind::Func);
+
+        // Neither strategy matches -> None (derive_anchor turns this into the
+        // count-carrying diagnostic error).
+        let dw = DwarfMap::for_anchor_test(&[], &[]);
+        assert!(select_anchor(exports.iter().copied(), &dw).is_none());
     }
 
     #[test]
