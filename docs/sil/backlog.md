@@ -51,3 +51,28 @@ rewrite against proper test-owned stubs/mocks, or retire it in favor of more
 comprehensive cross-module SIL tests. No other consumers exist (nothing in
 `sw/sil/` or `sw/fw/` uses `_sim_*` except a mention in
 `sw/fw/src/hw/sim/_placeholder.c`).
+
+## Future feature: native debugger (VSCode) attached to in-the-loop firmware
+
+**Idea (owner, 2026-07-09):** run voyant with firmware in the loop, connected
+to the VSCode debugger — breakpoints, stepping, variable watches in the C
+firmware source while the sim runs. Realtime-sim flavored: fine to build the
+firmware at `-O0 -g` (the existing `run_sil.sh --debug` flavor), not chasing
+100×+ here.
+
+**Feasibility sketch:** most of this comes free from the architecture. The
+firmware is a native DLL inside the voyant process, so attaching a native
+debugger (MinGW gdb / VSCode `cppdbg`) to that process gives source-level
+breakpoints/stepping/watches in the C today — the DLL carries full DWARF, and
+gdb shows the executing fiber's stack at a breakpoint. The killer property is
+that the sim is single-threaded: **hitting a breakpoint freezes the entire
+virtual world coherently** — motor model, sim time, everything — unlike real
+hardware, where the plant keeps moving while the CPU is halted; and
+determinism means you can replay to the same breakpoint identically.
+
+**To productize (rough):** a `--wait-debugger` / hold mode in the driver +
+VSCode `launch.json` attach configs; a pacing policy that tolerates wall-clock
+stalls (a breakpoint stalls the paced loop — resync rather than sprint on
+resume); docs. Natural host is the **realtime/paced run mode**, so this
+sequences after fast mode + Python bindings (D3) and the realtime dashboard
+(D4), per the owner's ordering.
