@@ -18,12 +18,6 @@ jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # TEMPORARY (macOS aarch64 multi-tick cadence hunt): make the SIL suite print
-    # its white-box per-tick scheduling table so CI's macOS runner acts as a
-    # remote debugger. Remove once the anomaly is diagnosed. See main.rs
-    # `diag_per_tick_table` and docs/sil/backlog.md.
-    env:
-      PCS_SIL_DIAG: 1
     strategy:
       fail-fast: false
       matrix:
@@ -65,19 +59,3 @@ jobs:
       - name: Run SIL sanity suite (debug flavor)
         if: ${{ !cancelled() }}
         run: bash tools/run_sil.sh --clean --debug
-
-      # TEMPORARY (macOS Mach-O/dSYM DWARF static-collapse hunt): ship the real
-      # macOS SIL binaries + dSYM bundles so the fault can be diagnosed offline
-      # (no Mac to hand). Uploads both build flavors' dylib + whole .dSYM bundle.
-      # Remove once the Mach-O static resolver is fixed and CI is green.
-      - name: Upload macOS SIL binaries (offline DWARF analysis)
-        if: runner.os == 'macOS' && !cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-sil-binaries
-          if-no-files-found: warn
-          path: |
-            build/native-fw-release/src/libpcs_bldc_fw.dylib
-            build/native-fw-release/src/libpcs_bldc_fw.dylib.dSYM
-            build/native-fw/src/libpcs_bldc_fw.dylib
-            build/native-fw/src/libpcs_bldc_fw.dylib.dSYM

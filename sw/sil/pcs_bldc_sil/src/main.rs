@@ -207,8 +207,8 @@ fn main() -> ExitCode {
 /// otherwise). Straight after boot, advance the firmware one raw tick at a time
 /// and, each tick, DWARF-read the FreeRTOS kernel's own view — `xTickCount` and
 /// `xNextTaskUnblockTime` (the earliest tick any blocked task is scheduled to
-/// wake) — alongside the per-task heartbeat counters. This is our remote
-/// debugger for the macOS aarch64 anomaly where multi-tick delays collapse:
+/// wake) — alongside the per-task heartbeat counters. A general-purpose remote
+/// debugger for scheduling / DWARF-resolution questions:
 /// - if `xTickCount` advances by 1/tick but `xNextTaskUnblockTime` sits at
 ///   `xTickCount+1` every tick (and every counter climbs each tick), the block
 ///   times themselves are wrong (kernel/port bug — the delayed-list wake values
@@ -216,6 +216,9 @@ fn main() -> ExitCode {
 /// - if the counters climb but `xNextTaskUnblockTime` looks sane (e.g. +10 for
 ///   the 10 ms task), the anomaly is in how the suite reads the counters, not in
 ///   the firmware's scheduling (DWARF/address resolution).
+///
+/// The resolved-address list also surfaces per-variable DWARF faults directly:
+/// two distinct statics collapsing to one address means their reads alias.
 ///
 /// Print-only: it advances the shared `fw` handle exactly as the checks do
 /// (each check reads its own `before`/`after` deltas), so it does not perturb
@@ -245,39 +248,30 @@ fn diag_per_tick_table(fw: &Firmware) {
 
     // Resolved runtime addresses of the statics the table reads. If two distinct
     // statics collapse to one address here, their reads alias — a per-variable
-    // DWARF-resolution fault (suspected for file-scope `static`s on Mach-O),
-    // NOT a firmware/scheduling bug. `dbg_t10_*` are non-`static` (external
-    // linkage) controls; the counters are file-scope `static`.
+    // DWARF-resolution fault (e.g. same-TU file-scope `static`s on Mach-O),
+    // NOT a firmware/scheduling bug.
     println!("         resolved addresses (watch for collisions):");
     for p in [
         "xTickCount", "task1msRuns", "task10msRuns", "telemRuns",
-        "task200msRuns", "taskUsbRuns", "dbg_t10_lwIn", "dbg_t10_lwOut", "dbg_t10_tick",
+        "task200msRuns", "taskUsbRuns",
     ] {
         let a = fw.resolve_addr(p).map(|a| format!("{a:#018x}")).unwrap_or_else(|| "n/a".into());
         println!("           {p:<16} {a}");
     }
 
-    // t10.* are white-box probes captured inside task_10ms's delay cycle (main.c):
-    // lwIn = lastWake entering vTaskDelayUntil, lwOut = lastWake it wrote back
-    // (should be lwIn+10), tick = the tick task_10ms actually resumed on (should
-    // equal lwOut for a true 10-tick block).
-    println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}  {:>7}  {:>7}  {:>7}",
-             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb",
-             "t10.lwIn", "t10.lwOut", "t10.tick");
+    println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
+             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb");
     // Row 0 = post-boot baseline (all tasks just blocked; no tick applied yet).
     // Rows 1.. = state after each raw firmware tick.
     for i in 0..=TICKS {
-        println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}  {:>7}  {:>7}  {:>7}",
+        println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
                  i,
                  rd("xTickCount"),
                  rd("xNextTaskUnblockTime"),
                  rd("task1msRuns"),
                  rd("task10msRuns"),
                  rd("telemRuns"),
-                 rd("taskUsbRuns"),
-                 rd("dbg_t10_lwIn"),
-                 rd("dbg_t10_lwOut"),
-                 rd("dbg_t10_tick"));
+                 rd("taskUsbRuns"));
         if i < TICKS {
             fw.advance_tick();
         }
