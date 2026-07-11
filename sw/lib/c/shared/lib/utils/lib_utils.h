@@ -1,9 +1,11 @@
 #pragma once
 
-// Cross-cutting utility macros. Add new ones here as concrete needs
-// arise; resist the urge to pre-stock with "everyone usually has
-// MIN/MAX/CLAMP" until something actually needs them.
+#include "lib_types.h"
 
+#define PI (3.14159265359f)
+
+#define DEG_TO_RAD(a) ((a) * PI / 180.0f)
+#define RPM_TO_RAD_PER_SEC(a) ((a) * 2.0f * PI / 60.0f)
 
 /**
  * COUNTOF(arr) — number of elements in a static-sized array.
@@ -36,3 +38,11 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 
 #define US_TO_MS(us) ((us) / 1000)
 
+#define MIN_OF(a, b) ((a) < (b) ? (a) : (b))
+#define MAX_OF(a, b) ((a) > (b) ? (a) : (b))
+
+#define SIGN(a) ((a) > 0U ? (1) : (-1))
+
+#define EPSILON (1e-6)
+#define IS_FLOAT_EQUAL(a, b) (bool)(fabsf((a) - (b)) < EPSILON)
+#define IS_FLOAT_NOT_EQUAL(a, b) !IS_FLOAT_EQUAL((a), (b))

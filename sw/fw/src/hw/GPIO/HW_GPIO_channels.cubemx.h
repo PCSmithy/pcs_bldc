@@ -42,12 +42,12 @@
         .Pull = GPIO_NOPULL, \
     }, \
     { \
-        .Pin  = GPIO_PIN_14, \
+        .Pin  = (GPIO_PIN_14|GPIO_PIN_15), \
         .Mode = GPIO_MODE_INPUT, \
         .Pull = GPIO_NOPULL, \
     }, \
     { \
-        .Pin   = (GPIO_PIN_15|GPIO_PIN_4), \
+        .Pin   = GPIO_PIN_4, \
         .Mode  = GPIO_MODE_OUTPUT_PP, \
         .Pull  = GPIO_NOPULL, \
         .Speed = GPIO_SPEED_FREQ_LOW, \
@@ -55,8 +55,8 @@
 
 #define HW_GPIO_CUBEMX_SIM_PINS_PORT_C \
     { .pin = 0x2000U, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "PC13" }, \
-    { .pin = 0x4000U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PC14" }, \
-    { .pin = 0x8010U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PC15+PC4" },
+    { .pin = 0xC000U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PC14+PC15" }, \
+    { .pin = 0x0010U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PC4" },
 
 #define HW_GPIO_CUBEMX_PINS_PORT_E \
     { \

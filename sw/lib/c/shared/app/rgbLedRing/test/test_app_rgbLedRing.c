@@ -2,10 +2,13 @@
 #include "unity.h"
 
 // The board ring; the render core takes the count as a parameter.
-#define LED_COUNT  36U
+#define LED_COUNT   36U
+#define LVL         ((uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS)
+#define FULL_SCALE  (10.0f)   // speedo full-scale speed (rad/s) for the tests
 
-static app_rgbLedRing_state_S state;
-static app_rgbLedRing_rgb_S   pixels[LED_COUNT];
+static app_rgbLedRing_state_S       state;
+static app_rgbLedRing_rgb_S         pixels[LED_COUNT];
+static app_motorControl_snapshot_S  motor;
 
 void setUp(void)
 {
@@ -15,65 +18,40 @@ void setUp(void)
     {
         pixels[i] = (app_rgbLedRing_rgb_S){ 0U, 0U, 0U };
     }
+    motor = (app_motorControl_snapshot_S){ .state = APP_MOTORCONTROL_STATE_ENABLED };
 }
 
 void tearDown(void) {}
 
-// One press = a rising edge of the debounced button (advance), then a release.
-static void press(void)
+static void render(float32_t dialDeg, float32_t motorDeg)
 {
-    (void)app_rgbLedRing_advanceMode(&state, true);
-    (void)app_rgbLedRing_advanceMode(&state, false);
+    app_rgbLedRing_renderFrame(&state, dialDeg, motorDeg, &motor, FULL_SCALE, pixels, LED_COUNT);
 }
 
 /* ---- fw~obs_ring_001: mode selection ---- */
 
 // [test->fw~obs_ring_001~1]
-static void test_starts_in_walk_mode(void)
+static void test_starts_in_position_mode(void)
 {
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_WALK, state.mode);
+    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_POSITION, state.mode);
 }
 
 // [test->fw~obs_ring_001~1]
-static void test_button_edge_advances_once_per_press(void)
+static void test_advance_toggles_position_and_speedo(void)
 {
-    // Rising edge advances.
-    TEST_ASSERT_TRUE(app_rgbLedRing_advanceMode(&state, true));
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SOLID, state.mode);
-
-    // Held (no new edge) does not advance.
-    TEST_ASSERT_FALSE(app_rgbLedRing_advanceMode(&state, true));
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SOLID, state.mode);
-
-    // Release, then the next press advances again.
-    TEST_ASSERT_FALSE(app_rgbLedRing_advanceMode(&state, false));
-    TEST_ASSERT_TRUE(app_rgbLedRing_advanceMode(&state, true));
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SOLID2, state.mode);
+    app_rgbLedRing_advanceMode(&state);
+    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SPEEDO, state.mode);
+    app_rgbLedRing_advanceMode(&state);
+    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_POSITION, state.mode);
 }
 
-// [test->fw~obs_ring_001~1]
-static void test_mode_cycle_wraps(void)
-{
-    // WALK -> SOLID -> SOLID2 -> ENCODER -> OFF -> WALK.
-    press();
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SOLID, state.mode);
-    press();
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_SOLID2, state.mode);
-    press();
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_ENCODER, state.mode);
-    press();
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_OFF, state.mode);
-    press();
-    TEST_ASSERT_EQUAL_INT(APP_RGBLEDRING_MODE_WALK, state.mode);
-}
+/* ---- fw~obs_ring_002: state display + per-mode rendering ---- */
 
-/* ---- fw~obs_ring_002: per-mode rendering ---- */
-
-// [test->fw~obs_ring_002~1]
-static void test_off_clears_every_pixel(void)
+// [test->fw~obs_ring_002~1] [test->fw~mc_009~1]
+static void test_off_when_motor_disabled(void)
 {
-    state.mode = APP_RGBLEDRING_MODE_OFF;
-    app_rgbLedRing_renderFrame(&state, 123.0f, 250.0f, pixels, LED_COUNT);
+    motor.state = APP_MOTORCONTROL_STATE_DISABLED;
+    render(90.0f, 250.0f);
     for (uint16_t i = 0U; i < LED_COUNT; i++)
     {
         TEST_ASSERT_EQUAL_UINT8(0U, pixels[i].red);
@@ -82,89 +60,67 @@ static void test_off_clears_every_pixel(void)
     }
 }
 
-// [test->fw~obs_ring_002~1]
-static void test_solid_fills_ring_uniformly(void)
+// [test->fw~obs_ring_002~1] [test->fw~mc_009~1]
+static void test_red_takeover_when_motor_faulted(void)
 {
-    // Defaults: hue 0 (red), full saturation, value scaled to MAX/2 = 25.
-    state.mode = APP_RGBLEDRING_MODE_SOLID;
-    app_rgbLedRing_renderFrame(&state, 0.0f, 0.0f, pixels, LED_COUNT);
-
-    const uint8_t r = pixels[0].red;
-    const uint8_t g = pixels[0].green;
-    const uint8_t b = pixels[0].blue;
-    TEST_ASSERT_TRUE(r > 0U);     // a colour is shown
-    TEST_ASSERT_EQUAL_UINT8(0U, g);
-    TEST_ASSERT_EQUAL_UINT8(0U, b);
-    for (uint16_t i = 1U; i < LED_COUNT; i++)
+    motor.state = APP_MOTORCONTROL_STATE_FAULTED;
+    render(90.0f, 250.0f);
+    for (uint16_t i = 0U; i < LED_COUNT; i++)
     {
-        TEST_ASSERT_EQUAL_UINT8(r, pixels[i].red);
-        TEST_ASSERT_EQUAL_UINT8(g, pixels[i].green);
-        TEST_ASSERT_EQUAL_UINT8(b, pixels[i].blue);
+        TEST_ASSERT_EQUAL_UINT8(LVL, pixels[i].red);
+        TEST_ASSERT_EQUAL_UINT8(0U,  pixels[i].green);
+        TEST_ASSERT_EQUAL_UINT8(0U,  pixels[i].blue);
     }
 }
 
 // [test->fw~obs_ring_002~1]
-static void test_encoder_pip_tracks_each_angle(void)
+// POSITION: a green pip tracks the motor angle, a blue pip the dial angle, each
+// complemented into the ring's (reversed) LED order.
+static void test_position_pips_track_motor_and_dial(void)
 {
-    // Dial pip (SOLID colour, default red) at LED 0; motor pip (SOLID2 colour,
-    // default blue) at the opposite side (180 deg -> LED 18).
-    state.mode = APP_RGBLEDRING_MODE_ENCODER;
-    app_rgbLedRing_renderFrame(&state, 0.0f, 180.0f, pixels, LED_COUNT);
+    state.mode = APP_RGBLEDRING_MODE_POSITION;
 
-    // LED 0: full dial pip, red, no blue.
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS, pixels[0].red);
-    TEST_ASSERT_EQUAL_UINT8(0U, pixels[0].blue);
+    // motor at 0 deg -> ring LED 0; dial at 180 deg -> ring LED 18.
+    render(180.0f, 0.0f);
 
-    // LED 18 (180 deg): full motor pip, blue, no red.
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS, pixels[18].blue);
-    TEST_ASSERT_EQUAL_UINT8(0U, pixels[18].red);
+    TEST_ASSERT_EQUAL_UINT8(LVL, pixels[0].green);   // motor pip (green)
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[0].red);
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[0].blue);
 
-    // LED 9 (90 deg): outside both pips' +/-18 deg falloff -> dark.
-    TEST_ASSERT_EQUAL_UINT8(0U, pixels[9].red);
-    TEST_ASSERT_EQUAL_UINT8(0U, pixels[9].blue);
+    TEST_ASSERT_EQUAL_UINT8(LVL, pixels[18].blue);   // dial pip (blue)
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[18].red);
 }
 
-/* ---- fw~obs_ring_003: colour persistence across modes ---- */
-
-// [test->fw~obs_ring_003~1]
-static void test_solid_colour_persists_and_only_active_picker_responds(void)
+// [test->fw~obs_ring_002~1]
+// SPEEDO: setpoint needle (amber) sits at its full-scale sweep; the scaffold
+// actual-speed needle (green) sits at zero on the first, still frame.
+static void test_speedo_needles_track_setpoint_and_actual(void)
 {
-    // Pick a colour in SOLID by winding the motor (hue) to 120 deg.
-    state.mode = APP_RGBLEDRING_MODE_SOLID;
-    app_rgbLedRing_renderFrame(&state, 0.0f, 120.0f, pixels, LED_COUNT);
-    const uint8_t pickR = state.pickR;
-    const uint8_t pickG = state.pickG;
-    const uint8_t pickB = state.pickB;
-    TEST_ASSERT_TRUE((pickR + pickG + pickB) > 0);
+    state.mode = APP_RGBLEDRING_MODE_SPEEDO;
+    motor.velocitySetpoint_radPerSec = FULL_SCALE;   // norm +1 -> +150 deg, complemented -> LED 21
 
-    // Leave for OFF and move the encoders there; the SOLID colour must not move.
-    state.mode = APP_RGBLEDRING_MODE_OFF;
-    app_rgbLedRing_renderFrame(&state, 90.0f, 200.0f, pixels, LED_COUNT);
-    TEST_ASSERT_EQUAL_UINT8(pickR, state.pickR);
-    TEST_ASSERT_EQUAL_UINT8(pickG, state.pickG);
-    TEST_ASSERT_EQUAL_UINT8(pickB, state.pickB);
+    render(0.0f, 0.0f);   // motor still -> actual estimate 0 -> LED 0
 
-    // Return to SOLID with no further motor movement: the colour resumes.
-    state.mode = APP_RGBLEDRING_MODE_SOLID;
-    app_rgbLedRing_renderFrame(&state, 90.0f, 200.0f, pixels, LED_COUNT);
-    TEST_ASSERT_EQUAL_UINT8(pickR, state.pickR);
-    TEST_ASSERT_EQUAL_UINT8(pickG, state.pickG);
-    TEST_ASSERT_EQUAL_UINT8(pickB, state.pickB);
+    TEST_ASSERT_EQUAL_UINT8(LVL, pixels[21].red);    // setpoint needle magenta
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[21].green);
+    TEST_ASSERT_EQUAL_UINT8(LVL, pixels[21].blue);
+
+    TEST_ASSERT_EQUAL_UINT8(LVL, pixels[0].green);   // actual needle green at zero
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[0].red);
+    TEST_ASSERT_EQUAL_UINT8(0U,  pixels[0].blue);
 }
 
 int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(test_starts_in_walk_mode);
-    RUN_TEST(test_button_edge_advances_once_per_press);
-    RUN_TEST(test_mode_cycle_wraps);
+    RUN_TEST(test_starts_in_position_mode);
+    RUN_TEST(test_advance_toggles_position_and_speedo);
 
-    RUN_TEST(test_off_clears_every_pixel);
-    RUN_TEST(test_solid_fills_ring_uniformly);
-    RUN_TEST(test_encoder_pip_tracks_each_angle);
-
-    RUN_TEST(test_solid_colour_persists_and_only_active_picker_responds);
+    RUN_TEST(test_off_when_motor_disabled);
+    RUN_TEST(test_red_takeover_when_motor_faulted);
+    RUN_TEST(test_position_pips_track_motor_and_dial);
+    RUN_TEST(test_speedo_needles_track_setpoint_and_actual);
 
     return UNITY_END();
 }

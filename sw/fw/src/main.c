@@ -25,11 +25,13 @@
 #include "IO_AS5048.h"
 #include "IO_SK6805.h"
 #include "IO_i2c.h"
-#include "IO_PWM.h"
+#include "IO_bridge.h"
 #include "dev_switch.h"
 #include "dev_CYPD3177.h"
 #include "dev_gateDriver.h"
 #include "app_rgbLedRing.h"
+#include "app_motorControl.h"
+#include "app_userControls.h"
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
   #include "stm32g4xx_hal.h"  // HAL_Init
@@ -44,7 +46,7 @@ extern const HW_I2C_config_S HW_I2C_config;
 extern const HW_TIM_config_S HW_TIM_config;
 extern const HW_DMA_config_S HW_DMA_config;
 extern const IO_i2c_config_S IO_i2c_config;
-extern const IO_PWM_config_S IO_PWM_config;
+extern const IO_bridge_config_S IO_bridge_config;
 
 extern const IO_AS5048_config_S IO_AS5048_config;
 extern const IO_SK6805_config_S IO_SK6805_config;
@@ -53,6 +55,8 @@ extern const dev_CYPD3177_config_S dev_CYPD3177_config;
 extern const dev_gateDriver_config_S dev_gateDriver_config;
 extern const IO_serial_config_S IO_serial_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
+extern const app_motorControl_config_S app_motorControl_config;
+extern const app_userControls_config_S app_userControls_config;
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 // stm32g4xx_it.c's TIM6_DAC_IRQHandler references hdac1; the DAC isn't
@@ -193,6 +197,8 @@ static void task_1ms(void * params)
         dev_switch_run1ms();   // debounce switches off the cached GPIO snapshot
 
         // app
+        app_userControls_run1ms();   // button + dial -> motor mode/velocity commands
+        app_motorControl_run1ms();   // in-module overcurrent trip + enable gating (fw~safety_001 / fw~mc_006)
 
         profileUpdate(PROFILE_TASK_1MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
@@ -241,6 +247,16 @@ static void task_200ms(void * params)
         dev_CYPD3177_run200ms();
         dev_gateDriver_run200ms();
 
+        // The gate driver holds nFAULT low until it is configured, so TIM1
+        // latches a break flag every boot. Clear that stale latch once the
+        // driver first reports operational; later latches are real faults.
+        static bool bridgeBreakLatchCleared = false;
+        if ((!bridgeBreakLatchCleared) &&
+            (dev_gateDriver_isOperational(DEV_GATEDRIVER_CHANNEL_MAIN)))
+        {
+            bridgeBreakLatchCleared = IO_bridge_clearBreakFlags(IO_BRIDGE_CHANNEL_MOTOR);
+        }
+
         // app
 
         profileUpdate(PROFILE_TASK_200MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
@@ -272,6 +288,12 @@ static void task_usb(void * params)
 // the data only refreshes at the 200 ms poll, so emitting it faster is waste.
 #define TELEMETRY_SLOW_PERIOD_MS 200U
 #define TELEMETRY_SLOW_DIVIDER   (TELEMETRY_SLOW_PERIOD_MS / (uint32_t)TELEMETRY_PERIOD_MS)
+
+// Medium-tier emit period (ms). Signals that only need a ~10 ms cadence (the
+// task10ms profile) ride the same modulo-counter idiom as the slow tier, one
+// tier faster — appended to every TELEMETRY_MED_DIVIDER-th window.
+#define TELEMETRY_MED_PERIOD_MS 10U
+#define TELEMETRY_MED_DIVIDER   (TELEMETRY_MED_PERIOD_MS / (uint32_t)TELEMETRY_PERIOD_MS)
 
 // One window's Teleplot packets are formatted into a buffer this size and pushed
 // with a single IO_serial_write, so the CDC FIFO is flushed once per window
@@ -325,6 +347,9 @@ static void telemetryTask(void * params)
     // Slow-tier divider: counts connected windows so the slow signals emit on
     // the first window after connect, then every TELEMETRY_SLOW_PERIOD_MS.
     uint32_t slowWindowCount = 0U;
+    // Medium-tier divider: same modulo-counter idiom, one tier faster. Emits on
+    // the first window after connect, then every TELEMETRY_MED_PERIOD_MS.
+    uint32_t medWindowCount = 0U;
 
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
@@ -340,6 +365,8 @@ static void telemetryTask(void * params)
 
         const bool slowTick = (slowWindowCount == 0U);
         slowWindowCount = (slowWindowCount + 1U) % TELEMETRY_SLOW_DIVIDER;
+        const bool medTick = (medWindowCount == 0U);
+        medWindowCount = (medWindowCount + 1U) % TELEMETRY_MED_DIVIDER;
 
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
@@ -347,9 +374,19 @@ static void telemetryTask(void * params)
         // tick is the natural in-task time base (1 ms period).
         const uint32_t nowMs = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
+        // Batch every packet into txBuf, then push it with one write. Each
+        // snprintf only advances the offset if the packet fit (guards against a
+        // truncated write corrupting the length).
+        int off = 0;
+        int n = 0;
+
+        // ==== Fast tier (every 2 ms window) =================================
+        // Only the signals that genuinely refresh at the window rate. Encoder
+        // angles (deg) go out here; the raw counts, read in the same call, ride
+        // the slow tier below (motorAngleRaw/dialAngleRaw are reused there).
         uint16_t motorAngleRaw = 0U;
         float32_t motorAngle_deg = 0.0f;
-        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, &motorAngleRaw, &motorAngle_deg))
+        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, &motorAngleRaw, &motorAngle_deg, NULL))
         {
             motorAngleRaw = 0U;
             motorAngle_deg = 0.0f;
@@ -361,7 +398,7 @@ static void telemetryTask(void * params)
 
         uint16_t dialAngleRaw = 0U;
         float32_t dialAngle_deg = 0.0f;
-        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, &dialAngleRaw, &dialAngle_deg))
+        if (!IO_AS5048_readAngle(IO_AS5048_CHANNEL_DIAL, &dialAngleRaw, &dialAngle_deg, NULL))
         {
             dialAngleRaw = 0U;
             dialAngle_deg = 0.0f;
@@ -371,90 +408,15 @@ static void telemetryTask(void * params)
         uint32_t dialAngleDecimalScaled = 0U;
         floatToFixed(dialAngle_deg, 100U, &dialAngleScaled, &dialAngleDecimalScaled);
 
-        // Batch every packet into txBuf, then push it with one write. Each
-        // snprintf only advances the offset if the packet fit (guards against a
-        // truncated write corrupting the length).
-        int off = 0;
-        int n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                         "motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-                         "motor_raw:%lu:%u;"
-                         "dial_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-                         "dial_raw:%lu:%u\n",
-                         (unsigned long)nowMs,
-                         (unsigned long)motorAngleScaled,
-                         (unsigned long)motorAngleDecimalScaled,
-                         (unsigned long)nowMs,
-                         (unsigned)motorAngleRaw,
-                         (unsigned long)nowMs,
-                         (unsigned long)dialAngleScaled,
-                         (unsigned long)dialAngleDecimalScaled,
-                         (unsigned long)nowMs,
-                         (unsigned)dialAngleRaw);
-        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
-
-        // ADC engineering-unit signals. getVolts returns each pin's voltage;
-        // the scaling constants above turn it into amps/volts. Phase currents
-        // are bipolar (swing negative), so telemetrySignedFixed splits the sign.
-        float32_t phaseU_v = 0.0f;
-        float32_t phaseV_v = 0.0f;
-        float32_t phaseW_v = 0.0f;
-        float32_t vbusI_v  = 0.0f;
-        float32_t vbusV_v  = 0.0f;
-        float32_t rail5_v  = 0.0f;
-        float32_t rail3_v  = 0.0f;
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &phaseU_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 7U, &phaseV_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 8U, &phaseW_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &vbusI_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 12U, &vbusV_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 1U, &rail5_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 9U, &rail3_v);
-
-        const float32_t phaseU_i = (phaseU_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t phaseV_i = (phaseV_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t phaseW_i = (phaseW_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t vbus_i   = vbusI_v / ADC_VBUS_I_V_PER_A;
-        const float32_t vbus_v   = vbusV_v / ADC_VBUS_V_RATIO;
-        const float32_t rail5v0  = rail5_v / ADC_RAIL_V_RATIO;
-        const float32_t rail3v3  = rail3_v / ADC_RAIL_V_RATIO;
-
-        uint32_t phaseUWhole = 0U;
-        uint32_t phaseUFrac  = 0U;
-        const char * const phaseUSign = telemetrySignedFixed(phaseU_i, 1000U, &phaseUWhole, &phaseUFrac);
-        uint32_t phaseVWhole = 0U;
-        uint32_t phaseVFrac  = 0U;
-        const char * const phaseVSign = telemetrySignedFixed(phaseV_i, 1000U, &phaseVWhole, &phaseVFrac);
-        uint32_t phaseWWhole = 0U;
-        uint32_t phaseWFrac  = 0U;
-        const char * const phaseWSign = telemetrySignedFixed(phaseW_i, 1000U, &phaseWWhole, &phaseWFrac);
-        uint32_t vbusIWhole = 0U;
-        uint32_t vbusIFrac  = 0U;
-        const char * const vbusISign = telemetrySignedFixed(vbus_i, 1000U, &vbusIWhole, &vbusIFrac);
-        uint32_t vbusVWhole = 0U;
-        uint32_t vbusVFrac  = 0U;
-        const char * const vbusVSign = telemetrySignedFixed(vbus_v, 1000U, &vbusVWhole, &vbusVFrac);
-        uint32_t rail5Whole = 0U;
-        uint32_t rail5Frac  = 0U;
-        const char * const rail5Sign = telemetrySignedFixed(rail5v0, 1000U, &rail5Whole, &rail5Frac);
-        uint32_t rail3Whole = 0U;
-        uint32_t rail3Frac  = 0U;
-        const char * const rail3Sign = telemetrySignedFixed(rail3v3, 1000U, &rail3Whole, &rail3Frac);
-
-        HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
-        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
-        (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
-
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "phase_u_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
-                     "phase_v_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
-                     "phase_w_i:%lu:%s%lu.%03lu" TP_UNIT "A\n",
-                     (unsigned long)nowMs, phaseUSign,
-                     (unsigned long)phaseUWhole, (unsigned long)phaseUFrac,
-                     (unsigned long)nowMs, phaseVSign,
-                     (unsigned long)phaseVWhole, (unsigned long)phaseVFrac,
-                     (unsigned long)nowMs, phaseWSign,
-                     (unsigned long)phaseWWhole, (unsigned long)phaseWFrac);
+                     "motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
+                     "dial_angle:%lu:%lu.%02lu" TP_UNIT "deg\n",
+                     (unsigned long)nowMs,
+                     (unsigned long)motorAngleScaled,
+                     (unsigned long)motorAngleDecimalScaled,
+                     (unsigned long)nowMs,
+                     (unsigned long)dialAngleScaled,
+                     (unsigned long)dialAngleDecimalScaled);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         // Phase terminal voltages via the OPAMP-buffered divider (IN13 on
@@ -493,35 +455,168 @@ static void telemetryTask(void * params)
                      (unsigned long)phaseWvWhole, (unsigned long)phaseWvFrac);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
+        // Motor-control snapshot: taken once and cached for both tiers. The
+        // electrical angle (mc_magdeg) is fast — hand-turn the rotor with the
+        // mode OFF and it should sweep 0..360 once per pole pair. The mode /
+        // alignment / bridge-enable flags ride the slow tier (mcSnap reused).
+        app_motorControl_snapshot_S mcSnap = { 0 };
+        const bool mcValid = app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &mcSnap);
+        if (mcValid)
+        {
+            const float32_t magAngle_deg = mcSnap.magneticAngle_rad * (180.0f / 3.14159265f);
+            uint32_t magWhole = 0U;
+            uint32_t magFrac  = 0U;
+            floatToFixed(magAngle_deg, 100U, &magWhole, &magFrac);
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "mc_magdeg:%lu:%lu.%02lu" TP_UNIT "deg\n",
+                         (unsigned long)nowMs,
+                         (unsigned long)magWhole, (unsigned long)magFrac);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+        }
+
+        // task1ms profile: pure CPU time (its body never blocks), taken every
+        // window in the fast tier so no sample reads 0.
+        const uint32_t task1msMaxUs = profileTakeMaxUs(PROFILE_TASK_1MS);
         n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "vbus_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
-                     "vbus_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "rail_5v0:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "rail_3v3:%lu:%s%lu.%03lu" TP_UNIT "V\n",
-                     (unsigned long)nowMs, vbusISign,
-                     (unsigned long)vbusIWhole, (unsigned long)vbusIFrac,
-                     (unsigned long)nowMs, vbusVSign,
-                     (unsigned long)vbusVWhole, (unsigned long)vbusVFrac,
-                     (unsigned long)nowMs, rail5Sign,
-                     (unsigned long)rail5Whole, (unsigned long)rail5Frac,
-                     (unsigned long)nowMs, rail3Sign,
-                     (unsigned long)rail3Whole, (unsigned long)rail3Frac);
+                     "task1ms_us:%lu:%lu" TP_UNIT "us\n",
+                     (unsigned long)nowMs, (unsigned long)task1msMaxUs);
         if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-        // n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-        //              "adc1_status:%lu:%u;"
-        //              "adc2_status:%lu:%u\n",
-        //              (unsigned long)nowMs, (unsigned)adc1Status,
-        //              (unsigned long)nowMs, (unsigned)adc2Status);
-        // if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+        // ==== Medium tier (every 10 ms) =====================================
+        // task10ms runs once per 5 windows; take its profile only in this tier
+        // so the emitted sample is the max over the 10 ms period, not a 0-read.
+        if (medTick)
+        {
+            const uint32_t task10msMaxUs = profileTakeMaxUs(PROFILE_TASK_10MS);
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "task10ms_us:%lu:%lu" TP_UNIT "us\n",
+                         (unsigned long)nowMs, (unsigned long)task10msMaxUs);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+        }
 
-        // Slow tier: the complete USB-PD sink snapshot — decoded engineering
-        // values plus every raw HPI register word the 200 ms poll fetches. The
-        // raw words are emitted as plain unsigned values (Teleplot is numeric);
-        // pd_present gates freshness — while it is 0 the other fields are the
-        // last-good values, not live ones.
+        // ==== Slow tier (every 200 ms) ======================================
         if (slowTick)
         {
+            // Encoder raw counts (the angles they came from went out fast).
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "motor_raw:%lu:%u;"
+                         "dial_raw:%lu:%u\n",
+                         (unsigned long)nowMs, (unsigned)motorAngleRaw,
+                         (unsigned long)nowMs, (unsigned)dialAngleRaw);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            // ADC engineering-unit signals. getVolts returns each pin's
+            // voltage; the scaling constants above turn it into amps/volts.
+            // Phase currents are bipolar (swing negative), so
+            // telemetrySignedFixed splits the sign. Read only in the slow tier
+            // — these do not need a 2 ms cadence.
+            float32_t phaseU_v = 0.0f;
+            float32_t phaseV_v = 0.0f;
+            float32_t phaseW_v = 0.0f;
+            float32_t vbusI_v  = 0.0f;
+            float32_t vbusV_v  = 0.0f;
+            float32_t rail5_v  = 0.0f;
+            float32_t rail3_v  = 0.0f;
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &phaseU_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 7U, &phaseV_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 8U, &phaseW_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 11U, &vbusI_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 12U, &vbusV_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 1U, &rail5_v);
+            (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 9U, &rail3_v);
+
+            const float32_t phaseU_i = (phaseU_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+            const float32_t phaseV_i = (phaseV_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+            const float32_t phaseW_i = (phaseW_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
+            const float32_t vbus_i   = vbusI_v / ADC_VBUS_I_V_PER_A;
+            const float32_t vbus_v   = vbusV_v / ADC_VBUS_V_RATIO;
+            const float32_t rail5v0  = rail5_v / ADC_RAIL_V_RATIO;
+            const float32_t rail3v3  = rail3_v / ADC_RAIL_V_RATIO;
+
+            uint32_t phaseUWhole = 0U;
+            uint32_t phaseUFrac  = 0U;
+            const char * const phaseUSign = telemetrySignedFixed(phaseU_i, 1000U, &phaseUWhole, &phaseUFrac);
+            uint32_t phaseVWhole = 0U;
+            uint32_t phaseVFrac  = 0U;
+            const char * const phaseVSign = telemetrySignedFixed(phaseV_i, 1000U, &phaseVWhole, &phaseVFrac);
+            uint32_t phaseWWhole = 0U;
+            uint32_t phaseWFrac  = 0U;
+            const char * const phaseWSign = telemetrySignedFixed(phaseW_i, 1000U, &phaseWWhole, &phaseWFrac);
+            uint32_t vbusIWhole = 0U;
+            uint32_t vbusIFrac  = 0U;
+            const char * const vbusISign = telemetrySignedFixed(vbus_i, 1000U, &vbusIWhole, &vbusIFrac);
+            uint32_t vbusVWhole = 0U;
+            uint32_t vbusVFrac  = 0U;
+            const char * const vbusVSign = telemetrySignedFixed(vbus_v, 1000U, &vbusVWhole, &vbusVFrac);
+            uint32_t rail5Whole = 0U;
+            uint32_t rail5Frac  = 0U;
+            const char * const rail5Sign = telemetrySignedFixed(rail5v0, 1000U, &rail5Whole, &rail5Frac);
+            uint32_t rail3Whole = 0U;
+            uint32_t rail3Frac  = 0U;
+            const char * const rail3Sign = telemetrySignedFixed(rail3v3, 1000U, &rail3Whole, &rail3Frac);
+
+            HW_ADC_conversionStatus_E adc1Status = HW_ADC_CONVERSION_STATUS_IDLE;
+            HW_ADC_conversionStatus_E adc2Status = HW_ADC_CONVERSION_STATUS_IDLE;
+            (void)HW_ADC_getStatus(HW_ADC_CHANNEL_1, &adc1Status);
+            (void)HW_ADC_getStatus(HW_ADC_CHANNEL_2, &adc2Status);
+
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "phase_u_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                         "phase_v_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                         "phase_w_i:%lu:%s%lu.%03lu" TP_UNIT "A\n",
+                         (unsigned long)nowMs, phaseUSign,
+                         (unsigned long)phaseUWhole, (unsigned long)phaseUFrac,
+                         (unsigned long)nowMs, phaseVSign,
+                         (unsigned long)phaseVWhole, (unsigned long)phaseVFrac,
+                         (unsigned long)nowMs, phaseWSign,
+                         (unsigned long)phaseWWhole, (unsigned long)phaseWFrac);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                         "vbus_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
+                         "vbus_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                         "rail_5v0:%lu:%s%lu.%03lu" TP_UNIT "V;"
+                         "rail_3v3:%lu:%s%lu.%03lu" TP_UNIT "V\n",
+                         (unsigned long)nowMs, vbusISign,
+                         (unsigned long)vbusIWhole, (unsigned long)vbusIFrac,
+                         (unsigned long)nowMs, vbusVSign,
+                         (unsigned long)vbusVWhole, (unsigned long)vbusVFrac,
+                         (unsigned long)nowMs, rail5Sign,
+                         (unsigned long)rail5Whole, (unsigned long)rail5Frac,
+                         (unsigned long)nowMs, rail3Sign,
+                         (unsigned long)rail3Whole, (unsigned long)rail3Frac);
+            if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            // n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+            //              "adc1_status:%lu:%u;"
+            //              "adc2_status:%lu:%u\n",
+            //              (unsigned long)nowMs, (unsigned)adc1Status,
+            //              (unsigned long)nowMs, (unsigned)adc2Status);
+            // if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+
+            // Motor-control state: mode (0=OFF, 1=SIX_STEP_TRAP), alignment
+            // flag, and the live bridge-enable bit (mcSnap cached in the fast
+            // tier). mode 1 with mc_bridge_on 0 means the hardware break
+            // (nFAULT) is vetoing the commanded enable.
+            if (mcValid)
+            {
+                bool bridgeOn = false;
+                (void)IO_bridge_getOutputEnabled(IO_BRIDGE_CHANNEL_MOTOR, &bridgeOn);
+                n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
+                             "mc_mode:%lu:%u;"
+                             "mc_aligned:%lu:%u;"
+                             "mc_bridge_on:%lu:%u\n",
+                             (unsigned long)nowMs, (unsigned)mcSnap.mode,
+                             (unsigned long)nowMs, (unsigned)mcSnap.isAligned,
+                             (unsigned long)nowMs, (unsigned)bridgeOn);
+                if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
+            }
+
+            // The complete USB-PD sink snapshot — decoded engineering values
+            // plus every raw HPI register word the 200 ms poll fetches. The
+            // raw words are emitted as plain unsigned values (Teleplot is
+            // numeric); pd_present gates freshness — while it is 0 the other
+            // fields are the last-good values, not live ones.
             dev_CYPD3177_snapshot_S pd;
             (void)dev_CYPD3177_getSnapshot(DEV_CYPD3177_CHANNEL_SINK, &pd);
 
@@ -586,34 +681,21 @@ static void telemetryTask(void * params)
                          (unsigned long)nowMs, (unsigned)gd.vccUndervoltage);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
-            // The slower tasks' profiles are taken here (once per slow window)
-            // rather than every 2 ms window: they run once per 5 / 100 windows,
-            // so a per-window take would read 0 in most samples and bury the
-            // real values. Each emitted sample is the max over the slow period.
-            const uint32_t task10msMaxUs  = profileTakeMaxUs(PROFILE_TASK_10MS);
+            // task200ms and telem profiles are taken here (once per slow
+            // window). task200ms runs once per 100 windows, so a per-window
+            // take would read 0 in most samples; telem is this task's own
+            // wall-clock body time (includes any CDC backpressure waits) and
+            // its low-rate cadence is fine. Each emitted sample is the max over
+            // the slow period.
             const uint32_t task200msMaxUs = profileTakeMaxUs(PROFILE_TASK_200MS);
+            const uint32_t telemMaxUs     = profileTakeMaxUs(PROFILE_TASK_TELEM);
             n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                         "task10ms_us:%lu:%lu" TP_UNIT "us;"
-                         "task200ms_us:%lu:%lu" TP_UNIT "us\n",
-                         (unsigned long)nowMs, (unsigned long)task10msMaxUs,
-                         (unsigned long)nowMs, (unsigned long)task200msMaxUs);
+                         "task200ms_us:%lu:%lu" TP_UNIT "us;"
+                         "telem_us:%lu:%lu" TP_UNIT "us\n",
+                         (unsigned long)nowMs, (unsigned long)task200msMaxUs,
+                         (unsigned long)nowMs, (unsigned long)telemMaxUs);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
         }
-
-        // Per-task worst-case body duration since the last emit (microseconds),
-        // snapshotted and reset each window. task1ms is pure CPU time (its body
-        // never blocks); telem is wall-clock and so includes any CDC
-        // backpressure waits. task10ms/task200ms are reported in the slow tier
-        // above (they run less often than the 2 ms window).
-        const uint32_t task1msMaxUs = profileTakeMaxUs(PROFILE_TASK_1MS);
-        const uint32_t telemMaxUs   = profileTakeMaxUs(PROFILE_TASK_TELEM);
-
-        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "task1ms_us:%lu:%lu" TP_UNIT "us;"
-                     "telem_us:%lu:%lu" TP_UNIT "us\n",
-                     (unsigned long)nowMs, (unsigned long)task1msMaxUs,
-                     (unsigned long)nowMs, (unsigned long)telemMaxUs);
-        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
 
         // One write per window: IO_serial_write batches the whole buffer into the
         // CDC FIFO in one call and flushes once.
@@ -662,11 +744,13 @@ static bool prvAppInit(void)
     ok &= IO_AS5048_init(&IO_AS5048_config);
     ok &= IO_SK6805_init(&IO_SK6805_config);
     ok &= IO_i2c_init(&IO_i2c_config);
-    ok &= IO_PWM_init(&IO_PWM_config);
+    ok &= IO_bridge_init(&IO_bridge_config);
     ok &= dev_switch_init(&dev_switch_config);
     ok &= dev_CYPD3177_init(&dev_CYPD3177_config);
     ok &= dev_gateDriver_init(&dev_gateDriver_config);
     ok &= app_rgbLedRing_init(&app_rgbLedRing_config);
+    ok &= app_motorControl_init(&app_motorControl_config);
+    ok &= app_userControls_init(&app_userControls_config);
     ok &= HW_USB_init();   // USB device stack (serviced in task_usb)
     ok &= IO_serial_init(&IO_serial_config);
     return ok;

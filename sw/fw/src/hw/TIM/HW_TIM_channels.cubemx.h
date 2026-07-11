@@ -12,9 +12,12 @@
 #ifndef HW_TIM_CHANNELS_CUBEMX_H
 #define HW_TIM_CHANNELS_CUBEMX_H
 
-// Each timer exposes a per-target body (HW_TIM_CUBEMX_G4_TIMn /
-// HW_TIM_CUBEMX_SIM_TIMn) and a BUILD_TARGET-selected alias
-// (HW_TIM_CUBEMX_TIMn) used by HW_TIM_channels.c. lib_build.h
+// Each timer exposes a per-target peripheral body
+// (HW_TIM_CUBEMX_G4_PERIPH_TIMn / HW_TIM_CUBEMX_SIM_PERIPH_TIMn) plus
+// one per-output body per output-compare unit
+// (HW_TIM_CUBEMX_{G4,SIM}_OC_TIMn_CHm), each aliased by a
+// BUILD_TARGET-selected name (HW_TIM_CUBEMX_PERIPH_TIMn /
+// HW_TIM_CUBEMX_OC_TIMn_CHm) used by HW_TIM_channels.c. lib_build.h
 // supplies the BUILD_TARGET_* constants the selection compares.
 #include "lib_build.h"
 
@@ -27,56 +30,6 @@
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
     .RepetitionCounter = 1, \
     .AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE,
-
-#define HW_TIM_CUBEMX_OC_TIM1 \
-    [0] = \
-    { \
-        .enabled       = true, \
-        .channel       = TIM_CHANNEL_1, \
-        .complementary = true, \
-        .oc = \
-        { \
-            .OCMode       = TIM_OCMODE_PWM1, \
-            .Pulse        = 0, \
-            .OCPolarity   = TIM_OCPOLARITY_HIGH, \
-            .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
-            .OCFastMode   = TIM_OCFAST_DISABLE, \
-            .OCIdleState  = TIM_OCIDLESTATE_RESET, \
-            .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
-        }, \
-    }, \
-    [1] = \
-    { \
-        .enabled       = true, \
-        .channel       = TIM_CHANNEL_2, \
-        .complementary = true, \
-        .oc = \
-        { \
-            .OCMode       = TIM_OCMODE_PWM1, \
-            .Pulse        = 0, \
-            .OCPolarity   = TIM_OCPOLARITY_HIGH, \
-            .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
-            .OCFastMode   = TIM_OCFAST_DISABLE, \
-            .OCIdleState  = TIM_OCIDLESTATE_RESET, \
-            .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
-        }, \
-    }, \
-    [2] = \
-    { \
-        .enabled       = true, \
-        .channel       = TIM_CHANNEL_3, \
-        .complementary = true, \
-        .oc = \
-        { \
-            .OCMode       = TIM_OCMODE_PWM1, \
-            .Pulse        = 0, \
-            .OCPolarity   = TIM_OCPOLARITY_HIGH, \
-            .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
-            .OCFastMode   = TIM_OCFAST_DISABLE, \
-            .OCIdleState  = TIM_OCIDLESTATE_RESET, \
-            .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
-        }, \
-    },
 
 #define HW_TIM_CUBEMX_BDT_TIM1 \
     .OffStateRunMode  = TIM_OSSR_ENABLE, \
@@ -111,36 +64,80 @@
     .MasterOutputTrigger2 = TIM_TRGO2_RESET, \
     .MasterSlaveMode      = TIM_MASTERSLAVEMODE_DISABLE,
 
-#define HW_TIM_CUBEMX_G4_TIM1 \
+#define HW_TIM_CUBEMX_G4_PERIPH_TIM1 \
     .htim = \
     { \
         .Instance = TIM1, \
         .Init = { HW_TIM_CUBEMX_INIT_TIM1 }, \
     }, \
-    .outputCompare = { HW_TIM_CUBEMX_OC_TIM1 }, \
     .configureBreakDeadTime = true, \
     .breakDeadTime = { HW_TIM_CUBEMX_BDT_TIM1 }, \
     .breakInputs = { HW_TIM_CUBEMX_BRKIN_TIM1 }, \
     .configureTrgo = true, \
     .master = { HW_TIM_CUBEMX_MASTER_TIM1 },
 
-#define HW_TIM_CUBEMX_SIM_OC_TIM1 \
-    [0] = { .enabled = true, .complementary = true, .compare = 0U, .inactiveLevel = 0U }, \
-    [1] = { .enabled = true, .complementary = true, .compare = 0U, .inactiveLevel = 0U }, \
-    [2] = { .enabled = true, .complementary = true, .compare = 0U, .inactiveLevel = 0U },
-
-#define HW_TIM_CUBEMX_SIM_TIM1 \
-    .channelNameStr   = "TIM1", \
+#define HW_TIM_CUBEMX_SIM_PERIPH_TIM1 \
+    .nameStr          = "TIM1", \
     .prescaler        = 0U, \
     .period           = 4249U, \
     .counterWidthBits = 16U, \
     .countDir         = HW_TIM_COUNT_CENTER, \
-    .outputCompare    = { HW_TIM_CUBEMX_SIM_OC_TIM1 }, \
     .configureBreakDeadTime = true, \
     .deadTime               = 43U, \
     .hasBreakInput          = true, \
     .configureTrgo          = true, \
     .trgoSource             = HW_TIM_TRGO_UPDATE,
+
+#define HW_TIM_CUBEMX_G4_OC_TIM1_CH1 \
+    .complementary = true, \
+    .channel       = TIM_CHANNEL_1, \
+    .oc = \
+    { \
+        .OCMode       = TIM_OCMODE_PWM1, \
+        .Pulse        = 0, \
+        .OCPolarity   = TIM_OCPOLARITY_HIGH, \
+        .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
+        .OCFastMode   = TIM_OCFAST_DISABLE, \
+        .OCIdleState  = TIM_OCIDLESTATE_RESET, \
+        .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
+    },
+
+#define HW_TIM_CUBEMX_G4_OC_TIM1_CH2 \
+    .complementary = true, \
+    .channel       = TIM_CHANNEL_2, \
+    .oc = \
+    { \
+        .OCMode       = TIM_OCMODE_PWM1, \
+        .Pulse        = 0, \
+        .OCPolarity   = TIM_OCPOLARITY_HIGH, \
+        .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
+        .OCFastMode   = TIM_OCFAST_DISABLE, \
+        .OCIdleState  = TIM_OCIDLESTATE_RESET, \
+        .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
+    },
+
+#define HW_TIM_CUBEMX_G4_OC_TIM1_CH3 \
+    .complementary = true, \
+    .channel       = TIM_CHANNEL_3, \
+    .oc = \
+    { \
+        .OCMode       = TIM_OCMODE_PWM1, \
+        .Pulse        = 0, \
+        .OCPolarity   = TIM_OCPOLARITY_HIGH, \
+        .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
+        .OCFastMode   = TIM_OCFAST_DISABLE, \
+        .OCIdleState  = TIM_OCIDLESTATE_RESET, \
+        .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
+    },
+
+#define HW_TIM_CUBEMX_SIM_OC_TIM1_CH1 \
+    .complementary = true, .compare = 0U, .inactiveLevel = 0U,
+
+#define HW_TIM_CUBEMX_SIM_OC_TIM1_CH2 \
+    .complementary = true, .compare = 0U, .inactiveLevel = 0U,
+
+#define HW_TIM_CUBEMX_SIM_OC_TIM1_CH3 \
+    .complementary = true, .compare = 0U, .inactiveLevel = 0U,
 
 // ----- TIM2 -----
 
@@ -151,7 +148,7 @@
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
     .AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE,
 
-#define HW_TIM_CUBEMX_G4_TIM2 \
+#define HW_TIM_CUBEMX_G4_PERIPH_TIM2 \
     .htim = \
     { \
         .Instance = TIM2, \
@@ -160,8 +157,8 @@
     .configureBreakDeadTime = false, \
     .configureTrgo = false,
 
-#define HW_TIM_CUBEMX_SIM_TIM2 \
-    .channelNameStr   = "TIM2", \
+#define HW_TIM_CUBEMX_SIM_PERIPH_TIM2 \
+    .nameStr          = "TIM2", \
     .prescaler        = 143U, \
     .period           = 4294967295U, \
     .counterWidthBits = 32U, \
@@ -171,11 +168,17 @@
 // ----- target selection -----
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
-#define HW_TIM_CUBEMX_TIM1  HW_TIM_CUBEMX_G4_TIM1
-#define HW_TIM_CUBEMX_TIM2  HW_TIM_CUBEMX_G4_TIM2
+#define HW_TIM_CUBEMX_PERIPH_TIM1  HW_TIM_CUBEMX_G4_PERIPH_TIM1
+#define HW_TIM_CUBEMX_OC_TIM1_CH1  HW_TIM_CUBEMX_G4_OC_TIM1_CH1
+#define HW_TIM_CUBEMX_OC_TIM1_CH2  HW_TIM_CUBEMX_G4_OC_TIM1_CH2
+#define HW_TIM_CUBEMX_OC_TIM1_CH3  HW_TIM_CUBEMX_G4_OC_TIM1_CH3
+#define HW_TIM_CUBEMX_PERIPH_TIM2  HW_TIM_CUBEMX_G4_PERIPH_TIM2
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
-#define HW_TIM_CUBEMX_TIM1  HW_TIM_CUBEMX_SIM_TIM1
-#define HW_TIM_CUBEMX_TIM2  HW_TIM_CUBEMX_SIM_TIM2
+#define HW_TIM_CUBEMX_PERIPH_TIM1  HW_TIM_CUBEMX_SIM_PERIPH_TIM1
+#define HW_TIM_CUBEMX_OC_TIM1_CH1  HW_TIM_CUBEMX_SIM_OC_TIM1_CH1
+#define HW_TIM_CUBEMX_OC_TIM1_CH2  HW_TIM_CUBEMX_SIM_OC_TIM1_CH2
+#define HW_TIM_CUBEMX_OC_TIM1_CH3  HW_TIM_CUBEMX_SIM_OC_TIM1_CH3
+#define HW_TIM_CUBEMX_PERIPH_TIM2  HW_TIM_CUBEMX_SIM_PERIPH_TIM2
 #else
 #error "BUILD_TARGET must be BUILD_TARGET_STM32G4 or BUILD_TARGET_SIM"
 #endif

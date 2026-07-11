@@ -17,7 +17,7 @@ Sub-folders are created when a topic gets its first spec.
 - `io/` — generic, domain-independent io-layer infrastructure drivers (device
   abstractions layered over HAL buses). Per-bus sub-topic IDs, e.g.
   `fw~io_i2c_001~1` (IO_i2c generic per-device I2C driver over HW_I2C),
-  `fw~io_pwm_001~1` (IO_PWM 3-phase complementary PWM driver over HW_TIM)
+  `fw~io_bridge_001~1` (IO_bridge 3-phase motor-bridge driver over HW_TIM)
 - `pd/` — USB-PD sink status: register decode and runtime for the CYPD3177
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
 - `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4

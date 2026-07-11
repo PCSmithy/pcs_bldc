@@ -1,11 +1,10 @@
-# App-layer RGB LED ring UI: button-cycled display modes driven by the dial +
-# motor encoders, rendered to an SK6805 ring. Channelized (one instance per
-# ring); all board wiring comes from the consumer-provided app_rgbLedRing_channels
-# seam. Target-independent, but only the embedded executable links it (the SIM
-# main() has no UI consumer). The module is FreeRTOS-free — run10ms is driven by
-# the shared 10 ms task, and the DMA-backed LED stream needs no scheduler guard.
-# The unit test compiles app_rgbLedRing.c directly against an IO/dev mock harness
-# to exercise the render core.
+# App-layer RGB LED ring UI: display modes driven by the dial + motor encoders,
+# rendered to an SK6805 ring, cycled via app_rgbLedRing_cycleMode (the button is
+# owned by app_userControls). Channelized (one instance per ring); board wiring
+# comes from the consumer-provided app_rgbLedRing_channels seam. Target-
+# independent, but only the embedded executable links it (the SIM main() has no
+# UI consumer). FreeRTOS-free — run10ms is driven by the shared 10 ms task. The
+# unit test compiles app_rgbLedRing.c directly to exercise the render core.
 add_library(app_rgbLedRing STATIC
   app_rgbLedRing.c
 )
@@ -15,7 +14,7 @@ target_link_libraries(app_rgbLedRing
     lib_types
     io_SK6805                 # ring framebuffer + transmit
     io_AS5048                 # dial + motor encoder angles
-    dev_switch                # debounced user button
+    app_motorControl          # motor state + setpoint snapshot
     pcs_rgbLedRing_channels   # consumer-provided app_rgbLedRing_channels.h path
 )
 

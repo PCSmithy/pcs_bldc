@@ -14,12 +14,12 @@ static const IO_AS5048_channelConfig_S IO_AS5048_channelConfig[] =
     [IO_AS5048_CHANNEL_MOTOR] =
     {
         .spiChannel = HW_SPI_CHANNEL_AS5048_1,
-        .reverse = true,   // encoder turns opposite the LED-ring convention
+        .reverse = false,
     },
     [IO_AS5048_CHANNEL_DIAL] =
     {
         .spiChannel = HW_SPI_CHANNEL_AS5048_2,
-        .reverse = true,   // encoder turns opposite the LED-ring convention
+        .reverse = false,   // encoder turns opposite the LED-ring convention
     },
 };
 

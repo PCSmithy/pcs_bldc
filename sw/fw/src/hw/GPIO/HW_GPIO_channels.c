@@ -20,6 +20,10 @@
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 
 static const GPIO_InitTypeDef HW_GPIO_portBPinConfigs[] = { HW_GPIO_CUBEMX_PINS_PORT_B };
+// PC15 (DISABLE_VDS_PROT) must stay an input: it sits directly on the
+// STSPIN32G4 SCREF node, where Hi-Z arms VDS protection at the divider's
+// 0.34 V and driving low forces SCREF below its 0.2 V minimum (protection
+// then trips on any conduction). Drive high only to disable the protection.
 static const GPIO_InitTypeDef HW_GPIO_portCPinConfigs[] = { HW_GPIO_CUBEMX_PINS_PORT_C };
 
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
