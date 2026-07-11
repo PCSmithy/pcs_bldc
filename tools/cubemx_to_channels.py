@@ -572,42 +572,46 @@ def tim_trgo_constant(tim: TIMConfig) -> str:
     return dict(tim.master).get("MasterOutputTrigger", "TIM_TRGO_RESET")
 
 
-def gen_tim_oc_macro(name: str, tim: TIMConfig,
-                     complementary: set[tuple[int, int]]) -> str:
+def gen_tim_oc_macros(name: str, tim: TIMConfig,
+                      complementary: set[tuple[int, int]]) -> list[str]:
+    """One G4 macro per output-compare unit, holding the per-output fields a
+    logical channel carries (complementary, HAL channel id, OC init). The
+    hand-written channels.c prepends .peripheral / .role / .ocUnit."""
     inum = tim_instance_num(tim.instance)
-    lines: list[str] = []
+    parts: list[str] = []
     for oc in tim.oc_units:
         chnum = tim_channel_num(oc.channel)
         is_comp = (inum, chnum) in complementary
-        lines.append(f"    [{chnum - 1}] =")
-        lines.append("    {")
-        lines.append("        .enabled       = true,")
-        lines.append(f"        .channel       = {oc.channel},")
-        lines.append(f"        .complementary = {'true' if is_comp else 'false'},")
-        lines.append("        .oc =")
-        lines.append("        {")
+        lines: list[str] = [
+            f"    .complementary = {'true' if is_comp else 'false'},",
+            f"    .channel       = {oc.channel},",
+            "    .oc =",
+            "    {",
+        ]
         lines.extend(aligned_assignments(list(oc.fields.items()),
-                                         indent="            "))
-        lines.append("        },")
+                                         indent="        "))
         lines.append("    },")
-    return emit_macro(f"HW_TIM_CUBEMX_OC_{name}", lines)
+        parts.append(emit_macro(f"HW_TIM_CUBEMX_G4_OC_{name}_CH{chnum}", lines))
+        parts.append("")
+    return parts
 
 
-def gen_tim_sim_oc_macro(name: str, tim: TIMConfig,
-                         complementary: set[tuple[int, int]]) -> str:
+def gen_tim_sim_oc_macros(name: str, tim: TIMConfig,
+                          complementary: set[tuple[int, int]]) -> list[str]:
+    """One SIM macro per output-compare unit, mirroring the per-output fields."""
     inum = tim_instance_num(tim.instance)
-    lines: list[str] = []
+    parts: list[str] = []
     for oc in tim.oc_units:
         chnum = tim_channel_num(oc.channel)
         is_comp = (inum, chnum) in complementary
         pulse = oc.fields.get("Pulse", "0")
         idle = oc.fields.get("OCIdleState", "TIM_OCIDLESTATE_RESET")
         inactive = "1U" if idle.endswith("_SET") else "0U"
-        lines.append(
-            f"    [{chnum - 1}] = {{ .enabled = true, "
-            f".complementary = {'true' if is_comp else 'false'}, "
-            f".compare = {pulse}U, .inactiveLevel = {inactive} }},")
-    return emit_macro(f"HW_TIM_CUBEMX_SIM_OC_{name}", lines)
+        line = (f"    .complementary = {'true' if is_comp else 'false'}, "
+                f".compare = {pulse}U, .inactiveLevel = {inactive},")
+        parts.append(emit_macro(f"HW_TIM_CUBEMX_SIM_OC_{name}_CH{chnum}", [line]))
+        parts.append("")
+    return parts
 
 
 def gen_tim_break_input_macro(name: str, tim: TIMConfig) -> str:
@@ -626,8 +630,8 @@ def gen_tim_break_input_macro(name: str, tim: TIMConfig) -> str:
     return emit_macro(f"HW_TIM_CUBEMX_BRKIN_{name}", lines)
 
 
-def gen_tim_channel_macro(name: str, tim: TIMConfig, has_oc: bool,
-                          has_bdt: bool, has_brkin: bool, has_trgo: bool) -> str:
+def gen_tim_peripheral_macro(name: str, tim: TIMConfig,
+                             has_bdt: bool, has_brkin: bool, has_trgo: bool) -> str:
     body: list[str] = [
         "    .htim =",
         "    {",
@@ -635,8 +639,6 @@ def gen_tim_channel_macro(name: str, tim: TIMConfig, has_oc: bool,
         f"        .Init = {{ HW_TIM_CUBEMX_INIT_{name} }},",
         "    },",
     ]
-    if has_oc:
-        body.append(f"    .outputCompare = {{ HW_TIM_CUBEMX_OC_{name} }},")
     body.append(f"    .configureBreakDeadTime = {'true' if has_bdt else 'false'},")
     if has_bdt:
         body.append(f"    .breakDeadTime = {{ HW_TIM_CUBEMX_BDT_{name} }},")
@@ -645,23 +647,20 @@ def gen_tim_channel_macro(name: str, tim: TIMConfig, has_oc: bool,
     body.append(f"    .configureTrgo = {'true' if has_trgo else 'false'},")
     if has_trgo:
         body.append(f"    .master = {{ HW_TIM_CUBEMX_MASTER_{name} }},")
-    return emit_macro(f"HW_TIM_CUBEMX_G4_{name}", body)
+    return emit_macro(f"HW_TIM_CUBEMX_G4_PERIPH_{name}", body)
 
 
-def gen_tim_sim_channel_macro(name: str, tim: TIMConfig,
-                              has_oc: bool, has_bdt: bool) -> str:
+def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> str:
     init = dict(tim.init)
     inum = tim_instance_num(tim.instance)
     width = 32 if inum in TIM_32BIT_INSTANCES else 16
     body: list[str] = [
-        f'    .channelNameStr   = "{tim.instance}",',
+        f'    .nameStr          = "{tim.instance}",',
         f"    .prescaler        = {init.get('Prescaler', '0')}U,",
         f"    .period           = {init.get('Period', '0')}U,",
         f"    .counterWidthBits = {width}U,",
         f"    .countDir         = {sim_count_dir(init.get('CounterMode', ''))},",
     ]
-    if has_oc:
-        body.append(f"    .outputCompare    = {{ HW_TIM_CUBEMX_SIM_OC_{name} }},")
     if has_bdt:
         bdt = dict(tim.bdt)
         break_on = bdt.get("BreakState", "") == "TIM_BREAK_ENABLE"
@@ -673,7 +672,7 @@ def gen_tim_sim_channel_macro(name: str, tim: TIMConfig,
     body.append(f"    .configureTrgo          = {'true' if has_trgo else 'false'},")
     if has_trgo:
         body.append(f"    .trgoSource             = {sim_trgo_source(trgo)},")
-    return emit_macro(f"HW_TIM_CUBEMX_SIM_{name}", body)
+    return emit_macro(f"HW_TIM_CUBEMX_SIM_PERIPH_{name}", body)
 
 
 def gen_tim_macros(tims: list[TIMConfig],
@@ -691,9 +690,6 @@ def gen_tim_macros(tims: list[TIMConfig],
         parts.append(emit_macro(f"HW_TIM_CUBEMX_INIT_{name}",
                                 aligned_assignments(tim.init, indent="    ")))
         parts.append("")
-        if has_oc:
-            parts.append(gen_tim_oc_macro(name, tim, complementary))
-            parts.append("")
         if has_bdt:
             parts.append(emit_macro(f"HW_TIM_CUBEMX_BDT_{name}",
                                     aligned_assignments(tim.bdt, indent="    ")))
@@ -705,31 +701,41 @@ def gen_tim_macros(tims: list[TIMConfig],
             parts.append(emit_macro(f"HW_TIM_CUBEMX_MASTER_{name}",
                                     aligned_assignments(tim.master, indent="    ")))
             parts.append("")
-        # Composing macros: one full channel body per target, referencing the
-        # field macros above. HW_TIM_channels.c just maps each logical channel
-        # to one of these.
-        parts.append(gen_tim_channel_macro(name, tim, has_oc, has_bdt,
-                                           has_brkin, has_trgo))
+        # Peripheral-plane body per target: everything instance-level, minus the
+        # output-compare units. HW_TIM_channels.c maps each peripheral to one.
+        parts.append(gen_tim_peripheral_macro(name, tim, has_bdt,
+                                              has_brkin, has_trgo))
         parts.append("")
+        parts.append(gen_tim_sim_peripheral_macro(name, tim, has_bdt))
+        parts.append("")
+        # Logical-channel-plane bodies: one per-output OC macro per target that
+        # HW_TIM_channels.c references from each logical channel entry.
         if has_oc:
-            parts.append(gen_tim_sim_oc_macro(name, tim, complementary))
-            parts.append("")
-        parts.append(gen_tim_sim_channel_macro(name, tim, has_oc, has_bdt))
-        parts.append("")
+            parts.extend(gen_tim_oc_macros(name, tim, complementary))
+            parts.extend(gen_tim_sim_oc_macros(name, tim, complementary))
 
-    # Target selection: map each timer's neutral name to its per-target body
-    # so HW_TIM_channels.c maps every channel uniformly, with no BUILD_TARGET
-    # branching of its own. (TIM has no hand-set per-project fields, so the
-    # whole channel body is CubeMX-derived — unlike ADC/SPI.)
-    names = [tim.instance for tim in tims]
+    # Target selection: map each timer's neutral names (one peripheral body plus
+    # one per output-compare unit) to their per-target bodies, so
+    # HW_TIM_channels.c maps every plane uniformly with no BUILD_TARGET
+    # branching of its own.
     parts.append("// ----- target selection -----")
     parts.append("")
     parts.append("#if (BUILD_TARGET == BUILD_TARGET_STM32G4)")
-    for name in names:
-        parts.append(f"#define HW_TIM_CUBEMX_{name}  HW_TIM_CUBEMX_G4_{name}")
+    for tim in tims:
+        name = tim.instance
+        parts.append(f"#define HW_TIM_CUBEMX_PERIPH_{name}  HW_TIM_CUBEMX_G4_PERIPH_{name}")
+        for oc in tim.oc_units:
+            chnum = tim_channel_num(oc.channel)
+            parts.append(f"#define HW_TIM_CUBEMX_OC_{name}_CH{chnum}  "
+                         f"HW_TIM_CUBEMX_G4_OC_{name}_CH{chnum}")
     parts.append("#elif (BUILD_TARGET == BUILD_TARGET_SIM)")
-    for name in names:
-        parts.append(f"#define HW_TIM_CUBEMX_{name}  HW_TIM_CUBEMX_SIM_{name}")
+    for tim in tims:
+        name = tim.instance
+        parts.append(f"#define HW_TIM_CUBEMX_PERIPH_{name}  HW_TIM_CUBEMX_SIM_PERIPH_{name}")
+        for oc in tim.oc_units:
+            chnum = tim_channel_num(oc.channel)
+            parts.append(f"#define HW_TIM_CUBEMX_OC_{name}_CH{chnum}  "
+                         f"HW_TIM_CUBEMX_SIM_OC_{name}_CH{chnum}")
     parts.append("#else")
     parts.append('#error "BUILD_TARGET must be BUILD_TARGET_STM32G4 or BUILD_TARGET_SIM"')
     parts.append("#endif")
@@ -747,9 +753,12 @@ def write_tim_header(tims: list[TIMConfig],
         f"#ifndef HW_TIM_CHANNELS_CUBEMX_H\n"
         f"#define HW_TIM_CHANNELS_CUBEMX_H\n"
         f"\n"
-        f"// Each timer exposes a per-target body (HW_TIM_CUBEMX_G4_TIMn /\n"
-        f"// HW_TIM_CUBEMX_SIM_TIMn) and a BUILD_TARGET-selected alias\n"
-        f"// (HW_TIM_CUBEMX_TIMn) used by HW_TIM_channels.c. lib_build.h\n"
+        f"// Each timer exposes a per-target peripheral body\n"
+        f"// (HW_TIM_CUBEMX_G4_PERIPH_TIMn / HW_TIM_CUBEMX_SIM_PERIPH_TIMn) plus\n"
+        f"// one per-output body per output-compare unit\n"
+        f"// (HW_TIM_CUBEMX_{{G4,SIM}}_OC_TIMn_CHm), each aliased by a\n"
+        f"// BUILD_TARGET-selected name (HW_TIM_CUBEMX_PERIPH_TIMn /\n"
+        f"// HW_TIM_CUBEMX_OC_TIMn_CHm) used by HW_TIM_channels.c. lib_build.h\n"
         f"// supplies the BUILD_TARGET_* constants the selection compares.\n"
         f'#include "lib_build.h"\n'
         f"\n"

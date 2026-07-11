@@ -11,5 +11,5 @@ target_include_directories(test_io_AS5048 PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
-target_link_libraries(test_io_AS5048 PRIVATE lib_types unity)
+target_link_libraries(test_io_AS5048 PRIVATE lib_types lib_utils unity)
 add_test(NAME io_AS5048 COMMAND test_io_AS5048)

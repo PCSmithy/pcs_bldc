@@ -714,7 +714,18 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
     /* USER CODE BEGIN TIM1_MspInit 1 */
-
+    // Re-init PE15 (TIM1_BKIN) with the internal pull-up. nFAULT is the
+    // STSPIN32G4's open-drain output on an in-package bond with no external
+    // pull-up; without a pull the line floats low and the break (polarity
+    // LOW) is permanently asserted, holding MOE off — the bridge can never
+    // energize. Durable fix: set PE15 GPIO_PuPd = pull-up in the .ioc and
+    // regenerate; this USER CODE override survives regeneration either way.
+    GPIO_InitStruct.Pin = GPIO_PIN_15;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF2_TIM1;
+    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
     /* USER CODE END TIM1_MspInit 1 */
   }
   else if(htim_base->Instance==TIM2)

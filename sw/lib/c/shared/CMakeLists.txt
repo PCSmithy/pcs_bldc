@@ -4,6 +4,12 @@
 
 add_subdirectory(lib)
 
+# Shared unit-test mocks (reusable test doubles as CMake targets). Native only —
+# they exist purely to be linked into Unity suites.
+if(PCS_TARGET STREQUAL "native")
+  add_subdirectory(test/mocks)
+endif()
+
 # Channelized hw/ modules need consumer-provided pcs_*_config interface
 # libs (defined in sw/fw/src/hw/<module>/CMakeLists.txt). Skip the whole
 # hw/ tree when building lib/c standalone so unit tests for cross-cutting

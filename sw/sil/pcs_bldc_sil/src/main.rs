@@ -409,9 +409,19 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     //     (HW_SPI_CHANNEL_AS5048_1 = index 0). Response frame layout: bit15 =
     //     even parity, bit14 = error flag, bits[13:0] = angle. Frame 0x9000 has
     //     bits {15,12} set => even parity (valid), error flag clear, angle =
-    //     0x1000 = 4096. The MOTOR channel is reverse=true, so the decoded raw
-    //     is (16384 - 4096) = 12288 -> 270.00 deg. Sent big-endian: {0x90,0x00}.
+    //     0x1000 = 4096. Sent big-endian: {0x90,0x00}. Expected raw/angle derive
+    //     from the firmware's own channel config (reverse maps raw to
+    //     16384 - raw): the check asserts the decode contract, not a frozen
+    //     board convention.
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1
+    const INJECTED_ANGLE: u64 = 0x1000; // frame 0x9000, bits[13:0]
+    let reverse = match fw.read_cvar(&format!("IO_AS5048_channelConfig[{CH}].reverse")) {
+        Value::Bool(b) => b,
+        other => panic!("IO_AS5048_channelConfig[{CH}].reverse read back as {other:?}, not Bool"),
+    };
+    let exp_raw: u64 = if reverse { 16384 - INJECTED_ANGLE } else { INJECTED_ANGLE };
+    let exp_deg = (exp_raw as f64) * 360.0 / 16384.0;
+    let exp_deg_str = format!("{exp_deg:.2}");
     fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRx[0]"), &Value::U32(0x90));
     fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRx[1]"), &Value::U32(0x00));
     fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRxLen"), &Value::U64(2));
@@ -434,8 +444,8 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     let deg = v_f64(&fw.read_cvar(&format!("IO_AS5048_data.channels[{CH}].angle_deg"))).unwrap_or(0.0);
     rep.check(
         "AS5048 decodes the injected SPI frame",
-        (raw == 12288) && ((deg - 270.0).abs() < 0.05),
-        format!("IO_AS5048_data.channels[0].raw = {raw} (expect 12288), angle_deg = {deg:.2} (expect 270.00)"),
+        (raw == exp_raw) && ((deg - exp_deg).abs() < 0.05),
+        format!("IO_AS5048_data.channels[0].raw = {raw} (expect {exp_raw}, reverse={reverse}), angle_deg = {deg:.2} (expect {exp_deg_str})"),
     );
 
     // (3b) Pull the sim USB TX capture and confirm the Teleplot telemetry text.
@@ -444,8 +454,8 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         println!("         telemetry[0]: {first}");
     }
     let has_keys = text.contains("motor_angle:") && text.contains("motor_raw:");
-    let has_angle = text.contains("270.00");
-    let has_raw = text.contains("12288");
+    let has_angle = text.contains(&exp_deg_str);
+    let has_raw = text.contains(&exp_raw.to_string());
     rep.check(
         "telemetry text present with expected signal keys",
         has_keys,
@@ -455,7 +465,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     rep.check(
         "telemetry carries the injected angle end-to-end (exact)",
         has_angle && has_raw,
-        format!("text contains angle 270.00 = {has_angle}, raw 12288 = {has_raw}"),
+        format!("text contains angle {exp_deg_str} = {has_angle}, raw {exp_raw} = {has_raw}"),
     );
 
     // (4) Drain the capture (write txLen back to 0) and re-verify the next
@@ -465,9 +475,11 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         eng.step().expect("engine step");
     }
     let text2 = read_tx_capture(fw);
+    // motor_angle goes out in the fast (2 ms) tier every window; motor_raw is
+    // slow-tier (200 ms) and won't appear in a short post-drain capture.
     rep.check(
         "TX capture drains and refills across windows",
-        text2.contains("270.00") && text2.contains("motor_raw:"),
+        text2.contains(&exp_deg_str) && text2.contains("motor_angle:"),
         format!("post-drain capture {} bytes, still carries the angle", text2.len()),
     );
     rep.absorb(eng.take_logs());

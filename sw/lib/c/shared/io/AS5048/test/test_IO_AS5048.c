@@ -52,7 +52,7 @@ static void test_sampling_before_init_is_noop(void)
 {
     IO_AS5048_run1ms();
     uint16_t raw = 0U;
-    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, NULL));
+    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, NULL, NULL));
 }
 
 // [test->fw~est_encoder_004~1]
@@ -60,7 +60,7 @@ static void test_readout_before_init_fails(void)
 {
     uint16_t  raw = 0U;
     float32_t deg = 0.0f;
-    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg));
+    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg, NULL));
 }
 
 // [test->fw~est_encoder_006~1]
@@ -118,8 +118,8 @@ static void test_channels_addressed_independently(void)
 
     uint16_t rawA = 0U;
     uint16_t rawB = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &rawA, NULL));
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_B, &rawB, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &rawA, NULL, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_B, &rawB, NULL, NULL));
 
     // ENC_A is forward (1000); ENC_B is reverse (16384 - 2000 = 14384).
     TEST_ASSERT_EQUAL_UINT16(1000U, rawA);
@@ -140,13 +140,13 @@ static void test_sampling_updates_stored_angle(void)
     mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(100U, false, true));
     IO_AS5048_run1ms();
     uint16_t first = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &first, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &first, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT16(100U, first);
 
     mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(200U, false, true));
     IO_AS5048_run1ms();
     uint16_t second = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &second, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &second, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT16(200U, second);
 }
 
@@ -161,7 +161,7 @@ static void test_readout_count_and_degrees(void)
 
     uint16_t  raw = 0U;
     float32_t deg = 0.0f;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg, NULL));
     TEST_ASSERT_EQUAL_UINT16(6844U, raw);
 
     const float32_t expected = ((float32_t)6844U * 360.0f) / 16384.0f;
@@ -173,7 +173,7 @@ static void test_readout_out_of_range_fails(void)
 {
     TEST_ASSERT_TRUE(IO_AS5048_init(&config));
     uint16_t raw = 0U;
-    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_COUNT, &raw, NULL));
+    TEST_ASSERT_FALSE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_COUNT, &raw, NULL, NULL));
 }
 
 /* ---- fw~est_encoder_005: per-channel reverse ---- */
@@ -192,8 +192,8 @@ static void test_reverse_inverts_angle(void)
 
     uint16_t fwd = 0U;
     uint16_t rev = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &fwd, NULL));
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_B, &rev, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &fwd, NULL, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_B, &rev, NULL, NULL));
 
     TEST_ASSERT_EQUAL_UINT16(physical, fwd);
     TEST_ASSERT_EQUAL_UINT16((uint16_t)((16384U - physical) % 16384U), rev);
@@ -222,7 +222,7 @@ static void test_parity_error_faults_and_holds_angle(void)
     mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(777U, false, true));
     IO_AS5048_run1ms();
     uint16_t good = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &good, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &good, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT16(777U, good);
 
     // Corrupt parity: angle held, status FAULT.
@@ -230,7 +230,7 @@ static void test_parity_error_faults_and_holds_angle(void)
     IO_AS5048_run1ms();
 
     uint16_t held = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &held, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &held, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT16(777U, held);
 
     IO_AS5048_status_E status = IO_AS5048_STATUS_OK;
@@ -251,7 +251,7 @@ static void test_error_flag_faults_and_holds_angle(void)
     IO_AS5048_run1ms();
 
     uint16_t held = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &held, NULL));
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &held, NULL, NULL));
     TEST_ASSERT_EQUAL_UINT16(888U, held);
 
     IO_AS5048_status_E status = IO_AS5048_STATUS_OK;

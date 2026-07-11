@@ -5,16 +5,18 @@
 /* Private Data Definitions */
 
 // Board wiring for the single status ring: the SK6805 ring string, steered by
-// the dial (knob) and motor encoders, mode-cycled by the user button.
+// the dial (knob) and motor encoders. Mode cycling comes from app_userControls
+// via app_rgbLedRing_cycleMode, so no button is wired here.
 static const app_rgbLedRing_channelConfig_S app_rgbLedRing_channelConfig[] =
 {
     [APP_RGBLEDRING_CHANNEL_RING] =
     {
-        .ledChannel    = IO_SK6805_CHANNEL_RING,
-        .dialChannel   = IO_AS5048_CHANNEL_DIAL,
-        .motorChannel  = IO_AS5048_CHANNEL_MOTOR,
-        .buttonChannel = DEV_SWITCH_CHANNEL_USER_BUTTON,
-        .pixelCount    = IO_SK6805_PIXEL_COUNT,
+        .ledChannel                = IO_SK6805_CHANNEL_RING,
+        .dialChannel               = IO_AS5048_CHANNEL_DIAL,
+        .motorChannel              = IO_AS5048_CHANNEL_MOTOR,
+        .motorControlChannel       = APP_MOTORCONTROL_CHANNEL_MAIN,
+        .speedoFullScale_radPerSec = APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC,
+        .pixelCount                = IO_SK6805_PIXEL_COUNT,
     },
 };
 

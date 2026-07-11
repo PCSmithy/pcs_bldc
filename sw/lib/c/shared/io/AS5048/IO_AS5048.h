@@ -47,7 +47,7 @@ void IO_AS5048_run1ms(void);
 // when each is non-NULL. Returns false if uninitialized or channel is out
 // of range. The reading's integrity is reported separately by
 // IO_AS5048_getStatus.
-bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg);
+bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad);
 
 // Read the integrity status of a channel's most recent _run1ms read.
 // Returns false if uninitialized, channel out of range, or out is NULL.

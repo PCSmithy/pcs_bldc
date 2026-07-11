@@ -1,8 +1,10 @@
 /* Includes */
-#include "IO_AS5048.h"
+#include "lib_utils.h"
+
 #include "HW_SPI.h"
 
-#include "IO_AS5048_channels.h"
+#include "IO_AS5048.h"
+
 
 /* Defines */
 
@@ -17,10 +19,13 @@
 
 #define AS5048_FRAME_BYTES     2U
 
+#define TWO_PI (2.0f * PI)
+
 typedef struct
 {
     uint16_t raw;
     float32_t angle_deg;
+    float32_t angle_rad;
 
     // Outcome of the most recent _run1ms read on this channel.
     IO_AS5048_status_E status;
@@ -137,6 +142,7 @@ void IO_AS5048_run1ms(void)
                 }
                 channelData->raw = raw;
                 channelData->angle_deg = ((float32_t)raw * 360.0f) / AS5048_COUNTS_PER_REV;
+                channelData->angle_rad = ((float32_t)raw * TWO_PI) / AS5048_COUNTS_PER_REV;
                 channelData->status = IO_AS5048_STATUS_OK;
             }
             else
@@ -148,13 +154,14 @@ void IO_AS5048_run1ms(void)
 }
 
 // [impl->fw~est_encoder_004~1]
-bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg)
+bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad)
 {
     bool ret = false;
     if ((data->config) && (channel < IO_AS5048_CHANNEL_COUNT))
     {
         if (angleRaw != NULL) { *angleRaw = data->channels[channel].raw; }
         if (angle_deg != NULL) { *angle_deg = data->channels[channel].angle_deg; }
+        if (angle_rad != NULL) { *angle_rad = data->channels[channel].angle_rad; }
 
         ret = true;
     }

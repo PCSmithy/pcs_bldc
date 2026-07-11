@@ -11,5 +11,5 @@ typedef enum
     IO_AS5048_CHANNEL_COUNT,
 } IO_AS5048_channel_E;
 
-bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg);
+bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad);
 

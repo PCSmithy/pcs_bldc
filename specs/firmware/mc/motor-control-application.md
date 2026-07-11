@@ -7,12 +7,12 @@ tags: [firmware, mc, app, driver]
 
 The `app_motorControl` module owns the drive loop: each control cycle it
 runs one active commutation method — selected from a registered set — and
-applies the method's outputs to the bridge through `IO_PWM`. The operator
+applies the method's outputs to the bridge through `IO_bridge`. The operator
 interface is the user button (gestures), the dial encoder (speed target),
 and the LED ring (state indication).
 
 See also: [[commutation-method-architecture]] (sys~mc_005~1),
-[[pwm]] (fw~io_pwm_002/003, the duty and enable path),
+[[bridge]] (fw~io_bridge_002/003, the duty and enable path),
 [[gate-driver]] (dev_gateDriver supplies the operational gate),
 [[overcurrent]] (fw~safety_001~1, the trip that force-disables).
 
@@ -24,12 +24,12 @@ See also: [[commutation-method-architecture]] (sys~mc_005~1),
 The application shall gate the drive loop each 1 ms control cycle: while
 the bridge is enabled it invokes the active commutation method with the
 speed target, motor shaft angle, and phase currents, applying the method's
-per-phase duty and output-enable commands through IO_PWM; an enable
+per-phase duty and output-enable commands through IO_bridge; an enable
 request takes effect only with dev_gateDriver_isOperational true and no
 fault latched, the bridge otherwise held disabled.
 
 Acceptance:
-- While enabled, the active method's commands reach IO_PWM every cycle.
+- While enabled, the active method's commands reach IO_bridge every cycle.
 - An enable request with the gate driver not operational, or with a fault
   latched, leaves the bridge disabled.
 - While disabled, no method runs and the bridge output enable stays

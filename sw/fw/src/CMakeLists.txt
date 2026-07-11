@@ -122,11 +122,13 @@ target_link_libraries(pcs_bldc_fw PRIVATE
   io_AS5048_channels
   io_SK6805_channels
   io_i2c_channels
-  io_PWM_channels
+  io_bridge_channels
   dev_switch_channels
   dev_CYPD3177_channels
   dev_gateDriver_channels
   app_rgbLedRing_channels
+  app_motorControl_channels
+  app_userControls
 )
 
 # Embedded-target post-build: emit .bin and .hex artifacts and print the

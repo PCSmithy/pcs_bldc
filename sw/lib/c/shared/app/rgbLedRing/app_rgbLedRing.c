@@ -3,7 +3,6 @@
 
 #include "IO_SK6805.h"
 #include "IO_AS5048.h"
-#include "dev_switch.h"
 
 /* Defines */
 
@@ -12,6 +11,11 @@
 // so run10ms never stalls the shared task).
 #define APP_RGBLEDRING_BLINK_HALF_TICKS  (APP_RGBLEDRING_MODE_BLINK_MS / APP_RGBLEDRING_FRAME_PERIOD_MS)
 #define APP_RGBLEDRING_BLINK_TOTAL_TICKS (2U * APP_RGBLEDRING_BLINK_HALF_TICKS)
+
+// SCAFFOLD speed-estimate low-pass factor (0..1) and deg->rad. Temporary — see
+// the renderFrame estimate note.
+#define APP_RGBLEDRING_SPEED_FILTER_ALPHA (0.2f)
+#define APP_RGBLEDRING_RAD_PER_DEG        (3.14159265f / 180.0f)
 
 /* Private Data Definitions */
 
@@ -22,6 +26,11 @@ static app_rgbLedRing_state_S ringState[APP_RGBLEDRING_CHANNEL_COUNT];
 
 // Ticks left in each ring's mode-change flash (0 = not flashing).
 static uint8_t blinkTicksLeft[APP_RGBLEDRING_CHANNEL_COUNT];
+
+// Pending cycle-view requests. cycleMode (1 ms user-controls task) only sets
+// the flag; run10ms (10 ms task) applies it, so ringState is mutated by a
+// single task. volatile single-word access is the cross-task handoff.
+static volatile bool cyclePending[APP_RGBLEDRING_CHANNEL_COUNT];
 
 // Encoder references are seeded on the first run10ms, once the 1 ms task has
 // taken at least one AS5048 sample, so the first frame's deltas are ~0.
@@ -50,55 +59,6 @@ static float32_t pipBrightness(float32_t angle_deg, uint16_t ledIndex, uint16_t 
     return brightness;
 }
 
-// HSV -> RGB. h in [0,360) deg, s and v in [0,1]; each output channel is scaled
-// to [0, maxLevel].
-static void hsvToRgb(float32_t h, float32_t s, float32_t v, uint8_t maxLevel,
-                     uint8_t * r, uint8_t * g, uint8_t * b)
-{
-    const float32_t chroma = v * s;
-    const float32_t hp     = h / 60.0f;          // hue sector position, 0..6
-
-    float32_t hpMod2 = hp;
-    while (hpMod2 >= 2.0f) { hpMod2 -= 2.0f; }
-    float32_t tri = hpMod2 - 1.0f;
-    if (tri < 0.0f) { tri = -tri; }
-    const float32_t second = chroma * (1.0f - tri);   // the "x" component
-    const float32_t base   = v - chroma;              // the "m" offset
-
-    float32_t rp = 0.0f;
-    float32_t gp = 0.0f;
-    float32_t bp = 0.0f;
-    if      (hp < 1.0f) { rp = chroma; gp = second; }
-    else if (hp < 2.0f) { rp = second; gp = chroma; }
-    else if (hp < 3.0f) { gp = chroma; bp = second; }
-    else if (hp < 4.0f) { gp = second; bp = chroma; }
-    else if (hp < 5.0f) { rp = second; bp = chroma; }
-    else                { rp = chroma; bp = second; }
-
-    const float32_t scale = (float32_t)maxLevel;
-    *r = (uint8_t)((rp + base) * scale);
-    *g = (uint8_t)((gp + base) * scale);
-    *b = (uint8_t)((bp + base) * scale);
-}
-
-// Advance one signed walk-head: fold this frame's encoder movement into a
-// sticky, clamped speed accumulator (centred on zero) and integrate the
-// resulting signed speed into a ring position, wrapped into [0, ledCount).
-static void walkAdvance(float32_t * accum, float32_t * pos, float32_t delta, uint16_t ledCount)
-{
-    *accum += delta;
-    if (*accum >  APP_RGBLEDRING_WALK_ACCUM_RANGE_DEG) { *accum =  APP_RGBLEDRING_WALK_ACCUM_RANGE_DEG; }
-    if (*accum < -APP_RGBLEDRING_WALK_ACCUM_RANGE_DEG) { *accum = -APP_RGBLEDRING_WALK_ACCUM_RANGE_DEG; }
-
-    const float32_t frac      = *accum / APP_RGBLEDRING_WALK_ACCUM_RANGE_DEG;   // -1..+1
-    const float32_t speedDps  = frac * APP_RGBLEDRING_WALK_SPEED_MAX_DPS;       // signed
-    const float32_t degPerLed = 360.0f / (float32_t)ledCount;
-
-    *pos += (speedDps / degPerLed) * APP_RGBLEDRING_FRAME_DT_S;                 // signed LED units
-    while (*pos >= (float32_t)ledCount) { *pos -= (float32_t)ledCount; }
-    while (*pos < 0.0f)                 { *pos += (float32_t)ledCount; }
-}
-
 // Clamp an additive 0..255+ channel sum to a uint8_t.
 static uint8_t clampChannel(uint16_t value)
 {
@@ -107,32 +67,46 @@ static uint8_t clampChannel(uint16_t value)
     return (uint8_t)clamped;
 }
 
+// Complement a physical angle into LED-ring space: the ring's LED order runs
+// opposite the dial/motor sense, so a physical angle maps to (360 - angle).
+static float32_t ringAngle(float32_t deg)
+{
+    float32_t a = 360.0f - deg;
+    while (a >= 360.0f) { a -= 360.0f; }
+    while (a < 0.0f)    { a += 360.0f; }
+    return a;
+}
+
+// Add one pip (an RGB colour faded by pip proximity) into the frame.
+static void drawPip(app_rgbLedRing_rgb_S * pixels, uint16_t ledCount, float32_t ringAngle_deg,
+                    uint8_t r, uint8_t g, uint8_t b)
+{
+    for (uint16_t i = 0U; i < ledCount; i++)
+    {
+        const float32_t bright = pipBrightness(ringAngle_deg, i, ledCount);
+        pixels[i].red   = clampChannel((uint16_t)pixels[i].red   + (uint16_t)(bright * (float32_t)r));
+        pixels[i].green = clampChannel((uint16_t)pixels[i].green + (uint16_t)(bright * (float32_t)g));
+        pixels[i].blue  = clampChannel((uint16_t)pixels[i].blue  + (uint16_t)(bright * (float32_t)b));
+    }
+}
+
+// Fill the whole ring one colour.
+static void fillRing(app_rgbLedRing_rgb_S * pixels, uint16_t ledCount, uint8_t r, uint8_t g, uint8_t b)
+{
+    for (uint16_t i = 0U; i < ledCount; i++)
+    {
+        pixels[i].red = r; pixels[i].green = g; pixels[i].blue = b;
+    }
+}
+
 /* Public Function Definitions — rendering core */
 
 void app_rgbLedRing_renderInit(app_rgbLedRing_state_S * state)
 {
-    state->mode       = APP_RGBLEDRING_MODE_WALK;
-    state->prevButton = false;
-
-    state->walkPos    = 0.0f;
-    state->walkPos2   = 0.0f;
-    state->dialAccum  = 0.0f;
-    state->motorAccum = 0.0f;
-
-    state->satAccum   = APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG;  // start full
-    state->satAccum2  = APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG;
-    state->hueAccum   = 0.0f;                                // start red
-    state->hueAccum2  = 240.0f;                              // start blue
-
-    state->pickR  = (uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS;  // default red
-    state->pickG  = 0U;
-    state->pickB  = 0U;
-    state->pick2R = 0U;
-    state->pick2G = 0U;
-    state->pick2B = (uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS;  // default blue
-
-    state->prevDial  = 0.0f;
-    state->prevMotor = 0.0f;
+    state->mode              = APP_RGBLEDRING_MODE_POSITION;
+    state->prevDial          = 0.0f;
+    state->prevMotor         = 0.0f;
+    state->actualSpeedEst_dps = 0.0f;
 }
 
 void app_rgbLedRing_seedEncoders(app_rgbLedRing_state_S * state, float32_t dialDeg, float32_t motorDeg)
@@ -142,135 +116,66 @@ void app_rgbLedRing_seedEncoders(app_rgbLedRing_state_S * state, float32_t dialD
 }
 
 // [impl->fw~obs_ring_001~1]
-bool app_rgbLedRing_advanceMode(app_rgbLedRing_state_S * state, bool buttonActive)
+void app_rgbLedRing_advanceMode(app_rgbLedRing_state_S * state)
 {
-    bool changed = false;
-    if (buttonActive && (!state->prevButton))
-    {
-        state->mode = (app_rgbLedRing_mode_E)(((uint32_t)state->mode + 1U) % (uint32_t)APP_RGBLEDRING_MODE_COUNT);
-        changed = true;
-    }
-    state->prevButton = buttonActive;
-    return changed;
+    state->mode = (app_rgbLedRing_mode_E)(((uint32_t)state->mode + 1U) % (uint32_t)APP_RGBLEDRING_MODE_COUNT);
+}
+
+// Map a signed, full-scale-normalized speed (-1..+1) to a ring angle: zero at
+// top, +/-full sweeping +/-SPEEDO_SWEEP_DEG, complemented into the reversed LED
+// order (like the position pips) so the sweep matches physical rotation.
+static float32_t speedoRingAngle(float32_t norm)
+{
+    if (norm >  1.0f) { norm =  1.0f; }
+    if (norm < -1.0f) { norm = -1.0f; }
+    return ringAngle(norm * APP_RGBLEDRING_SPEEDO_SWEEP_DEG);
 }
 
 // [impl->fw~obs_ring_002~1]
 void app_rgbLedRing_renderFrame(app_rgbLedRing_state_S * state, float32_t dialDeg, float32_t motorDeg,
+                                const app_motorControl_snapshot_S * motor, float32_t speedoFullScale_radPerSec,
                                 app_rgbLedRing_rgb_S * pixels, uint16_t ledCount)
 {
-    // Track dial and motor movement every frame (wrapped to +/-180 deg) so the
-    // deltas are always current and switching modes never injects a jump.
-    float32_t dialDelta = dialDeg - state->prevDial;
-    if (dialDelta > 180.0f)       { dialDelta -= 360.0f; }
-    else if (dialDelta < -180.0f) { dialDelta += 360.0f; }
-    state->prevDial = dialDeg;
-
+    // Motor movement this frame, wrapped to +/-180 deg.
     float32_t motorDelta = motorDeg - state->prevMotor;
     if (motorDelta > 180.0f)       { motorDelta -= 360.0f; }
     else if (motorDelta < -180.0f) { motorDelta += 360.0f; }
     state->prevMotor = motorDeg;
+    state->prevDial  = dialDeg;
 
-    switch (state->mode)
+    // SCAFFOLD actual-speed estimate: raw encoder rate, low-pass filtered.
+    // TEMPORARY — belongs in app_motorControl (or an estimator app) as a
+    // properly filtered measured speed; this is a stand-in for the speedometer.
+    const float32_t instSpeed_dps = motorDelta / APP_RGBLEDRING_FRAME_DT_S;
+    state->actualSpeedEst_dps += APP_RGBLEDRING_SPEED_FILTER_ALPHA * (instSpeed_dps - state->actualSpeedEst_dps);
+
+    const uint8_t lvl = (uint8_t)APP_RGBLEDRING_PIP_MAX_BRIGHTNESS;
+    const app_motorControl_state_E motorState = (motor != NULL) ? motor->state : APP_MOTORCONTROL_STATE_DISABLED;
+
+    fillRing(pixels, ledCount, 0U, 0U, 0U);
+
+    // [impl->fw~mc_009~1] Bridge-state indication: faulted / disabled / running
+    // are distinguishable on the ring (running renders the active view below).
+    if (motorState == APP_MOTORCONTROL_STATE_FAULTED)
     {
-        case APP_RGBLEDRING_MODE_WALK:
-        {
-            // Two signed walk-heads: dial drives the first, motor the second.
-            walkAdvance(&state->dialAccum,  &state->walkPos,  dialDelta,  ledCount);
-            walkAdvance(&state->motorAccum, &state->walkPos2, motorDelta, ledCount);
-
-            const float32_t degPerLed  = 360.0f / (float32_t)ledCount;
-            const float32_t walkAngle  = state->walkPos  * degPerLed;
-            const float32_t walkAngle2 = state->walkPos2 * degPerLed;
-
-            for (uint16_t i = 0U; i < ledCount; i++)
-            {
-                const float32_t bright1 = pipBrightness(walkAngle,  i, ledCount);
-                const float32_t bright2 = pipBrightness(walkAngle2, i, ledCount);
-
-                pixels[i].red   = clampChannel((uint16_t)(bright1 * (float32_t)state->pickR) + (uint16_t)(bright2 * (float32_t)state->pick2R));
-                pixels[i].green = clampChannel((uint16_t)(bright1 * (float32_t)state->pickG) + (uint16_t)(bright2 * (float32_t)state->pick2G));
-                pixels[i].blue  = clampChannel((uint16_t)(bright1 * (float32_t)state->pickB) + (uint16_t)(bright2 * (float32_t)state->pick2B));
-            }
-            break;
-        }
-
-        case APP_RGBLEDRING_MODE_SOLID:
-        {
-            // [impl->fw~obs_ring_003~1] The picker accumulators live in the
-            // persistent state and only the active mode updates them, so a
-            // picked colour survives switching to another mode and back.
-            state->hueAccum += motorDelta;
-            while (state->hueAccum >= 360.0f) { state->hueAccum -= 360.0f; }
-            while (state->hueAccum < 0.0f)    { state->hueAccum += 360.0f; }
-
-            state->satAccum += dialDelta;
-            if (state->satAccum < 0.0f)                              { state->satAccum = 0.0f; }
-            if (state->satAccum > APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG) { state->satAccum = APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG; }
-            const float32_t saturation = state->satAccum / APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG;
-
-            hsvToRgb(state->hueAccum, saturation, 1.0f, (uint8_t)(APP_RGBLEDRING_PIP_MAX_BRIGHTNESS / 2U),
-                     &state->pickR, &state->pickG, &state->pickB);
-
-            for (uint16_t i = 0U; i < ledCount; i++)
-            {
-                pixels[i].red   = state->pickR;
-                pixels[i].green = state->pickG;
-                pixels[i].blue  = state->pickB;
-            }
-            break;
-        }
-
-        case APP_RGBLEDRING_MODE_SOLID2:
-        {
-            // [impl->fw~obs_ring_003~1] Second picker, identical controls,
-            // independent persistent colour.
-            state->hueAccum2 += motorDelta;
-            while (state->hueAccum2 >= 360.0f) { state->hueAccum2 -= 360.0f; }
-            while (state->hueAccum2 < 0.0f)    { state->hueAccum2 += 360.0f; }
-
-            state->satAccum2 += dialDelta;
-            if (state->satAccum2 < 0.0f)                              { state->satAccum2 = 0.0f; }
-            if (state->satAccum2 > APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG) { state->satAccum2 = APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG; }
-            const float32_t saturation = state->satAccum2 / APP_RGBLEDRING_SAT_ACCUM_RANGE_DEG;
-
-            hsvToRgb(state->hueAccum2, saturation, 1.0f, (uint8_t)(APP_RGBLEDRING_PIP_MAX_BRIGHTNESS / 2U),
-                     &state->pick2R, &state->pick2G, &state->pick2B);
-
-            for (uint16_t i = 0U; i < ledCount; i++)
-            {
-                pixels[i].red   = state->pick2R;
-                pixels[i].green = state->pick2G;
-                pixels[i].blue  = state->pick2B;
-            }
-            break;
-        }
-
-        case APP_RGBLEDRING_MODE_ENCODER:
-        {
-            // One pip per encoder: dial in the SOLID colour, motor in SOLID2.
-            for (uint16_t i = 0U; i < ledCount; i++)
-            {
-                const float32_t brightDial  = pipBrightness(dialDeg,  i, ledCount);
-                const float32_t brightMotor = pipBrightness(motorDeg, i, ledCount);
-
-                pixels[i].red   = clampChannel((uint16_t)(brightDial * (float32_t)state->pickR) + (uint16_t)(brightMotor * (float32_t)state->pick2R));
-                pixels[i].green = clampChannel((uint16_t)(brightDial * (float32_t)state->pickG) + (uint16_t)(brightMotor * (float32_t)state->pick2G));
-                pixels[i].blue  = clampChannel((uint16_t)(brightDial * (float32_t)state->pickB) + (uint16_t)(brightMotor * (float32_t)state->pick2B));
-            }
-            break;
-        }
-
-        case APP_RGBLEDRING_MODE_OFF:
-        default:
-        {
-            for (uint16_t i = 0U; i < ledCount; i++)
-            {
-                pixels[i].red   = 0U;
-                pixels[i].green = 0U;
-                pixels[i].blue  = 0U;
-            }
-            break;
-        }
+        fillRing(pixels, ledCount, lvl, 0U, 0U);            // red takeover
+    }
+    else if (motorState == APP_MOTORCONTROL_STATE_DISABLED)
+    {
+        // stays blank
+    }
+    else if (state->mode == APP_RGBLEDRING_MODE_SPEEDO)
+    {
+        const float32_t fullScale = (speedoFullScale_radPerSec > 0.0f) ? speedoFullScale_radPerSec : 1.0f;
+        const float32_t setNorm = ((motor != NULL) ? motor->velocitySetpoint_radPerSec : 0.0f) / fullScale;
+        const float32_t actNorm = (state->actualSpeedEst_dps * APP_RGBLEDRING_RAD_PER_DEG) / fullScale;
+        drawPip(pixels, ledCount, speedoRingAngle(setNorm), lvl, 0U, lvl);   // setpoint = magenta
+        drawPip(pixels, ledCount, speedoRingAngle(actNorm), 0U, lvl, 0U);    // actual = green
+    }
+    else   // APP_RGBLEDRING_MODE_POSITION
+    {
+        drawPip(pixels, ledCount, ringAngle(motorDeg), 0U, lvl, 0U);   // motor = green
+        drawPip(pixels, ledCount, ringAngle(dialDeg),  0U, 0U, lvl);   // dial = blue
     }
 }
 
@@ -280,7 +185,7 @@ void app_rgbLedRing_renderFrame(app_rgbLedRing_state_S * state, float32_t dialDe
 static float32_t readAngleDeg(IO_AS5048_channel_E channel)
 {
     float32_t deg = 0.0f;
-    (void)IO_AS5048_readAngle(channel, NULL, &deg);
+    (void)IO_AS5048_readAngle(channel, NULL, &deg, NULL);
     return deg;
 }
 
@@ -306,7 +211,6 @@ bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config)
             channelsValid &= (cfg->ledChannel < IO_SK6805_CHANNEL_COUNT);
             channelsValid &= (cfg->dialChannel < IO_AS5048_CHANNEL_COUNT);
             channelsValid &= (cfg->motorChannel < IO_AS5048_CHANNEL_COUNT);
-            channelsValid &= (cfg->buttonChannel < DEV_SWITCH_CHANNEL_COUNT);
             channelsValid &= (cfg->pixelCount > 0U);
             channelsValid &= (cfg->pixelCount <= APP_RGBLEDRING_MAX_PIXELS);
         }
@@ -319,11 +223,21 @@ bool app_rgbLedRing_init(const app_rgbLedRing_config_S * const config)
             {
                 app_rgbLedRing_renderInit(&ringState[ch]);
                 blinkTicksLeft[ch] = 0U;
+                cyclePending[ch] = false;
             }
             success = true;
         }
     }
     return success;
+}
+
+// [impl->fw~obs_ring_001~1]
+void app_rgbLedRing_cycleMode(app_rgbLedRing_channel_E channel)
+{
+    if ((appConfig != NULL) && (channel < appConfig->numChannels))
+    {
+        cyclePending[channel] = true;
+    }
 }
 
 // [impl->fw~obs_ring_001~1]
@@ -350,11 +264,11 @@ void app_rgbLedRing_run10ms(void)
     {
         const app_rgbLedRing_channelConfig_S * const cfg = &appConfig->channels[ch];
 
-        // Advance this ring's mode on a button press (rising edge); a change
-        // starts the confirmation flash.
-        const bool button = dev_switch_isActive(cfg->buttonChannel);
-        if (app_rgbLedRing_advanceMode(&ringState[ch], button))
+        // Apply a pending cycle-view request in this (the rendering) task.
+        if (cyclePending[ch])
         {
+            cyclePending[ch] = false;
+            app_rgbLedRing_advanceMode(&ringState[ch]);
             blinkTicksLeft[ch] = APP_RGBLEDRING_BLINK_TOTAL_TICKS;
         }
 
@@ -379,7 +293,11 @@ void app_rgbLedRing_run10ms(void)
             const float32_t dialDeg  = readAngleDeg(cfg->dialChannel);
             const float32_t motorDeg = readAngleDeg(cfg->motorChannel);
 
-            app_rgbLedRing_renderFrame(&ringState[ch], dialDeg, motorDeg, pixels, cfg->pixelCount);
+            app_motorControl_snapshot_S motor = { 0 };
+            (void)app_motorControl_getSnapshot(cfg->motorControlChannel, &motor);
+
+            app_rgbLedRing_renderFrame(&ringState[ch], dialDeg, motorDeg, &motor,
+                                       cfg->speedoFullScale_radPerSec, pixels, cfg->pixelCount);
 
             for (uint16_t i = 0U; i < cfg->pixelCount; i++)
             {
