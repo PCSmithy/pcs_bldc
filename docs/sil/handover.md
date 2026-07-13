@@ -282,6 +282,13 @@ docs/sil/*.md            the design (see "Design docs" below)
 
 ## What's next (prioritized)
 
+> **Current sprint (2026-07-12): full-loop motor commutation** — see
+> `roadmap.md` § "Current sprint" for the staged plan (string-keyed table
+> write API → SPI comms seam → encoder model → PWM ports → motor/inverter →
+> harness → closed-loop scenario). D8 is deferred to the following
+> (interrupt-driven-control) sprint; `usb_cdc`/`teleplot` telemetry capture
+> is filed near the top of `backlog.md`.
+
 1. ~~**`Model` trait + `vsig` backing**~~ — **DONE (2026-07-04).** `voyant::model`
    adds the minimal `Model` trait (`name`/`signals`/`advance(dt_us)`/`read`), the
    `ModelSignal` descriptor, and `register_model`/`record_model` glue that samples

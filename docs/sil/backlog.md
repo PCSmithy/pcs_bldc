@@ -3,6 +3,21 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## `usb_cdc` / `teleplot` sig_type — telemetry captured as table signals
+
+**When:** near-term — first sprint after commutation SIL, or opportunistically
+during it. Filed 2026-07-12; owner wants it near the top of this backlog.
+
+**What:** capture the sim USB CDC TX stream via upcall into a comms entry
+(`usb_cdc` sig_type), and parse the Teleplot text into per-signal table
+entries (either a `:decoded` modifier or a dedicated `teleplot` sig_type), so
+a test asserts `sim["usb:pcs_bldc:motor_angle"] == 90.0` instead of
+DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
+`pcs_bldc_sil/src/main.rs` does today). Design anchor:
+`state-route-tables.md` §1 "Comms entries" (logical payloads via sim-HW
+upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
+but TX capture + parse needs no D8.
+
 ## Remove the `HW_<Module>_sim.h` inject/inspect API layer
 
 **When:** after the firmware/SIL build unification lands and the SIL framework

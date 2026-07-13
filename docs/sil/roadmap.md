@@ -7,6 +7,84 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
+## Current sprint — full-loop motor commutation (started 2026-07-12)
+
+**North star:** the firmware's six-step drive commutates a simulated motor
+end-to-end — PWM out → motor model spins → encoder/current models feed back —
+driven and asserted purely through the State Table.
+
+**Owner-set API direction** (from review of the sanity suite, 2026-07-12):
+
+- Tests interact with voyant (the State Table), never a `Firmware` handle.
+  Direct cvar writes are the rare case, and even those go through the table:
+  `st.write("cvar:pcs_bldc:HW_USB_sim_data.connected", true)`.
+- The same call shape writes model inputs —
+  `st.write("vsig:as5048:angle_deg", 90.0)` — one uniform API for cvars,
+  model inputs, and (later) bus signals.
+- Target end-state (Python, Phase 4) the Rust API must shape toward:
+
+  ```python
+  def test_encoder_spi_comms():
+      sim["vsig:pcs_bldc:usb:connected"] = True
+      sim.run_for(10)
+      sim["vsig:as5048:angle_deg"] = 90.0
+      sim.run_for(1)
+      assert sim["usb:pcs_bldc:motor_angle"] == 90.0
+  ```
+
+**Stages** (each lands as its own reviewed commit):
+
+- ☐ **1. String-keyed table write/read** — `write`/`read` (+ a pinned-write
+  variant) over `SignalId::parse` → `record`/`current_value`; migrate the
+  sanity suite off direct `fw.read_cvar`/`write_cvar` (only boot/shutdown
+  stay below the engine).
+- ☐ **2. SPI comms seam** — admit `spi` as a sig_type; sim `HW_SPI` registers
+  per-channel rx/tx ports (`SIL_ports`), so a routed `Bytes` frame is what
+  `transmitReceive` returns (replaces `injectedRx` white-box pokes; blocking
+  transfers read the port cache in-tick — no D8 needed).
+- ☐ **3. AS5048 encoder model** (instantiation-side) — writable
+  `angle_rad`/`angle_deg` inputs; `raw_encoder_ticks` + framed SPI response
+  out (14-bit angle, even parity bit 15, error bit 14; the driver reads two
+  pipelined frames/tick). Two instances: motor encoder (SPI ch 1) and the
+  user dial (SPI ch 2) — velocity demand becomes
+  `st.write("vsig:dial:angle_deg", …)`.
+- ☐ **4. PWM/bridge observation ports** — sim `HW_TIM` publishes normalized
+  per-phase duty + per-phase enable + MOE as output ports (the D6 route
+  source; duty ∈ [0,1], never raw CCR/ARR).
+- ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
+  phase voltages, six-step aware: a disabled phase floats) into a
+  trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +
+  inertia/friction mechanical; model-owned integrator, sub-stepped if the
+  electrical τ demands it).
+- ☐ **6. Feedback + harness models** — current-sense model driving the
+  existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
+  every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
+  gestures via sim GPIO.
+- ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
+  → dial + button tap → assert the sector sequence advances, the rotor spins,
+  currents stay under trip, telemetry reports motion; fault-injection
+  variants (pinned overcurrent, starved encoder) prove the latches.
+
+**Bring-up traps** (from the 04b2cf8 firmware survey — each costs a day if
+forgotten):
+
+- Undriven ADC ports ramp to ~3.3 V ≈ 16 A computed phase current → the
+  overcurrent latch trips almost immediately: current-sense ports must be
+  driven every tick.
+- Un-injected SPI reads back `0xFFFF` (error flag set) → the encoder-fault
+  latch trips after 5 consecutive ticks: both AS5048 channels need valid
+  frames.
+- Drive stays blocked until `dev_gateDriver_isOperational()`: the sim I2C
+  STATUS register must be seeded AND `task_200ms` must have completed a
+  configure+status pass (first pass lands within ~200–400 ticks).
+
+**Deferred** (owner, 2026-07-12): **D8 interrupt controller** — the current
+control path is entirely cooperative in `task_1ms`, so D8 isn't needed until
+the interrupt-driven control sprint that follows this one.
+**`usb_cdc`/`teleplot` sig_type** — filed near the top of `backlog.md`.
+
+---
+
 ## Phase 0 — Worktree + architecture
 **Goal:** branch, worktree, agreed ground rules, planning docs.
 **Exit:** `architecture.md` decisions table reflects reality.
@@ -114,7 +192,9 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   firmware `cvar`, suspend/resume gating).
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
-  registration; port dispatch shim (ISR entry/exit, FromISR/yield)
+  registration; port dispatch shim (ISR entry/exit, FromISR/yield) —
+  **deferred** (owner, 2026-07-12) to the interrupt-driven-control sprint;
+  the current firmware control path is fully cooperative in `task_1ms`
 - ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
   Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
   advance sim time (monotonic, wall-clock-free) → advance models (registration
@@ -133,6 +213,8 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
 **Goal:** motor + encoder + sensor models close the loop with firmware.
 **Exit:** firmware commands PWM → motor model spins → encoder/ADC feed back →
 a basic control action is observable end-to-end.
+
+Staged in detail in **Current sprint** above (stages 3–7 map here).
 
 - ☐ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
 - ☐ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
