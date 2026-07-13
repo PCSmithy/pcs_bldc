@@ -39,7 +39,7 @@ ADC, ...). Files, as of 2026-07-04:
 - `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 
 **Why it goes:** the SIL (voyant) has white-box DWARF read/write access to all
-firmware memory, plus State Table overrides and Route Table suspend/resume for
+firmware memory, plus Route Table suspend/resume + direct destination writes for
 injection. A hand-written per-driver injection API is a redundant seam — extra
 firmware added to the firmware-under-test in order to test the
 firmware-under-test. Remove it across the board, on every peripheral driver.
@@ -53,7 +53,7 @@ still parked; drivers migrate to ports as they are converted.
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the
 white-box path instead — DWARF read/write of the sim drivers' statics (and,
-as they land, State Table overrides / Route Table suspend-resume). The
+as they land, Route Table suspend-resume + direct destination writes). The
 existing 8 test suites are the frozen consumer set this task removes.
 
 **The complication — unit tests:** 8 Unity suites currently exercise drivers

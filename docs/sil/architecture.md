@@ -196,14 +196,14 @@ firmware seam" to internal plumbing behind the member. It is constructed with an
 explicit instance **`name`** (not derived from the DLL — two boards may run the
 same image as distinct members) and a firmware tick period; its `advance`
 accumulates sim time and, per elapsed firmware-tick period, **flushes** the *fresh*
-(route-/test-/pin-written) `cvar`s in its namespace into firmware memory, runs one
+(route-/test-written) `cvar`s in its namespace into firmware memory, runs one
 `advance_tick`, then **sweeps** its whole cvar leaf list back out into the table
 (`record_mirror`). The cvar mirror is **automatic** — the member enumerates the
 firmware's traceable namespace from DWARF at enable (minus a built-in
 array-size/pointer exclusion policy; `exclude`/`include` tune it) and mirrors it
 with **no per-signal declarations** (the D12 end-state). The flush is sparse (a
-State Table **dirty set** tracks command writes; a pinned cvar re-asserts every
-tick). It is the **only** thing that touches firmware memory — routes never do
+State Table **dirty set** tracks command writes; writes are one-shot,
+last-writer-wins). It is the **only** thing that touches firmware memory — routes never do
 (they are table-mediated; see
 [`state-route-tables.md`](state-route-tables.md) §2). Lifecycle (`start`/`shutdown`)
 stays an explicit call on the concrete `Firmware` handle the driver holds.

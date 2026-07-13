@@ -31,9 +31,10 @@
 //! member flushes it that tick); a model reads a routed `vsig` via
 //! [`StateTable::current_value`].
 //!
-//! Because a destination is written via [`StateTable::record`], it honours
-//! [`StateTable::set_override`]: pinning a destination makes `record` a no-op, so
-//! **fault injection composes with routing at zero extra mechanism**.
+//! **Fault injection composes with routing at zero extra mechanism**: suspend the
+//! route driving a destination, then [`record`](StateTable::record) a fault value into
+//! it directly (the suspended route no longer records over it); [`resume`](RouteTable::resume)
+//! hands the destination back to the route.
 //!
 //! A destination may be **any registered signal of any `sig_type`** — the table is a
 //! flat, member-agnostic registry, no per-`sig_type` restriction.
@@ -66,11 +67,10 @@
 //! ## Suspend / resume (fault injection)
 //!
 //! [`suspend`](RouteTable::suspend) cuts a route so its destination stops being
-//! driven — a test then writes/pins that destination to inject a fault, and
+//! driven — a test then writes that destination to inject a fault, and
 //! [`resume`](RouteTable::resume) restores it. A suspended route is skipped by
 //! propagation and exempt from validation.
 //!
-//! [`StateTable::set_override`]: crate::state_table::StateTable::set_override
 //! [`StateTable::current_value`]: crate::state_table::StateTable::current_value
 
 use crate::signal::{SignalId, Value};
@@ -245,8 +245,7 @@ impl RouteTable {
     /// Propagate every enabled **delayed** (latency-1) route once, snapshot-then-write:
     /// snapshot all delayed sources (each holding its end-of-previous-tick value, as
     /// this runs before any member advances), then record all destinations. Both
-    /// endpoints must be registered; a never-recorded source is skipped; a pinned
-    /// destination absorbs the record as a no-op.
+    /// endpoints must be registered; a never-recorded source is skipped.
     pub fn propagate_delayed(&self, st: &mut StateTable) -> Result<(), RouteError> {
         let mut pending: Vec<(usize, Value)> = Vec::new();
         for route in self.routes.iter().filter(|r| r.enabled && (r.latency > 0)) {
@@ -269,7 +268,7 @@ impl RouteTable {
     /// from [`validate`](Self::validate), with **fresh reads**: a chain `a→b→c`
     /// resolves fully in one call (later routes see earlier ones' values this tick).
     /// The engine re-runs this before *each* member's advance (`M×R` copies — a flagged
-    /// perf seam, `docs/sil/performance.md`). Registration/override rules match
+    /// perf seam, `docs/sil/performance.md`). Registration rules match
     /// [`propagate_delayed`](Self::propagate_delayed).
     pub fn propagate_zero_latency(
         &self,
@@ -588,7 +587,9 @@ mod tests {
     }
 
     #[test]
-    fn override_on_destination_pins_it_against_the_route() {
+    fn suspended_route_lets_a_direct_write_to_the_destination_persist() {
+        // Fault injection: a suspended route no longer records over its destination, so
+        // a direct write persists until resume hands the destination back to the route.
         let mut st = StateTable::new();
         let src = register_cvar(&mut st, "src", Value::U32(1));
         let dst = register_cvar(&mut st, "dst", Value::U32(0));
@@ -596,13 +597,22 @@ mod tests {
         rt.add(src.clone(), dst.clone()).unwrap();
         let order = plan(&rt);
 
-        st.set_override(&dst, true).unwrap();
+        // Live route: destination tracks the source.
         st.set_time(1_000);
         rt.propagate_zero_latency(&mut st, &order).unwrap();
-        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(0))); // pinned
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1)));
 
-        st.set_override(&dst, false).unwrap();
-        rt.propagate_zero_latency(&mut st, &order).unwrap();
+        // Suspend, then write a fault value straight into the destination.
+        rt.suspend(&src, &dst).unwrap();
+        st.set_time(2_000);
+        st.record(&dst, Value::U32(99)).unwrap();
+        rt.propagate_zero_latency(&mut st, &plan(&rt)).unwrap();
+        assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(99))); // not clobbered
+
+        // Resume: the route drives the destination from the source again.
+        rt.resume(&src, &dst).unwrap();
+        st.set_time(3_000);
+        rt.propagate_zero_latency(&mut st, &plan(&rt)).unwrap();
         assert_eq!(st.current_value(&dst).unwrap(), Some(Value::U32(1)));
     }
 

@@ -1,6 +1,6 @@
 # SIL bring-up — handover
 
-Last updated: 2026-07-09. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-07-12. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
 `roadmap.md` in this folder.
 
@@ -63,8 +63,9 @@ sw/sil/
   voyant/                 THE FRAMEWORK (generic, no pcs_bldc code)
     src/signal.rs           SignalId (sig_type:source:name[:modifier]) + Value
     src/state_table.rs      StateTable: registry + per-signal change-log history
-                            + current cache + overrides + per-signal epsilon
-                            + retention. Pure data, no FFI. (10 unit tests)
+                            + current cache + per-signal epsilon
+                            + retention. Pure data, no FFI. One-shot,
+                            last-writer-wins writes (no override/pin).
     src/backend.rs          Firmware (public handle): control ABI + cvar
                             sample-resolver (start/shutdown/advance_tick +
                             read_cvar/write_cvar; the only unsafe/DWARF part).
@@ -75,11 +76,11 @@ sw/sil/
                             instance wrapped as a Member — AUTO-mirrors the whole
                             traceable cvar namespace (enumerated from DWARF at
                             enable, array-size exclusion policy + exclude/include),
-                            flushing fresh/pinned cvars into fw memory + sweeping the
+                            flushing fresh cvars into fw memory + sweeping the
                             whole mirror back out around advance_tick; the ONLY thing
                             that touches fw memory (routes never do). dwarf.rs gained
                             leaf enumeration; state_table.rs a dirty set +
-                            record_mirror/take_dirty/pinned.
+                            record_mirror/take_dirty.
     src/member.rs           Member trait (the one seam the engine drives everything
                             through: name/advance(dt,st)/set_enabled) + vsig_id +
                             RampModel reference model member. Members register their
@@ -89,7 +90,8 @@ sw/sil/
                             snapshot-then-write pass/tick, add/remove/suspend/resume.
                             propagate is TABLE-ONLY (no backend): records src entry
                             -> dst entry; dst = any registered signal; both endpoints
-                            checked at propagate; override pins a dest against a route.
+                            checked at propagate; fault injection = suspend the route,
+                            then write the destination directly.
     src/log.rs              Unified log: LogLevel/LogEntry + drop-oldest LogRing the
                             StateTable stamps with sim time (st.log/take_logs).
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
@@ -128,8 +130,8 @@ docs/sil/*.md            the design (see "Design docs" below)
     elements**, and **enums by symbolic name**.
   - **State Table** implemented: `SignalId`, logical `Value`, per-signal
     change-logged history (dedup + per-signal epsilon, default 1e-3), current
-    cache (O(1)), `value_at` ZOH (O(log n)), injection **overrides**, time-based
-    retention (`None` = unbounded for fast mode).
+    cache (O(1)), `value_at` ZOH (O(log n)), time-based retention (`None` =
+    unbounded for fast mode). (Injection overrides removed 2026-07-12.)
 - **Rebased onto current `main` + firmware/SIL build unified (2026-07-04):**
   the SIM target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`,
   `task_usb`, `telemetryTask`) and the same io/dev/app init as embedded, via
@@ -157,8 +159,9 @@ docs/sil/*.md            the design (see "Design docs" below)
   takes **no `Backend`**; it records source entries into destination entries and
   nothing else. A destination is **any registered signal of any `sig_type`** (the
   `cvar`-only restriction and `RouteError::UnsupportedDest` are gone), so `vsig`
-  destinations (model inputs) work with no new seam, and `set_override` on a
-  destination pins it against its route (free fault-injection compose). Added
+  destinations (model inputs) work with no new seam. (The `set_override`
+  fault-injection compose mentioned here was removed 2026-07-12 — fault injection
+  is now suspend-route-then-write-destination.) Added
   `RouteTable::remove`; both endpoints are existence-checked at propagate
   (symmetric). The firmware member gained **`drive_cvar`** — the mirror of
   `sample_cvar`: per firmware tick it flushes driven cvars (table -> fw memory) ->
@@ -240,10 +243,10 @@ docs/sil/*.md            the design (see "Design docs" below)
   depth/leaf cap) and registers `cvar:<member>:<leaf>` for each, caching a resolved
   address/type handle per leaf. Out-sync **sweeps** them all memory→table
   (`record_mirror`) each tick; in-sync **flush is sparse** — a State Table **dirty
-  set** (`record`/`force_record`/pin mark dirty, `record_mirror` does not) drained
-  per-source (`take_dirty`) ∪ pinned ids, filtered to `cvar`. A pinned cvar
-  re-asserts every tick (fault-injection drive); a mirror record on a pinned entry
-  is ignored (never un-pins). `exclude(prefix)`/`include(path)` tune the policy
+  set** (`record`/`force_record` mark dirty, `record_mirror` does not) drained
+  per-source (`take_dirty`), filtered to `cvar`. (The pinned-flush union described
+  here was removed 2026-07-12 — flush is command-dirtied only.)
+  `exclude(prefix)`/`include(path)` tune the policy
   (the suite `include`s the one 256-byte-buffer SPI MISO byte it drives). Sweep
   cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
   workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
@@ -280,6 +283,18 @@ docs/sil/*.md            the design (see "Design docs" below)
   (materializing). voyant unit tests 76 → 83 (7 columnar tests). See
   `signal-trace.md` §1 + `performance.md` §6/§13.
 
+- **Override/pin mechanic removed (2026-07-12):** the State Table is dumb —
+  signals + history, one-shot **last-writer-wins** writes. A value persists
+  exactly when nothing else writes that signal (model disabled, route suspended,
+  or no author by construction); persistence is the **absence of writers**, not a
+  framework hold. If firmware overwrites a user's cvar write it *should* be
+  clobbered — users own their write targets. **Fault injection = suspend the
+  route, then write directly into the route's destination signal.** Deleted the
+  `overrides` set, `set_override`/`pinned`, the `record`/mirror pin branches, and
+  the pinned half of the `FirmwareMember` flush union (flush is now
+  command-dirtied only). voyant unit tests 89 → 85 (owner ruling — the mechanic
+  earned no keep).
+
 ## What's next (prioritized)
 
 > **Current sprint (2026-07-12): full-loop motor commutation** — see
@@ -303,8 +318,9 @@ docs/sil/*.md            the design (see "Design docs" below)
    a chain `x→y→z` advances one hop per tick. Sources are any State Table entry
    (`vsig`/`cvar`); destinations are `cvar`s driven via `Backend::write_cvar` (the
    DWARF path is the id's `name` segment — no separate mapping). Per-route
-   `suspend`/`resume` gates driving for fault injection (pairs with the table's
-   `override`). A `vsig` destination (model input) needs a `Model::write` seam and
+   `suspend`/`resume` gates driving for fault injection (the table `override` it
+   once paired with was removed 2026-07-12; injection is now suspend + direct
+   write). A `vsig` destination (model input) needs a `Model::write` seam and
    is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
    snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
    model's `vsig` into a firmware `cvar` and proves suspend/resume gating.

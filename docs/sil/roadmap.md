@@ -34,8 +34,8 @@ driven and asserted purely through the State Table.
 
 **Stages** (each lands as its own reviewed commit):
 
-- ☐ **1. String-keyed table write/read** — `write`/`read` (+ a pinned-write
-  variant) over `SignalId::parse` → `record`/`current_value`; migrate the
+- ☐ **1. String-keyed table write/read** — `write`/`read` over
+  `SignalId::parse` → `record`/`current_value`; migrate the
   sanity suite off direct `fw.read_cvar`/`write_cvar` (only boot/shutdown
   stay below the engine).
 - ☐ **2. SPI comms seam** — admit `spi` as a sig_type; sim `HW_SPI` registers
@@ -63,7 +63,7 @@ driven and asserted purely through the State Table.
 - ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
   → dial + button tap → assert the sector sequence advances, the rotor spins,
   currents stay under trip, telemetry reports motion; fault-injection
-  variants (pinned overcurrent, starved encoder) prove the latches.
+  variants (suspend + write overcurrent, starved encoder) prove the latches.
 
 **Bring-up traps** (from the 04b2cf8 firmware survey — each costs a day if
 forgotten):
@@ -169,7 +169,7 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   - `signal`: `SignalId` (owned, validated `sig_type:source:name[:modifier]`) +
     the logical `Value` (`F32/F64/I32/U32/U64/Bool/Enum/Bytes`) + `approx_eq`.
   - `state_table`: registry + **per-signal change-logged history** + current
-    cache + injection **overrides** + **per-signal epsilon** (default 1e-3) +
+    cache + **per-signal epsilon** (default 1e-3) +
     time-based retention (`None`=unbounded fast mode). `record`/`force_record`/
     `current_value` (O(1))/`value_at` (O(log n) ZOH). *No FFI — pure data.*
   - `backend`: the **cvar sample-resolver** — `read_cvar`/`write_cvar` coerce
@@ -187,7 +187,8 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   sources from the State Table cache, then writes all dests — order-independent,
   one hop/tick). Sources are any entry (`vsig`/`cvar`); `cvar` dests are driven
   via `Backend::write_cvar` (DWARF path = id `name`). Per-route `suspend`/`resume`
-  for fault injection (pairs with the table `override`); `vsig` dests deferred to
+  for fault injection (suspend + direct write; the table `override` it once paired
+  with was removed 2026-07-12); `vsig` dests deferred to
   a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
   firmware `cvar`, suspend/resume gating).
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;

@@ -8,7 +8,7 @@
 //! Modules:
 //! - [`signal`] — [`SignalId`] (`sig_type:source:name[:modifier]`) + the [`Value`] currency.
 //! - [`state_table`] — the [`StateTable`]: signal registry + change-logged history +
-//!   overrides + retention. Pure data, no FFI (it *is* the historian, D12).
+//!   retention. Pure data, no FFI (it *is* the historian, D12).
 //! - `backend` — [`Firmware`] (public handle: control ABI + DWARF cvar resolver, the
 //!   only unsafe part) and [`FirmwareMember`] (a firmware wrapped as a [`Member`]). A
 //!   "port" is just a Signal the firmware syncs from C — firmware-member vocabulary,

@@ -1,12 +1,13 @@
 //! The State Table: signal registry + per-signal change-logged history +
-//! current-value cache + injection overrides + bounded retention.
+//! current-value cache + bounded retention.
 //!
 //! Pure data — no FFI, no DWARF. Fed by [`StateTable::record`], queried by
 //! [`StateTable::current_value`] (O(1)) / [`StateTable::value_at`] (O(log n),
 //! zero-order-hold). Each signal *is* its own historian (D12): a record is stored
 //! only when the value moves past the signal's epsilon (default 1e-3 for floats;
-//! exact otherwise). Overridden signals ignore `record` (the injection pin).
-//! Retention evicts old samples by time window (unbounded in fast mode).
+//! exact otherwise). Writes are one-shot, last-writer-wins — a value persists
+//! exactly when nothing else writes that signal. Retention evicts old samples by
+//! time window (unbounded in fast mode).
 
 use crate::log::{LogEntry, LogLevel, LogRing};
 use crate::signal::{SignalId, Value};
@@ -363,10 +364,8 @@ pub struct StateTable {
     /// Resolved change-detection epsilon, by signal index (per-signal override else
     /// global — resolved at register so the hot `record` path never hashes config).
     epsilon: Vec<f64>,
-    /// Signals whose `record` is ignored (injection pin), by signal index.
-    overrides: HashSet<usize>,
     /// **Command-write dirty set**, by signal index: indices a framework command
-    /// wrote this cycle (`record` / `force_record` / pin) — *not* mirror sweeps
+    /// wrote this cycle (`record` / `force_record`) — *not* mirror sweeps
     /// (`record_mirror`). A firmware member drains its own namespace's dirt each
     /// tick to know which `cvar`s to flush back into firmware memory.
     dirty: HashSet<usize>,
@@ -395,9 +394,6 @@ impl Default for StateTable {
 macro_rules! typed_mirror_lane {
     ($name:ident, $t:ty, $variant:ident, $eq:expr) => {
         pub(crate) fn $name(&mut self, idx: usize, x: $t) -> Result<(), TableError> {
-            if self.overrides.contains(&idx) {
-                return Ok(()); // pinned: mirror records ignored
-            }
             match &self.columns[idx] {
                 Column::$variant(c) => {
                     if let Some(prev) = c.tail() {
@@ -442,7 +438,6 @@ impl StateTable {
             columns: Vec::new(),
             current: Vec::new(),
             epsilon: Vec::new(),
-            overrides: HashSet::new(),
             dirty: HashSet::new(),
             evicted: HashSet::new(),
             current_time_us: 0,
@@ -509,19 +504,19 @@ impl StateTable {
     }
 
     /// Record a **command-written** value (route, test, or model output) at the
-    /// current time. Marks the signal dirty. Skips the historian append if overridden
-    /// or unchanged, but the dirty mark stands whenever the command applied (an
-    /// unchanged re-command still means the framework is driving it, so it must be
-    /// re-asserted into firmware memory each tick). Errors if not registered.
+    /// current time. Marks the signal dirty. Skips the historian append if unchanged,
+    /// but the dirty mark stands whenever the command applied (an unchanged re-command
+    /// still means the framework is driving it, so it must be re-asserted into firmware
+    /// memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, true)
     }
 
     /// Record a **mirror** value (a firmware member's end-of-tick sweep of memory
-    /// into the table). Same dedup/historian/override as [`record`](Self::record) — a
-    /// pin still ignores it, so a sweep can't un-pin the view — but does **not** mark
-    /// dirty (tracking what memory already holds, not commanding a write back).
+    /// into the table). Same dedup/historian as [`record`](Self::record) but does
+    /// **not** mark dirty (tracking what memory already holds, not commanding a write
+    /// back).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, false)
@@ -555,11 +550,6 @@ impl StateTable {
     }
 
     fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {
-        if self.overrides.contains(&idx) {
-            // Pinned: command and mirror records both ignored; the pin holds the view
-            // and is re-asserted via the pinned-flush union, not via record.
-            return Ok(());
-        }
         if command {
             self.dirty.insert(idx);
         }
@@ -571,8 +561,8 @@ impl StateTable {
         self.append(idx, value)
     }
 
-    /// Record unconditionally (bypasses change-detection and overrides). Counts as
-    /// a command write (marks the signal dirty).
+    /// Record unconditionally (bypasses change-detection). Counts as a command write
+    /// (marks the signal dirty).
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.dirty.insert(idx);
@@ -617,20 +607,6 @@ impl StateTable {
         }
     }
 
-    /// Pin/unpin a signal (a pinned signal ignores `record`). Pinning marks dirty: a
-    /// pin is a continuous drive, re-asserted into firmware memory every tick (see
-    /// [`pinned`](Self::pinned)). Unpinning does not mark dirty.
-    pub fn set_override(&mut self, id: &SignalId, on: bool) -> Result<(), TableError> {
-        let idx = self.ensure(id)?;
-        if on {
-            self.overrides.insert(idx);
-            self.dirty.insert(idx);
-        } else {
-            self.overrides.remove(&idx);
-        }
-        Ok(())
-    }
-
     /// Remove and return the dirty ids whose `<source>` segment equals `source`
     /// (a member drains its **own** namespace; other members' dirt is left in
     /// place for their own drain). Deterministic order (sorted by id string).
@@ -652,21 +628,6 @@ impl StateTable {
             .collect();
         mine.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         mine
-    }
-
-    /// The currently-pinned (overridden) ids whose `<source>` segment equals
-    /// `source`, for the per-tick pinned-flush union (a pin re-asserts every tick,
-    /// even when not freshly dirty). Deterministic order.
-    pub fn pinned(&self, source: &str) -> Vec<SignalId> {
-        let mut ids: Vec<SignalId> = self
-            .overrides
-            .iter()
-            .filter_map(|&idx| self.signals.get_index(idx))
-            .filter(|id| id.source() == source)
-            .cloned()
-            .collect();
-        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        ids
     }
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
@@ -812,19 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn override_pins_value() {
-        let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        st.set_time(1_000);
-        st.record(&a, Value::U32(5)).unwrap();
-        st.set_override(&a, true).unwrap();
-        st.set_time(2_000);
-        st.record(&a, Value::U32(99)).unwrap(); // ignored
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
-    }
-
-    #[test]
     fn per_signal_epsilon() {
         let a = id("cvar:dut:a");
         let mut cfg = StateTableConfig::default();
@@ -914,29 +862,6 @@ mod tests {
         st.record(&a, Value::U32(9)).unwrap(); // unchanged -> no historian append
         assert_eq!(st.changes(&a).unwrap().len(), 2);
         assert_eq!(st.take_dirty("dut"), vec![a]);
-    }
-
-    #[test]
-    fn pinned_ignores_mirror_and_flushes_every_tick() {
-        let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        st.set_time(1_000);
-        st.record_mirror(&a, Value::U32(5)).unwrap();
-
-        // Pin at 5; it enters the pinned set (and is dirty once).
-        st.set_override(&a, true).unwrap();
-        assert_eq!(st.pinned("dut"), vec![a.clone()]);
-
-        // A mirror record on a pinned entry is ignored — the sweep cannot un-pin
-        // the view.
-        st.set_time(2_000);
-        st.record_mirror(&a, Value::U32(99)).unwrap();
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
-
-        // The pin persists across take_dirty drains: it must flush EVERY tick.
-        st.take_dirty("dut");
-        assert_eq!(st.pinned("dut"), vec![a]);
     }
 
     #[test]
@@ -1198,20 +1123,5 @@ mod tests {
         }
         assert_eq!(fast2.changes(&b), slow2.changes(&b));
         assert_eq!(fast2.current_value(&b).unwrap(), Some(Value::U32(9)));
-    }
-
-    #[test]
-    fn typed_fast_lane_respects_override_pin() {
-        // A pin makes the fast lane a no-op, exactly like the generic mirror path.
-        let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        let idx = st.resolve_index(&a).unwrap();
-        st.set_time(1_000);
-        st.record_mirror_u32_at(idx, 5).unwrap();
-        st.set_override(&a, true).unwrap();
-        st.set_time(2_000);
-        st.record_mirror_u32_at(idx, 99).unwrap(); // ignored: pinned
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
     }
 }

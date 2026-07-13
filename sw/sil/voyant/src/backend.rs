@@ -735,9 +735,9 @@ fn select_anchor<'a>(
 ///    - *Ports* — apply pending registrations, then fill every port's input cache
 ///      from its entry (never driven → `None` → `readSignal` false → driver falls back).
 ///    - *Cvars (flush)* — write the **fresh** cvars (command-dirtied
-///      [`take_dirty`](StateTable::take_dirty) ∪ pinned [`pinned`](StateTable::pinned))
-///      into memory. Single-threaded ⇒ an entry differs from memory iff command-written,
-///      so "flush fresh" ≡ "flush all", done sparsely.
+///      [`take_dirty`](StateTable::take_dirty)) into memory. Single-threaded ⇒ an entry
+///      differs from memory iff command-written, so "flush fresh" ≡ "flush all", done
+///      sparsely.
 /// 2. **Tick** — `advance_tick` runs the firmware to quiescence (C reads input caches,
 ///    buffers `writeSignal` output).
 /// 3. **Out-sync (firmware → table)**, each binding's outbound half:
@@ -830,7 +830,7 @@ struct ShadowRange {
     /// Runtime address of the first byte the shadow mirrors.
     base: u64,
     /// The last-seen bytes of `[base, base+shadow.len())` — mirrors MEMORY, not the
-    /// table (updated even where the table dedups or a pin ignores the record).
+    /// table (updated even where the table dedups the record).
     shadow: Vec<u8>,
     /// Per chunk, the `resolved`-indices of leaves overlapping that chunk (a leaf
     /// straddling a chunk edge appears in every chunk it touches).
@@ -997,25 +997,19 @@ impl<'b> FirmwareMember<'b> {
     }
 
     /// Cvar in-sync (flush): write the **fresh** `cvar`s in this member's namespace
-    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty))
-    /// ∪ pinned ([`pinned`](StateTable::pinned), re-asserted each tick as a continuous
-    /// drive). The production path a route takes to reach memory. Single-threaded ⇒
-    /// flushing fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
+    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty)).
+    /// The production path a route takes to reach memory. Single-threaded ⇒ flushing
+    /// fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
     fn in_sync_cvars(&mut self, st: &mut StateTable) {
-        // Fresh (command-dirtied) cvars in my namespace, plus my pinned cvars.
-        let mut flush: Vec<SignalId> = st
+        // Fresh (command-dirtied) cvars in my namespace.
+        let flush: Vec<SignalId> = st
             .take_dirty(&self.name)
             .into_iter()
             .filter(|id| id.sig_type() == "cvar")
             .collect();
-        for id in st.pinned(&self.name) {
-            if (id.sig_type() == "cvar") && !flush.contains(&id) {
-                flush.push(id);
-            }
-        }
         for id in flush {
-            // The flush set is sparse (command-dirtied + pinned), so resolving each
-            // id's index here is cheap; `current_value_at` then avoids re-hashing.
+            // The flush set is sparse (command-dirtied), so resolving each id's index
+            // here is cheap; `current_value_at` then avoids re-hashing.
             match st.resolve_index(&id) {
                 Some(idx) => {
                     if let Some(v) = st.current_value_at(idx) {
@@ -1061,8 +1055,8 @@ impl<'b> FirmwareMember<'b> {
     /// the shadow; an unchanged range is skipped. On a mismatch, each changed
     /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly its overlapping leaves and records
     /// them by dense index ([`record_mirror_at`](StateTable::record_mirror_at) — no
-    /// hash, no dirty mark, ignored on a pin). The shadow mirrors MEMORY (not the
-    /// table), so it advances even where the table dedups or a pin ignores the record.
+    /// hash, no dirty mark). The shadow mirrors MEMORY (not the table), so it advances
+    /// even where the table dedups the record.
     /// The first sweep after (re)enable is **cold** (every chunk changed) for a full
     /// baseline. String-path leaves (a handle-less backend, e.g. a mock) fall back to
     /// the per-leaf read/record loop.
@@ -1153,7 +1147,7 @@ impl<'b> FirmwareMember<'b> {
 /// state; the point is the phase structure, not one binding per signal.
 #[derive(Clone, Copy)]
 enum Binding {
-    /// Cvars (in + out): flush fresh/pinned cvars into memory; sweep the mirror out.
+    /// Cvars (in + out): flush fresh cvars into memory; sweep the mirror out.
     Cvars,
     /// Ports (in + out): apply registrations + fill input caches; drain writes.
     Ports,
@@ -1484,7 +1478,7 @@ mod tests {
     /// A pure-Rust [`Backend`] with no DLL: a configurable cvar "memory" plus an
     /// enumerable leaf list, used to prove the member/mirror semantics without a
     /// real firmware image. Logs every `write_cvar` path so a test can assert the
-    /// flush is **sparse** (only fresh/pinned cvars, not the whole namespace).
+    /// flush is **sparse** (only fresh cvars, not the whole namespace).
     #[derive(Default)]
     struct MockBackend {
         ticks: RefCell<u64>,
@@ -1675,32 +1669,6 @@ mod tests {
         st.set_time(2_000);
         fm.advance(1_000, &mut st);
         assert!(be.writes.borrow().is_empty(), "untouched entries are not flushed");
-    }
-
-    #[test]
-    fn pinned_cvar_flushes_every_tick() {
-        // An override on a cvar is a continuous drive: the pin re-asserts the
-        // pinned value into firmware memory EVERY tick, even without a fresh
-        // command (the firmware may overwrite it mid-tick).
-        let be = MockBackend::with_leaves(&["p"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        let mut st = StateTable::new();
-        fm.set_enabled(true, &mut st);
-
-        let p = id("cvar:dut:p");
-        st.set_time(1_000);
-        st.record(&p, Value::U32(50)).unwrap();
-        st.set_override(&p, true).unwrap(); // pin at 50
-
-        be.writes.borrow_mut().clear();
-        fm.advance(1_000, &mut st);
-        assert_eq!(be.read_cvar("p"), Value::U32(50));
-
-        // Next tick, no fresh command: the pin still flushes.
-        be.writes.borrow_mut().clear();
-        st.set_time(2_000);
-        fm.advance(1_000, &mut st);
-        assert_eq!(&*be.writes.borrow(), &["p".to_string()]);
     }
 
     #[test]
@@ -2084,11 +2052,10 @@ mod tests {
     }
 
     #[test]
-    fn shadow_mirrors_memory_not_the_table_under_a_pin() {
-        // The shadow tracks MEMORY even where the table pin ignores the record:
-        // after memory changes under a pin, the leaf decodes exactly once (the tick
-        // it changed) and not again on a subsequent unchanged tick — the shadow
-        // absorbed the change despite the table holding the pinned value.
+    fn shadow_decodes_once_per_memory_change() {
+        // The shadow tracks MEMORY: a leaf decodes exactly once per memory change (the
+        // tick it changed) and not again on a subsequent unchanged tick — the shadow
+        // absorbed the change.
         let be = ShadowMock::new(16, &[("a", 0)]);
         be.set_u32(0, 10);
         let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
@@ -2098,13 +2065,13 @@ mod tests {
         st.set_time(1_000);
         fm.advance(1_000, &mut st); // cold: a=10, decode=1
         assert_eq!(be.decodes(0), 1);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(10)));
 
-        st.set_override(&a, true).unwrap(); // pin at 10
-        be.set_u32(0, 77); // memory changes under the pin
+        be.set_u32(0, 77); // memory changes
         st.set_time(2_000);
         fm.advance(1_000, &mut st);
         assert_eq!(be.decodes(0), 2); // chunk changed -> decoded
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(10))); // pin holds
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(77))); // mirror follows
 
         // Memory now stable: the shadow was updated to 77, so no re-decode.
         st.set_time(3_000);

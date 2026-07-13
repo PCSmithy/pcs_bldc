@@ -134,18 +134,15 @@ exist.
   reads through **pre-resolved handles** (address/type cached at enable), never
   re-resolving DWARF per tick.
 - **In-sync flush is sparse — only the *fresh* cvars.** The State Table marks a
-  **dirty set**: `record` / `force_record` (route, test, model output) and a pin
-  (`set_override(id, true)`) mark the id dirty; the mirror sweep (`record_mirror`)
-  does **not**. Each tick the member flushes its namespace's dirty ids
-  (`take_dirty`, source-scoped) ∪ its pinned ids, filtered to `cvar`. This is
-  sound because the sim is single-threaded: between one tick's sweep and the
-  next tick's flush no firmware code runs, so a table entry differs from memory
-  **iff** the framework command-wrote it — "flush fresh" ≡ "flush all", done
-  cheaply. A **pinned cvar flushes every tick** (a pin is a continuous drive the
-  firmware may overwrite mid-tick, so it is re-asserted each tick — the fault-
-  injection semantics of `set_override` on a cvar), and a mirror record on a
-  pinned entry is **ignored** exactly like a command `record`, so the sweep can
-  never un-pin the view.
+  **dirty set**: `record` / `force_record` (route, test, model output) mark the id
+  dirty; the mirror sweep (`record_mirror`) does **not**. Each tick the member
+  flushes its namespace's dirty ids (`take_dirty`, source-scoped), filtered to
+  `cvar`. This is sound because the sim is single-threaded: between one tick's
+  sweep and the next tick's flush no firmware code runs, so a table entry differs
+  from memory **iff** the framework command-wrote it — "flush fresh" ≡ "flush
+  all", done cheaply. Writes are one-shot, last-writer-wins: if firmware
+  overwrites a value mid-tick, the sweep mirrors that back and the framework does
+  not re-assert — a value persists only as long as nothing else writes it.
 - **Exclusion policy (built-in).** Enumeration expands nested struct members and
   array elements to scalar leaves, but an array with more than a size threshold
   (**default 32**) is excluded whole — this drops FreeRTOS task stacks, `ucHeap`,
@@ -203,7 +200,7 @@ Design rules:
   table-only act, because a `cvar` entry is the table's *mirror* of firmware
   memory and a `vsig` entry *abides* in the framework. **Members sync their own
   mirrors** on their own clock: a `FirmwareMember` **flushes** the *fresh* (route-/
-  test-/pin-written) `cvar` entries in its namespace into firmware memory and
+  test-written) `cvar` entries in its namespace into firmware memory and
   **sweeps** its whole leaf list back out around its firmware tick; a model reads
   a routed `vsig` input straight from the entry. The route is indifferent to which —
   no bespoke firmware code moves data. A route driving a `cvar` marks it dirty, so
@@ -214,10 +211,12 @@ Design rules:
   model) work through the identical path — a `record` into the entry — with no
   per-`sig_type` restriction and no new seam. The table is a flat, member-agnostic
   registry.
-- **Override pins a destination against its route.** Because a route drives its
-  destination via `record`, `set_override` on that entry makes the record a no-op —
-  the route cannot drive a pinned destination. Fault injection composes with
-  routing at **zero extra mechanism** (it is the same pin the historian uses).
+- **Fault injection = suspend the route, then write the destination.** A live
+  route re-drives its destination via `record` every tick, so a direct write would
+  be clobbered. `suspend` the route and the destination stops being recorded; a
+  `record` straight into that entry then persists (one-shot, last-writer-wins),
+  and `resume` hands the destination back to the route. Composes with routing at
+  **zero extra mechanism** — no pin, no override, just the ordinary write.
 - **Conversions are models, not routes.** A motor model emits *amps*; a
   firmware ADC static holds *counts*. The amps→counts conversion lives in a
   **sensor model** whose input and output are themselves State Table entries:
@@ -275,7 +274,7 @@ per tick:
   4. for each ENABLED member, in registration order:
        a. evaluate the enabled ZERO-latency routes in topological order with FRESH
           reads (a→b→c resolves fully, reading values produced earlier this tick)
-       b. member.advance(dt)   (a firmware member: flush fresh/pinned cvars →
+       b. member.advance(dt)   (a firmware member: flush fresh cvars →
                                 advance_tick → sweep the whole cvar mirror out; a
                                 model: read inputs, step, push outputs)
   5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
