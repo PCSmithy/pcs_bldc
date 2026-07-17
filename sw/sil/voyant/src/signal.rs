@@ -131,6 +131,30 @@ impl Value {
     }
 }
 
+// `From` conversions so table writes take bare literals (`write(id, true)`,
+// `write(id, 90.0)`). Only the variants the scenario API actually drives — bool /
+// u32 / u64 / f64 — are provided; add more when a call shape needs them.
+impl From<bool> for Value {
+    fn from(x: bool) -> Self {
+        Value::Bool(x)
+    }
+}
+impl From<u32> for Value {
+    fn from(x: u32) -> Self {
+        Value::U32(x)
+    }
+}
+impl From<u64> for Value {
+    fn from(x: u64) -> Self {
+        Value::U64(x)
+    }
+}
+impl From<f64> for Value {
+    fn from(x: f64) -> Self {
+        Value::F64(x)
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -10,7 +10,7 @@
 //! time window (unbounded in fast mode).
 
 use crate::log::{LogEntry, LogLevel, LogRing};
-use crate::signal::{SignalId, Value};
+use crate::signal::{ParseError, SignalId, Value};
 use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -345,6 +345,18 @@ pub enum TableError {
     },
 }
 
+/// Error from the **string-keyed** table API ([`write`](StateTable::write) /
+/// [`read`](StateTable::read)): either the id string didn't parse, or the
+/// underlying table operation failed (unregistered signal, type mismatch). Never
+/// panics — the uniform scenario entry point returns every failure as an `Err`.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum AccessError {
+    #[error("bad signal id: {0}")]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Table(#[from] TableError),
+}
+
 pub struct StateTable {
     /// Registered signals in insertion order. The [`IndexSet`] gives each signal a
     /// **stable dense index** (append-only — never removed), the key for all hot
@@ -511,6 +523,27 @@ impl StateTable {
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, true)
+    }
+
+    // --- string-keyed scenario API ---------------------------------------
+    // Write/read a signal by id string (one uniform call shape, no typed handle): parse
+    // the id, delegate to the typed primitive above; a bad/unregistered/mistyped id
+    // returns an `Err`, never a panic.
+
+    /// Record a value by **string id** — parse then [`record`](Self::record).
+    /// Literals coerce via [`Value`]'s `From` impls (`write(id, true)`).
+    pub fn write(&mut self, id: &str, value: impl Into<Value>) -> Result<(), AccessError> {
+        let sid = SignalId::parse(id)?;
+        self.record(&sid, value.into())?;
+        Ok(())
+    }
+
+    /// Read the current value by **string id** — parse then
+    /// [`current_value`](Self::current_value). `Ok(None)` = registered but never
+    /// recorded.
+    pub fn read(&self, id: &str) -> Result<Option<Value>, AccessError> {
+        let sid = SignalId::parse(id)?;
+        Ok(self.current_value(&sid)?)
     }
 
     /// Record a **mirror** value (a firmware member's end-of-tick sweep of memory
@@ -1123,5 +1156,50 @@ mod tests {
         }
         assert_eq!(fast2.changes(&b), slow2.changes(&b));
         assert_eq!(fast2.current_value(&b).unwrap(), Some(Value::U32(9)));
+    }
+
+    // --- string-keyed scenario API ---------------------------------------
+
+    #[test]
+    fn write_read_roundtrip_on_a_registered_vsig() {
+        let mut st = StateTable::new();
+        let v = id("vsig:motor:angle_deg");
+        st.register(v.clone(), Some("deg")).unwrap();
+        st.set_time(1_000);
+        st.write("vsig:motor:angle_deg", 90.0).unwrap(); // f64 literal via From
+        assert_eq!(st.read("vsig:motor:angle_deg").unwrap(), Some(Value::F64(90.0)));
+        // The write went through the historian, not a side channel.
+        assert_eq!(st.current_value(&v).unwrap(), Some(Value::F64(90.0)));
+    }
+
+    #[test]
+    fn write_to_unregistered_id_errors() {
+        let mut st = StateTable::new();
+        assert!(matches!(
+            st.write("cvar:dut:missing", 1u32),
+            Err(AccessError::Table(TableError::UnknownSignal(_)))
+        ));
+    }
+
+    #[test]
+    fn unparseable_or_unknown_sig_type_id_errors_not_panics() {
+        let mut st = StateTable::new();
+        // Too few segments and an unapproved sig_type both surface as a Parse error.
+        assert!(matches!(st.write("cvar:onlytwo", 1u32), Err(AccessError::Parse(_))));
+        assert!(matches!(st.write("bogus:src:name", 1u32), Err(AccessError::Parse(_))));
+        assert!(matches!(st.read("bogus:src:name"), Err(AccessError::Parse(_))));
+    }
+
+    #[test]
+    fn value_from_impls_cover_the_literal_shapes() {
+        assert_eq!(Value::from(true), Value::Bool(true));
+        assert_eq!(Value::from(9u32), Value::U32(9));
+        assert_eq!(Value::from(1u64 << 40), Value::U64(1 << 40));
+        assert_eq!(Value::from(90.0f64), Value::F64(90.0));
+        // And a literal flows through write() to drive a signal.
+        let mut st = StateTable::new();
+        st.register(id("vsig:m:x"), Some("V")).unwrap();
+        st.write("vsig:m:x", 1.5f64).unwrap();
+        assert_eq!(st.read("vsig:m:x").unwrap(), Some(Value::F64(1.5)));
     }
 }

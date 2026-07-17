@@ -149,8 +149,9 @@ exist.
   512-byte scratch buffers, etc. Multi-dimensional and unknown-length arrays, and
   non-data leaves (pointers, functions, opaque aggregates), are skipped too; a
   depth/leaf-count safety cap guards pathological DWARF. A firmware member can
-  `exclude(prefix)` a noisy subtree or `include(path)` a specific over-threshold
-  leaf it needs to drive (e.g. one byte of a 256-byte SPI injection buffer).
+  `skip_cvar_registration_by_prefix(prefix)` a noisy subtree or
+  `register_cvar_in_state_table(path)` a specific over-threshold leaf it needs to
+  drive (e.g. one byte of a 256-byte SPI injection buffer).
 - **Input vs output is behavioral, not metadata.** Input ports carry commanded
   values (table → cache → C read); output ports carry firmware-produced values
   (C write → table). A signal has no direction metadata — the same port may do
@@ -366,8 +367,9 @@ One namespace, one access path, zero firmware-side data code.
   project allowlist?~~ **Resolved:** the firmware member mirrors the **whole
   traceable namespace** by default (every scalar/enum leaf under every static),
   minus a built-in exclusion policy (array-size threshold drops stacks/heap/large
-  buffers; pointers/functions/multi-dim skipped). Per-member `exclude(prefix)` /
-  `include(path)` tune it; a general symbol/pattern trace filter is a later
+  buffers; pointers/functions/multi-dim skipped). Per-member
+  `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
+  tune it; a general symbol/pattern trace filter is a later
   cosmetic addition ([`signal-trace.md`](signal-trace.md) §9).
 - **Entry keying / path syntax** for nested members and array elements.
 - ~~**Model registration API** (Rust): how models declare their entries.~~

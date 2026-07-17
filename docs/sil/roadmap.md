@@ -34,7 +34,7 @@ driven and asserted purely through the State Table.
 
 **Stages** (each lands as its own reviewed commit):
 
-- ☐ **1. String-keyed table write/read** — `write`/`read` over
+- ☑ **1. String-keyed table write/read** — `write`/`read` over
   `SignalId::parse` → `record`/`current_value`; migrate the
   sanity suite off direct `fw.read_cvar`/`write_cvar` (only boot/shutdown
   stay below the engine).

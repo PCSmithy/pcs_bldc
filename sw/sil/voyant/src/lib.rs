@@ -38,4 +38,4 @@ pub use log::{LogEntry, LogLevel, LogRing};
 pub use member::{vsig_id, Member, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};
-pub use state_table::{StateTable, StateTableConfig, TableError};
+pub use state_table::{AccessError, StateTable, StateTableConfig, TableError};

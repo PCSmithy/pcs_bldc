@@ -913,20 +913,16 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
-    /// **Exclude** every enumerated cvar leaf whose path starts with `prefix` from
-    /// the mirror (prefix match only — no globs). Configure before adding the
-    /// member (the leaf list is enumerated at enable). Use to drop a noisy or
-    /// irrelevant subtree; the array-size threshold already drops stacks/heap.
-    pub fn exclude(&mut self, prefix: &str) {
+    /// Skip State-Table registration of every cvar leaf whose path starts with
+    /// `prefix` (prefix match only — no globs). Configure before adding the member.
+    pub fn skip_cvar_registration_by_prefix(&mut self, prefix: &str) {
         self.excludes.push(prefix.to_string());
     }
 
-    /// **Force-include** a cvar path (or prefix) that the array-size threshold
-    /// would otherwise exclude — e.g. one element of an oversized buffer the test
-    /// drives (`HW_SPI_data.channels[0].injectedRx[0]`). A concrete leaf path pulls
-    /// in just that element; a prefix naming a whole over-threshold array pulls in
-    /// all of it. Prefix match only. Configure before adding the member.
-    pub fn include(&mut self, path: &str) {
+    /// Register a cvar the array-size threshold would otherwise drop — an exact
+    /// leaf (`...injectedRx[0]`), or a prefix naming a whole over-threshold array.
+    /// Configure before adding the member.
+    pub fn register_cvar_in_state_table(&mut self, path: &str) {
         self.includes.push(path.to_string());
     }
 
@@ -1686,10 +1682,10 @@ mod tests {
     }
 
     #[test]
-    fn exclude_prefix_drops_a_subtree() {
+    fn skip_by_prefix_drops_a_subtree() {
         let be = MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]);
         let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        fm.exclude("drop");
+        fm.skip_cvar_registration_by_prefix("drop");
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(fm.cvar_leaf_count(), 1); // only keep.a survives

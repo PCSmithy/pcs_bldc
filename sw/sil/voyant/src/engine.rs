@@ -46,8 +46,8 @@
 use crate::log::LogEntry;
 use crate::member::Member;
 use crate::route::{RouteError, RouteTable};
-use crate::signal::SignalId;
-use crate::state_table::StateTable;
+use crate::signal::{SignalId, Value};
+use crate::state_table::{AccessError, StateTable};
 use thiserror::Error;
 
 /// A registered member plus the engine's own enable flag (engine-gating: the
@@ -236,6 +236,21 @@ impl<'b> Engine<'b> {
     /// The State Table / historian, for assertions and inspection.
     pub fn state(&self) -> &StateTable {
         &self.state
+    }
+
+    // --- string-keyed scenario API (delegates to the owned State Table) ---
+    // A test holding an `Engine` writes/reads by id string, without a `Firmware` handle.
+
+    /// String-keyed table write. Delegates to [`StateTable::write`]. A driven `cvar`
+    /// reaches firmware memory at the owning member's in-sync flush on the next
+    /// [`step`](Self::step) — not immediately.
+    pub fn write(&mut self, id: &str, value: impl Into<Value>) -> Result<(), AccessError> {
+        self.state.write(id, value)
+    }
+
+    /// String-keyed current-value read. Delegates to [`StateTable::read`].
+    pub fn read(&self, id: &str) -> Result<Option<Value>, AccessError> {
+        self.state.read(id)
     }
 
     /// Drain the State Table's buffered log entries (sim-time-stamped warnings /

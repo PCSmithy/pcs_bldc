@@ -246,8 +246,9 @@ docs/sil/*.md            the design (see "Design docs" below)
   set** (`record`/`force_record` mark dirty, `record_mirror` does not) drained
   per-source (`take_dirty`), filtered to `cvar`. (The pinned-flush union described
   here was removed 2026-07-12 — flush is command-dirtied only.)
-  `exclude(prefix)`/`include(path)` tune the policy
-  (the suite `include`s the one 256-byte-buffer SPI MISO byte it drives). Sweep
+  `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
+  tune the policy (the suite registers the one 256-byte-buffer SPI MISO byte it
+  drives; renamed from `exclude`/`include` 2026-07-16). Sweep
   cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
   workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
   mirror-accuracy check on `HW_ADC_data.tickCounter` — no declaration).

@@ -57,6 +57,12 @@ fn cvar(path: &str) -> SignalId {
     SignalId::new("cvar", SOURCE, path, None).expect("valid cvar id")
 }
 
+/// The `cvar:pcs_bldc:<path>` id **string** — for the string-keyed engine API
+/// (`eng.write`/`eng.read`), which parses the id itself.
+fn cid(path: &str) -> String {
+    format!("cvar:{SOURCE}:{path}")
+}
+
 /// Coerce a logical [`Value`] to an unsigned integer for the checks below.
 fn v_u64(v: &Value) -> Option<u64> {
     match v {
@@ -288,6 +294,8 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];
     const N: u64 = 50;
 
+    // Direct read: the cvar mirror is cold until the first step, so read the baseline
+    // counters from firmware memory.
     let before: Vec<u64> = COUNTERS
         .iter()
         .map(|c| v_u64(&fw.read_cvar(c)).unwrap_or(0))
@@ -301,12 +309,11 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     for _ in 0..N {
         eng.step().expect("engine step");
     }
-    // Post-window counter values come from the engine's own historian.
+    // Post-window counter values come from the engine's own historian (auto-mirrored).
     let after: Vec<u64> = ids
         .iter()
         .map(|id| {
-            eng.state()
-                .current_value(id)
+            eng.read(id.as_str())
                 .ok()
                 .flatten()
                 .as_ref()
@@ -360,7 +367,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
         eng.step().expect("engine step");
-        let v = eng.state().current_value(&ramp).ok().flatten();
+        let v = eng.read(ramp.as_str()).ok().flatten();
         samples.push(v.as_ref().and_then(v_u64).unwrap_or(0));
     }
 
@@ -381,8 +388,13 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
         format!("value_at({mid}us) = {zoh:?}"),
     );
 
-    // Enum-typed cvar resolves to its symbolic DWARF enumerator name.
-    let tm = fw.read_cvar("HW_ADC_channelConfig[0].triggerMode");
+    // Enum-typed cvar resolves to its symbolic DWARF enumerator name (auto-mirrored;
+    // the boxed lane carries the Enum value after stepping).
+    let tm = eng
+        .read(&cid("HW_ADC_channelConfig[0].triggerMode"))
+        .ok()
+        .flatten()
+        .unwrap_or(Value::U32(0));
     rep.check(
         "enum cvar reads as a symbolic name",
         matches!(tm, Value::Enum(_)),
@@ -395,26 +407,26 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
 /// native scheduler using only DWARF white-box writes, and read the resulting
 /// Teleplot text back out of the sim USB TX capture.
 fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
-    // (1) Open the port: IO_serial_connected(CDC) -> HW_USB_connected() reads
-    //     HW_USB_sim_data.connected. Without this, telemetryTask skips its body.
-    fw.write_cvar("HW_USB_sim_data.connected", &Value::Bool(true));
-    let connected = matches!(fw.read_cvar("HW_USB_sim_data.connected"), Value::Bool(true));
-    rep.check(
-        "sim USB marked connected via DWARF write",
-        connected,
-        "HW_USB_sim_data.connected = true".into(),
-    );
-
-    // (2) Inject an AS5048 response on the MOTOR encoder's SPI channel
-    //     (HW_SPI_CHANNEL_AS5048_1 = index 0). Response frame layout: bit15 =
-    //     even parity, bit14 = error flag, bits[13:0] = angle. Frame 0x9000 has
-    //     bits {15,12} set => even parity (valid), error flag clear, angle =
-    //     0x1000 = 4096. Sent big-endian: {0x90,0x00}. Expected raw/angle derive
-    //     from the firmware's own channel config (reverse maps raw to
-    //     16384 - raw): the check asserts the decode contract, not a frozen
-    //     board convention.
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1
     const INJECTED_ANGLE: u64 = 0x1000; // frame 0x9000, bits[13:0]
+
+    // Build the engine + firmware member before injecting: injection flows through the
+    // State Table (`eng.write`). injectedRx is a 256-byte buffer (over the mirror
+    // threshold), so the two bytes we drive are registered explicitly; connected,
+    // injectedRxLen, and txLen are scalars and mirror without help.
+    let rx0 = format!("HW_SPI_data.channels[{CH}].injectedRx[0]");
+    let rx1 = format!("HW_SPI_data.channels[{CH}].injectedRx[1]");
+    let rxlen = format!("HW_SPI_data.channels[{CH}].injectedRxLen");
+    let mut eng = Engine::new(TICK_US);
+    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+    fwm.register_cvar_in_state_table(&rx0);
+    fwm.register_cvar_in_state_table(&rx1);
+    eng.add_member(Box::new(fwm));
+
+    // Pre-step config read (static value; the mirror is cold until the first step).
+    // Expected raw/angle derive from the firmware's own channel config (reverse maps
+    // raw to 16384 - raw): the check asserts the decode contract, not a frozen board
+    // convention.
     let reverse = match fw.read_cvar(&format!("IO_AS5048_channelConfig[{CH}].reverse")) {
         Value::Bool(b) => b,
         other => panic!("IO_AS5048_channelConfig[{CH}].reverse read back as {other:?}, not Bool"),
@@ -422,33 +434,59 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     let exp_raw: u64 = if reverse { 16384 - INJECTED_ANGLE } else { INJECTED_ANGLE };
     let exp_deg = (exp_raw as f64) * 360.0 / 16384.0;
     let exp_deg_str = format!("{exp_deg:.2}");
-    fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRx[0]"), &Value::U32(0x90));
-    fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRx[1]"), &Value::U32(0x00));
-    fw.write_cvar(&format!("HW_SPI_data.channels[{CH}].injectedRxLen"), &Value::U64(2));
 
-    // Drain any stale capture so we read a strictly post-injection window.
-    fw.write_cvar("HW_USB_sim_data.txLen", &Value::U32(0));
+    // Inject via the table. (1) connected opens the port (telemetryTask skips its body
+    // otherwise). (2) The AS5048 response on the MOTOR channel: bit15 even parity,
+    // bit14 error flag, bits[13:0] angle. Frame 0x9000 has bits {15,12} set => even
+    // parity (valid), error clear, angle 0x1000; sent big-endian {0x90,0x00}. Also
+    // drain the stale TX capture. The flush lands all of these in firmware memory
+    // during step 1's in-sync — before its advance_tick — so task_1ms sees the frame
+    // on the very first tick.
+    eng.write(&cid("HW_USB_sim_data.connected"), true).expect("write connected");
+    eng.write(&cid(&rx0), 0x90u32).expect("write injectedRx[0]");
+    eng.write(&cid(&rx1), 0x00u32).expect("write injectedRx[1]");
+    eng.write(&cid(&rxlen), 2u64).expect("write injectedRxLen");
+    eng.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
 
-    // (3) Advance through the engine: task_1ms samples the encoder each tick;
-    //     telemetry fires every 2 ms. 10 ticks -> several windows. Injection and
-    //     capture reads stay ad-hoc DWARF pokes on the shared firmware handle.
-    //     The firmware runs as a FirmwareMember so the engine ticks it each step.
-    let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    // (3) Advance: task_1ms samples the encoder each tick; telemetry fires every 2 ms.
     for _ in 0..10 {
         eng.step().expect("engine step");
     }
 
-    // (3a) The decoded encoder static reflects the injected SPI frame.
-    let raw = v_u64(&fw.read_cvar(&format!("IO_AS5048_data.channels[{CH}].raw"))).unwrap_or(0);
-    let deg = v_f64(&fw.read_cvar(&format!("IO_AS5048_data.channels[{CH}].angle_deg"))).unwrap_or(0.0);
+    // (3a) The connected flag reached firmware (the mirror reads it back true).
+    let connected = matches!(
+        eng.read(&cid("HW_USB_sim_data.connected")).ok().flatten(),
+        Some(Value::Bool(true))
+    );
+    rep.check(
+        "sim USB marked connected via table write + flush",
+        connected,
+        "HW_USB_sim_data.connected mirrors true after the flush".into(),
+    );
+
+    // (3b) The decoded encoder statics reflect the injected SPI frame (auto-mirrored).
+    let raw = eng
+        .read(&cid(&format!("IO_AS5048_data.channels[{CH}].raw")))
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(v_u64)
+        .unwrap_or(0);
+    let deg = eng
+        .read(&cid(&format!("IO_AS5048_data.channels[{CH}].angle_deg")))
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(v_f64)
+        .unwrap_or(0.0);
     rep.check(
         "AS5048 decodes the injected SPI frame",
         (raw == exp_raw) && ((deg - exp_deg).abs() < 0.05),
         format!("IO_AS5048_data.channels[0].raw = {raw} (expect {exp_raw}, reverse={reverse}), angle_deg = {deg:.2} (expect {exp_deg_str})"),
     );
 
-    // (3b) Pull the sim USB TX capture and confirm the Teleplot telemetry text.
+    // (3c) Pull the sim USB TX capture and confirm the Teleplot telemetry text.
+    //      Direct read: tx[] is over the mirror threshold — see backlog usb_cdc/teleplot.
     let text = read_tx_capture(fw);
     if let Some(first) = text.lines().next() {
         println!("         telemetry[0]: {first}");
@@ -468,9 +506,10 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         format!("text contains angle {exp_deg_str} = {has_angle}, raw {exp_raw} = {has_raw}"),
     );
 
-    // (4) Drain the capture (write txLen back to 0) and re-verify the next
-    //     windows refill it — proves the path keeps flowing and the drain works.
-    fw.write_cvar("HW_USB_sim_data.txLen", &Value::U32(0));
+    // (4) Drain the capture (txLen back to 0, flushed on the next step's in-sync
+    //     before telemetry runs) and re-verify the next windows refill it — proves the
+    //     path keeps flowing and the drain works.
+    eng.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
     for _ in 0..6 {
         eng.step().expect("engine step");
     }
@@ -495,11 +534,8 @@ fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
     // The firmware ticks alongside (irrelevant to the model's own vsig).
     eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
     let id = vsig_id("demo", "value").expect("valid vsig id");
-    let registered = eng
-        .state()
-        .current_value(&id)
-        .map(|v| v.is_none())
-        .unwrap_or(false);
+    // Registered by the model at add, but not yet recorded (read -> Ok(None)).
+    let registered = eng.read(id.as_str()).map(|v| v.is_none()).unwrap_or(false);
     rep.check(
         "model registers a vsig signal into the State Table",
         registered,
@@ -510,7 +546,7 @@ fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
         eng.step().expect("engine step");
     }
     let n_changes = eng.state().changes(&id).map(|c| c.len()).unwrap_or(0);
-    let last = eng.state().current_value(&id).ok().flatten();
+    let last = eng.read(id.as_str()).ok().flatten();
     rep.check(
         "vsig advances with sim time and the historian records it",
         (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
@@ -581,14 +617,15 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
     // injectedRx is a 256-byte buffer, over the array threshold, so the driven
-    // element is force-included to register + mirror it. No `drive_cvar`: a
-    // registered cvar the framework command-writes (the route) is flushed by the
-    // member automatically (fresh-dirty flush).
-    fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
+    // element is registered explicitly. A registered cvar the framework command-writes
+    // (the route) is flushed into memory by the member automatically (fresh-dirty flush).
+    fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
     eng.add_member(Box::new(fwm));
     eng.add_route(src.clone(), dst.clone()).expect("add route");
 
-    // Active route: firmware memory tracks the model exactly, step by step.
+    // Active route: firmware memory tracks the model exactly, step by step. Direct
+    // reads: this check asserts the routed value reached firmware MEMORY (the member's
+    // flush), not just the table.
     let mut tracked = true;
     let mut last = 0u64;
     for tick in 1..=4u64 {
@@ -608,10 +645,9 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     // must NOT follow the model.
     eng.suspend_route(&src, &dst).expect("suspend");
     eng.step().expect("engine step");
-    let held = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    let held = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0); // direct: verifies fw memory
     let model_now = eng
-        .state()
-        .current_value(&src)
+        .read(src.as_str())
         .ok()
         .flatten()
         .as_ref()
@@ -626,10 +662,9 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     // Resume: the destination jumps to the model's current value again.
     eng.resume_route(&src, &dst).expect("resume");
     eng.step().expect("engine step");
-    let resumed = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+    let resumed = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0); // direct: verifies fw memory
     let model_after = eng
-        .state()
-        .current_value(&src)
+        .read(src.as_str())
         .ok()
         .flatten()
         .as_ref()
@@ -712,10 +747,10 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     eng.add_member(Box::new(LoopModel::new("loop_model"))); // idx 0
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US); // idx 1
-    // The MISO byte lives in a 256-byte buffer (over threshold) -> force-include
-    // it so the route can drive it. `task1msRuns` (the sampled counter) is a
+    // The MISO byte lives in a 256-byte buffer (over threshold) -> register it
+    // explicitly so the route can drive it. `task1msRuns` (the sampled counter) is a
     // top-level scalar, auto-mirrored with no declaration.
-    fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
+    fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
     eng.add_member(Box::new(fwm));
 
     // Forward edge: model out -> firmware MISO byte (zero-latency, model before fw).
@@ -746,7 +781,9 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     //   step k>=2: in = task1msRuns as of the end of step k-1 = base + (k-1),
     //             so injectedRx[0] = (base + (k-1)) % 200.
     // `base` is the firmware counter right before the first successful step (the
-    // rejected step returned early and did NOT advance the firmware).
+    // rejected step returned early and did NOT advance the firmware). Direct reads:
+    // the check verifies the routed value reached firmware MEMORY (the delayed feedback
+    // edge flushing through the member).
     let base = v_u64(&fw.read_cvar(counter.name())).unwrap_or(0);
     const N: u64 = 6;
     let got: Vec<u64> = (1..=N)
@@ -839,8 +876,9 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
         .expect("add route");
 
     // Expected counts: mirror of the sim driver's volts->counts math
-    // (HW_ADC_private_voltsToCounts), with numBits/vref read via DWARF from
-    // the sim channel config rather than hardcoded.
+    // (HW_ADC_private_voltsToCounts), with numBits/vref read via DWARF from the sim
+    // channel config rather than hardcoded. Direct reads: static config, read before
+    // the step loop while the mirror is still cold.
     let vref = v_f64(&fw.read_cvar("HW_ADC_channelConfig[0].vref")).unwrap_or(0.0);
     let num_bits = v_u64(&fw.read_cvar("HW_ADC_channelConfig[0].numBits")).unwrap_or(0);
     let max_counts = (1u64 << num_bits) - 1;
@@ -859,8 +897,8 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     let mut neighbor: Vec<u64> = Vec::new();
     for _ in 0..6 {
         eng.step().expect("engine step");
-        driven.push(v_u64(&fw.read_cvar(driven_counts)).unwrap_or(0));
-        neighbor.push(v_u64(&fw.read_cvar(neighbor_counts)).unwrap_or(0));
+        driven.push(eng.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(v_u64).unwrap_or(0));
+        neighbor.push(eng.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(v_u64).unwrap_or(0));
     }
     let settled = &driven[2..];
     rep.check(
@@ -894,11 +932,12 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
         eng.step().expect("engine step");
-        vals.push(eng.state().current_value(&leaf).ok().flatten().as_ref().and_then(v_u64));
+        vals.push(eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(v_u64));
     }
     // The mirror at the end of the last tick equals firmware memory now (single-
-    // threaded: nothing changed memory between the sweep and this read).
-    let table_now = eng.state().current_value(&leaf).ok().flatten().as_ref().and_then(v_u64);
+    // threaded: nothing changed memory between the sweep and this read). `mem_now` is a
+    // direct DWARF read: the ground truth the mirror (via eng.read) is checked against.
+    let table_now = eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(v_u64);
     let mem_now = v_u64(&fw.read_cvar(leaf.name()));
     let tracks = table_now.is_some() && (table_now == mem_now);
     let changed = vals.windows(2).any(|w| w[0] != w[1]);
@@ -946,7 +985,7 @@ fn report_performance(fw: &Firmware) {
         let mut eng = Engine::new(TICK_US);
         eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
         let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-        fwm.include("HW_SPI_data.channels[0].injectedRx[0]");
+        fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
         eng.add_member(Box::new(fwm));
         eng.add_route(src, dst).expect("add route");
         time_avg_us(WARMUP, N, || {
