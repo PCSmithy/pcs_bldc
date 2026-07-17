@@ -25,7 +25,7 @@ lives, not what kind of member owns it:
 |---|---|---|---|
 | `cvar` | table **mirror** of authoritative memory inside a firmware instance | every C `static` (+ nested members, array elements) | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4); sampled into the table each firmware tick |
 | `vsig` | **framework-resident** — the entry's value *is* the authority (no external mirror); it abides entirely within the framework | a model/peer member's state (inputs, outputs, internals) | pushed into the table by the member each advance |
-| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** — a framework-resident transport payload (a future backing regime) | logical packet payloads on a serial bus | a framework queue, fed by a sim-HW-driver C→Rust upcall (*Comms entries* below) |
+| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** — a framework-resident transport payload | logical packet payloads on a serial bus | `spi` has landed as **duplex transactions**: an engine-owned `DuplexRouter` couples any initiating member to a linked peer synchronously, and the engine records each exchange as `:tx`/`:rx` event entries (`Value::Bytes`). `usb_cdc`/`i2c`/`uart` join as they land (*Comms entries* below) |
 
 **Open registration — no inference of member type from `sig_type`.** Registration
 is a runtime act any member performs directly on the table; it is never
@@ -109,9 +109,9 @@ exist.
 - **Native format.** Port values flow member-to-member in native units
   (volts→volts). The sim HW driver owns any conversion to its C-memory
   representation (volts→counts per its own numBits/vref) — the conversion lives
-  where real hardware does it. Values are `double` scalars today; typed
-  variants are the documented extension path (transport/event payloads arrive
-  with the D5 comms work).
+  where real hardware does it. Scalar ports carry a `double` (pins are levels);
+  bus transactions do not flow through the port cache at all — they use the
+  synchronous **DuplexTransfer** primitive (*Comms entries* below).
 - **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
   State Table mid-tick. Per firmware tick the member runs **three fixed phases**
   over its signal *bindings* (ports, cvars — each an optional in-half and/or
@@ -174,11 +174,28 @@ calls a **C→Rust upcall** with each payload; the framework (1) records it in t
 comms entry's history and (2) routes it to the destination (a peer model now, an
 external transport — the real desktop app, D5 — later).
 
+- **Request/response buses use DuplexTransfer** (landed for `spi`) — a **generic,
+  engine-scoped primitive**. An engine-owned `DuplexRouter` couples any initiating
+  [member](architecture.md#member-model) to a linked
+  [`DuplexPeer`](architecture.md#member-model): the initiator runs a synchronous
+  exchange (tx in, the peer's rx back within the same call), and the engine
+  force-records it as `:tx`/`:rx` event entries after all members advance. A model
+  initiates through `MemberCtx::duplex_transfer`; a **firmware** member is just one
+  initiator among many — its C SPI upcall forwards into the **same** router. Endpoints
+  are `spi:<owning-member>:<local>`; linking one nobody has declared yet is legal
+  (a pending link that resolves when the endpoint is declared; a still-dangling link
+  warns once). **Limitation:** the primitive is synchronous, so it needs a Rust-side
+  responder (a peer/model). Two firmware instances on one bus (the multi-device stretch)
+  cannot answer each other synchronously — firmware↔firmware duplex rides the **D8
+  delayed-response** extension (`backlog.md`). Streaming buses (`usb_cdc` telemetry
+  capture) still want the plain upcall→queue.
 - **Logical payloads, not raw bytes.** We own the sim-HW driver code, so a comms
   entry holds the *logical contents* of the packet (a `Value::Record`/`Bytes`
   shaped by the transport), not a bitstream — far nicer to assert on and route.
-- **Timing.** A transaction's completion schedules a **one-shot interrupt** (D8)
-  quantized to the base `dt`; rx is delivered then.
+- **Timing.** A synchronous DuplexTransfer delivers rx within the same tick. A
+  non-blocking (DMA/IT) transaction's completion instead schedules a **one-shot
+  interrupt** (D8) quantized to the base `dt`; rx is delivered then. Streaming
+  capture + D8 timing remain future.
 - **History is uniform.** A comms entry is a historian like any other — just a
   timeseries of `Value`s (here, packets) rather than scalars (D12).
 - Comms is **designed-in now, built after** the model + interrupt (D8) layers,

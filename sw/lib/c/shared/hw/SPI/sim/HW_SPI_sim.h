@@ -14,22 +14,19 @@
 
 /* Public Function Declarations */
 
-// SIL-only control + inspection of the loopback SPI model. Lets native
-// tests inject receive data, observe transmitted data and chip-select
-// activity, force faults, and drive non-blocking completion — none of
-// which has real hardware on the native target.
+// SIL-only control + inspection of the SPI model. Lets native tests observe
+// transmitted data and chip-select activity, force faults, and drive
+// non-blocking completion — none of which has real hardware on the native
+// target. Receive data comes from the linked duplex peer over SIL_ports.
 
-// Clear per-channel sim state (injection, capture, CS records, faults,
-// pending transfers). Does not change the registered configuration.
+// Clear per-channel sim state (capture, CS records, faults, pending
+// transfers). Does not change the registered configuration.
 void HW_SPI_sim_reset(void);
 
 // Complete every pending non-blocking (interrupt/DMA) transfer: fill its
 // receive buffer, deassert CS, set final status, and fire the channel's
 // completion callback exactly once.
 void HW_SPI_sim_tick(void);
-
-// Bytes a subsequent receive() on `channel` will return (loopback aside).
-void HW_SPI_sim_setInjectedRx(HW_SPI_channel_E channel, const uint8_t * data, size_t length);
 
 // Copy up to `maxLength` bytes most recently transmitted on `channel`
 // into `out`; returns the full transmitted length.

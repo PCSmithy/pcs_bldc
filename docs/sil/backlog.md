@@ -18,6 +18,38 @@ DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
 upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
 but TX capture + parse needs no D8.
 
+## DuplexTransfer — residual extensions
+
+**What:** the synchronous member↔member serial-transaction primitive landed for
+`spi` (stage 2 of the commutation sprint). Remaining:
+
+- **Extend to UART / USB_CDC** when real responder models exist (an IMU, etc.) —
+  the same `DuplexPeer` upcall, a new sim-HW bus driver registering the endpoint.
+- **D8 one-shot completion timing** for non-blocking (DMA/IT) buses: the data
+  plane is DuplexTransfer, but completion *timing* still quantizes to a D8
+  one-shot. Blocking SW transfers (the AS5048 path) consume the response
+  synchronously and need none of this.
+- **Sub-tick event timestamps:** tick-resolution timestamps make same-tick
+  transactions share a timestamp; the historian wants finer stamps for
+  same-tick ordering.
+- **Firmware↔firmware duplex** (two boards on one bus — the multi-device stretch):
+  the synchronous primitive needs a Rust-side responder, so one firmware instance
+  cannot answer another synchronously. This rides the **D8 delayed-response**
+  extension below (the peer callback loads the response and schedules its delivery),
+  not the MVP synchronous path.
+
+**Delayed duplex responses via the D8 interrupt table (owner, 2026-07-16).** The
+firmware initiates a transfer; the peer callback parses TX, runs arbitrary code,
+loads the response buffer, *and configures the response interrupt* (delay +
+handler) — letting the framework deliver the response at a future sim time with
+roughly-modeled transfer delays. NOT MVP: pursue only when bringing up the D8
+interrupt tables, and only if precision-delayed duplex transfers buy real
+timing-accuracy. Aligns with `sim-interrupts.md` §3's example (sim `HW_SPI`
+scheduling a one-shot `SPI3_IRQHandler` 2 µs out); the new element is the *peer*
+configuring the delay/response rather than the driver hardcoding a literal.
+Natural fit: non-blocking (DMA/IT) buses where real hardware raises a completion
+IRQ after bytes × bit-time — blocking SW transfers gain nothing.
+
 ## Remove the `HW_<Module>_sim.h` inject/inspect API layer
 
 **When:** after the firmware/SIL build unification lands and the SIL framework
@@ -34,7 +66,9 @@ ADC, ...). Files, as of 2026-07-04:
 - `sw/lib/c/shared/hw/DMA/sim/HW_DMA_sim.h`
 - `sw/lib/c/shared/hw/GPIO/sim/HW_GPIO_sim.h`
 - `sw/lib/c/shared/hw/OPAMP/sim/HW_OPAMP_sim.h`
-- `sw/lib/c/shared/hw/SPI/sim/HW_SPI_sim.h`
+- `sw/lib/c/shared/hw/SPI/sim/HW_SPI_sim.h` (SPI's `setInjectedRx` is already
+  gone — DuplexTransfer replaced it and the Unity suite was rewritten against a
+  test-owned hooks double; the remaining `_sim_*` getters here still apply)
 - `sw/lib/c/shared/hw/TIM/sim/HW_TIM_sim.h`
 - `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 

@@ -43,18 +43,25 @@
 //! [`FirmwareMember`](crate::FirmwareMember) driving its own backend, so
 //! multi-firmware is just multiple `FirmwareMember`s peering in one engine.
 
-use crate::log::LogEntry;
-use crate::member::Member;
+use crate::duplex::{DuplexHandle, DuplexPeer, DuplexRouter};
+use crate::log::{LogEntry, LogLevel};
+use crate::member::{Member, MemberCtx};
 use crate::route::{RouteError, RouteTable};
-use crate::signal::{SignalId, Value};
+use crate::signal::{is_duplex_bus, SignalId, Value};
 use crate::state_table::{AccessError, StateTable};
+use std::cell::RefCell;
+use std::rc::Rc;
 use thiserror::Error;
 
 /// A registered member plus the engine's own enable flag (engine-gating: the
 /// engine skips a disabled member's [`Member::advance`] — simpler than making
-/// every member self-gate).
+/// every member self-gate). Members are **shared** ([`Rc`]/[`RefCell`]): `add_member`
+/// hands the caller a typed handle to the same cell the engine steps, so a dual-role
+/// member (also a [`DuplexPeer`]) links to a bus directly. `name` is cached at add so
+/// validation / lookup never borrows the cell.
 struct MemberEntry<'m> {
-    member: Box<dyn Member + 'm>,
+    member: Rc<RefCell<dyn Member + 'm>>,
+    name: String,
     enabled: bool,
 }
 
@@ -63,6 +70,8 @@ struct MemberEntry<'m> {
 pub enum EngineError {
     #[error(transparent)]
     Route(#[from] RouteError),
+    #[error("duplex endpoint {id:?}: {reason}")]
+    Duplex { id: String, reason: String },
 }
 
 /// The sim clock + step loop. Owns the State Table, Route Table, and members, and
@@ -73,6 +82,9 @@ pub struct Engine<'b> {
     state: StateTable,
     routes: RouteTable,
     members: Vec<MemberEntry<'b>>,
+    /// The shared duplex router any initiating member (firmware or model) couples
+    /// through; the engine drains + records its transactions each `step`.
+    duplex: DuplexRouter,
     tick_period_us: u64,
     now_us: u64,
     /// Wiring changed since the last validation → revalidate at the next `step`.
@@ -93,6 +105,7 @@ impl<'b> Engine<'b> {
             state: StateTable::new(),
             routes: RouteTable::new(),
             members: Vec::new(),
+            duplex: DuplexRouter::new(),
             tick_period_us,
             now_us: 0,
             dirty: true,
@@ -110,17 +123,29 @@ impl<'b> Engine<'b> {
         }
     }
 
-    /// Add a member. Members **start enabled**: the engine calls
+    /// Add a member **by value** and get back a typed shared handle
+    /// ([`Rc<RefCell<M>>`](std::rc::Rc)) to the same cell the engine steps — ignorable
+    /// for a plain model, linkable for a dual-role member (an `M: DuplexPeer` handle
+    /// coerces to `Rc<RefCell<dyn DuplexPeer>>` for [`link_duplex`](Self::link_duplex)).
+    /// Members **start enabled**: the engine calls
     /// [`Member::set_enabled(true)`](Member::set_enabled) now (where it registers its
-    /// signals). Advance order is registration order (D7) — a design surface for
-    /// forward flow. Marks the wiring dirty.
-    pub fn add_member(&mut self, mut member: Box<dyn Member + 'b>) {
-        member.set_enabled(true, &mut self.state);
+    /// signals) and caches the name. Advance order is registration order (D7) — a design
+    /// surface for forward flow. Marks the wiring dirty.
+    ///
+    /// The engine steps each member through `borrow_mut`; holding a `borrow_mut` on the
+    /// returned handle across [`step`](Self::step) panics (single-threaded discipline,
+    /// loud on misuse — the same rule as a duplex peer's cell).
+    pub fn add_member<M: Member + 'b>(&mut self, member: M) -> Rc<RefCell<M>> {
+        let rc = Rc::new(RefCell::new(member));
+        let name = rc.borrow().name().to_string();
+        rc.borrow_mut().set_enabled(true, &mut self.state);
         self.members.push(MemberEntry {
-            member,
+            member: rc.clone() as Rc<RefCell<dyn Member + 'b>>,
+            name,
             enabled: true,
         });
         self.dirty = true;
+        rc
     }
 
     /// Enable or disable a member by name. A disabled member's advance is skipped
@@ -128,9 +153,9 @@ impl<'b> Engine<'b> {
     /// [`Member::set_enabled(true)`](Member::set_enabled) idempotently. Returns
     /// whether the member was found; marks the wiring dirty when it was.
     pub fn set_member_enabled(&mut self, name: &str, on: bool) -> bool {
-        if let Some(entry) = self.members.iter_mut().find(|e| e.member.name() == name) {
+        if let Some(entry) = self.members.iter_mut().find(|e| e.name == name) {
             entry.enabled = on;
-            entry.member.set_enabled(on, &mut self.state);
+            entry.member.borrow_mut().set_enabled(on, &mut self.state);
             self.dirty = true;
             true
         } else {
@@ -178,6 +203,50 @@ impl<'b> Engine<'b> {
         Ok(())
     }
 
+    /// Link a [`DuplexPeer`] to a duplex endpoint and return the endpoint's
+    /// [`DuplexHandle`]. `endpoint_id` is a SignalId-grammar `spi:<owning-member>:<local>`
+    /// (a bus `sig_type`, no modifier). Declares the endpoint (a model endpoint is
+    /// declared implicitly here; a firmware endpoint the firmware member re-declares
+    /// idempotently), registers its `:tx` / `:rx` event entries, and attaches the peer.
+    ///
+    /// An initiating **model** keeps the returned handle and drives the bus via
+    /// [`MemberCtx::duplex_transfer`](crate::member::MemberCtx::duplex_transfer); a
+    /// **firmware** initiator drives it through its C SPI upcall (the handle is then a
+    /// convenience the caller may ignore).
+    pub fn link_duplex(
+        &mut self,
+        endpoint_id: &str,
+        peer: Rc<RefCell<dyn DuplexPeer>>,
+    ) -> Result<DuplexHandle, EngineError> {
+        let bad = |reason: &str| EngineError::Duplex {
+            id: endpoint_id.to_string(),
+            reason: reason.to_string(),
+        };
+        let sid = SignalId::parse(endpoint_id).map_err(|e| bad(&e.to_string()))?;
+        if sid.modifier().is_some() {
+            return Err(bad("endpoint id must not carry a :modifier"));
+        }
+        if !is_duplex_bus(sid.sig_type()) {
+            return Err(bad("sig_type is not a duplex bus"));
+        }
+        let handle = self.duplex.declare(endpoint_id);
+        self.duplex.link(endpoint_id, peer);
+        // Register the `:tx` / `:rx` event entries (idempotent with a firmware declare).
+        let tx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("tx"))
+            .expect("bus id + tx");
+        let rx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("rx"))
+            .expect("bus id + rx");
+        let _ = self.state.register(tx_id, None);
+        let _ = self.state.register(rx_id, None);
+        Ok(handle)
+    }
+
+    /// The [`DuplexHandle`] of a declared duplex endpoint (`None` if not yet declared) —
+    /// an initiating model resolves its handle here at wiring time.
+    pub fn duplex_handle(&self, endpoint_id: &str) -> Option<DuplexHandle> {
+        self.duplex.handle_of(endpoint_id)
+    }
+
     /// Advance the whole system one tick (the canonical order — see the module
     /// docs). Each call moves sim time forward by one period. Returns
     /// [`EngineError::Route`] if the wiring is invalid (raised at this step, and
@@ -187,9 +256,19 @@ impl<'b> Engine<'b> {
         self.now_us += self.tick_period_us;
         self.state.set_time(self.now_us);
 
+        // A duplex link that still names an undeclared endpoint is dangling — warn
+        // once (a peer wired to an endpoint no member ever brings up).
+        for id in self.duplex.take_dangling() {
+            self.state.log(
+                LogLevel::Warning,
+                "duplex",
+                format!("duplex link {id:?} names an endpoint that was never declared"),
+            );
+        }
+
         // 2. Validate the wiring if dirty; cache the verdict + zero-latency order.
         if self.dirty {
-            let names: Vec<&str> = self.members.iter().map(|e| e.member.name()).collect();
+            let names: Vec<&str> = self.members.iter().map(|e| e.name.as_str()).collect();
             match self.routes.validate(&names) {
                 Ok(order) => {
                     self.zl_order = order;
@@ -212,15 +291,53 @@ impl<'b> Engine<'b> {
         //    the iterator. Propagation is table-only; the member syncs its own
         //    firmware mirrors.
         let dt = self.tick_period_us;
-        for entry in &mut self.members {
+        for entry in &self.members {
             if !entry.enabled {
                 continue;
             }
             self.routes
                 .propagate_zero_latency(&mut self.state, &self.zl_order)?;
-            entry.member.advance(dt, &mut self.state);
+            let mut ctx = MemberCtx::new(&mut self.state, &self.duplex);
+            entry.member.borrow_mut().advance(dt, &mut ctx);
         }
+
+        // 5. Drain the duplex router: force-record every exchange this tick as
+        //    `<endpoint>:tx` / `:rx` event entries — identical for firmware- and
+        //    model-initiated transfers. (Same-tick transactions share a timestamp;
+        //    finer event stamps arrive with the D8 interrupt work.)
+        self.record_duplex_transactions();
         Ok(())
+    }
+
+    /// Drain the duplex router and force-record each `(endpoint, tx, rx)` exchange
+    /// into the endpoint's `:tx` / `:rx` event entries. Events are never deduped
+    /// (consecutive identical polls are distinct transactions).
+    fn record_duplex_transactions(&mut self) {
+        for (endpoint, tx, rx) in self.duplex.drain() {
+            let sid = match SignalId::parse(&endpoint) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.state.log(
+                        LogLevel::Warning,
+                        "duplex",
+                        format!("duplex endpoint {endpoint:?} is not a valid id: {e}"),
+                    );
+                    continue;
+                }
+            };
+            let tx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("tx"))
+                .expect("bus id + tx");
+            let rx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("rx"))
+                .expect("bus id + rx");
+            if let Err(e) = self.state.force_record(&tx_id, Value::Bytes(tx)) {
+                self.state
+                    .log(LogLevel::Warning, "duplex", format!("duplex tx record {tx_id} failed: {e}"));
+            }
+            if let Err(e) = self.state.force_record(&rx_id, Value::Bytes(rx)) {
+                self.state
+                    .log(LogLevel::Warning, "duplex", format!("duplex rx record {rx_id} failed: {e}"));
+            }
+        }
     }
 
     /// Current sim time (microseconds), monotonic across [`step`](Self::step)s.
@@ -330,7 +447,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        fn advance(&mut self, _dt_us: u64, _st: &mut StateTable) {
+        fn advance(&mut self, _dt_us: u64, _ctx: &mut MemberCtx) {
             self.log.borrow_mut().push(self.name.clone());
         }
         fn set_enabled(&mut self, _on: bool, _st: &mut StateTable) {}
@@ -364,13 +481,13 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
-            let input = match st.current_value(&self.in_id()).ok().flatten() {
+        fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
+            let input = match ctx.st.current_value(&self.in_id()).ok().flatten() {
                 Some(Value::U32(x)) => x,
                 _ => 0,
             };
             self.out = input.wrapping_add(self.step);
-            let _ = st.record(&self.out_id(), Value::U32(self.out));
+            let _ = ctx.st.record(&self.out_id(), Value::U32(self.out));
         }
         fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
             if on {
@@ -393,9 +510,9 @@ mod tests {
         // entry, and the firmware member flushes it.
         let be = MockBackend::with_leaves(&["sensor_in"]);
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(RampModel::new("ramp", 1000.0, None)));
+        eng.add_member(RampModel::new("ramp", 1000.0, None));
         let fw = FirmwareMember::with_backend("fw", &be, 1_000);
-        eng.add_member(Box::new(fw));
+        eng.add_member(fw);
         // The auto-mirrored cvar is registered under the member's own name ("fw").
         let sensor_in = SignalId::new("cvar", "fw", "sensor_in", None).unwrap();
         eng.add_route(vsig_id("ramp", "value").unwrap(), sensor_in)
@@ -415,7 +532,7 @@ mod tests {
         let be = MockBackend::with_leaves(&["counter"]);
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "counter", None).unwrap();
-        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
+        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -433,10 +550,10 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut eng = Engine::new(1_000);
         for name in ["first", "second", "third"] {
-            eng.add_member(Box::new(OrderModel {
+            eng.add_member(OrderModel {
                 name: name.to_string(),
                 log: Rc::clone(&log),
-            }));
+            });
         }
 
         eng.step().unwrap();
@@ -453,7 +570,7 @@ mod tests {
         let be = MockBackend::with_leaves(&["ramp_counter"]);
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "ramp_counter", None).unwrap();
-        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
+        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
 
         for _ in 0..3 {
             eng.step().unwrap();
@@ -465,7 +582,7 @@ mod tests {
     #[test]
     fn records_model_vsig_each_tick() {
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(RampModel::new("ramp", 1000.0, Some("counts"))));
+        eng.add_member(RampModel::new("ramp", 1000.0, Some("counts")));
         let id = vsig_id("ramp", "value").unwrap();
 
         assert_eq!(eng.state().current_value(&id).unwrap(), None);
@@ -481,7 +598,7 @@ mod tests {
     fn empty_step_advances_firmware_and_time() {
         let be = MockBackend::default();
         let mut eng = Engine::new(2_000);
-        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 2_000)));
+        eng.add_member(FirmwareMember::with_backend("fw", &be, 2_000));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
@@ -493,7 +610,7 @@ mod tests {
     fn disabled_member_is_skipped_then_resumes() {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
+        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
 
         assert!(eng.set_member_enabled("fw", false));
         eng.step().unwrap(); // skipped: no advance_tick
@@ -511,7 +628,7 @@ mod tests {
     fn route_source_unregistered_errors() {
         let be = MockBackend::default();
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(FirmwareMember::with_backend("fw", &be, 1_000)));
+        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),
@@ -525,10 +642,10 @@ mod tests {
         // per-member propagation, a pulse at `a` reaches `c` within the SAME step.
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(OrderModel {
+        eng.add_member(OrderModel {
             name: "nop".into(),
             log: Rc::clone(&log),
-        }));
+        });
         eng.state_mut_seed("cvar:test:a", Value::U32(9));
         eng.state_mut_seed("cvar:test:b", Value::U32(0));
         eng.state_mut_seed("cvar:test:c", Value::U32(0));
@@ -565,8 +682,8 @@ mod tests {
         // and B → A on a DELAYED edge (the ZOH cut). A zero-latency backward edge is
         // rejected; delayed, the loop steps cleanly with a predictable sequence.
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(AdderModel::new("a", 1))); // out = in + 1
-        eng.add_member(Box::new(AdderModel::new("b", 10))); // out = in + 10
+        eng.add_member(AdderModel::new("a", 1)); // out = in + 1
+        eng.add_member(AdderModel::new("b", 10)); // out = in + 10
 
         let a_in = vsig_id("a", "in").unwrap();
         let a_out = vsig_id("a", "out").unwrap();
@@ -609,10 +726,10 @@ mod tests {
     fn multi_driver_errors_at_step_unless_suspended() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(OrderModel {
+        eng.add_member(OrderModel {
             name: "nop".into(),
             log,
-        })); // drives the per-member zero-latency pass
+        }); // drives the per-member zero-latency pass
         eng.state_mut_seed("cvar:test:x", Value::U32(1));
         eng.state_mut_seed("cvar:test:y", Value::U32(2));
         eng.state_mut_seed("cvar:test:dst", Value::U32(0));
@@ -635,10 +752,10 @@ mod tests {
         // removing the offending route lets the next step pass — no rebuild.
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut eng = Engine::new(1_000);
-        eng.add_member(Box::new(OrderModel {
+        eng.add_member(OrderModel {
             name: "nop".into(),
             log,
-        })); // drives the per-member zero-latency pass
+        }); // drives the per-member zero-latency pass
         eng.state_mut_seed("cvar:test:a", Value::U32(1));
         eng.state_mut_seed("cvar:test:b", Value::U32(2));
         eng.add_route(cvar("a"), cvar("b")).unwrap();
@@ -658,6 +775,119 @@ mod tests {
         eng.remove_route(&cvar("b"), &cvar("a")).unwrap();
         eng.step().unwrap();
         assert_eq!(eng.state().current_value(&cvar("b")).unwrap(), Some(Value::U32(1)));
+    }
+
+    // --- model <-> model duplex (no firmware) ----------------------------
+
+    use crate::duplex::{DuplexHandle, DuplexPeer};
+
+    /// One struct, both roles: answers each transfer with its current byte (as a
+    /// [`DuplexPeer`]) and advances that byte each tick (as a [`Member`]) — its state
+    /// is its own.
+    struct SpiResponder {
+        name: String,
+        next: u8,
+    }
+    impl DuplexPeer for SpiResponder {
+        fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+            vec![self.next, 0x00]
+        }
+    }
+    impl Member for SpiResponder {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn advance(&mut self, _dt_us: u64, _ctx: &mut MemberCtx) {
+            self.next = self.next.wrapping_add(1);
+        }
+        fn set_enabled(&mut self, _on: bool, _st: &mut StateTable) {}
+    }
+
+    /// A duplex initiator member: initiates a transfer each advance and records the
+    /// first response byte as a `vsig`.
+    struct SpiInitiator {
+        name: String,
+        handle: DuplexHandle,
+    }
+    impl Member for SpiInitiator {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
+            if let Some(rx) = ctx.duplex_transfer(self.handle, &[0xFF, 0xFF]) {
+                let id = vsig_id(&self.name, "rx0").unwrap();
+                let _ = ctx.st.record(&id, Value::U32(u32::from(rx[0])));
+            }
+        }
+        fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+            if on {
+                let _ = st.register(vsig_id(&self.name, "rx0").unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn model_to_model_duplex_transfers_and_records() {
+        // Two models couple over spi:initiator:cs with NO firmware: the initiator transfers
+        // mid-advance, the responder answers from its own state synchronously, and the
+        // engine force-records the exchange under the model-owned endpoint.
+        let mut eng = Engine::new(1_000);
+        // The responder is a shared member: added by value, linked to the bus by its
+        // handle. It advances (idx 0) before the initiator (idx 1) reads each tick, so
+        // its byte starts at 0x0F and the initiator sees 0x10, 0x11, 0x12.
+        let responder = eng.add_member(SpiResponder { name: "responder".into(), next: 0x0F });
+        let handle = eng.link_duplex("spi:initiator:cs", responder).unwrap();
+        eng.add_member(SpiInitiator { name: "initiator".into(), handle });
+
+        for _ in 0..3 {
+            eng.step().unwrap();
+        }
+
+        // The initiator reads the responder's just-advanced byte: 0x10, 0x11, 0x12.
+        assert_eq!(eng.read("vsig:initiator:rx0").unwrap(), Some(Value::U32(0x12)));
+        let tx = SignalId::parse("spi:initiator:cs:tx").unwrap();
+        let rx = SignalId::parse("spi:initiator:cs:rx").unwrap();
+        // Events are force-recorded (never deduped): one transfer/tick = three each.
+        assert_eq!(eng.state().changes(&tx).unwrap().len(), 3);
+        assert_eq!(eng.state().changes(&rx).unwrap().len(), 3);
+        assert_eq!(
+            eng.state().current_value(&rx).unwrap(),
+            Some(Value::Bytes(vec![0x12, 0x00]))
+        );
+    }
+
+    #[test]
+    fn duplex_transfer_on_unlinked_endpoint_is_none() {
+        // A declared-but-unlinked endpoint: the initiator's transfer returns None (a
+        // floating bus), nothing is recorded, and the initiator produces no reading.
+        let mut eng = Engine::new(1_000);
+        let handle = eng.duplex.declare("spi:initiator:cs"); // no peer linked
+        eng.add_member(SpiInitiator { name: "initiator".into(), handle });
+        eng.step().unwrap();
+        assert_eq!(eng.read("vsig:initiator:rx0").unwrap(), None);
+        assert!(eng.state().signals().all(|s| s.as_str() != "spi:initiator:cs:rx"));
+    }
+
+    #[test]
+    fn dangling_duplex_link_warns_once() {
+        // A peer linked to an endpoint no member ever declares is dangling: the engine
+        // warns once at step time, not per tick.
+        let mut eng = Engine::new(1_000);
+        eng.duplex
+            .link("spi:ghost:cs", Rc::new(RefCell::new(SpiResponder { name: "ghost".into(), next: 0 })));
+        eng.step().unwrap();
+        assert_eq!(
+            eng.take_logs()
+                .iter()
+                .filter(|e| e.message.contains("spi:ghost:cs"))
+                .count(),
+            1
+        );
+        eng.step().unwrap();
+        assert!(eng
+            .take_logs()
+            .iter()
+            .all(|e| !e.message.contains("spi:ghost:cs")));
     }
 
     // --- test-only helpers on the engine ---------------------------------

@@ -1,12 +1,13 @@
 /* Includes */
 #include "HW_SPI.h"
 #include "HW_SPI_sim.h"
+#include "SIL_ports.h"
 
 /* Defines */
 
-// Largest transfer the loopback model captures/injects. Tests stay well
-// under this; transfers longer than this still move data through the
-// caller's buffers, only the captured copy is clamped.
+// Largest transfer the model captures. Tests stay well under this; transfers
+// longer than this still move data through the caller's buffers, only the
+// captured copy is clamped.
 #define HW_SPI_SIM_MAX_XFER    (256U)
 
 // Single-bit pin mask range mirroring the stm32g4 GPIO_PIN_x encoding,
@@ -35,11 +36,13 @@ typedef struct
     size_t    length;
     bool      pending;
 
-    // Loopback capture / injection.
+    // Transmit capture.
     uint8_t lastTx[HW_SPI_SIM_MAX_XFER];
     size_t  lastTxLen;
-    uint8_t injectedRx[HW_SPI_SIM_MAX_XFER];
-    size_t  injectedRxLen;
+
+    // SIL duplex endpoint (SIL_PORTS_HANDLE_INVALID when unregistered): a
+    // transfer upcalls the linked peer for the MISO response frame.
+    int32_t duplexHandle;
 
     // Fault injection.
     bool stall;
@@ -124,7 +127,6 @@ static void HW_SPI_private_clearChannel(HW_SPI_channel_E channel)
     cd->length          = 0U;
     cd->pending         = false;
     cd->lastTxLen       = 0U;
-    cd->injectedRxLen   = 0U;
     cd->stall           = false;
     cd->forceError      = false;
     cd->csAssertCount   = 0U;
@@ -175,40 +177,28 @@ static void HW_SPI_private_captureTx(HW_SPI_channel_E channel)
 static void HW_SPI_private_fillRx(HW_SPI_channel_E channel)
 {
     HW_SPI_channelData_S * const cd = &data->channels[channel];
-    if (cd->op == HW_SPI_OP_TXRX)
+    if (cd->op == HW_SPI_OP_TX)
     {
-        if (cd->injectedRxLen > 0U)
-        {
-            // Full-duplex with an injected response: MISO is driven from the
-            // injected frame rather than mirrored from MOSI. A peripheral that
-            // reads over transmitReceive (e.g. the AS5048 encoder) needs this to
-            // return a crafted response; the injectedRx static is the SIL
-            // white-box injection point. Falls back to loopback when nothing is
-            // injected, so plain loopback consumers are unaffected.
-            for (size_t i = 0U; i < cd->length; i++)
-            {
-                cd->rxData[i] = (i < cd->injectedRxLen) ? cd->injectedRx[i] : 0U;
-            }
-        }
-        else
-        {
-            // Full-duplex loopback: MISO mirrors MOSI.
-            for (size_t i = 0U; i < cd->length; i++)
-            {
-                cd->rxData[i] = cd->txData[i];
-            }
-        }
-    }
-    else if (cd->op == HW_SPI_OP_RX)
-    {
-        for (size_t i = 0U; i < cd->length; i++)
-        {
-            cd->rxData[i] = (i < cd->injectedRxLen) ? cd->injectedRx[i] : 0U;
-        }
+        // Transmit-only: nothing to deliver to the caller.
     }
     else
     {
-        // Transmit-only: nothing to deliver to the caller.
+        // Duplex/receive: the linked peer answers with the MISO frame. TXRX
+        // hands it the captured MOSI frame (a command-aware peer parses it);
+        // RX-only sends nothing. The peer's response is bounded to the transfer
+        // length.
+        const uint8_t * const tx = (cd->op == HW_SPI_OP_TXRX) ? cd->txData : NULL;
+        const size_t txLen = (cd->op == HW_SPI_OP_TXRX) ? cd->length : 0U;
+        size_t rxLen = 0U;
+        const bool answered = SIL_ports_duplexTransfer(cd->duplexHandle, tx, txLen,
+                                                       cd->rxData, cd->length, &rxLen);
+        if (!answered)
+        {
+            for (size_t i = 0U; i < cd->length; i++)
+            {
+                cd->rxData[i] = 0xFFU; // floating MISO: a disconnected bus reads all-ones
+            }
+        }
     }
 }
 
@@ -291,6 +281,15 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
             for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
             {
                 HW_SPI_private_clearChannel(channel);
+
+                // Register one duplex endpoint per named channel: a transfer
+                // upcalls the linked peer for its MISO response. Null-safe — with
+                // no hooks installed the handle stays invalid and the transfer
+                // falls back to the floating-bus fill.
+                const char * const name = config->channels[channel].channelNameStr;
+                data->channels[channel].duplexHandle = (name != NULL)
+                    ? SIL_ports_registerDuplex("spi", name)
+                    : SIL_PORTS_HANDLE_INVALID;
             }
             data->initialized = true;
             ret = true;
@@ -379,20 +378,6 @@ void HW_SPI_sim_tick(void)
                 }
             }
         }
-    }
-}
-
-void HW_SPI_sim_setInjectedRx(HW_SPI_channel_E channel, const uint8_t * data_, size_t length)
-{
-    if ((channel < HW_SPI_CHANNEL_COUNT) && (data_ != NULL))
-    {
-        HW_SPI_channelData_S * const cd = &data->channels[channel];
-        const size_t copyLen = (length < HW_SPI_SIM_MAX_XFER) ? length : HW_SPI_SIM_MAX_XFER;
-        for (size_t i = 0U; i < copyLen; i++)
-        {
-            cd->injectedRx[i] = data_[i];
-        }
-        cd->injectedRxLen = copyLen;
     }
 }
 

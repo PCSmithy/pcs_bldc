@@ -38,10 +38,15 @@ driven and asserted purely through the State Table.
   `SignalId::parse` → `record`/`current_value`; migrate the
   sanity suite off direct `fw.read_cvar`/`write_cvar` (only boot/shutdown
   stay below the engine).
-- ☐ **2. SPI comms seam** — admit `spi` as a sig_type; sim `HW_SPI` registers
-  per-channel rx/tx ports (`SIL_ports`), so a routed `Bytes` frame is what
-  `transmitReceive` returns (replaces `injectedRx` white-box pokes; blocking
-  transfers read the port cache in-tick — no D8 needed).
+- ☑ **2. DuplexTransfer** — synchronous member↔member serial transactions
+  (`spi` first), an **engine-scoped** primitive. An engine-owned `DuplexRouter`
+  couples any initiating member to a linked `DuplexPeer`: a model initiates via
+  `MemberCtx::duplex_transfer`, a firmware member through its C SPI upcall — both
+  forward into the same router (tx in, the peer's rx back synchronously, one
+  full-duplex step, no D8). The engine force-records each exchange as
+  `spi:<ep>:tx` / `:rx` event entries (`Value::Bytes`) for the historian. The
+  sim `HW_SPI` `injectedRx` inject + MOSI loopback are removed; an unhandled
+  transfer reads `0xFF` (a floating/disconnected bus).
 - ☐ **3. AS5048 encoder model** (instantiation-side) — writable
   `angle_rad`/`angle_deg` inputs; `raw_encoder_ticks` + framed SPI response
   out (14-bit angle, even parity bit 15, error bit 14; the driver reads two

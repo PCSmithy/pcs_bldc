@@ -29,12 +29,14 @@
 //!   bands the checks assert are unaffected. Exists to turn a CI runner into a
 //!   remote debugger for the macOS aarch64 multi-tick cadence anomaly.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::time::Instant;
 use voyant::{
-    vsig_id, Engine, EngineError, Firmware, FirmwareMember, LogEntry, LogLevel, Member, RampModel,
-    RouteError, SignalId, StateTable, Value,
+    vsig_id, DuplexHandle, DuplexPeer, Engine, EngineError, Firmware, FirmwareMember, LogEntry,
+    LogLevel, Member, MemberCtx, RampModel, RouteError, SignalId, StateTable, Value,
 };
 
 const SOURCE: &str = "pcs_bldc";
@@ -180,12 +182,16 @@ fn main() -> ExitCode {
     println!("\n-- 9. cvar mirror accuracy (auto-derived, no declaration) --");
     check_mirror_accuracy(&fw, &mut rep);
 
+    // --- Check 10: model <-> model duplex (no firmware) ---------------------
+    println!("\n-- 10. model<->model duplex over spi (no firmware) --");
+    check_model_duplex(&mut rep);
+
     // --- Performance report (phase-isolated, informational) -----------------
     println!("\n-- performance report (phase-isolated, informational) --");
     report_performance(&fw);
 
-    // --- Check 10: shutdown -------------------------------------------------
-    println!("\n-- 10. shutdown --");
+    // --- Check 11: shutdown -------------------------------------------------
+    println!("\n-- 11. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -305,7 +311,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
     // No per-signal declaration: the FirmwareMember auto-mirrors the whole cvar
     // namespace, so these counters are sampled into the historian each tick.
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
     for _ in 0..N {
         eng.step().expect("engine step");
     }
@@ -362,7 +368,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     // Auto-mirrored: counts[19] is under the array threshold, so counts[6] is
     // registered + sampled with no `sample_cvar` declaration.
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
 
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
@@ -403,25 +409,56 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
+/// A duplex peer that answers every SPI transfer with a fixed MISO frame — the
+/// simplest command-agnostic responder, standing in for the AS5048 until the encoder
+/// model lands. Byte-for-byte the crafted response the firmware decodes.
+struct FixedFramePeer {
+    frame: Vec<u8>,
+}
+
+impl DuplexPeer for FixedFramePeer {
+    fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+        self.frame.clone()
+    }
+}
+
 /// The flagship check: drive the whole encoder->telemetry->USB path on the
-/// native scheduler using only DWARF white-box writes, and read the resulting
-/// Teleplot text back out of the sim USB TX capture.
+/// native scheduler, feeding the AS5048 MISO frame through a linked duplex peer,
+/// and read the resulting Teleplot text back out of the sim USB TX capture.
 fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1
     const INJECTED_ANGLE: u64 = 0x1000; // frame 0x9000, bits[13:0]
 
-    // Build the engine + firmware member before injecting: injection flows through the
-    // State Table (`eng.write`). injectedRx is a 256-byte buffer (over the mirror
-    // threshold), so the two bytes we drive are registered explicitly; connected,
-    // injectedRxLen, and txLen are scalars and mirror without help.
-    let rx0 = format!("HW_SPI_data.channels[{CH}].injectedRx[0]");
-    let rx1 = format!("HW_SPI_data.channels[{CH}].injectedRx[1]");
-    let rxlen = format!("HW_SPI_data.channels[{CH}].injectedRxLen");
+    // Link a fixed-frame peer to the motor encoder's SPI endpoint: every transfer
+    // on AS5048_1 returns big-endian {0x90,0x00} = frame 0x9000 (bit15 even parity
+    // valid, bit14 error clear, angle 0x1000). The firmware registers its C endpoints
+    // at add_member; the engine's shared router couples the peer to one of them — the
+    // firmware is one initiator among many.
     let mut eng = Engine::new(TICK_US);
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    fwm.register_cvar_in_state_table(&rx0);
-    fwm.register_cvar_in_state_table(&rx1);
-    eng.add_member(Box::new(fwm));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.link_duplex(
+        "spi:pcs_bldc:AS5048_1",
+        Rc::new(RefCell::new(FixedFramePeer { frame: vec![0x90, 0x00] })),
+    )
+    .expect("link AS5048_1 peer");
+
+    // Both encoder channels register their SPI endpoints as :tx/:rx event entries —
+    // the dial (AS5048_2) too, which stage 3 drives as the velocity demand.
+    let ep = |ch: &str, m: &str| format!("spi:{SOURCE}:{ch}:{m}");
+    let endpoints_present = ["AS5048_1", "AS5048_2"].iter().all(|ch| {
+        ["tx", "rx"]
+            .iter()
+            .all(|m| eng.state().signals().any(|s| s.as_str() == ep(ch, m)))
+    });
+    rep.check(
+        "both AS5048 duplex endpoints registered in the State Table",
+        endpoints_present,
+        format!(
+            "{}, {} present={endpoints_present}",
+            ep("AS5048_1", "rx"),
+            ep("AS5048_2", "rx")
+        ),
+    );
 
     // Pre-step config read (static value; the mirror is cold until the first step).
     // Expected raw/angle derive from the firmware's own channel config (reverse maps
@@ -435,23 +472,35 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     let exp_deg = (exp_raw as f64) * 360.0 / 16384.0;
     let exp_deg_str = format!("{exp_deg:.2}");
 
-    // Inject via the table. (1) connected opens the port (telemetryTask skips its body
-    // otherwise). (2) The AS5048 response on the MOTOR channel: bit15 even parity,
-    // bit14 error flag, bits[13:0] angle. Frame 0x9000 has bits {15,12} set => even
-    // parity (valid), error clear, angle 0x1000; sent big-endian {0x90,0x00}. Also
-    // drain the stale TX capture. The flush lands all of these in firmware memory
-    // during step 1's in-sync — before its advance_tick — so task_1ms sees the frame
-    // on the very first tick.
+    // Open the USB port (telemetryTask skips its body otherwise) and drain the stale
+    // TX capture. The flush lands both during step 1's in-sync, before advance_tick.
+    // The peer answers each transfer synchronously mid-tick, so task_1ms decodes the
+    // frame on the very first tick.
     eng.write(&cid("HW_USB_sim_data.connected"), true).expect("write connected");
-    eng.write(&cid(&rx0), 0x90u32).expect("write injectedRx[0]");
-    eng.write(&cid(&rx1), 0x00u32).expect("write injectedRx[1]");
-    eng.write(&cid(&rxlen), 2u64).expect("write injectedRxLen");
     eng.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
 
     // (3) Advance: task_1ms samples the encoder each tick; telemetry fires every 2 ms.
     for _ in 0..10 {
         eng.step().expect("engine step");
     }
+
+    // (3z) The SPI transactions land as event records: the AS5048 does two transfers
+    // per tick, and events are force-recorded (never deduped), so :tx / :rx each
+    // accumulate more entries than the 10 ticks would allow under level dedup. :tx
+    // carries the READ-ANGLE command (0xFFFF -> {0xFF,0xFF}); :rx the injected frame.
+    let tx_id = SignalId::parse(&ep("AS5048_1", "tx")).expect("valid spi id");
+    let rx_id = SignalId::parse(&ep("AS5048_1", "rx")).expect("valid spi id");
+    let n_tx = eng.state().changes(&tx_id).map(|c| c.len()).unwrap_or(0);
+    let n_rx = eng.state().changes(&rx_id).map(|c| c.len()).unwrap_or(0);
+    let last_tx = eng.state().current_value(&tx_id).ok().flatten();
+    let last_rx = eng.state().current_value(&rx_id).ok().flatten();
+    rep.check(
+        "SPI transactions recorded as :tx/:rx events (2 transfers/tick, not deduped)",
+        (n_tx > 10) && (n_rx > 10)
+            && (last_tx == Some(Value::Bytes(vec![0xFF, 0xFF])))
+            && (last_rx == Some(Value::Bytes(vec![0x90, 0x00]))),
+        format!("{n_tx} tx + {n_rx} rx events over 10 ticks; last tx={last_tx:?}, rx={last_rx:?}"),
+    );
 
     // (3a) The connected flag reached firmware (the mirror reads it back true).
     let connected = matches!(
@@ -530,9 +579,9 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
 /// The firmware ticks alongside but is irrelevant to the model's own `vsig`.
 fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(RampModel::new("demo", 1000.0, Some("counts")))); // +1.0 / ms
+    eng.add_member(RampModel::new("demo", 1000.0, Some("counts"))); // +1.0 / ms
     // The firmware ticks alongside (irrelevant to the model's own vsig).
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
     let id = vsig_id("demo", "value").expect("valid vsig id");
     // Registered by the model at add, but not yet recorded (read -> Ok(None)).
     let registered = eng.read(id.as_str()).map(|v| v.is_none()).unwrap_or(false);
@@ -583,11 +632,11 @@ impl Member for CountsRampModel {
     fn name(&self) -> &str {
         &self.name
     }
-    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
+    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         self.counts = self.counts.wrapping_add(self.step);
         let id = self.counts_id();
-        if let Err(e) = st.record(&id, Value::U32(self.counts)) {
-            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        if let Err(e) = ctx.st.record(&id, Value::U32(self.counts)) {
+            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -602,25 +651,24 @@ impl Member for CountsRampModel {
 /// [`FirmwareMember`] flushes it into memory before `advance_tick` (plant output →
 /// firmware sensor input). Suspend/resume gates the route.
 ///
-/// The destination is the SPI sim's `injectedRx[0]` byte — a firmware input the
-/// firmware *reads* but never writes, so a flushed value survives the tick and can be
-/// asserted after. Member order `[model, firmware]` gives zero-lag tracking; the model
-/// steps by 25 to stay within the byte.
+/// The destination is the sim USB rx buffer's byte 0 — a firmware input the firmware
+/// *reads* but never writes (only the sim's injectRx writes `rx[]`), so a flushed
+/// value survives the tick and can be asserted after. Member order `[model, firmware]`
+/// gives zero-lag tracking; the model steps by 25 to stay within the byte.
 fn check_route_table(fw: &Firmware, rep: &mut Report) {
     const STEP: u32 = 25; // stays within a u8 destination byte
     let src = vsig_id("sensor", "counts").expect("valid vsig id");
-    // The SPI sim's injected-MISO byte: read by the firmware, never written by it.
-    let dst = SignalId::new("cvar", SOURCE, "HW_SPI_data.channels[0].injectedRx[0]", None)
-        .expect("valid cvar id");
+    // The sim USB rx byte: read by the firmware, never written by it.
+    let dst = SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None).expect("valid cvar id");
 
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
+    eng.add_member(CountsRampModel::new("sensor", STEP));
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-    // injectedRx is a 256-byte buffer, over the array threshold, so the driven
-    // element is registered explicitly. A registered cvar the framework command-writes
-    // (the route) is flushed into memory by the member automatically (fresh-dirty flush).
-    fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
-    eng.add_member(Box::new(fwm));
+    // rx is a 512-byte buffer, over the array threshold, so the driven element is
+    // registered explicitly. A registered cvar the framework command-writes (the
+    // route) is flushed into memory by the member automatically (fresh-dirty flush).
+    fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
+    eng.add_member(fwm);
     eng.add_route(src.clone(), dst.clone()).expect("add route");
 
     // Active route: firmware memory tracks the model exactly, step by step. Direct
@@ -637,7 +685,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     rep.check(
         "route drives a firmware cvar from a model vsig (via FirmwareMember flush)",
         tracked && (last == 4 * STEP as u64),
-        format!("injectedRx[0] tracked the model to {last} over 4 steps (expect {})", 4 * STEP),
+        format!("rx[0] tracked the model to {last} over 4 steps (expect {})", 4 * STEP),
     );
 
     // Suspend: the model keeps advancing, but the route stops recording the dest
@@ -656,7 +704,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     rep.check(
         "suspended route stops driving its destination",
         (held == last) && (model_now > held),
-        format!("injectedRx[0] held at {held} while model advanced to {model_now}"),
+        format!("rx[0] held at {held} while model advanced to {model_now}"),
     );
 
     // Resume: the destination jumps to the model's current value again.
@@ -673,15 +721,15 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     rep.check(
         "resumed route drives the destination again",
         resumed == model_after,
-        format!("injectedRx[0] = {resumed} after resume (expect current model {model_after})"),
+        format!("rx[0] = {resumed} after resume (expect current model {model_after})"),
     );
     rep.absorb(eng.take_logs());
 }
 
 /// A model member for the feedback loop: reads input `in` (a firmware counter,
 /// delivered on the *delayed* backward edge) and emits `out = in % 200` (a
-/// [`Value::U32`] within a `u8` so it can drive the SPI sim's `injectedRx[0]` byte
-/// with no conversion). The modulo keeps `out` in range regardless of the firmware
+/// [`Value::U32`] within a `u8` so it can drive the sim USB `rx[0]` byte with no
+/// conversion). The modulo keeps `out` in range regardless of the firmware
 /// counter's absolute value.
 struct LoopModel {
     name: String,
@@ -707,8 +755,9 @@ impl Member for LoopModel {
     fn name(&self) -> &str {
         &self.name
     }
-    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
-        let input = st
+    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
+        let input = ctx
+            .st
             .current_value(&self.in_id())
             .ok()
             .flatten()
@@ -717,8 +766,8 @@ impl Member for LoopModel {
             .unwrap_or(0);
         self.out = (input % 200) as u32;
         let id = self.out_id();
-        if let Err(e) = st.record(&id, Value::U32(self.out)) {
-            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        if let Err(e) = ctx.st.record(&id, Value::U32(self.out)) {
+            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -730,8 +779,8 @@ impl Member for LoopModel {
 }
 
 /// Prove the per-route latency design as a genuine **two-member feedback loop**:
-/// - forward (zero-latency): the model's `out` drives the firmware's SPI-sim input
-///   byte (read but never written, so a flushed value survives the tick);
+/// - forward (zero-latency): the model's `out` drives a firmware sim-input byte
+///   (read but never written, so a flushed value survives the tick);
 /// - backward (DELAYED, the ZOH cut): the firmware counter `task1msRuns` → model `in`.
 ///
 /// With member order `[model, firmware]`, the backward edge is backward in
@@ -742,19 +791,19 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     let out = vsig_id("loop_model", "out").expect("valid vsig id");
     let inp = vsig_id("loop_model", "in").expect("valid vsig id");
     let counter = cvar("task1msRuns"); // firmware output (sampled)
-    let miso = cvar("HW_SPI_data.channels[0].injectedRx[0]"); // firmware input (driven)
+    let rx = cvar("HW_USB_sim_data.rx[0]"); // firmware input (driven)
 
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(LoopModel::new("loop_model"))); // idx 0
+    eng.add_member(LoopModel::new("loop_model")); // idx 0
     let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US); // idx 1
-    // The MISO byte lives in a 256-byte buffer (over threshold) -> register it
+    // The rx byte lives in a 512-byte buffer (over threshold) -> register it
     // explicitly so the route can drive it. `task1msRuns` (the sampled counter) is a
     // top-level scalar, auto-mirrored with no declaration.
-    fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
-    eng.add_member(Box::new(fwm));
+    fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
+    eng.add_member(fwm);
 
-    // Forward edge: model out -> firmware MISO byte (zero-latency, model before fw).
-    eng.add_route(out.clone(), miso.clone()).expect("add forward route");
+    // Forward edge: model out -> firmware rx byte (zero-latency, model before fw).
+    eng.add_route(out.clone(), rx.clone()).expect("add forward route");
     // Backward edge as ZERO-latency first: firmware counter -> model in. This is a
     // backward edge (source firmware is registered AFTER the consuming model), so
     // the validator must reject it at the next step.
@@ -776,10 +825,10 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     eng.add_delayed_route(counter.clone(), inp.clone())
         .expect("add delayed backward route");
 
-    // Predicted deterministic sequence for injectedRx[0] read after each step:
+    // Predicted deterministic sequence for rx[0] read after each step:
     //   step 1: model in is unset (fw counter not yet sampled by this engine) -> 0.
     //   step k>=2: in = task1msRuns as of the end of step k-1 = base + (k-1),
-    //             so injectedRx[0] = (base + (k-1)) % 200.
+    //             so rx[0] = (base + (k-1)) % 200.
     // `base` is the firmware counter right before the first successful step (the
     // rejected step returned early and did NOT advance the firmware). Direct reads:
     // the check verifies the routed value reached firmware MEMORY (the delayed feedback
@@ -789,7 +838,7 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     let got: Vec<u64> = (1..=N)
         .map(|_| {
             eng.step().expect("engine step");
-            v_u64(&fw.read_cvar(miso.name())).unwrap_or(0)
+            v_u64(&fw.read_cvar(rx.name())).unwrap_or(0)
         })
         .collect();
     let predicted: Vec<u64> = (1..=N)
@@ -799,7 +848,7 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     rep.check(
         "delayed feedback loop produces the exact predicted sequence",
         got == predicted,
-        format!("injectedRx[0] over {N} steps = {got:?}, predicted {predicted:?} (base counter {base})"),
+        format!("rx[0] over {N} steps = {got:?}, predicted {predicted:?} (base counter {base})"),
     );
     rep.absorb(eng.take_logs());
 }
@@ -827,10 +876,10 @@ impl Member for VoltsModel {
     fn name(&self) -> &str {
         &self.name
     }
-    fn advance(&mut self, _dt_us: u64, st: &mut StateTable) {
+    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         let id = self.volts_id();
-        if let Err(e) = st.record(&id, Value::F64(self.volts)) {
-            st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+        if let Err(e) = ctx.st.record(&id, Value::F64(self.volts)) {
+            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -854,8 +903,8 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     let neighbor_counts = "HW_ADC_data.channelData[0].counts[1]";
 
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(VoltsModel::new("pin_model", VOLTS)));
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    eng.add_member(VoltsModel::new("pin_model", VOLTS));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
 
     // The ADC's ports were registered during sil_fw_start; the FirmwareMember
     // applied them to the table at add_member. The board config enables 10
@@ -927,7 +976,7 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
 fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     let leaf = cvar("HW_ADC_data.tickCounter");
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
 
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
@@ -945,6 +994,114 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
         "cvar mirror tracks firmware memory (auto-derived, no declaration)",
         tracks && changed,
         format!("table {table_now:?} == memory {mem_now:?}; window {vals:?}"),
+    );
+    rep.absorb(eng.take_logs());
+}
+
+/// A duplex responder model — one struct, both roles: as a [`DuplexPeer`] it answers
+/// each SPI transfer with its current 14-bit angle framed big-endian; as a [`Member`]
+/// it advances that angle every tick and records it as a `vsig`. Its state is its own —
+/// a stand-in AS5048 with no firmware anywhere in the loop.
+struct DialResponder {
+    name: String,
+    angle: u16,
+    step: u16,
+}
+
+impl DuplexPeer for DialResponder {
+    fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+        (self.angle & 0x3FFF).to_be_bytes().to_vec()
+    }
+}
+
+impl Member for DialResponder {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
+        self.angle = self.angle.wrapping_add(self.step);
+        let id = vsig_id(&self.name, "angle").expect("valid vsig id");
+        let _ = ctx.st.record(&id, Value::U32(u32::from(self.angle)));
+    }
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            let _ = st.register(vsig_id(&self.name, "angle").expect("valid vsig id"), None);
+        }
+    }
+}
+
+/// A duplex initiator model: initiates a READ-ANGLE transfer each advance over its own
+/// endpoint and records the decoded angle as a `vsig`.
+struct DialInitiator {
+    name: String,
+    handle: DuplexHandle,
+}
+
+impl Member for DialInitiator {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
+        if let Some(rx) = ctx.duplex_transfer(self.handle, &[0xFF, 0xFF]) {
+            let raw = (u16::from(rx[0]) << 8) | u16::from(rx[1]);
+            let id = vsig_id(&self.name, "read_angle").expect("valid vsig id");
+            let _ = ctx.st.record(&id, Value::U32(u32::from(raw & 0x3FFF)));
+        }
+    }
+    fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+        if on {
+            let _ = st.register(vsig_id(&self.name, "read_angle").expect("valid vsig id"), None);
+        }
+    }
+}
+
+/// Prove the DuplexTransfer primitive is engine-scoped and generic: two instantiation
+/// -side test members couple over `spi:dial_initiator:cs` with **no FirmwareMember in the
+/// transfer**. The initiator initiates mid-advance via [`MemberCtx::duplex_transfer`], the
+/// responder answers synchronously from its own state, and the engine force-records the
+/// exchange under the model-owned endpoint — identical machinery to the firmware path.
+fn check_model_duplex(rep: &mut Report) {
+    const ENDPOINT: &str = "spi:dial_initiator:cs";
+    const STEP: u16 = 0x0100;
+
+    let mut eng = Engine::new(TICK_US);
+    // The responder is a shared member: added by value (idx 0), then linked to the bus
+    // by its handle. It advances before the initiator (idx 1) reads each tick, so its
+    // angle starts at 0x0000 and the initiator sees 0x0100, 0x0200, 0x0300.
+    let responder = eng.add_member(DialResponder { name: "dial_responder".into(), angle: 0x0000, step: STEP });
+    let handle = eng
+        .link_duplex(ENDPOINT, responder)
+        .expect("link the model responder peer");
+    eng.add_member(DialInitiator { name: "dial_initiator".into(), handle });
+
+    // The initiator reads the responder's just-advanced angle: 0x0100, 0x0200, 0x0300.
+    for _ in 0..3 {
+        eng.step().expect("engine step");
+    }
+
+    let read = eng
+        .read("vsig:dial_initiator:read_angle")
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(v_u64);
+    rep.check(
+        "initiator reads the responder's frame synchronously (no firmware)",
+        read == Some(0x0300),
+        format!("vsig:dial_initiator:read_angle = {read:?} (expect {})", 0x0300),
+    );
+
+    // The engine force-recorded the exchange as :tx / :rx events under the endpoint
+    // (one transfer/tick, never deduped -> three entries each).
+    let tx_id = SignalId::parse(&format!("{ENDPOINT}:tx")).expect("valid spi id");
+    let rx_id = SignalId::parse(&format!("{ENDPOINT}:rx")).expect("valid spi id");
+    let n_tx = eng.state().changes(&tx_id).map(|c| c.len()).unwrap_or(0);
+    let n_rx = eng.state().changes(&rx_id).map(|c| c.len()).unwrap_or(0);
+    let last_rx = eng.state().current_value(&rx_id).ok().flatten();
+    rep.check(
+        "engine records model duplex as :tx/:rx events under the model-owned endpoint",
+        (n_tx == 3) && (n_rx == 3) && (last_rx == Some(Value::Bytes(vec![0x03, 0x00]))),
+        format!("{n_tx} tx + {n_rx} rx events; last rx = {last_rx:?}"),
     );
     rep.absorb(eng.take_logs());
 }
@@ -980,13 +1137,13 @@ fn report_performance(fw: &Firmware) {
     let full_us = {
         const STEP: u32 = 25; // stays within the u8 destination byte
         let src = vsig_id("sensor", "counts").expect("valid vsig id");
-        let dst = SignalId::new("cvar", SOURCE, "HW_SPI_data.channels[0].injectedRx[0]", None)
+        let dst = SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None)
             .expect("valid cvar id");
         let mut eng = Engine::new(TICK_US);
-        eng.add_member(Box::new(CountsRampModel::new("sensor", STEP)));
+        eng.add_member(CountsRampModel::new("sensor", STEP));
         let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
-        fwm.register_cvar_in_state_table("HW_SPI_data.channels[0].injectedRx[0]");
-        eng.add_member(Box::new(fwm));
+        fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
+        eng.add_member(fwm);
         eng.add_route(src, dst).expect("add route");
         time_avg_us(WARMUP, N, || {
             eng.step().expect("engine step");
@@ -998,7 +1155,7 @@ fn report_performance(fw: &Firmware) {
     //     flush from the model/route overhead the full step adds.
     let sweep_us = {
         let mut eng = Engine::new(TICK_US);
-        eng.add_member(Box::new(FirmwareMember::new(SOURCE, fw, TICK_US)));
+        eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
         time_avg_us(WARMUP, N, || {
             eng.step().expect("engine step");
         })

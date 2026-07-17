@@ -845,9 +845,10 @@ mod tests {
         rt.add(src, dst.clone()).unwrap();
         let order = plan(&rt);
 
+        let router = crate::duplex::DuplexRouter::new();
         for tick in 1..=3u64 {
             st.set_time(tick * 1_000);
-            model.advance(1_000, &mut st);
+            model.advance(1_000, &mut crate::member::MemberCtx::new(&mut st, &router));
             rt.propagate_zero_latency(&mut st, &order).unwrap();
             assert_eq!(st.current_value(&dst).unwrap(), Some(Value::F64(tick as f64)));
         }

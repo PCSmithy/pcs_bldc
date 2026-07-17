@@ -7,7 +7,9 @@ typedef struct
     void *  lastContext;
     char    lastSigType[32];
     char    lastLocalName[32];
+    char    lastModifier[32];
     char    lastUnit[32];
+    int32_t lastKind;
     int32_t registerReturn;
 
     int32_t lastReadHandle;
@@ -17,6 +19,14 @@ typedef struct
     int32_t lastWriteHandle;
     double  lastWriteValue;
     uint32_t writeCalls;
+
+    int32_t  lastDuplexHandle;
+    uint8_t  lastDuplexTx[8];
+    size_t   lastDuplexTxLen;
+    uint8_t  duplexResp[8];
+    size_t   duplexRespLen;
+    bool     duplexReturn;
+    uint32_t duplexCalls;
 } fakeHooksLog_S;
 
 static fakeHooksLog_S fakeLog;
@@ -37,12 +47,15 @@ static void copyStr(char * const dst, const char * const src, size_t dstSize)
 }
 
 static int32_t fakeRegister(void * context, const char * sigType,
-                            const char * localName, const char * unit)
+                            const char * localName, const char * modifier,
+                            const char * unit, int32_t kind)
 {
     fakeLog.lastContext = context;
     copyStr(fakeLog.lastSigType, sigType, sizeof(fakeLog.lastSigType));
     copyStr(fakeLog.lastLocalName, localName, sizeof(fakeLog.lastLocalName));
+    copyStr(fakeLog.lastModifier, modifier, sizeof(fakeLog.lastModifier));
     copyStr(fakeLog.lastUnit, unit, sizeof(fakeLog.lastUnit));
+    fakeLog.lastKind = kind;
     return fakeLog.registerReturn;
 }
 
@@ -65,6 +78,30 @@ static void fakeWrite(void * context, int32_t handle, double value)
     fakeLog.writeCalls++;
 }
 
+static bool fakeDuplex(void * context, int32_t handle, const uint8_t * tx, size_t txLen,
+                       uint8_t * rx, size_t rxMax, size_t * rxLen)
+{
+    fakeLog.lastContext      = context;
+    fakeLog.lastDuplexHandle = handle;
+    fakeLog.duplexCalls++;
+    fakeLog.lastDuplexTxLen = (txLen < sizeof(fakeLog.lastDuplexTx)) ? txLen : sizeof(fakeLog.lastDuplexTx);
+    for (size_t i = 0U; i < fakeLog.lastDuplexTxLen; i++)
+    {
+        fakeLog.lastDuplexTx[i] = tx[i];
+    }
+    size_t n = 0U;
+    if (fakeLog.duplexReturn)
+    {
+        n = (fakeLog.duplexRespLen < rxMax) ? fakeLog.duplexRespLen : rxMax;
+        for (size_t i = 0U; i < n; i++)
+        {
+            rx[i] = fakeLog.duplexResp[i];
+        }
+    }
+    *rxLen = n;
+    return fakeLog.duplexReturn;
+}
+
 static void installFakeHooks(void)
 {
     const SIL_ports_hooks_S hooks = {
@@ -72,6 +109,7 @@ static void installFakeHooks(void)
         .registerSignal = fakeRegister,
         .readSignal     = fakeRead,
         .writeSignal    = fakeWrite,
+        .duplexTransfer = fakeDuplex,
     };
     SIL_ports_setHooks(&hooks);
 }
@@ -92,7 +130,9 @@ void tearDown(void)
 static void test_no_hooks_register_returns_invalid(void)
 {
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID,
-                            SIL_ports_register("vsig", "adc_in", "V"));
+                            SIL_ports_register("vsig", "adc_in", NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID,
+                            SIL_ports_registerDuplex("spi", "AS5048_1"));
 }
 
 static void test_no_hooks_read_returns_false(void)
@@ -110,6 +150,14 @@ static void test_no_hooks_write_is_noop(void)
     TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.writeCalls);
 }
 
+static void test_no_hooks_duplex_transfer_returns_false(void)
+{
+    const uint8_t tx[2] = { 0xFFU, 0xFFU };
+    uint8_t rx[2]  = { 1U, 2U };
+    size_t  rxLen  = 99U;
+    TEST_ASSERT_FALSE(SIL_ports_duplexTransfer(0, tx, 2U, rx, sizeof(rx), &rxLen));
+}
+
 /* ---- hooks installed: arguments pass straight through ---- */
 
 static void test_register_passes_through(void)
@@ -117,11 +165,25 @@ static void test_register_passes_through(void)
     installFakeHooks();
     fakeLog.registerReturn = 7;
 
-    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "ADC1_IN6", "V"));
+    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "ADC1_IN6", NULL, "V"));
     TEST_ASSERT_EQUAL_PTR(&contextTag, fakeLog.lastContext);
     TEST_ASSERT_EQUAL_STRING("vsig", fakeLog.lastSigType);
     TEST_ASSERT_EQUAL_STRING("ADC1_IN6", fakeLog.lastLocalName);
     TEST_ASSERT_EQUAL_STRING("V", fakeLog.lastUnit);
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_KIND_SCALAR, fakeLog.lastKind);
+}
+
+static void test_register_duplex_passes_kind_no_modifier(void)
+{
+    installFakeHooks();
+    fakeLog.registerReturn = 3;
+
+    TEST_ASSERT_EQUAL_INT32(3, SIL_ports_registerDuplex("spi", "AS5048_1"));
+    TEST_ASSERT_EQUAL_STRING("spi", fakeLog.lastSigType);
+    TEST_ASSERT_EQUAL_STRING("AS5048_1", fakeLog.lastLocalName);
+    TEST_ASSERT_EQUAL_STRING("", fakeLog.lastModifier); // NULL modifier -> empty
+    TEST_ASSERT_EQUAL_STRING("", fakeLog.lastUnit);     // NULL unit -> empty
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_KIND_DUPLEX, fakeLog.lastKind);
 }
 
 static void test_register_rejects_null_names_locally(void)
@@ -129,8 +191,10 @@ static void test_register_rejects_null_names_locally(void)
     installFakeHooks();
     fakeLog.registerReturn = 7;
     // NULL sigType/localName never reach the hook.
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register(NULL, "x", "V"));
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register(NULL, "x", NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", NULL, NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_registerDuplex(NULL, "x"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_registerDuplex("spi", NULL));
 }
 
 static void test_read_passes_through_when_driven(void)
@@ -180,18 +244,59 @@ static void test_write_guards_invalid_handle(void)
     TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.writeCalls);
 }
 
+static void test_duplex_transfer_passes_through(void)
+{
+    installFakeHooks();
+    fakeLog.duplexReturn  = true;
+    fakeLog.duplexResp[0] = 0x90U;
+    fakeLog.duplexResp[1] = 0x00U;
+    fakeLog.duplexRespLen = 2U;
+
+    const uint8_t tx[2] = { 0xFFU, 0xFFU };
+    uint8_t rx[2]  = { 0U, 0U };
+    size_t  rxLen  = 0U;
+    TEST_ASSERT_TRUE(SIL_ports_duplexTransfer(4, tx, 2U, rx, sizeof(rx), &rxLen));
+    TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.duplexCalls);
+    TEST_ASSERT_EQUAL_INT32(4, fakeLog.lastDuplexHandle);
+    TEST_ASSERT_EQUAL_UINT(2U, fakeLog.lastDuplexTxLen);
+    TEST_ASSERT_EQUAL_HEX8(0xFFU, fakeLog.lastDuplexTx[0]);
+    TEST_ASSERT_EQUAL_UINT(2U, rxLen);
+    TEST_ASSERT_EQUAL_HEX8(0x90U, rx[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x00U, rx[1]);
+}
+
+static void test_duplex_transfer_guards_invalid_handle_and_null(void)
+{
+    installFakeHooks();
+    fakeLog.duplexReturn = true;
+
+    const uint8_t tx[2] = { 0xFFU, 0xFFU };
+    uint8_t rx[2]  = { 0U, 0U };
+    size_t  rxLen  = 0U;
+    // Invalid handle / NULL rx / NULL rxLen never reach the hook.
+    TEST_ASSERT_FALSE(SIL_ports_duplexTransfer(SIL_PORTS_HANDLE_INVALID, tx, 2U, rx, sizeof(rx), &rxLen));
+    TEST_ASSERT_FALSE(SIL_ports_duplexTransfer(4, tx, 2U, NULL, sizeof(rx), &rxLen));
+    TEST_ASSERT_FALSE(SIL_ports_duplexTransfer(4, tx, 2U, rx, sizeof(rx), NULL));
+    TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.duplexCalls);
+}
+
 static void test_clearing_hooks_restores_noop_behavior(void)
 {
     installFakeHooks();
     fakeLog.registerReturn = 7;
-    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "x", NULL));
+    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "x", NULL, NULL));
 
     SIL_ports_setHooks(NULL);
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", "x", NULL));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", "x", NULL, NULL));
     double out = 0.0;
     TEST_ASSERT_FALSE(SIL_ports_read(7, &out));
     SIL_ports_write(7, 1.0);
     TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.writeCalls);
+    const uint8_t tx[1] = { 0U };
+    uint8_t rx[1]  = { 0U };
+    size_t  rxLen  = 0U;
+    TEST_ASSERT_FALSE(SIL_ports_duplexTransfer(0, tx, 1U, rx, sizeof(rx), &rxLen));
+    TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.duplexCalls);
 }
 
 int main(void)
@@ -200,13 +305,17 @@ int main(void)
     RUN_TEST(test_no_hooks_register_returns_invalid);
     RUN_TEST(test_no_hooks_read_returns_false);
     RUN_TEST(test_no_hooks_write_is_noop);
+    RUN_TEST(test_no_hooks_duplex_transfer_returns_false);
     RUN_TEST(test_register_passes_through);
+    RUN_TEST(test_register_duplex_passes_kind_no_modifier);
     RUN_TEST(test_register_rejects_null_names_locally);
     RUN_TEST(test_read_passes_through_when_driven);
     RUN_TEST(test_read_false_when_never_driven);
     RUN_TEST(test_read_guards_invalid_handle_and_null_out);
     RUN_TEST(test_write_passes_through);
     RUN_TEST(test_write_guards_invalid_handle);
+    RUN_TEST(test_duplex_transfer_passes_through);
+    RUN_TEST(test_duplex_transfer_guards_invalid_handle_and_null);
     RUN_TEST(test_clearing_hooks_restores_noop_behavior);
     return UNITY_END();
 }

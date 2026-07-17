@@ -3,11 +3,56 @@
 #include "HW_SPI_timeout.h"
 #include "HW_GPIO.h"
 #include "HW_GPIO_sim.h"
+#include "SIL_ports.h"
 #include "unity.h"
 
 // Single-bit HAL-style pin masks for the two GPIO chip-selects used here.
 #define CS1_PIN    (0x04U)   // AS5048_1 -> port C
 #define CS2_PIN    (0x02U)   // AS5048_2 -> port B
+
+// Test-owned SIL_ports hooks double: a linked duplex peer that answers every
+// transfer with a canned frame, exercising the production upcall path. Installed
+// before HW_SPI_init so each channel registers its duplex endpoint against it.
+// With no hooks installed the bus is unlinked and a transfer reads all-ones.
+static uint8_t canned[8];
+static size_t  cannedLen;
+
+static int32_t hookRegister(void * ctx, const char * sigType, const char * localName,
+                            const char * modifier, const char * unit, int32_t kind)
+{
+    (void)ctx; (void)sigType; (void)localName; (void)modifier; (void)unit; (void)kind;
+    return 0; // one valid handle for every endpoint; the tests drive one channel
+}
+
+static bool hookDuplex(void * ctx, int32_t handle, const uint8_t * tx, size_t txLen,
+                       uint8_t * rx, size_t rxMax, size_t * rxLen)
+{
+    (void)ctx; (void)handle; (void)tx; (void)txLen;
+    const size_t n = (cannedLen < rxMax) ? cannedLen : rxMax;
+    for (size_t i = 0U; i < n; i++)
+    {
+        rx[i] = canned[i];
+    }
+    *rxLen = n;
+    return true;
+}
+
+static void installDuplexPeer(const uint8_t * frame, size_t len)
+{
+    cannedLen = (len < sizeof(canned)) ? len : sizeof(canned);
+    for (size_t i = 0U; i < cannedLen; i++)
+    {
+        canned[i] = frame[i];
+    }
+    const SIL_ports_hooks_S hooks = {
+        .context        = NULL,
+        .registerSignal = hookRegister,
+        .readSignal     = NULL,
+        .writeSignal    = NULL,
+        .duplexTransfer = hookDuplex,
+    };
+    SIL_ports_setHooks(&hooks);
+}
 
 // File-scope config the tests build (good baseline) and tweak per case.
 // HW_SPI_init stores a pointer to it, so it must outlive each test — hence
@@ -57,6 +102,7 @@ static void buildGoodConfig(void)
 
 void setUp(void)
 {
+    SIL_ports_setHooks(NULL); // unlinked bus by default; per-test peer opts in
     HW_GPIO_sim_reset();
     cbCount   = 0U;
     cbChannel = HW_SPI_CHANNEL_COUNT;
@@ -64,7 +110,10 @@ void setUp(void)
     buildGoodConfig();
 }
 
-void tearDown(void) {}
+void tearDown(void)
+{
+    SIL_ports_setHooks(NULL);
+}
 
 /* ---- fw~hal_spi_001: init + config validation ---- */
 // [test->fw~hal_spi_001~1]
@@ -148,8 +197,9 @@ static void test_addressed_channel_asserts_only_its_own_cs(void)
     TEST_ASSERT_EQUAL_UINT32(0U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_B, CS2_PIN));
     // Assert then deassert on the addressed line.
     TEST_ASSERT_EQUAL_UINT32(2U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_C, CS1_PIN));
-    // Loopback delivered the data on the addressed channel.
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 2U);
+    // Unlinked bus: MISO reads all-ones on the addressed channel.
+    const uint8_t ones[2] = { 0xFFU, 0xFFU };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ones, rx, 2U);
 }
 
 // [test->fw~hal_spi_002~1]
@@ -163,7 +213,9 @@ static void test_second_channel_on_shared_bus_independent(void)
 
     TEST_ASSERT_EQUAL_UINT32(1U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_2));
     TEST_ASSERT_EQUAL_UINT32(0U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 3U);
+    // Unlinked bus: MISO reads all-ones.
+    const uint8_t ones[3] = { 0xFFU, 0xFFU, 0xFFU };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ones, rx, 3U);
 }
 
 /* ---- fw~hal_spi_003: blocking byte transfers + computed timeout ---- */
@@ -183,27 +235,27 @@ static void test_transmit_moves_exact_length(void)
 }
 
 // [test->fw~hal_spi_003~1]
-static void test_receive_returns_injected_bytes(void)
+static void test_receive_returns_linked_peer_frame(void)
 {
+    uint8_t frame[3] = { 0xDEU, 0xADU, 0xBEU };
+    installDuplexPeer(frame, 3U); // link the peer before init so the channel registers its endpoint
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    uint8_t injected[3] = { 0xDEU, 0xADU, 0xBEU };
-    HW_SPI_sim_setInjectedRx(HW_SPI_CHANNEL_AS5048_1, injected, 3U);
 
     uint8_t rx[3] = { 0U, 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_receive(HW_SPI_CHANNEL_AS5048_1, rx, 3U));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(injected, rx, 3U);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(frame, rx, 3U);
 }
 
 // [test->fw~hal_spi_003~1]
-static void test_transmitReceive_loopback(void)
+static void test_transmitReceive_unlinked_bus_reads_ones(void)
 {
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig)); // no peer linked
 
     uint8_t tx[5] = { 9U, 8U, 7U, 6U, 5U };
     uint8_t rx[5] = { 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmitReceive(HW_SPI_CHANNEL_AS5048_1, tx, rx, 5U));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 5U);
+    const uint8_t ones[5] = { 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ones, rx, 5U);
 }
 
 // [test->fw~hal_spi_003~1]
@@ -390,8 +442,8 @@ int main(void)
     RUN_TEST(test_second_channel_on_shared_bus_independent);
 
     RUN_TEST(test_transmit_moves_exact_length);
-    RUN_TEST(test_receive_returns_injected_bytes);
-    RUN_TEST(test_transmitReceive_loopback);
+    RUN_TEST(test_receive_returns_linked_peer_frame);
+    RUN_TEST(test_transmitReceive_unlinked_bus_reads_ones);
     RUN_TEST(test_software_transfer_timeout_returns_false);
     RUN_TEST(test_timeout_formula);
 

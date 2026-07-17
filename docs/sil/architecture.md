@@ -166,16 +166,24 @@ firmware bursts are instantaneous, with one fidelity trade noted in
 ## Member model
 
 Everything the sim executes is a **`Member`** — the framework's single, uniform
-seam. The [`Engine`](#5-sim-core-rust) holds a `Vec<Box<dyn Member>>` and drives
-each one *only* through this trait, in registration order (deterministic):
+seam. The [`Engine`](#5-sim-core-rust) holds shared members (`Rc<RefCell<dyn
+Member>>`) and drives each one *only* through this trait, in registration order
+(deterministic). `add_member` takes the member **by value** and returns a typed
+handle (`Rc<RefCell<M>>`): ignorable for a plain model, or — when `M` also impls
+`DuplexPeer` — linked straight to a bus so one struct fills both roles.
 
 ```rust
 pub trait Member {
-    fn name(&self) -> &str;                                  // instance name = <source> of its signals
-    fn advance(&mut self, dt_us: u64, st: &mut StateTable);  // one deterministic step
+    fn name(&self) -> &str;                                    // instance name = <source> of its signals
+    fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx);    // one deterministic step
     fn set_enabled(&mut self, on: bool, st: &mut StateTable);
 }
 ```
+
+`MemberCtx` is the initiator seam the engine hands each `advance`: `ctx.st` is the
+State Table (register / record / read), and `ctx.duplex_transfer(handle, tx)` runs a
+synchronous serial exchange against a linked peer (the model-side twin of the
+firmware's C SPI upcall — both drive the engine's one shared `DuplexRouter`).
 
 Members do **not** declare their signals (`signals()`) and are **not** pulled
 (`read()`). Instead a member treats the State Table as its live workspace: it

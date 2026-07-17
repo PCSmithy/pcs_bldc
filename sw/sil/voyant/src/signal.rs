@@ -12,9 +12,20 @@ use thiserror::Error;
 /// Segment names, by index (a future `tool` segment could prepend this).
 const SEGMENT_NAMES: [&str; 4] = ["sig_type", "source", "name", "modifier"];
 
-/// Recognized `sig_type` values. Comms buses (`usb_cdc`/`spi`/…) join as they
-/// land.
-pub const APPROVED_SIG_TYPES: &[&str] = &["cvar", "vsig"];
+/// Recognized `sig_type` values. `spi` is the first comms bus — its transactions
+/// land as `tx`/`rx` event records (`Value::Bytes`); the rest (`usb_cdc`/`i2c`/…)
+/// join as they land.
+pub const APPROVED_SIG_TYPES: &[&str] = &["cvar", "vsig", "spi"];
+
+/// The comms `sig_type`s that carry duplex (request/response) transactions — a
+/// duplex endpoint's `sig_type` must be one of these. `spi` is the first; `i2c` /
+/// `uart` join as their bus drivers land.
+pub const DUPLEX_BUS_SIG_TYPES: &[&str] = &["spi"];
+
+/// Whether `sig_type` names a duplex transaction bus (see [`DUPLEX_BUS_SIG_TYPES`]).
+pub fn is_duplex_bus(sig_type: &str) -> bool {
+    DUPLEX_BUS_SIG_TYPES.contains(&sig_type)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ParseError {
@@ -152,6 +163,11 @@ impl From<u64> for Value {
 impl From<f64> for Value {
     fn from(x: f64) -> Self {
         Value::F64(x)
+    }
+}
+impl From<Vec<u8>> for Value {
+    fn from(x: Vec<u8>) -> Self {
+        Value::Bytes(x)
     }
 }
 

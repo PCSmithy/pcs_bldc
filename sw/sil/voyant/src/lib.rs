@@ -13,8 +13,11 @@
 //!   only unsafe part) and [`FirmwareMember`] (a firmware wrapped as a [`Member`]). A
 //!   "port" is just a Signal the firmware syncs from C — firmware-member vocabulary,
 //!   not a voyant primitive. The internal `Backend` trait is the test-double seam.
-//! - [`member`] — the [`Member`] trait (the one seam the [`Engine`] drives), plus
-//!   [`RampModel`] and [`vsig_id`].
+//! - [`member`] — the [`Member`] trait (the one seam the [`Engine`] drives) + the
+//!   [`MemberCtx`] initiator seam (State Table + duplex access), plus [`RampModel`]
+//!   and [`vsig_id`].
+//! - `duplex` — the engine-owned [`DuplexPeer`]/[`DuplexHandle`] duplex-transaction
+//!   primitive: any initiating member couples to a peer over one shared router.
 //! - [`route`] — the [`RouteTable`]: `source → destination` transport with per-route
 //!   latency (0 = same-tick, 1 = delayed ZOH cut) and suspend/resume for fault injection.
 //! - [`engine`] — the [`Engine`]: sim clock + step loop owning table/routes/members,
@@ -24,6 +27,7 @@
 //! Run modes (fast / realtime pacing) wrap [`Engine::step`] and land in a later chunk.
 
 mod backend;
+mod duplex;
 mod dwarf;
 pub mod engine;
 pub mod log;
@@ -33,9 +37,10 @@ pub mod signal;
 pub mod state_table;
 
 pub use backend::{Firmware, FirmwareMember};
+pub use duplex::{DuplexHandle, DuplexPeer};
 pub use engine::{Engine, EngineError};
 pub use log::{LogEntry, LogLevel, LogRing};
-pub use member::{vsig_id, Member, RampModel};
+pub use member::{vsig_id, Member, MemberCtx, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};
 pub use state_table::{AccessError, StateTable, StateTableConfig, TableError};
