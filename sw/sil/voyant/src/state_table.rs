@@ -128,6 +128,20 @@ enum Zoh {
 }
 
 impl Column {
+    /// Timestamp of the newest sample, O(1); `None` for an empty column.
+    fn last_time(&self) -> Option<u64> {
+        match self {
+            Column::Empty => None,
+            Column::F32(c) => c.times.back().copied(),
+            Column::F64(c) => c.times.back().copied(),
+            Column::I32(c) => c.times.back().copied(),
+            Column::U32(c) => c.times.back().copied(),
+            Column::U64(c) => c.times.back().copied(),
+            Column::Bool(c) => c.times.back().copied(),
+            Column::Boxed(c) => c.back().map(|(t, _)| *t),
+        }
+    }
+
     /// Seed an empty column from the incoming value, choosing the column kind by
     /// its variant (scalars → a typed column; `Enum`/`Bytes` → boxed).
     fn seed(t: u64, value: Value) -> Column {
@@ -614,6 +628,16 @@ impl StateTable {
     /// [`current_value`](Self::current_value)).
     pub(crate) fn current_value_at(&self, idx: usize) -> Option<Value> {
         self.current[idx].clone()
+    }
+
+    /// Sim time of a signal's most recent **accepted change** (its change-log
+    /// tail), O(1). `Ok(None)` = registered but never recorded. Freshness compares
+    /// change times: an epsilon-deduped re-record of the same value does not
+    /// advance this. Pairs with [`current_value`](Self::current_value) for
+    /// last-writer-wins between alternative input signals.
+    pub fn last_change_us(&self, id: &SignalId) -> Result<Option<u64>, TableError> {
+        let idx = self.ensure(id)?;
+        Ok(self.columns[idx].last_time())
     }
 
     /// Value in effect at `time_us` (zero-order hold: the last sample at or
@@ -1201,5 +1225,24 @@ mod tests {
         st.register(id("vsig:m:x"), Some("V")).unwrap();
         st.write("vsig:m:x", 1.5f64).unwrap();
         assert_eq!(st.read("vsig:m:x").unwrap(), Some(Value::F64(1.5)));
+    }
+
+    #[test]
+    fn last_change_us_tracks_accepted_changes_only() {
+        let mut st = StateTable::new();
+        let a = id("vsig:m:a");
+        st.register(a.clone(), None).unwrap();
+        assert_eq!(st.last_change_us(&a).unwrap(), None); // never recorded
+        st.set_time(1_000);
+        st.record(&a, Value::F64(1.0)).unwrap();
+        assert_eq!(st.last_change_us(&a).unwrap(), Some(1_000));
+        // A same-value re-record dedups: the change time does not advance.
+        st.set_time(2_000);
+        st.record(&a, Value::F64(1.0)).unwrap();
+        assert_eq!(st.last_change_us(&a).unwrap(), Some(1_000));
+        // A real change advances it.
+        st.set_time(3_000);
+        st.record(&a, Value::F64(2.0)).unwrap();
+        assert_eq!(st.last_change_us(&a).unwrap(), Some(3_000));
     }
 }
