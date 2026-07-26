@@ -84,6 +84,33 @@ firmware-under-test. Remove it across the board, on every peripheral driver.
 input/output path — sim `HW_ADC` is the first conversion. Removal itself is
 still parked; drivers migrate to ports as they are converted.
 
+**Removal sequence (pinned 2026-07-17; owner: nothing survives indefinitely).**
+A driver's box is checked ONLY when its `HW_<Module>_sim.h` is deleted. Each
+conversion = replacement seam on the production path + Unity suite rewritten
+against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
+
+- ◐ **SPI** — `setInjectedRx` + loopback replaced by DuplexTransfer (sprint
+  stage 2, suite rewritten against a test-owned hooks double), but
+  `HW_SPI_sim.h` still exists: `getLastTx` / CS inspection / tick remain in
+  Unity use. Final sweep: assert TX via the hooks double's own capture, find
+  the CS-observation replacement, then delete the header.
+- ☐ **TIM** — sprint stage 4 (PWM/bridge observation ports): duty/enable/MOE
+  ports replace the `_sim_` waveform inspection; `assertBreak` becomes
+  table-driven injection; delete `HW_TIM_sim.h`.
+- ☐ **GPIO** — sprint stage 6 (button gestures): drive the DWARF-visible input
+  statics via `st.write` (policy already forbids `setInputLevel`); decide the
+  EXTI-trigger seam; delete `HW_GPIO_sim.h`.
+- ☐ **USB** (+ `io/serial` test usage) — with the `usb_cdc`/`teleplot`
+  sig_type item above: comms-entry TX capture replaces the capture getters;
+  delete `HW_USB_sim.h`.
+- ☐ **ADC** (conversion-stall), **DMA**, **OPAMP** — final sweep after sprint
+  stage 7: pick per-capability replacements (test-owned hooks double or DWARF
+  write), rewrite/retire the suites, delete the headers.
+- ☐ **Exit criterion / enforcement:** no `*_sim.h` files remain under
+  `sw/lib/c/shared/hw/`, and a grep for `_sim_` there comes back empty —
+  worth a CI lint line once the last header falls, so the crutch can't grow
+  back.
+
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the
 white-box path instead — DWARF read/write of the sim drivers' statics (and,
