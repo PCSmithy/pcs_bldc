@@ -29,6 +29,9 @@
 //!   bands the checks assert are unaffected. Exists to turn a CI runner into a
 //!   remote debugger for the macOS aarch64 multi-tick cadence anomaly.
 
+mod as5048;
+
+use as5048::As5048Model;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -186,12 +189,16 @@ fn main() -> ExitCode {
     println!("\n-- 10. model<->model duplex over spi (no firmware) --");
     check_model_duplex(&mut rep);
 
+    // --- Check 11: AS5048 encoder model scaffolding -------------------------
+    println!("\n-- 11. AS5048 encoder model scaffolding --");
+    check_as5048_scaffold(&mut rep);
+
     // --- Performance report (phase-isolated, informational) -----------------
     println!("\n-- performance report (phase-isolated, informational) --");
     report_performance(&fw);
 
-    // --- Check 11: shutdown -------------------------------------------------
-    println!("\n-- 11. shutdown --");
+    // --- Check 12: shutdown -------------------------------------------------
+    println!("\n-- 12. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -1102,6 +1109,40 @@ fn check_model_duplex(rep: &mut Report) {
         "engine records model duplex as :tx/:rx events under the model-owned endpoint",
         (n_tx == 3) && (n_rx == 3) && (last_rx == Some(Value::Bytes(vec![0x03, 0x00]))),
         format!("{n_tx} tx + {n_rx} rx events; last rx = {last_rx:?}"),
+    );
+    rep.absorb(eng.take_logs());
+}
+
+/// The AS5048 model scaffolding is wired: both instances register their
+/// commanded-angle inputs + raw output, and answer a transfer with a 2-byte frame
+/// (frame content is the model's business — see `as5048.rs` TODOs).
+fn check_as5048_scaffold(rep: &mut Report) {
+    let mut eng = Engine::new(TICK_US);
+    let motor = eng.add_member(As5048Model::new("as5048_motor"));
+    let _dial = eng.add_member(As5048Model::new("dial"));
+
+    let expected: Vec<String> = ["as5048_motor", "dial"]
+        .iter()
+        .flat_map(|m| {
+            ["angle_deg", "angle_rad", "raw_encoder_ticks"]
+                .iter()
+                .map(move |s| format!("vsig:{m}:{s}"))
+        })
+        .collect();
+    let all_registered = expected
+        .iter()
+        .all(|id| eng.state().signals().any(|s| s.as_str() == *id));
+    rep.check(
+        "both AS5048 instances register angle inputs + raw output",
+        all_registered,
+        format!("{} vsig ids present", expected.len()),
+    );
+
+    let frame = motor.borrow_mut().transfer(&[0xFF, 0xFF]);
+    rep.check(
+        "model answers a transfer with a 2-byte frame",
+        frame.len() == 2,
+        format!("transfer(READ-ANGLE) -> {frame:02X?}"),
     );
     rep.absorb(eng.take_logs());
 }

@@ -47,7 +47,8 @@ driven and asserted purely through the State Table.
   `spi:<ep>:tx` / `:rx` event entries (`Value::Bytes`) for the historian. The
   sim `HW_SPI` `injectedRx` inject + MOSI loopback are removed; an unhandled
   transfer reads `0xFF` (a floating/disconnected bus).
-- ☐ **3. AS5048 encoder model** (instantiation-side) — writable
+- ◐ **3. AS5048 encoder model** (instantiation-side; scaffolding landed —
+  `pcs_bldc_sil/src/as5048.rs`, owner writing the model body) — writable
   `angle_rad`/`angle_deg` inputs; `raw_encoder_ticks` + framed SPI response
   out (14-bit angle, even parity bit 15, error bit 14; the driver reads two
   pipelined frames/tick). Two instances: motor encoder (SPI ch 1) and the
