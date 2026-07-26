@@ -125,6 +125,39 @@ pub enum Value {
 }
 
 impl Value {
+    // Decoders paired with the `From` constructors: extract a native scalar,
+    // coercing within the numeric family; `None` = wrong variant for the ask.
+    // Only the shapes with consumers — add more when a call shape needs them.
+
+    /// Decode to `f32` (`F64` narrows lossily — model working precision).
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Value::F32(x) => Some(*x),
+            Value::F64(x) => Some(*x as f32),
+            _ => None,
+        }
+    }
+
+    /// Decode to `f64` (the float family, losslessly).
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::F32(x) => Some(f64::from(*x)),
+            Value::F64(x) => Some(*x),
+            _ => None,
+        }
+    }
+
+    /// Decode to `u64` (unsigned family + `Bool`; a negative `I32` is `None`).
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Value::U32(x) => Some(u64::from(*x)),
+            Value::U64(x) => Some(*x),
+            Value::I32(x) => u64::try_from(*x).ok(),
+            Value::Bool(b) => Some(u64::from(*b)),
+            _ => None,
+        }
+    }
+
     /// Change comparison for the historian: floats within `epsilon` (absolute),
     /// everything else exact. Different variants always compare unequal.
     pub fn approx_eq(&self, other: &Self, epsilon: f64) -> bool {
@@ -189,6 +222,17 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_decoders_coerce_within_family_and_refuse_across() {
+        assert_eq!(Value::F64(90.0).as_f32(), Some(90.0f32));
+        assert_eq!(Value::F32(1.5).as_f64(), Some(1.5f64));
+        assert_eq!(Value::U32(7).as_u64(), Some(7));
+        assert_eq!(Value::I32(-1).as_u64(), None); // negative refuses, not wraps
+        assert_eq!(Value::Bool(true).as_u64(), Some(1));
+        assert_eq!(Value::U32(7).as_f32(), None); // no cross-family coercion
+        assert_eq!(Value::Bytes(vec![1]).as_f64(), None);
+    }
 
     #[test]
     fn parses_cvar_without_modifier() {
