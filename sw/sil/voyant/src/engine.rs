@@ -49,6 +49,7 @@ use crate::member::{Member, MemberCtx};
 use crate::route::{RouteError, RouteTable};
 use crate::signal::{is_duplex_bus, SignalId, Value};
 use crate::state_table::{AccessError, StateTable};
+use crate::unit::UnitError;
 use std::cell::RefCell;
 use std::rc::Rc;
 use thiserror::Error;
@@ -368,6 +369,18 @@ impl<'b> Engine<'b> {
     /// String-keyed current-value read. Delegates to [`StateTable::read`].
     pub fn read(&self, id: &str) -> Result<Option<Value>, AccessError> {
         self.state.read(id)
+    }
+
+    /// Extend the unit-conversion registry at runtime. Delegates to
+    /// [`StateTable::add_unit`].
+    pub fn add_unit(
+        &mut self,
+        name: &str,
+        dimension: &str,
+        scale: f64,
+        offset: f64,
+    ) -> Result<(), UnitError> {
+        self.state.add_unit(name, dimension, scale, offset)
     }
 
     /// Drain the State Table's buffered log entries (sim-time-stamped warnings /
@@ -888,6 +901,22 @@ mod tests {
             .take_logs()
             .iter()
             .all(|e| !e.message.contains("spi:ghost:cs")));
+    }
+
+    #[test]
+    fn engine_delegates_add_unit_and_unit_ask_write_read() {
+        // A model registers vsig:ramp:value with canonical unit "rad"; the engine's
+        // add_unit / write / read delegates carry the whole unit boundary through.
+        let mut eng = Engine::new(1_000);
+        eng.add_member(RampModel::new("ramp", 0.0, Some("rad")));
+        // A runtime-added unit is usable immediately (deg is a built-in; add a scaled
+        // one to prove the delegate reaches the registry).
+        eng.add_unit("turn", "angle", std::f64::consts::TAU, 0.0).unwrap();
+        eng.write("vsig:ramp:value[deg]", 90.0).unwrap();
+        match eng.read("vsig:ramp:value[turn]").unwrap() {
+            Some(Value::F64(x)) => assert!((x - 0.25).abs() < 1e-9), // 90 deg == 0.25 turn
+            other => panic!("expected converted F64, got {other:?}"),
+        }
     }
 
     // --- test-only helpers on the engine ---------------------------------

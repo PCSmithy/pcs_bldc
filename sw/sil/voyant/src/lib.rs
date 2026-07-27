@@ -35,6 +35,7 @@ pub mod member;
 pub mod route;
 pub mod signal;
 pub mod state_table;
+pub mod unit;
 
 pub use backend::{Firmware, FirmwareMember};
 pub use duplex::{DuplexHandle, DuplexPeer};
@@ -44,3 +45,4 @@ pub use member::{vsig_id, Member, MemberCtx, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};
 pub use state_table::{AccessError, StateTable, StateTableConfig, TableError};
+pub use unit::{UnitError, UnitRegistry};

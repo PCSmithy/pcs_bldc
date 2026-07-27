@@ -81,6 +81,55 @@ Every entry has a canonical key: **`<sig_type>:<source>:<local>[:<modifier>]`**.
 Examples: `cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]`,
 `vsig:motor:phase_u_voltage`, `spi:encoder:rx:decoded`.
 
+### Units (one signal per quantity; conversion at the boundary)
+
+**One physical quantity is ONE signal, stored in ONE canonical unit.** Units
+are never part of a signal's identity — there is no `angle_deg` alongside an
+`angle_rad`, and no unit segment in the key. A caller who wants a different
+unit asks for a *conversion at the table boundary*; the stored history stays
+a single canonical series.
+
+- **Canonical unit = the unit declared at `register(id, Some("rad"))`.** The
+  declaration is load-bearing: it names the unit every stored sample is in.
+  Convention: SI (or the SI-derived natural unit) for dimensioned quantities;
+  signals with no meaningful unit (duty in [0,1], raw counts, flags) register
+  `None` and get no conversion service — bare access only.
+- **The unit ask** rides the string-keyed API as a bracket suffix on the id:
+  `write("vsig:as5048_motor:angle[deg]", 90.0)` converts deg→canonical on the
+  way in; `read("…:angle[deg]")` converts on the way out. The suffix is
+  per-call, parsed off before id resolution — it is never stored and never
+  distinguishes entries. A **bare id operates in the canonical unit.**
+  A trailing **non-numeric** bracket is the unit ask; an **all-digit** bracket
+  (`counts[6]`) is a cvar array index and stays part of the id. Unit names may
+  not start with a digit, so the two never collide.
+- **Conversion registry:** a runtime table `unit → (dimension, scale, offset)`
+  relative to the dimension's base unit; a conversion resolves ask-unit →
+  base → canonical and requires both units to share a dimension. Linear
+  (scale + offset) only — that covers deg/rad, RPM/rad·s⁻¹, mV/V, °C/K.
+  Built-ins ship for the units the sim uses; `add_unit(name, dimension,
+  scale, offset)` extends it at runtime.
+- **Fail loud, never guess:** unknown unit, dimension mismatch
+  (`angle[V]`), a unit ask on a `None`-unit signal, or a conversion against a
+  non-float column is an `Err` — no silent pass-through.
+- **Boundary-only.** Conversion lives exclusively in the string-keyed
+  `write`/`read` layer (tests, scenarios, Python bindings). Routes, the
+  mirror sweep, ports, and members always move canonical values natively —
+  the native-format principle and the typed hot-path lanes are untouched.
+  `cvar`s are whatever unit the firmware chose; the table never infers or
+  converts them (they register `None` unless a human declares otherwise).
+
+Worked example: the encoder model registers `vsig:as5048_motor:angle`
+(canonical `rad`). A test writes `angle[deg] = 90.0`; the table stores
+`1.5708`; the model reads canonical radians; a later
+`read("…:angle[deg]")` returns `90.0`. Coherent by construction — there is
+nothing to keep in sync.
+
+Non-goals (deliberate): no `uom`/dimensional-analysis dependency (runtime
+string-keyed values fight compile-time quantity types; linear conversions
+don't need them); no compound-unit algebra; no hot-path conversion. Future
+(unbuilt): route validation could check dimension compatibility across a
+route's endpoints — the wiring-error class unit metadata exists to catch.
+
 ### Firmware "ports" (ordinary Signals, registered from C)
 
 **"Port" is firmware-member vocabulary, not a voyant concept.** Table-side, a
