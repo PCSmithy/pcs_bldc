@@ -1,18 +1,81 @@
 #include "HW_TIM.h"
-#include "HW_TIM_sim.h"
+#include "SIL_ports.h"
 #include "unity.h"
 
-// Peripheral 1 is a center/up PWM-style timer carrying one complementary
-// output-compare channel; peripheral 2 is a wide free-running time base. Tests
-// tweak the file-scope config then call HW_TIM_init, so it must outlive each
-// test.
+#include <string.h>
+
+// Peripheral 1 is the advanced-control PWM timer carrying three complementary
+// output-compare channels + a break input (hence an MOE latch); peripheral 2 is
+// a wide free-running time base. Tests tweak the file-scope config then call
+// HW_TIM_init, so it must outlive each test. HW_TIM_init fully re-seeds the
+// driver, so each test starts from a clean state by initializing.
 #define PWM_PERIOD     (1000U)
 #define PWM_COMPARE    (400U)
 #define PWM_DEADTIME   (50U)
 
 #define PWM_PERIPH     (HW_TIM_PERIPHERAL_1)
 #define BASE_PERIPH    (HW_TIM_PERIPHERAL_2)
-#define PWM_CH         (HW_TIM_CHANNEL_PWM_U)   // logical channel 0, on PWM_PERIPH
+#define PWM_CH         (HW_TIM_CHANNEL_PWM_U)
+
+// Test-owned SIL_ports hooks double: registerSignal assigns sequential handles
+// and remembers each port's local name; writeSignal records the last value per
+// handle. Installed before HW_TIM_init so the driver's port registrations and
+// publications run through the production seam. With no hooks installed the
+// driver registers nothing and its writes no-op (the standalone-native contract).
+#define MAX_PORTS  (16)
+static char     portName[MAX_PORTS][40];
+static double   portValue[MAX_PORTS];
+static bool     portWritten[MAX_PORTS];
+static int32_t  portCount;
+
+static int32_t hookRegister(void * ctx, const char * sigType, const char * localName,
+                            const char * modifier, const char * unit, int32_t kind)
+{
+    (void)ctx; (void)sigType; (void)modifier; (void)unit; (void)kind;
+    int32_t handle = portCount;
+    if (portCount < MAX_PORTS)
+    {
+        snprintf(portName[handle], sizeof(portName[handle]), "%s", localName);
+        portCount++;
+    }
+    return handle;
+}
+
+static void hookWrite(void * ctx, int32_t handle, double value)
+{
+    (void)ctx;
+    if ((handle >= 0) && (handle < MAX_PORTS))
+    {
+        portValue[handle]   = value;
+        portWritten[handle] = true;
+    }
+}
+
+static void installPortsDouble(void)
+{
+    const SIL_ports_hooks_S hooks = {
+        .context        = NULL,
+        .registerSignal = hookRegister,
+        .readSignal     = NULL,
+        .writeSignal    = hookWrite,
+        .duplexTransfer = NULL,
+    };
+    SIL_ports_setHooks(&hooks);
+}
+
+// Resolve a registered port's handle by its local name; -1 when absent.
+static int32_t portHandle(const char * name)
+{
+    int32_t handle = -1;
+    for (int32_t i = 0; (i < portCount) && (handle < 0); i++)
+    {
+        if (strcmp(portName[i], name) == 0)
+        {
+            handle = i;
+        }
+    }
+    return handle;
+}
 
 static HW_TIM_peripheralConfig_S timPeripherals[HW_TIM_PERIPHERAL_COUNT];
 static HW_TIM_channelConfig_S    timChannels[HW_TIM_CHANNEL_COUNT];
@@ -30,7 +93,7 @@ static void buildGoodConfig(void)
     }
 
     timPeripherals[PWM_PERIPH] = (HW_TIM_peripheralConfig_S){
-        .nameStr          = "TIM_PWM",
+        .nameStr          = "TIM1",
         .prescaler        = 0U,
         .period           = PWM_PERIOD,
         .counterWidthBits = 16U,
@@ -42,35 +105,50 @@ static void buildGoodConfig(void)
         .trgoSource             = HW_TIM_TRGO_UPDATE };
 
     timPeripherals[BASE_PERIPH] = (HW_TIM_peripheralConfig_S){
-        .nameStr          = "TIM_BASE",
+        .nameStr          = "TIM2",
         .prescaler        = 143U,
         .period           = 0xFFFFFFFFU,
         .counterWidthBits = 32U,
         .countDir         = HW_TIM_COUNT_UP };
 
-    // One logical channel: output-compare unit 0 on the PWM peripheral.
-    timChannels[0] = (HW_TIM_channelConfig_S){
-        .peripheral    = PWM_PERIPH,
-        .role          = HW_TIM_ROLE_OUTPUT_COMPARE,
-        .ocUnit        = 0U,
-        .complementary = true,
-        .compare       = PWM_COMPARE,
-        .inactiveLevel = 0U };
+    // Three complementary output-compare channels on the PWM peripheral.
+    timChannels[HW_TIM_CHANNEL_PWM_U] = (HW_TIM_channelConfig_S){
+        .peripheral = PWM_PERIPH, .role = HW_TIM_ROLE_OUTPUT_COMPARE, .ocUnit = 0U,
+        .complementary = true, .compare = PWM_COMPARE, .inactiveLevel = 0U,
+        .channelNameStr = "PWM_U" };
+    timChannels[HW_TIM_CHANNEL_PWM_V] = (HW_TIM_channelConfig_S){
+        .peripheral = PWM_PERIPH, .role = HW_TIM_ROLE_OUTPUT_COMPARE, .ocUnit = 1U,
+        .complementary = true, .compare = PWM_COMPARE, .inactiveLevel = 0U,
+        .channelNameStr = "PWM_V" };
+    timChannels[HW_TIM_CHANNEL_PWM_W] = (HW_TIM_channelConfig_S){
+        .peripheral = PWM_PERIPH, .role = HW_TIM_ROLE_OUTPUT_COMPARE, .ocUnit = 2U,
+        .complementary = true, .compare = PWM_COMPARE, .inactiveLevel = 0U,
+        .channelNameStr = "PWM_W" };
 
     timConfig = (HW_TIM_config_S){
         .peripherals    = timPeripherals,
         .numPeripherals = HW_TIM_PERIPHERAL_COUNT,
         .channels       = timChannels,
-        .numChannels    = 1U };
+        .numChannels    = HW_TIM_CHANNEL_COUNT };
 }
 
 void setUp(void)
 {
-    HW_TIM_sim_reset();
+    SIL_ports_setHooks(NULL); // unlinked by default; port tests opt in
+    for (int32_t i = 0; i < MAX_PORTS; i++)
+    {
+        portName[i][0] = '\0';
+        portValue[i]   = 0.0;
+        portWritten[i] = false;
+    }
+    portCount = 0;
     buildGoodConfig();
 }
 
-void tearDown(void) {}
+void tearDown(void)
+{
+    SIL_ports_setHooks(NULL);
+}
 
 /* ---- fw~hal_tim_001: init + config validation ---- */
 // [test->fw~hal_tim_001~1]
@@ -149,62 +227,7 @@ static void test_init_rejects_bad_ocUnit(void)
     TEST_ASSERT_FALSE(HW_TIM_init(&timConfig));
 }
 
-/* ---- fw~hal_tim_002: counter direction and period ---- */
-// [test->fw~hal_tim_002~1]
-static void test_count_up_and_wrap(void)
-{
-    timPeripherals[PWM_PERIPH].period = 3U;
-    timChannels[0].compare = 0U;   // keep compare <= period
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-
-    uint32_t counter = 0xFFU;
-    HW_TIM_sim_advance(PWM_PERIPH, 2U);
-    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-    TEST_ASSERT_EQUAL_UINT32(2U, counter);
-
-    HW_TIM_sim_advance(PWM_PERIPH, 2U);          // 3 then wrap to 0
-    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-    TEST_ASSERT_EQUAL_UINT32(0U, counter);
-}
-
-// [test->fw~hal_tim_002~1]
-static void test_count_down(void)
-{
-    timPeripherals[PWM_PERIPH].countDir = HW_TIM_COUNT_DOWN;
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));   // counter seeds at period
-
-    uint32_t counter = 0U;
-    HW_TIM_sim_advance(PWM_PERIPH, 3U);
-    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-    TEST_ASSERT_EQUAL_UINT32(PWM_PERIOD - 3U, counter);
-}
-
-// [test->fw~hal_tim_002~1]
-static void test_count_center_triangle(void)
-{
-    timPeripherals[PWM_PERIPH].countDir = HW_TIM_COUNT_CENTER;
-    timPeripherals[PWM_PERIPH].period   = 4U;
-    timChannels[0].compare = 0U;   // keep compare <= period
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-
-    uint32_t counter = 0U;
-    HW_TIM_sim_advance(PWM_PERIPH, 4U);          // ramp up to the top
-    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-    TEST_ASSERT_EQUAL_UINT32(4U, counter);
-
-    HW_TIM_sim_advance(PWM_PERIPH, 4U);          // ramp back down to zero
-    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-    TEST_ASSERT_EQUAL_UINT32(0U, counter);
-}
-
 /* ---- fw~hal_tim_003: free-running counter readout ---- */
-// [test->fw~hal_tim_003~1]
-static void test_getCounter_before_init(void)
-{
-    uint32_t counter = 0U;
-    TEST_ASSERT_FALSE(HW_TIM_getCounter(PWM_PERIPH, &counter));
-}
-
 // [test->fw~hal_tim_003~1]
 static void test_getCounter_out_of_range(void)
 {
@@ -218,6 +241,20 @@ static void test_getCounter_null_out(void)
 {
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
     TEST_ASSERT_FALSE(HW_TIM_getCounter(PWM_PERIPH, NULL));
+}
+
+// [test->fw~hal_tim_003~1]
+static void test_getPeriod_and_peripheral(void)
+{
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    uint32_t period = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getPeriod(PWM_CH, &period));
+    TEST_ASSERT_EQUAL_UINT32(PWM_PERIOD, period);
+
+    HW_TIM_peripheral_E periph = BASE_PERIPH;
+    TEST_ASSERT_TRUE(HW_TIM_getPeripheral(PWM_CH, &periph));
+    TEST_ASSERT_EQUAL_INT(PWM_PERIPH, periph);
 }
 
 /* ---- fw~hal_tim_004: output-compare unit operation ---- */
@@ -243,188 +280,153 @@ static void test_setCompare_above_period_rejected(void)
 static void test_setCompare_out_of_range_channel_rejected(void)
 {
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    // Channel index beyond the configured channel count.
-    TEST_ASSERT_FALSE(HW_TIM_setCompare(HW_TIM_CHANNEL_PWM_V, 100U));
-}
-
-// [test->fw~hal_tim_004~1]
-static void test_output_level_follows_compare_and_enable(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-
-    // Disabled output sits at the inactive level regardless of compare.
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));   // MOE gates the output
-    // counter 0 < compare 400 -> active.
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    HW_TIM_sim_advance(PWM_PERIPH, 500U);        // counter 500 > compare 400
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-}
-
-/* ---- fw~hal_tim_005: complementary outputs + dead-time ---- */
-// [test->fw~hal_tim_005~1]
-static void test_complementary_antiphase(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));   // MOE gates the outputs
-
-    // counter 0 < compare -> primary active, complement inactive.
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getComplementaryLevel(PWM_CH));
-
-    HW_TIM_sim_advance(PWM_PERIPH, 500U);        // counter past compare -> swap
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getComplementaryLevel(PWM_CH));
-}
-
-// [test->fw~hal_tim_005~1]
-static void test_deadtime_configured(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_EQUAL_UINT32(PWM_DEADTIME, HW_TIM_sim_getDeadTime(PWM_PERIPH));
-}
-
-/* ---- fw~hal_tim_006: trigger output ---- */
-// [test->fw~hal_tim_006~1]
-static void test_trgo_on_update(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));   // trgoSource = UPDATE
-    HW_TIM_sim_clearTriggers(PWM_PERIPH);
-
-    HW_TIM_sim_advance(PWM_PERIPH, PWM_PERIOD + 1U); // one full period -> one wrap
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getTriggerCount(PWM_PERIPH));
-}
-
-// [test->fw~hal_tim_006~1]
-static void test_trgo_on_oc_match(void)
-{
-    timPeripherals[PWM_PERIPH].trgoSource = HW_TIM_TRGO_OC_MATCH;
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    HW_TIM_sim_clearTriggers(PWM_PERIPH);
-
-    HW_TIM_sim_advance(PWM_PERIPH, PWM_PERIOD + 1U); // counter crosses compare once
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getTriggerCount(PWM_PERIPH));
-}
-
-/* ---- fw~hal_tim_007: break-input safe-state shutdown ---- */
-// [test->fw~hal_tim_007~1]
-static void test_break_forces_outputs_inactive(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    HW_TIM_sim_assertBreak(PWM_PERIPH, true);
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getComplementaryLevel(PWM_CH));
-
-    // Break release does not restore outputs: they stay inactive until the
-    // master output enable is set again (fw~hal_tim_008).
-    HW_TIM_sim_assertBreak(PWM_PERIPH, false);
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
+    TEST_ASSERT_FALSE(HW_TIM_setCompare(HW_TIM_CHANNEL_COUNT, 100U));
 }
 
 /* ---- fw~hal_tim_008: master output enable ---- */
-
-// Bullet 1: clearing MOE holds every enabled output at its inactive state.
 // [test->fw~hal_tim_008~1]
-static void test_moe_gates_enabled_output(void)
+static void test_moe_set_get(void)
 {
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
 
-    // MOE is commanded OFF at init, so an enabled unit still reads inactive.
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
+    // Commanded OFF at init.
+    bool moe = true;
+    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
+    TEST_ASSERT_FALSE(moe);
 
     TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, false));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getComplementaryLevel(PWM_CH));
-}
-
-// Bullet 2: setting MOE restores outputs per the unchanged per-unit config;
-// the clear leaves compare values and enables intact. The reported state
-// tracks the commanded state with no break asserted.
-// [test->fw~hal_tim_008~1]
-static void test_moe_restore_preserves_config(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
-    TEST_ASSERT_TRUE(HW_TIM_setCompare(PWM_CH, 250U));
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-
-    bool moe = false;
     TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
     TEST_ASSERT_TRUE(moe);
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
 
     TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, false));
     TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
     TEST_ASSERT_FALSE(moe);
-
-    // Per-unit compare survived the gate toggling.
-    uint32_t compare = 0U;
-    TEST_ASSERT_TRUE(HW_TIM_getCompare(PWM_CH, &compare));
-    TEST_ASSERT_EQUAL_UINT32(250U, compare);
-
-    // Re-enabling restores the waveform: counter 0 < compare 250 -> active.
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
 }
 
-// Bullet 3: after a break assertion and release, the reported state reads
-// disabled and outputs stay inactive until MOE is set again.
-// [test->fw~hal_tim_008~1]
-static void test_moe_reads_disabled_after_break(void)
-{
-    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
-    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-
-    bool moe = false;
-    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
-    TEST_ASSERT_TRUE(moe);
-
-    HW_TIM_sim_assertBreak(PWM_PERIPH, true);
-    HW_TIM_sim_assertBreak(PWM_PERIPH, false);
-
-    TEST_ASSERT_TRUE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
-    TEST_ASSERT_FALSE(moe);
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_TIM_sim_getOutputLevel(PWM_CH));
-
-    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_TIM_sim_getOutputLevel(PWM_CH));
-}
-
-// Bullet 4: set, clear, and read on an out-of-range or uninitialized peripheral
-// return false.
 // [test->fw~hal_tim_008~1]
 static void test_moe_error_returns(void)
 {
-    bool moe = false;
-
-    // Uninitialized driver.
-    TEST_ASSERT_FALSE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
-    TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, &moe));
-
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
 
+    bool moe = false;
     // Out-of-range peripheral.
     TEST_ASSERT_FALSE(HW_TIM_setMainOutputEnabled(HW_TIM_PERIPHERAL_COUNT, true));
     TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(HW_TIM_PERIPHERAL_COUNT, &moe));
-
     // NULL out-pointer.
     TEST_ASSERT_FALSE(HW_TIM_getMainOutputEnabled(PWM_PERIPH, NULL));
+}
+
+// clearBreakFlags succeeds for a valid peripheral; firmware calls it to drop a
+// power-up latch. MOE is untouched.
+// [test->fw~hal_tim_008~1]
+static void test_clearBreakFlags(void)
+{
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_clearBreakFlags(PWM_PERIPH));
+    TEST_ASSERT_FALSE(HW_TIM_clearBreakFlags(HW_TIM_PERIPHERAL_COUNT));
+}
+
+/* ---- PWM/bridge observation ports ---- */
+
+// Every named channel registers a duty + enable port, and the advanced-control
+// peripheral registers one MOE port — seven in all.
+static void test_ports_registered(void)
+{
+    installPortsDouble();
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    TEST_ASSERT_EQUAL_INT32(7, portCount);
+    const char * const expected[7] = {
+        "PWM_U_duty", "PWM_U_enabled",
+        "PWM_V_duty", "PWM_V_enabled",
+        "PWM_W_duty", "PWM_W_enabled",
+        "TIM1_MOE" };
+    for (size_t i = 0U; i < 7U; i++)
+    {
+        TEST_ASSERT_TRUE_MESSAGE(portHandle(expected[i]) >= 0, expected[i]);
+    }
+}
+
+// A NULL channelNameStr registers no ports; the timebase (no break input) gets
+// no MOE port.
+static void test_unnamed_channel_registers_no_ports(void)
+{
+    installPortsDouble();
+    timChannels[HW_TIM_CHANNEL_PWM_V].channelNameStr = NULL;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    TEST_ASSERT_TRUE(portHandle("PWM_V_duty") < 0);
+    TEST_ASSERT_TRUE(portHandle("PWM_V_enabled") < 0);
+    TEST_ASSERT_TRUE(portHandle("TIM2_MOE") < 0);
+    TEST_ASSERT_EQUAL_INT32(5, portCount); // 2 named channels + 1 MOE
+}
+
+// Init publishes the dark-bridge boot state: every duty and enable at 0, MOE 0.
+// The dark bridge seeds compare 0 (duty 0); enables and MOE start off.
+static void test_boot_state_published_dark(void)
+{
+    installPortsDouble();
+    for (size_t ch = 0U; ch < HW_TIM_CHANNEL_COUNT; ch++)
+    {
+        timChannels[ch].compare = 0U;
+    }
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    const char * const zeroPorts[7] = {
+        "PWM_U_duty", "PWM_U_enabled",
+        "PWM_V_duty", "PWM_V_enabled",
+        "PWM_W_duty", "PWM_W_enabled",
+        "TIM1_MOE" };
+    for (size_t i = 0U; i < 7U; i++)
+    {
+        const int32_t h = portHandle(zeroPorts[i]);
+        TEST_ASSERT_TRUE_MESSAGE(h >= 0, zeroPorts[i]);
+        TEST_ASSERT_TRUE_MESSAGE(portWritten[h], zeroPorts[i]);
+        TEST_ASSERT_TRUE_MESSAGE(portValue[h] == 0.0, zeroPorts[i]);
+    }
+}
+
+// setCompare publishes the normalized duty (compare / period); raw counts never
+// cross the boundary.
+static void test_setCompare_publishes_normalized_duty(void)
+{
+    installPortsDouble();
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    TEST_ASSERT_TRUE(HW_TIM_setCompare(PWM_CH, PWM_PERIOD / 4U)); // 0.25
+    const int32_t h = portHandle("PWM_U_duty");
+    TEST_ASSERT_TRUE(h >= 0);
+    TEST_ASSERT_TRUE(portValue[h] == 0.25);
+}
+
+// setOutputEnabled publishes the per-phase enable as 0/1.
+static void test_setOutputEnabled_publishes_enable(void)
+{
+    installPortsDouble();
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, true));
+    const int32_t h = portHandle("PWM_U_enabled");
+    TEST_ASSERT_TRUE(h >= 0);
+    TEST_ASSERT_TRUE(portValue[h] == 1.0);
+
+    TEST_ASSERT_TRUE(HW_TIM_setOutputEnabled(PWM_CH, false));
+    TEST_ASSERT_TRUE(portValue[h] == 0.0);
+}
+
+// setMainOutputEnabled publishes the master output enable as 0/1.
+static void test_setMainOutputEnabled_publishes_moe(void)
+{
+    installPortsDouble();
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, true));
+    const int32_t h = portHandle("TIM1_MOE");
+    TEST_ASSERT_TRUE(h >= 0);
+    TEST_ASSERT_TRUE(portValue[h] == 1.0);
+
+    TEST_ASSERT_TRUE(HW_TIM_setMainOutputEnabled(PWM_PERIPH, false));
+    TEST_ASSERT_TRUE(portValue[h] == 0.0);
 }
 
 int main(void)
@@ -443,31 +445,24 @@ int main(void)
     RUN_TEST(test_init_rejects_channel_bad_peripheral);
     RUN_TEST(test_init_rejects_bad_ocUnit);
 
-    RUN_TEST(test_count_up_and_wrap);
-    RUN_TEST(test_count_down);
-    RUN_TEST(test_count_center_triangle);
-
-    RUN_TEST(test_getCounter_before_init);
     RUN_TEST(test_getCounter_out_of_range);
     RUN_TEST(test_getCounter_null_out);
+    RUN_TEST(test_getPeriod_and_peripheral);
 
     RUN_TEST(test_setCompare_readback);
     RUN_TEST(test_setCompare_above_period_rejected);
     RUN_TEST(test_setCompare_out_of_range_channel_rejected);
-    RUN_TEST(test_output_level_follows_compare_and_enable);
 
-    RUN_TEST(test_complementary_antiphase);
-    RUN_TEST(test_deadtime_configured);
-
-    RUN_TEST(test_trgo_on_update);
-    RUN_TEST(test_trgo_on_oc_match);
-
-    RUN_TEST(test_break_forces_outputs_inactive);
-
-    RUN_TEST(test_moe_gates_enabled_output);
-    RUN_TEST(test_moe_restore_preserves_config);
-    RUN_TEST(test_moe_reads_disabled_after_break);
+    RUN_TEST(test_moe_set_get);
     RUN_TEST(test_moe_error_returns);
+    RUN_TEST(test_clearBreakFlags);
+
+    RUN_TEST(test_ports_registered);
+    RUN_TEST(test_unnamed_channel_registers_no_ports);
+    RUN_TEST(test_boot_state_published_dark);
+    RUN_TEST(test_setCompare_publishes_normalized_duty);
+    RUN_TEST(test_setOutputEnabled_publishes_enable);
+    RUN_TEST(test_setMainOutputEnabled_publishes_moe);
 
     return UNITY_END();
 }

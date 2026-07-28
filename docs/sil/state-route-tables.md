@@ -214,6 +214,12 @@ exist.
   input (local name = the channel config's `inputNameStr`, unit `V`). A driven
   port commands that input's pin voltage; an undriven one keeps the synthetic
   ramp.
+- **Output ports** publish driver-produced state out of the firmware. The sim
+  `HW_TIM` is the first consumer: it registers one duty + one enable port per PWM
+  channel plus a per-peripheral master output enable
+  (`PWM_{U,V,W}_{duty,enabled}`, `TIM1_MOE`), publishing the commanded bridge
+  state (normalized duty ∈ [0,1], 0/1 flags) event-driven from its setters — the
+  D6 route source a motor model consumes.
 
 ### Comms entries (the framework is the wire)
 

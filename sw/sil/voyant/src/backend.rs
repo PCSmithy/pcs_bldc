@@ -2060,6 +2060,52 @@ mod tests {
         assert_eq!(st.current_value(&late).unwrap(), None);
     }
 
+    /// A pure-output mock: its "firmware" unconditionally writes a fixed value to
+    /// its one output port each tick, isolating the C-write → drain → table-record
+    /// path (the D6 route source a motor model consumes) with no input driving it.
+    #[derive(Default)]
+    struct OutPortMock {
+        ports: PortState,
+        value: f64,
+    }
+
+    impl Backend for OutPortMock {
+        fn advance_tick(&self) {
+            self.ports.inner.borrow_mut().write(0, self.value);
+        }
+        fn read_cvar(&self, _path: &str) -> Value {
+            Value::U32(0)
+        }
+        fn write_cvar(&self, _path: &str, _v: &Value) {}
+        fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
+            let inner = self.ports.inner.borrow();
+            inner.defs.get(from..).map(<[PortDef]>::to_vec).unwrap_or_default()
+        }
+        fn drain_port_writes(&self) -> Vec<(i32, f64)> {
+            std::mem::take(&mut self.ports.inner.borrow_mut().writes)
+        }
+    }
+
+    #[test]
+    fn output_port_write_lands_in_table_after_advance() {
+        // A registered output port the firmware writes each tick: the value reaches
+        // its table entry after the member's out-sync drain — the D6 source path a
+        // motor model consumes. No input, no route: just C write -> drain -> record.
+        let mock = OutPortMock { value: 0.75, ..Default::default() };
+        mock.ports.inner.borrow_mut().register("vsig", "duty", None, None, PortKind::Scalar);
+        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+
+        let duty = SignalId::parse("vsig:dut:duty").unwrap();
+        // Registered but not yet recorded before the first tick.
+        assert_eq!(st.current_value(&duty).unwrap(), None);
+
+        st.set_time(1_000);
+        adv(&mut fm, 1_000, &mut st);
+        assert_eq!(st.current_value(&duty).unwrap(), Some(Value::F64(0.75)));
+    }
+
     #[test]
     fn trampolines_roundtrip_the_c_abi() {
         // Drive the extern "C" trampolines exactly as the C helper does.

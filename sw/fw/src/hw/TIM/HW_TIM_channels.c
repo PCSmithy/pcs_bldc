@@ -23,6 +23,9 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         .role       = HW_TIM_ROLE_OUTPUT_COMPARE,
         .ocUnit     = 0U,
         HW_TIM_CUBEMX_OC_TIM1_CH1
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr = "PWM_U",
+#endif
     },
     [HW_TIM_CHANNEL_PWM_V] =
     {
@@ -30,6 +33,9 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         .role       = HW_TIM_ROLE_OUTPUT_COMPARE,
         .ocUnit     = 1U,
         HW_TIM_CUBEMX_OC_TIM1_CH2
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr = "PWM_V",
+#endif
     },
     [HW_TIM_CHANNEL_PWM_W] =
     {
@@ -37,6 +43,9 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         .role       = HW_TIM_ROLE_OUTPUT_COMPARE,
         .ocUnit     = 2U,
         HW_TIM_CUBEMX_OC_TIM1_CH3
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr = "PWM_W",
+#endif
     },
 };
 

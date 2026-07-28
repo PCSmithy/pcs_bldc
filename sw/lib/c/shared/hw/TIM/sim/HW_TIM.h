@@ -64,6 +64,7 @@ typedef struct
     bool                 complementary; // models the paired CHxN line
     uint32_t             compare;       // initial compare value, raw counts
     uint32_t             inactiveLevel; // output level (0/1) while disabled or idle
+    char *               channelNameStr; // SIL port base name; NULL registers no ports
 } HW_TIM_channelConfig_S;
 
 typedef struct

@@ -170,12 +170,16 @@ fn main() -> ExitCode {
     println!("\n-- 11. AS5048 encoder model --");
     check_as5048_model(&mut rep);
 
+    // --- Check 12: PWM/bridge observation ports -----------------------------
+    println!("\n-- 12. PWM/bridge observation ports --");
+    check_pwm_ports(&fw, &mut rep);
+
     // --- Performance report (phase-isolated, informational) -----------------
     println!("\n-- performance report (phase-isolated, informational) --");
     report_performance(&fw);
 
-    // --- Check 12: shutdown -------------------------------------------------
-    println!("\n-- 12. shutdown --");
+    // --- Check 13: shutdown -------------------------------------------------
+    println!("\n-- 13. shutdown --");
     fw.shutdown();
     rep.check("shutdown", true, "sil_fw_shutdown() returned cleanly".into());
 
@@ -879,18 +883,19 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     eng.add_member(VoltsModel::new("pin_model", VOLTS));
     eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
 
-    // The ADC's ports were registered during sil_fw_start; the FirmwareMember
-    // applied them to the table at add_member. The board config enables 10
-    // regular inputs (5 per ADC), so 10 ports exist under this member's name.
+    // The sim drivers register their ports during sil_fw_start; the FirmwareMember
+    // applied them to the table at add_member. Filter to the ADC-named input ports:
+    // the board config enables 10 regular inputs (5 per ADC), so 10 exist under this
+    // member's name (the TIM PWM/bridge ports register under their own names).
     let n_ports = eng
         .state()
         .signals()
-        .filter(|s| (s.sig_type() == "vsig") && (s.source() == SOURCE))
+        .filter(|s| (s.sig_type() == "vsig") && (s.source() == SOURCE) && s.name().starts_with("ADC"))
         .count();
     rep.check(
         "sim ADC registered one input port per enabled input",
         n_ports == 10,
-        format!("{n_ports} vsig:{SOURCE}:* port(s) in the table (expect 10)"),
+        format!("{n_ports} vsig:{SOURCE}:ADC* port(s) in the table (expect 10)"),
     );
 
     // Route the model's volts into the port (native format: volts -> volts).
@@ -1212,6 +1217,66 @@ fn check_as5048_model(rep: &mut Report) {
             "skipped: angle signal not registered (fix the registration first)".into(),
         );
     }
+    rep.absorb(eng.take_logs());
+}
+
+/// The sim `HW_TIM` publishes the firmware's commanded bridge state as output ports
+/// — normalized per-phase duty, per-phase enable, and the master output enable (the
+/// D6 route source a motor model consumes). The firmware boots the bridge dark, so
+/// after a few ticks every port reads 0.0: registration + the dark boot state are
+/// what this check pins. Live tracking waits on the stage-6/7 gate-driver bring-up
+/// that lets drive engage, so it is deliberately not asserted here.
+fn check_pwm_ports(fw: &Firmware, rep: &mut Report) {
+    const PORTS: [&str; 7] = [
+        "PWM_U_duty", "PWM_V_duty", "PWM_W_duty",
+        "PWM_U_enabled", "PWM_V_enabled", "PWM_W_enabled",
+        "TIM1_MOE",
+    ];
+
+    let mut eng = Engine::new(TICK_US);
+    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+
+    // Registered during sil_fw_start, applied to the table at add_member.
+    let missing: Vec<String> = PORTS
+        .iter()
+        .map(|p| format!("vsig:{SOURCE}:{p}"))
+        .filter(|id| !eng.state().signals().any(|s| s.as_str() == id))
+        .collect();
+    rep.check(
+        "sim HW_TIM registers 7 PWM/bridge observation ports",
+        missing.is_empty(),
+        if missing.is_empty() {
+            format!("all present: {PORTS:?}")
+        } else {
+            format!("missing: {missing:?}")
+        },
+    );
+
+    // app_motorControl re-commands the dark bridge every tick, so the ports publish
+    // 0 through the production setters — read them back after a few steps.
+    for _ in 0..5 {
+        eng.step().expect("engine step");
+    }
+    let wrong: Vec<String> = PORTS
+        .iter()
+        .filter_map(|p| {
+            let id = format!("vsig:{SOURCE}:{p}");
+            let v = eng.read(&id).ok().flatten().as_ref().and_then(Value::as_f64);
+            match v {
+                Some(0.0) => None,
+                other => Some(format!("{p}={other:?}")),
+            }
+        })
+        .collect();
+    rep.check(
+        "PWM/bridge ports read the dark-bridge boot state (duty/enable/MOE = 0)",
+        wrong.is_empty(),
+        if wrong.is_empty() {
+            "all 7 ports = 0.0 (bridge dark)".into()
+        } else {
+            format!("non-zero: {wrong:?}")
+        },
+    );
     rep.absorb(eng.take_logs());
 }
 

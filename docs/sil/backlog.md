@@ -94,9 +94,17 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   `HW_SPI_sim.h` still exists: `getLastTx` / CS inspection / tick remain in
   Unity use. Final sweep: assert TX via the hooks double's own capture, find
   the CS-observation replacement, then delete the header.
-- ☐ **TIM** — sprint stage 4 (PWM/bridge observation ports): duty/enable/MOE
-  ports replace the `_sim_` waveform inspection; `assertBreak` becomes
-  table-driven injection; delete `HW_TIM_sim.h`.
+- ☑ **TIM** — sprint stage 4 (PWM/bridge observation ports): duty/enable/MOE
+  output ports replace the `_sim_` waveform inspection; break injection is a
+  table write to the DWARF-visible MOE static. `HW_TIM_sim.h` and the whole
+  carrier/waveform machinery (`HW_TIM_sim_advance`, output/complementary level
+  queries, dead-time + trigger-count getters, `assertBreak`, and the counter
+  ramp / centerGoingUp / ocConfigured / triggerCount state that only fed them)
+  are deleted; `HW_TIM_getCounter` (TIM2 timebase) and `HW_TIM_clearBreakFlags`
+  stay (runtime consumers). The Unity suite is rewritten against a test-owned
+  `SIL_ports_hooks_S` double (registration + duty/enable/MOE publication); the
+  waveform/complementary/dead-time/TRGO/`assertBreak`/counter-direction tests
+  are retired (the stage-7 closed loop is their replacement coverage).
 - ☐ **GPIO** — sprint stage 6 (button gestures): drive the DWARF-visible input
   statics via `st.write` (policy already forbids `setInputLevel`); decide the
   EXTI-trigger seam; delete `HW_GPIO_sim.h`.

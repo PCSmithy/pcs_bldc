@@ -56,9 +56,14 @@ driven and asserted purely through the State Table.
   (`write angle[deg]=90` → telemetry `90.00`), the dial idles at 0 —
   its demand path (`st.write("vsig:dial:angle[deg]", …)`) is exercised
   in stage 6/7.
-- ☐ **4. PWM/bridge observation ports** — sim `HW_TIM` publishes normalized
-  per-phase duty + per-phase enable + MOE as output ports (the D6 route
-  source; duty ∈ [0,1], never raw CCR/ARR).
+- ☑ **4. PWM/bridge observation ports** — sim `HW_TIM` publishes the commanded
+  bridge state as output ports (the D6 route source): normalized per-phase duty
+  (compare/period ∈ [0,1]), per-phase enable, and one master output enable
+  (`vsig:pcs_bldc:PWM_{U,V,W}_{duty,enabled}` + `TIM1_MOE`, all f64 0/1 for
+  flags). Publication is event-driven from the setters; raw CCR/ARR never crosses
+  the boundary. `HW_TIM_sim.h` + the carrier/waveform sim machinery are deleted;
+  the Unity suite exercises the production seam via a test-owned hooks double.
+  Suite check 12 pins registration + the dark-bridge boot state.
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +
@@ -67,7 +72,9 @@ driven and asserted purely through the State Table.
 - ☐ **6. Feedback + harness models** — current-sense model driving the
   existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
   every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
-  gestures via sim GPIO.
+  gestures via sim GPIO. **Prerequisite: the sim TIM2 timebase** — the sim
+  counter must advance with sim time (D9); today it is frozen, so
+  `lib_timer` elapsed time never moves (see the trap below).
 - ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
   → dial + button tap → assert the sector sequence advances, the rotor spins,
   currents stay under trip, telemetry reports motion; fault-injection
@@ -85,6 +92,10 @@ forgotten):
 - Drive stays blocked until `dev_gateDriver_isOperational()`: the sim I2C
   STATUS register must be seeded AND `task_200ms` must have completed a
   configure+status pass (first pass lands within ~200–400 ticks).
+- **The sim TIM2 counter is frozen** (nothing advances it at runtime), so
+  `lib_timer` elapsed time never moves in SIL — the 500 ms alignment dwell
+  never completes and `dev_switch` tap/hold gestures never classify. Fix
+  before stage 6/7: advance the sim timebase counter with sim time (D9).
 
 **Deferred** (owner, 2026-07-12): **D8 interrupt controller** — the current
 control path is entirely cooperative in `task_1ms`, so D8 isn't needed until

@@ -1,31 +1,43 @@
 /* Includes */
 
+#include <stdio.h>
+
 #include "lib_types.h"
 
 #include "HW_TIM.h"
-#include "HW_TIM_sim.h"
+#include "SIL_ports.h"
 
 /* Defines */
+
+// Largest SIL port id segment the driver formats (<channelNameStr>_enabled).
+#define HW_TIM_SIM_PORT_NAME_MAX  (40U)
 
 /* Typedefs */
 
 typedef struct
 {
     uint32_t counter;
-    bool     centerGoingUp;                            // direction within a center-aligned ramp
     uint32_t compare[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     bool     outputEnabled[HW_TIM_OC_UNITS_PER_PERIPHERAL];
-    bool     ocConfigured[HW_TIM_OC_UNITS_PER_PERIPHERAL];  // a logical channel owns this unit
     // MOE latch gating every enabled output. Commanded OFF at init; a break
-    // assertion clears it and it stays clear (no auto-restore) until set again.
+    // clears it via a table write to this static and it stays clear until
+    // HW_TIM_setMainOutputEnabled sets it again.
     bool     mainOutputEnabled;
-    uint32_t triggerCount;
 } HW_TIM_peripheralData_S;
 
 typedef struct
 {
     const HW_TIM_config_S * config;
     HW_TIM_peripheralData_S peripheralData[HW_TIM_PERIPHERAL_COUNT];
+
+    // SIL output-port handles (SIL_PORTS_HANDLE_INVALID when unregistered): the
+    // commanded bridge state a motor model consumes — normalized per-phase duty
+    // + per-phase enable per logical channel, one master output enable per
+    // advanced-control peripheral. Publication is event-driven from the setters.
+    int32_t dutyHandle[HW_TIM_CHANNEL_COUNT];
+    int32_t enabledHandle[HW_TIM_CHANNEL_COUNT];
+    int32_t moeHandle[HW_TIM_PERIPHERAL_COUNT];
+
     bool initialized;
 } HW_TIM_data_S;
 
@@ -40,7 +52,9 @@ static uint32_t HW_TIM_private_maxForWidth(uint32_t widthBits);
 static bool HW_TIM_private_validatePeripheral(const HW_TIM_peripheralConfig_S * const peripheralConfig);
 static bool HW_TIM_private_validateChannel(const HW_TIM_config_S * const config,
                                            const HW_TIM_channelConfig_S * const channelConfig);
-static uint32_t HW_TIM_private_activeLevel(uint32_t inactiveLevel);
+static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel);
+static void HW_TIM_private_publishEnabled(HW_TIM_channels_E channel);
+static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral);
 
 /* Private Function Definitions */
 
@@ -52,11 +66,6 @@ static uint32_t HW_TIM_private_maxForWidth(uint32_t widthBits)
         max = (1UL << widthBits) - 1UL;
     }
     return max;
-}
-
-static uint32_t HW_TIM_private_activeLevel(uint32_t inactiveLevel)
-{
-    return (inactiveLevel != 0U) ? 0U : 1U;
 }
 
 static bool HW_TIM_private_validatePeripheral(const HW_TIM_peripheralConfig_S * const peripheralConfig)
@@ -93,12 +102,38 @@ static bool HW_TIM_private_validateChannel(const HW_TIM_config_S * const config,
     return valid;
 }
 
+// Publish a logical channel's normalized duty (compare / period ∈ [0,1]) on its
+// output port. Null-safe: an unnamed channel's handle stays invalid and the
+// write no-ops. Raw counts never cross the boundary.
+static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel)
+{
+    const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
+    const HW_TIM_peripheral_E peripheral = channelConfig->peripheral;
+    const uint32_t period  = data->config->peripherals[peripheral].period;
+    const uint32_t compare = data->peripheralData[peripheral].compare[channelConfig->ocUnit];
+    const double duty = (period > 0U) ? ((double)compare / (double)period) : 0.0;
+    SIL_ports_write(data->dutyHandle[channel], duty);
+}
+
+// Publish a logical channel's output enable as 0.0/1.0.
+static void HW_TIM_private_publishEnabled(HW_TIM_channels_E channel)
+{
+    const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
+    const bool enabled = data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit];
+    SIL_ports_write(data->enabledHandle[channel], enabled ? 1.0 : 0.0);
+}
+
+// Publish a peripheral's master output enable as 0.0/1.0.
+static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral)
+{
+    const bool enabled = data->peripheralData[peripheral].mainOutputEnabled;
+    SIL_ports_write(data->moeHandle[peripheral], enabled ? 1.0 : 0.0);
+}
+
 /* Public Function Definitions */
 
 // [impl->fw~hal_tim_001~1]
-// [impl->fw~hal_tim_002~1]
 // [impl->fw~hal_tim_005~1]
-// [impl->fw~hal_tim_006~1]
 // [impl->fw~hal_tim_007~1]
 bool HW_TIM_init(const HW_TIM_config_S * const config)
 {
@@ -122,28 +157,64 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
         if (valid)
         {
             data->config = config;
+            for (size_t p = 0U; p < HW_TIM_PERIPHERAL_COUNT; p++)
+            {
+                data->peripheralData[p] = (HW_TIM_peripheralData_S){ 0 };
+                data->moeHandle[p] = SIL_PORTS_HANDLE_INVALID;
+            }
+            for (size_t ch = 0U; ch < HW_TIM_CHANNEL_COUNT; ch++)
+            {
+                data->dutyHandle[ch]    = SIL_PORTS_HANDLE_INVALID;
+                data->enabledHandle[ch] = SIL_PORTS_HANDLE_INVALID;
+            }
+
             for (size_t p = 0U; p < config->numPeripherals; p++)
             {
                 const HW_TIM_peripheralConfig_S * const peripheralConfig = &config->peripherals[p];
-                HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[p];
-
-                *peripheralData = (HW_TIM_peripheralData_S){ 0 };
-                peripheralData->centerGoingUp = true;
-                peripheralData->counter =
+                data->peripheralData[p].counter =
                     (peripheralConfig->countDir == HW_TIM_COUNT_DOWN) ? peripheralConfig->period : 0U;
+
+                // The advanced-control peripheral (the one with a break input,
+                // hence an MOE latch) publishes a master-output-enable port,
+                // named from its peripheral name string.
+                if (peripheralConfig->hasBreakInput && (peripheralConfig->nameStr != NULL))
+                {
+                    char name[HW_TIM_SIM_PORT_NAME_MAX];
+                    (void)snprintf(name, sizeof(name), "%s_MOE", peripheralConfig->nameStr);
+                    data->moeHandle[p] = SIL_ports_register("vsig", name, NULL, NULL);
+                }
             }
 
-            // Seed each logical channel's initial compare into its peripheral's
-            // per-unit slot and mark the unit configured.
+            // Seed each logical channel's initial compare and register its duty +
+            // enable ports (native format: normalized duty, 0/1 enable).
             for (size_t ch = 0U; ch < config->numChannels; ch++)
             {
                 const HW_TIM_channelConfig_S * const channelConfig = &config->channels[ch];
-                HW_TIM_peripheralData_S * const peripheralData =
-                    &data->peripheralData[channelConfig->peripheral];
-                peripheralData->compare[channelConfig->ocUnit] = channelConfig->compare;
-                peripheralData->ocConfigured[channelConfig->ocUnit] = true;
+                data->peripheralData[channelConfig->peripheral].compare[channelConfig->ocUnit] =
+                    channelConfig->compare;
+
+                if (channelConfig->channelNameStr != NULL)
+                {
+                    char name[HW_TIM_SIM_PORT_NAME_MAX];
+                    (void)snprintf(name, sizeof(name), "%s_duty", channelConfig->channelNameStr);
+                    data->dutyHandle[ch] = SIL_ports_register("vsig", name, NULL, NULL);
+                    (void)snprintf(name, sizeof(name), "%s_enabled", channelConfig->channelNameStr);
+                    data->enabledHandle[ch] = SIL_ports_register("vsig", name, NULL, NULL);
+                }
             }
             data->initialized = true;
+
+            // Publish the boot state (bridge dark: duty 0, enables off, MOE off).
+            // The writes buffer in the framework until the first out-sync.
+            for (size_t ch = 0U; ch < config->numChannels; ch++)
+            {
+                HW_TIM_private_publishDuty((HW_TIM_channels_E)ch);
+                HW_TIM_private_publishEnabled((HW_TIM_channels_E)ch);
+            }
+            for (size_t p = 0U; p < config->numPeripherals; p++)
+            {
+                HW_TIM_private_publishMoe((HW_TIM_peripheral_E)p);
+            }
             ret = true;
         }
     }
@@ -207,6 +278,7 @@ bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts)
         if (counts <= data->config->peripherals[peripheral].period)
         {
             data->peripheralData[peripheral].compare[channelConfig->ocUnit] = counts;
+            HW_TIM_private_publishDuty(channel);
             ret = true;
         }
     }
@@ -239,6 +311,7 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
     {
         const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
         data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit] = enabled;
+        HW_TIM_private_publishEnabled(channel);
         ret = true;
     }
     return ret;
@@ -253,6 +326,7 @@ bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
         ((size_t)peripheral < data->config->numPeripherals))
     {
         data->peripheralData[peripheral].mainOutputEnabled = enabled;
+        HW_TIM_private_publishMoe(peripheral);
         ret = true;
     }
     return ret;
@@ -284,201 +358,4 @@ bool HW_TIM_clearBreakFlags(HW_TIM_peripheral_E peripheral)
         ret = true;
     }
     return ret;
-}
-
-/* SIL inspection / control API */
-
-void HW_TIM_sim_reset(void)
-{
-    *data = (HW_TIM_data_S){ 0 };
-}
-
-// [impl->fw~hal_tim_002~1]
-// [impl->fw~hal_tim_006~1]
-void HW_TIM_sim_advance(HW_TIM_peripheral_E peripheral, uint32_t ticks)
-{
-    if ((data->initialized) &&
-        (peripheral < HW_TIM_PERIPHERAL_COUNT) &&
-        ((size_t)peripheral < data->config->numPeripherals))
-    {
-        const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[peripheral];
-        HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[peripheral];
-        const uint32_t period = peripheralConfig->period;
-
-        for (uint32_t step = 0U; step < ticks; step++)
-        {
-            bool update = false;
-
-            switch (peripheralConfig->countDir)
-            {
-                case HW_TIM_COUNT_UP:
-                    if (peripheralData->counter >= period)
-                    {
-                        peripheralData->counter = 0U;
-                        update = true;
-                    }
-                    else
-                    {
-                        peripheralData->counter++;
-                    }
-                    break;
-
-                case HW_TIM_COUNT_DOWN:
-                    if (peripheralData->counter == 0U)
-                    {
-                        peripheralData->counter = period;
-                        update = true;
-                    }
-                    else
-                    {
-                        peripheralData->counter--;
-                    }
-                    break;
-
-                case HW_TIM_COUNT_CENTER:
-                default:
-                    if (peripheralData->centerGoingUp)
-                    {
-                        peripheralData->counter++;
-                        if (peripheralData->counter >= period)
-                        {
-                            peripheralData->counter = period;
-                            peripheralData->centerGoingUp = false;
-                        }
-                    }
-                    else if (peripheralData->counter == 0U)
-                    {
-                        peripheralData->centerGoingUp = true;
-                        update = true;
-                    }
-                    else
-                    {
-                        peripheralData->counter--;
-                    }
-                    break;
-            }
-
-            if (peripheralConfig->configureTrgo)
-            {
-                if ((peripheralConfig->trgoSource == HW_TIM_TRGO_UPDATE) && update)
-                {
-                    peripheralData->triggerCount++;
-                }
-                else if ((peripheralConfig->trgoSource == HW_TIM_TRGO_OC_MATCH) &&
-                         peripheralData->ocConfigured[0] &&
-                         (peripheralData->counter == peripheralData->compare[0]))
-                {
-                    peripheralData->triggerCount++;
-                }
-                else
-                {
-                    // no trigger this step
-                }
-            }
-        }
-    }
-}
-
-bool HW_TIM_sim_getOutputEnabled(HW_TIM_channels_E channel)
-{
-    bool enabled = false;
-    if ((data->initialized) &&
-        (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
-    {
-        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
-        enabled = data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit];
-    }
-    return enabled;
-}
-
-uint32_t HW_TIM_sim_getOutputLevel(HW_TIM_channels_E channel)
-{
-    uint32_t level = 0U;
-    if ((data->initialized) &&
-        (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
-    {
-        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
-        const HW_TIM_peripheralData_S * const peripheralData =
-            &data->peripheralData[channelConfig->peripheral];
-        const uint8_t ocUnit = channelConfig->ocUnit;
-
-        level = channelConfig->inactiveLevel;
-        if (peripheralData->outputEnabled[ocUnit] && peripheralData->mainOutputEnabled)
-        {
-            level = (peripheralData->counter < peripheralData->compare[ocUnit])
-                        ? HW_TIM_private_activeLevel(channelConfig->inactiveLevel)
-                        : channelConfig->inactiveLevel;
-        }
-    }
-    return level;
-}
-
-uint32_t HW_TIM_sim_getComplementaryLevel(HW_TIM_channels_E channel)
-{
-    uint32_t level = 0U;
-    if ((data->initialized) &&
-        (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
-    {
-        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
-        const HW_TIM_peripheralData_S * const peripheralData =
-            &data->peripheralData[channelConfig->peripheral];
-        const uint8_t ocUnit = channelConfig->ocUnit;
-
-        level = channelConfig->inactiveLevel;
-        if (peripheralData->outputEnabled[ocUnit] && peripheralData->mainOutputEnabled)
-        {
-            // Antiphase to the primary output.
-            level = (peripheralData->counter < peripheralData->compare[ocUnit])
-                        ? channelConfig->inactiveLevel
-                        : HW_TIM_private_activeLevel(channelConfig->inactiveLevel);
-        }
-    }
-    return level;
-}
-
-uint32_t HW_TIM_sim_getDeadTime(HW_TIM_peripheral_E peripheral)
-{
-    uint32_t deadTime = 0U;
-    if ((data->initialized) &&
-        (peripheral < HW_TIM_PERIPHERAL_COUNT) &&
-        ((size_t)peripheral < data->config->numPeripherals) &&
-        (data->config->peripherals[peripheral].configureBreakDeadTime))
-    {
-        deadTime = data->config->peripherals[peripheral].deadTime;
-    }
-    return deadTime;
-}
-
-uint32_t HW_TIM_sim_getTriggerCount(HW_TIM_peripheral_E peripheral)
-{
-    uint32_t count = 0U;
-    if ((data->initialized) && (peripheral < HW_TIM_PERIPHERAL_COUNT))
-    {
-        count = data->peripheralData[peripheral].triggerCount;
-    }
-    return count;
-}
-
-void HW_TIM_sim_clearTriggers(HW_TIM_peripheral_E peripheral)
-{
-    if ((data->initialized) && (peripheral < HW_TIM_PERIPHERAL_COUNT))
-    {
-        data->peripheralData[peripheral].triggerCount = 0U;
-    }
-}
-
-// [impl->fw~hal_tim_007~1]
-// [impl->fw~hal_tim_008~1]
-void HW_TIM_sim_assertBreak(HW_TIM_peripheral_E peripheral, bool asserted)
-{
-    // A break assertion clears the MOE latch, as hardware does when
-    // AutomaticOutput is disabled. Release does not restore it — the latch
-    // stays clear until HW_TIM_setMainOutputEnabled sets it again.
-    if ((data->initialized) && (peripheral < HW_TIM_PERIPHERAL_COUNT) && asserted)
-    {
-        data->peripheralData[peripheral].mainOutputEnabled = false;
-    }
 }
