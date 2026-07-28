@@ -68,26 +68,6 @@ fn cid(path: &str) -> String {
     format!("cvar:{SOURCE}:{path}")
 }
 
-/// Coerce a logical [`Value`] to an unsigned integer for the checks below.
-fn v_u64(v: &Value) -> Option<u64> {
-    match v {
-        Value::U32(x) => Some(*x as u64),
-        Value::U64(x) => Some(*x),
-        Value::I32(x) => Some(*x as u64),
-        Value::Bool(b) => Some(*b as u64),
-        _ => None,
-    }
-}
-
-/// Coerce a logical [`Value`] to a float for the checks below.
-fn v_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::F32(x) => Some(*x as f64),
-        Value::F64(x) => Some(*x),
-        _ => None,
-    }
-}
-
 /// Running tally of the sanity suite; prints each check and counts failures, and
 /// collects any Warning/Error log entries drained from the checks' State Tables.
 struct Report {
@@ -189,9 +169,9 @@ fn main() -> ExitCode {
     println!("\n-- 10. model<->model duplex over spi (no firmware) --");
     check_model_duplex(&mut rep);
 
-    // --- Check 11: AS5048 encoder model scaffolding -------------------------
-    println!("\n-- 11. AS5048 encoder model scaffolding --");
-    check_as5048_scaffold(&mut rep);
+    // --- Check 11: AS5048 encoder model ----------------------------------
+    println!("\n-- 11. AS5048 encoder model --");
+    check_as5048_model(&mut rep);
 
     // --- Performance report (phase-isolated, informational) -----------------
     println!("\n-- performance report (phase-isolated, informational) --");
@@ -257,7 +237,7 @@ fn diag_per_tick_table(fw: &Firmware) {
     let rd = |path: &str| -> String {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fw.read_cvar(path)))
             .ok()
-            .and_then(|v| v_u64(&v))
+            .and_then(|v| v.as_u64())
             .map(|n| n.to_string())
             .unwrap_or_else(|| "n/a".into())
     };
@@ -311,7 +291,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     // counters from firmware memory.
     let before: Vec<u64> = COUNTERS
         .iter()
-        .map(|c| v_u64(&fw.read_cvar(c)).unwrap_or(0))
+        .map(|c| fw.read_cvar(c).as_u64().unwrap_or(0))
         .collect();
 
     let mut eng = Engine::new(TICK_US);
@@ -330,7 +310,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
                 .ok()
                 .flatten()
                 .as_ref()
-                .and_then(v_u64)
+                .and_then(Value::as_u64)
                 .unwrap_or(0)
         })
         .collect();
@@ -381,7 +361,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     for _ in 1..=6u64 {
         eng.step().expect("engine step");
         let v = eng.read(ramp.as_str()).ok().flatten();
-        samples.push(v.as_ref().and_then(v_u64).unwrap_or(0));
+        samples.push(v.as_ref().and_then(Value::as_u64).unwrap_or(0));
     }
 
     let changed = samples.windows(2).any(|w| w[0] != w[1]);
@@ -526,14 +506,14 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         .ok()
         .flatten()
         .as_ref()
-        .and_then(v_u64)
+        .and_then(Value::as_u64)
         .unwrap_or(0);
     let deg = eng
         .read(&cid(&format!("IO_AS5048_data.channels[{CH}].angle_deg")))
         .ok()
         .flatten()
         .as_ref()
-        .and_then(v_f64)
+        .and_then(Value::as_f64)
         .unwrap_or(0.0);
     rep.check(
         "AS5048 decodes the injected SPI frame",
@@ -685,7 +665,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     let mut last = 0u64;
     for tick in 1..=4u64 {
         eng.step().expect("engine step");
-        let got = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0);
+        let got = fw.read_cvar(dst.name()).as_u64().unwrap_or(0);
         tracked &= got == (tick * STEP as u64);
         last = got;
     }
@@ -700,13 +680,13 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     // must NOT follow the model.
     eng.suspend_route(&src, &dst).expect("suspend");
     eng.step().expect("engine step");
-    let held = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0); // direct: verifies fw memory
+    let held = fw.read_cvar(dst.name()).as_u64().unwrap_or(0); // direct: verifies fw memory
     let model_now = eng
         .read(src.as_str())
         .ok()
         .flatten()
         .as_ref()
-        .and_then(v_u64)
+        .and_then(Value::as_u64)
         .unwrap_or(0);
     rep.check(
         "suspended route stops driving its destination",
@@ -717,13 +697,13 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
     // Resume: the destination jumps to the model's current value again.
     eng.resume_route(&src, &dst).expect("resume");
     eng.step().expect("engine step");
-    let resumed = v_u64(&fw.read_cvar(dst.name())).unwrap_or(0); // direct: verifies fw memory
+    let resumed = fw.read_cvar(dst.name()).as_u64().unwrap_or(0); // direct: verifies fw memory
     let model_after = eng
         .read(src.as_str())
         .ok()
         .flatten()
         .as_ref()
-        .and_then(v_u64)
+        .and_then(Value::as_u64)
         .unwrap_or(0);
     rep.check(
         "resumed route drives the destination again",
@@ -769,7 +749,7 @@ impl Member for LoopModel {
             .ok()
             .flatten()
             .as_ref()
-            .and_then(v_u64)
+            .and_then(Value::as_u64)
             .unwrap_or(0);
         self.out = (input % 200) as u32;
         let id = self.out_id();
@@ -840,12 +820,12 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
     // rejected step returned early and did NOT advance the firmware). Direct reads:
     // the check verifies the routed value reached firmware MEMORY (the delayed feedback
     // edge flushing through the member).
-    let base = v_u64(&fw.read_cvar(counter.name())).unwrap_or(0);
+    let base = fw.read_cvar(counter.name()).as_u64().unwrap_or(0);
     const N: u64 = 6;
     let got: Vec<u64> = (1..=N)
         .map(|_| {
             eng.step().expect("engine step");
-            v_u64(&fw.read_cvar(rx.name())).unwrap_or(0)
+            fw.read_cvar(rx.name()).as_u64().unwrap_or(0)
         })
         .collect();
     let predicted: Vec<u64> = (1..=N)
@@ -935,8 +915,8 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     // (HW_ADC_private_voltsToCounts), with numBits/vref read via DWARF from the sim
     // channel config rather than hardcoded. Direct reads: static config, read before
     // the step loop while the mirror is still cold.
-    let vref = v_f64(&fw.read_cvar("HW_ADC_channelConfig[0].vref")).unwrap_or(0.0);
-    let num_bits = v_u64(&fw.read_cvar("HW_ADC_channelConfig[0].numBits")).unwrap_or(0);
+    let vref = fw.read_cvar("HW_ADC_channelConfig[0].vref").as_f64().unwrap_or(0.0);
+    let num_bits = fw.read_cvar("HW_ADC_channelConfig[0].numBits").as_u64().unwrap_or(0);
     let max_counts = (1u64 << num_bits) - 1;
     let scaled = ((VOLTS / vref) * (max_counts as f64)) + 0.5;
     let expected = if scaled >= (max_counts as f64) {
@@ -953,8 +933,8 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
     let mut neighbor: Vec<u64> = Vec::new();
     for _ in 0..6 {
         eng.step().expect("engine step");
-        driven.push(eng.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(v_u64).unwrap_or(0));
-        neighbor.push(eng.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(v_u64).unwrap_or(0));
+        driven.push(eng.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
+        neighbor.push(eng.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
     }
     let settled = &driven[2..];
     rep.check(
@@ -988,13 +968,13 @@ fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
         eng.step().expect("engine step");
-        vals.push(eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(v_u64));
+        vals.push(eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(Value::as_u64));
     }
     // The mirror at the end of the last tick equals firmware memory now (single-
     // threaded: nothing changed memory between the sweep and this read). `mem_now` is a
     // direct DWARF read: the ground truth the mirror (via eng.read) is checked against.
-    let table_now = eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(v_u64);
-    let mem_now = v_u64(&fw.read_cvar(leaf.name()));
+    let table_now = eng.read(leaf.as_str()).ok().flatten().as_ref().and_then(Value::as_u64);
+    let mem_now = fw.read_cvar(leaf.name()).as_u64();
     let tracks = table_now.is_some() && (table_now == mem_now);
     let changed = vals.windows(2).any(|w| w[0] != w[1]);
     rep.check(
@@ -1091,7 +1071,7 @@ fn check_model_duplex(rep: &mut Report) {
         .ok()
         .flatten()
         .as_ref()
-        .and_then(v_u64);
+        .and_then(Value::as_u64);
     rep.check(
         "initiator reads the responder's frame synchronously (no firmware)",
         read == Some(0x0300),
@@ -1113,37 +1093,139 @@ fn check_model_duplex(rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
-/// The AS5048 model scaffolding is wired: both instances register their
-/// commanded-angle inputs + raw output, and answer a transfer with a 2-byte frame
-/// (frame content is the model's business — see `as5048.rs` TODOs).
-fn check_as5048_scaffold(rep: &mut Report) {
-    let mut eng = Engine::new(TICK_US);
-    let motor = eng.add_member(As5048Model::new("as5048_motor"));
-    let _dial = eng.add_member(As5048Model::new("dial"));
+/// Decode an AS5048 wire frame (big-endian: byte 0 = bits 15..8) into
+/// `(parity_ok, error_flag, raw14)`. Even parity: the count of ones across all
+/// 16 bits (parity bit included) must be even.
+fn as5048_decode(frame: &[u8]) -> Option<(bool, bool, u16)> {
+    if frame.len() != 2 {
+        return None;
+    }
+    let f = u16::from_be_bytes([frame[0], frame[1]]);
+    Some((f.count_ones().is_multiple_of(2), (f & 0x4000) != 0, f & 0x3FFF))
+}
 
+/// The AS5048 encoder model, standalone (no firmware): signal registration, the
+/// unit boundary (`angle[deg]` in, canonical rad stored), quantization + wrap,
+/// the pipelined READ-ANGLE wire frame, and the parity-error path.
+fn check_as5048_model(rep: &mut Report) {
+    const READ_ANGLE: [u8; 2] = [0xFF, 0xFF]; // parity 1, read 1, addr 0x3FFF
+    const BAD_PARITY: [u8; 2] = [0x7F, 0xFF]; // 15 ones -> parity invalid
+
+    let mut eng = Engine::new(TICK_US);
+    let motor = eng.add_member(As5048Model::new("as5048_motor", 0.0));
+    let dial = eng.add_member(As5048Model::new("dial", 0.0));
+
+    // One `angle` signal per instance (canonical rad — units are a boundary
+    // conversion, never part of the id) plus the raw-ticks output.
     let expected: Vec<String> = ["as5048_motor", "dial"]
         .iter()
         .flat_map(|m| {
-            ["angle_deg", "angle_rad", "raw_encoder_ticks"]
+            ["angle", "raw_encoder_ticks"]
                 .iter()
                 .map(move |s| format!("vsig:{m}:{s}"))
         })
         .collect();
-    let all_registered = expected
+    let missing: Vec<&str> = expected
         .iter()
-        .all(|id| eng.state().signals().any(|s| s.as_str() == *id));
+        .filter(|id| !eng.state().signals().any(|s| s.as_str() == **id))
+        .map(String::as_str)
+        .collect();
     rep.check(
-        "both AS5048 instances register angle inputs + raw output",
-        all_registered,
-        format!("{} vsig ids present", expected.len()),
+        "both AS5048 instances register the angle input + raw output",
+        missing.is_empty(),
+        if missing.is_empty() {
+            format!("all {} vsig ids present", expected.len())
+        } else {
+            format!("missing: {missing:?}")
+        },
     );
 
-    let frame = motor.borrow_mut().transfer(&[0xFF, 0xFF]);
-    rep.check(
-        "model answers a transfer with a 2-byte frame",
-        frame.len() == 2,
-        format!("transfer(READ-ANGLE) -> {frame:02X?}"),
-    );
+    if missing.is_empty() {
+        // Command 90 deg through the unit boundary (canonical storage is rad);
+        // one step folds it into the model and publishes the quantized output.
+        let wrote = eng.write("vsig:as5048_motor:angle[deg]", 90.0);
+        rep.check(
+            "angle commanded through the unit boundary (angle[deg] = 90)",
+            wrote.is_ok(),
+            format!("write -> {wrote:?}"),
+        );
+        eng.step().expect("engine step");
+        let raw = eng
+            .read("vsig:as5048_motor:raw_encoder_ticks")
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(Value::as_u64);
+        rep.check(
+            "model quantizes the commanded angle (90 deg -> 4096 counts, rounded)",
+            raw == Some(4096),
+            format!("raw_encoder_ticks = {raw:?} (expect 4096 = 16384/4)"),
+        );
+
+        // Two pipelined READ-ANGLE transfers: the response to command N arrives
+        // in transfer N+1, so the second frame carries the angle.
+        let (first, second) = {
+            let mut m = motor.borrow_mut();
+            (m.transfer(&READ_ANGLE), m.transfer(&READ_ANGLE))
+        };
+        let decoded = as5048_decode(&second);
+        rep.check(
+            "READ-ANGLE response decodes on the wire (parity ok, no error, raw 4096)",
+            matches!(decoded, Some((true, false, 4096))),
+            format!(
+                "frames {first:02X?} then {second:02X?}; second -> (parity_ok, err, raw) = {decoded:?}"
+            ),
+        );
+
+        // A negative command wraps into [0, 2pi) — and because the wrapped value
+        // differs from the raw command, this also proves the model PUBLISHES its
+        // folded angle back to the table (the signal is model state, not an echo
+        // of the last write).
+        let wrote = eng.write("vsig:as5048_motor:angle[deg]", -90.0);
+        rep.check(
+            "negative angle accepted through the unit boundary (angle[deg] = -90)",
+            wrote.is_ok(),
+            format!("write -> {wrote:?}"),
+        );
+        eng.step().expect("engine step");
+        let wrapped_deg = eng
+            .read("vsig:as5048_motor:angle[deg]")
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(Value::as_f64);
+        let raw_neg = eng
+            .read("vsig:as5048_motor:raw_encoder_ticks")
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(Value::as_u64);
+        rep.check(
+            "-90 deg wraps to 270 deg and 12288 counts (model publishes its state)",
+            matches!(wrapped_deg, Some(d) if (d - 270.0).abs() < 0.05) && (raw_neg == Some(12288)),
+            format!("angle[deg] reads {wrapped_deg:?} (expect ~270), raw = {raw_neg:?} (expect 12288)"),
+        );
+
+        // A parity-corrupt command must surface as the error flag in a later
+        // response (on the dial instance, so the motor's state stays clean).
+        let err_resp = {
+            let mut d = dial.borrow_mut();
+            let _ = d.transfer(&BAD_PARITY);
+            d.transfer(&READ_ANGLE)
+        };
+        let decoded_err = as5048_decode(&err_resp);
+        rep.check(
+            "parity-corrupt command raises the error flag in a later response",
+            matches!(decoded_err, Some((_, true, _))),
+            format!("frame {err_resp:02X?} -> (parity_ok, err, raw) = {decoded_err:?}"),
+        );
+    } else {
+        rep.check(
+            "encoder transfer content",
+            false,
+            "skipped: angle signal not registered (fix the registration first)".into(),
+        );
+    }
     rep.absorb(eng.take_logs());
 }
 
@@ -1251,10 +1333,10 @@ fn time_avg_us(warmup: u64, n: u64, mut body: impl FnMut()) -> f64 {
 /// Read the sim USB TX capture buffer (txLen + tx[] bytes) by DWARF and decode
 /// it as the Teleplot text the firmware emitted.
 fn read_tx_capture(fw: &Firmware) -> String {
-    let len = v_u64(&fw.read_cvar("HW_USB_sim_data.txLen")).unwrap_or(0);
+    let len = fw.read_cvar("HW_USB_sim_data.txLen").as_u64().unwrap_or(0);
     let mut bytes = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let b = v_u64(&fw.read_cvar(&format!("HW_USB_sim_data.tx[{i}]"))).unwrap_or(0) as u8;
+        let b = fw.read_cvar(&format!("HW_USB_sim_data.tx[{i}]")).as_u64().unwrap_or(0) as u8;
         bytes.push(b);
     }
     String::from_utf8_lossy(&bytes).into_owned()

@@ -1,39 +1,55 @@
-//! AS5048 encoder model scaffolding — one struct, both roles: a [`Member`] that
-//! consumes commanded-angle inputs and publishes outputs, and a [`DuplexPeer`]
-//! that answers the firmware's SPI reads. Wire two instances:
+//! AS5048 magnetic encoder model — one struct, both roles: a [`Member`] whose
+//! `vsig:<name>:angle` (canonical rad) is the commanded shaft angle, and a
+//! [`DuplexPeer`] answering the firmware's SPI reads. Wire two instances:
 //!
 //! ```text
-//! let motor = eng.add_member(As5048Model::new("as5048_motor"));
+//! let motor = eng.add_member(As5048Model::new("as5048_motor", 0.0));
 //! eng.link_duplex("spi:pcs_bldc:AS5048_1", motor)?;
-//! let dial = eng.add_member(As5048Model::new("dial"));
+//! let dial = eng.add_member(As5048Model::new("dial", 0.0));
 //! eng.link_duplex("spi:pcs_bldc:AS5048_2", dial)?;
 //! ```
 //!
-//! Device contract: response frame = bit15 even parity, bit14 error flag,
-//! bits[13:0] angle (16384 counts/rev), big-endian on the wire; the firmware
-//! polls with READ-ANGLE `0xFFFF`, two pipelined transfers per 1 ms tick.
+//! Device contract: frames are big-endian on the wire; a response carries
+//! bit15 even parity, bit14 error flag, bits[13:0] angle (16384 counts/rev).
+//! The response to command N arrives in transfer N+1 (one-frame pipeline);
+//! the firmware polls READ-ANGLE `0xFFFF`, two pipelined transfers per tick.
 
-use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable};
+use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
 
-/// An AS5048 magnetic encoder: commanded via `vsig:<name>:angle_deg` /
-/// `angle_rad` (last write wins), read out by the firmware over SPI.
+const ANGLE_RESOLUTION_TICKS_PER_REV: u64 = 16384;
+const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
+const SPI_COMMAND_LEN: usize = 2;
+
+const REG_ADDR_ANGLE: u16 = 0x3FFF;
+
+/// An AS5048 encoder instance. Registers `angle` (in, canonical rad; unit asks
+/// convert at the table boundary) and `raw_encoder_ticks` (out, quantized).
 pub struct As5048Model {
     name: String,
-    // TODO(owner): model state — current angle, command/response pipeline, ...
+
+    current_angle_rad: f32,
+    current_angle_raw: u16,
+
+    spi_error: bool,
+    /// The pipelined response armed by the previous command: 14-bit data
+    /// (parity is applied at emission). Power-on sentinel `0xFFFF` reads as a
+    /// parity-valid error frame — a bus nobody has commanded yet.
+    response_frame: u16,
 }
 
 impl As5048Model {
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: &str, current_angle_rad: f32) -> Self {
         Self {
             name: name.to_string(),
+            current_angle_rad,
+            current_angle_raw: 0,
+            spi_error: false,
+            response_frame: 0xFFFF,
         }
     }
 
-    fn angle_deg_id(&self) -> SignalId {
-        vsig_id(&self.name, "angle_deg").expect("valid vsig id")
-    }
-    fn angle_rad_id(&self) -> SignalId {
-        vsig_id(&self.name, "angle_rad").expect("valid vsig id")
+    fn angle_id(&self) -> SignalId {
+        vsig_id(&self.name, "angle").expect("valid vsig id")
     }
     fn raw_id(&self) -> SignalId {
         vsig_id(&self.name, "raw_encoder_ticks").expect("valid vsig id")
@@ -46,29 +62,66 @@ impl Member for As5048Model {
     }
 
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
-        // Commanded-angle inputs, either unit (a test writes whichever it likes).
-        let deg = ctx.st.current_value(&self.angle_deg_id()).ok().flatten();
-        let rad = ctx.st.current_value(&self.angle_rad_id()).ok().flatten();
-        let _ = (deg, rad);
-        // TODO(owner): fold the freshest input into the model's angle and record
-        // the quantized output: ctx.st.record(&self.raw_id(), Value::U32(...)).
+        // Commanded input
+        if let Some(angle_rad) = ctx.st
+                .current_value(&self.angle_id())
+                .ok().flatten()
+                .and_then(|v| v.as_f32()) {
+            self.current_angle_rad = angle_rad;
+        }
+
+        self.current_angle_rad = self.current_angle_rad.rem_euclid(TWO_PI);
+        self.current_angle_raw = (self.current_angle_rad * (ANGLE_RESOLUTION_TICKS_PER_REV as f32) / TWO_PI).round() as u16;
+        let _ = ctx.st.record(&self.raw_id(), Value::U32(self.current_angle_raw as u32));
+        let _ = ctx.st.record(&self.angle_id(), Value::F64(f64::from(self.current_angle_rad)));
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
-            let _ = st.register(self.angle_deg_id(), Some("deg"));
-            let _ = st.register(self.angle_rad_id(), Some("rad"));
+            let _ = st.register(self.angle_id(), Some("rad"));
             let _ = st.register(self.raw_id(), Some("counts"));
         }
     }
 }
 
 impl DuplexPeer for As5048Model {
-    fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
-        // TODO(owner): parse the command frame, model the one-frame pipeline,
-        // frame the angle with parity/error bits. Until then: all-ones, which
-        // decodes as an error frame (a floating bus), never a silently-valid
-        // angle 0.
-        vec![0xFF, 0xFF]
+    fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
+
+        // Emit the response armed by the PREVIOUS command (one-frame pipeline).
+        let mut resp_frame: u16 = match self.spi_error {
+            true => {
+                self.spi_error = false; // TODO: clear only via a CLEAR-ERROR-FLAG (0x0001) read
+                0x4000 // error flag
+            }
+            false => self.response_frame,
+        };
+
+        // Process this command — arms the NEXT response.
+        let valid_len = tx.len() == SPI_COMMAND_LEN;
+        if valid_len {
+            let command_frame = u16::from_be_bytes([tx[0], tx[1]]);
+            if command_frame.count_ones().is_multiple_of(2) {
+                let read = (command_frame & 0x4000) != 0;
+                let addr = command_frame & 0x3FFF;
+
+                if read && (addr == REG_ADDR_ANGLE) {
+                    self.response_frame = self.current_angle_raw & 0x3FFF;
+                }
+
+                if !read {
+                    panic!("Writes not implemented yet!")
+                }
+            } else {
+                self.spi_error = true
+            }
+        } else {
+            self.spi_error = true
+        }
+
+        // Even parity over all 16 bits, applied to every outgoing frame.
+        if !resp_frame.count_ones().is_multiple_of(2) {
+            resp_frame |= 0x8000;
+        }
+        resp_frame.to_be_bytes().to_vec()
     }
 }
