@@ -356,6 +356,18 @@ impl<'b> Engine<'b> {
         &self.state
     }
 
+    /// Serialize the historian as a versioned binary trace stream (see
+    /// [`crate::trace`]). `prefix_filter`: keep only signals whose id starts with one
+    /// of the prefixes; `None` = every signal. The data lives in the owned
+    /// [`StateTable`], so this delegates there.
+    pub fn dump_trace(
+        &self,
+        w: &mut impl std::io::Write,
+        prefix_filter: Option<&[&str]>,
+    ) -> std::io::Result<()> {
+        crate::trace::write_trace(&self.state, w, prefix_filter)
+    }
+
     // --- string-keyed scenario API (delegates to the owned State Table) ---
     // A test holding an `Engine` writes/reads by id string, without a `Firmware` handle.
 

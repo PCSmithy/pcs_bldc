@@ -64,6 +64,16 @@ driven and asserted purely through the State Table.
   the boundary. `HW_TIM_sim.h` + the carrier/waveform sim machinery are deleted;
   the Unity suite exercises the production seam via a test-owned hooks double.
   Suite check 12 pins registration + the dark-bridge boot state.
+- ☑ **4.5. Trace visibility (MF4 export)** — every SIL run can drop ASAM MDF4
+  (`.mf4`) trace files of the State Table historian, openable in asammdf's GUI.
+  voyant serializes the change-log as a versioned little-endian binary stream
+  (pure Rust, no Python knowledge — `Engine::dump_trace`); the suite spawns the
+  venv's `tools/mf4_build.py` (asammdf) over stdin to write `.mf4` — enum signals
+  carry value-to-text conversions, `Bytes` signals are skipped, units come from
+  the canonical registration, and a missing venv degrades to a raw `.bin` next to
+  the target (never loses data). `PCS_SIL_TRACE_DIR` gates the suite drops (checks
+  4/8/11); `tools/validate_mf4.py` round-trips the output. This is the
+  model-validation instrument for stage 5 — plot the plant against the firmware.
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +

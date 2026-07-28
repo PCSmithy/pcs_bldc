@@ -128,8 +128,7 @@ signals are exact-logged, so this only concerns floats.
 ## 6. Retention
 
 - **Fast / deterministic mode: unbounded — capture the entire trace.** Held in
-  memory and dumped at end-of-run. (Future: dump the whole State Table to an
-  **MDF4 `.mf4`** file for plotting.)
+  memory and dumped at end-of-run to an **MDF4 `.mf4`** file for plotting (§7).
 - **Realtime mode: bounded memory via a rolling dump-to-file backend.** Chunks
   flush to disk as the run proceeds and are **stitched back into the full trace
   once the sim ends**, so realtime also preserves the complete history — just
@@ -139,10 +138,14 @@ signals are exact-logged, so this only concerns floats.
 
 - Per-signal: `{ name, type, [(tick, value)...] }`.
 - Target export format is **ASAM MDF4 (`.mf4`)** (plays with `asammdf` / CANape /
-  INCA and standard measurement tooling). The exact on-disk/in-flight encoding
-  is a **just-in-time implementation choice** (Phase 4); the model above is
-  what's fixed here. Fast-mode end-dump and realtime rolling-dump should share
-  one serialization path.
+  INCA and standard measurement tooling).
+- **Landed.** voyant serializes the historian to a versioned little-endian binary
+  stream (pure Rust — `Engine::dump_trace`, `voyant::trace`): per signal an id,
+  unit (from the canonical registration), dtype tag, timestamps (µs) and native
+  values, with enum signals carrying a value→name table and `Bytes` signals
+  skipped. The instantiation pipes that stream to `tools/mf4_build.py` (asammdf),
+  which builds one `Signal` per channel and writes `.mf4` (v4.10); a missing venv
+  degrades to a raw `.bin`. Realtime rolling-dump will reuse the same serializer.
 
 ## 8. Couplings
 

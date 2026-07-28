@@ -21,6 +21,9 @@
 //! Env vars:
 //! - `PCS_SIL_DLL_FLAVOR` — label printed in the performance report (set by
 //!   `tools/run_sil.sh`).
+//! - `PCS_SIL_TRACE_DIR` — when set, checks that own an Engine drop an ASAM MDF4
+//!   (`.mf4`) trace of their historian into this directory (via the venv's
+//!   `tools/mf4_build.py`; see [`trace`]). Unset → zero cost, no behavior change.
 //! - `PCS_SIL_DIAG=1` — after boot, print a white-box per-tick scheduling table
 //!   (FreeRTOS `xTickCount`, `xNextTaskUnblockTime`, and the per-task heartbeat
 //!   counters, all read by DWARF straight from firmware memory). Print-only —
@@ -29,6 +32,7 @@
 //!   remote debugger for the macOS aarch64 multi-tick cadence anomaly.
 
 mod as5048;
+mod trace;
 
 use as5048::As5048Model;
 use std::path::PathBuf;
@@ -547,6 +551,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         text2.contains(&exp_deg_str) && text2.contains("motor_angle:"),
         format!("post-drain capture {} bytes, still carries the angle", text2.len()),
     );
+    trace::maybe_dump(&eng, "check04_end_to_end");
     rep.absorb(eng.take_logs());
 }
 
@@ -942,6 +947,7 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
         ramping,
         format!("counts[1] = {neighbor_settled:?} (must keep changing)"),
     );
+    trace::maybe_dump(&eng, "check08_adc_ports");
     rep.absorb(eng.take_logs());
 }
 
@@ -1217,6 +1223,7 @@ fn check_as5048_model(rep: &mut Report) {
             "skipped: angle signal not registered (fix the registration first)".into(),
         );
     }
+    trace::maybe_dump(&eng, "check11_as5048_model");
     rep.absorb(eng.take_logs());
 }
 

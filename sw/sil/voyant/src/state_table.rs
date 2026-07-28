@@ -846,6 +846,12 @@ impl StateTable {
         mine
     }
 
+    /// A signal's registered canonical unit, if any (`None` = registered without
+    /// one). Cold metadata — for trace export ([`crate::trace`]) and inspection.
+    pub fn unit_of(&self, id: &SignalId) -> Option<&str> {
+        self.units.get(id).map(String::as_str)
+    }
+
     /// The change-log for a signal (timestamped samples), for dump/inspection.
     /// **Materializing**: columnar storage has no `(u64, Value)` deque to borrow, so
     /// it reconstructs owned pairs (a cold path). `None` if unregistered; empty `Vec`

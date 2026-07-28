@@ -18,6 +18,24 @@ DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
 upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
 but TX capture + parse needs no D8.
 
+## Enum cvars mirror as DWARF placeholders (`<0>`, `<1>`), not enumerator names
+
+**When:** near-term — it degrades trace readability (every enum channel in an
+`.mf4` renders `<n>` instead of e.g. `HW_ADC_TRIGGER_SOFTWARE`) and stage-7
+FSM asserts will want symbolic mode names.
+
+**What (found by MF4 round-trip validation, 2026-07-28):** all 106 firmware
+enum channels in a trace resolve to the backend's placeholder form (`<0>`,
+`<1>`, …) — the DWARF enumerator-name resolution isn't producing names for
+mirrored enum leaves in this build (e.g.
+`cvar:pcs_bldc:HW_ADC_channelConfig[*].triggerMode`). The trace pipeline is
+NOT the bug — it faithfully carries whatever the mirror records, and the MDF
+value-to-text mechanism is proven with real names in isolation. Investigate
+the backend's enum decode on the mirror path (typed-lane `ScalarSample::Boxed`
+vs `dwarf.rs` value→name lookup). Note: suite check 3 only asserts
+`matches!(.., Value::Enum(_))` — the variant, not a symbolic name — so it
+cannot catch this; strengthen it once fixed.
+
 ## DuplexTransfer — residual extensions
 
 **What:** the synchronous member↔member serial-transaction primitive landed for

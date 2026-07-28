@@ -22,6 +22,8 @@
 //!   latency (0 = same-tick, 1 = delayed ZOH cut) and suspend/resume for fault injection.
 //! - [`engine`] — the [`Engine`]: sim clock + step loop owning table/routes/members,
 //!   advancing one tick at a time. Holds no backend handle — each firmware member drives its own.
+//! - [`trace`] — the historian serializer: [`Engine::dump_trace`] emits a versioned
+//!   binary stream (D12 §7) an external builder turns into ASAM MDF4.
 //! - [`log`] — [`LogLevel`] / [`LogEntry`] + the drop-oldest [`LogRing`].
 //!
 //! Run modes (fast / realtime pacing) wrap [`Engine::step`] and land in a later chunk.
@@ -35,6 +37,7 @@ pub mod member;
 pub mod route;
 pub mod signal;
 pub mod state_table;
+pub mod trace;
 pub mod unit;
 
 pub use backend::{Firmware, FirmwareMember};
