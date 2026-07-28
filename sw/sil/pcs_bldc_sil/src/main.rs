@@ -1,11 +1,10 @@
 //! pcs_bldc SIL sanity suite (and demo).
 //!
-//! Loads this board's firmware shared library and proves — purely through white-box
-//! DWARF read/write of firmware statics — that the REAL firmware runs on the native
-//! scheduler: all four FreeRTOS tasks advance, the State Table historian works, and
-//! one end-to-end path (task_1ms -> IO_AS5048 -> HW_SPI(sim) -> telemetryTask ->
-//! IO_serial -> HW_USB(sim capture)) carries an injected encoder reading out as
-//! Teleplot text.
+//! Loads this board's firmware shared library and proves that the REAL firmware
+//! runs on the native scheduler: all four FreeRTOS tasks advance, the State Table
+//! historian works, and one end-to-end path (AS5048 model -> duplex SPI ->
+//! IO_AS5048 -> telemetryTask -> IO_serial -> HW_USB(sim capture)) carries a
+//! model-commanded encoder angle out as Teleplot text.
 //!
 //! Sim-exercising checks drive the firmware through the [`voyant::Engine`] step loop
 //! (advance time, advance models, propagate routes, run firmware, sample cvars); only
@@ -32,10 +31,8 @@
 mod as5048;
 
 use as5048::As5048Model;
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::rc::Rc;
 use std::time::Instant;
 use voyant::{
     vsig_id, DuplexHandle, DuplexPeer, Engine, EngineError, Firmware, FirmwareMember, LogEntry,
@@ -396,38 +393,25 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
     rep.absorb(eng.take_logs());
 }
 
-/// A duplex peer that answers every SPI transfer with a fixed MISO frame — the
-/// simplest command-agnostic responder, standing in for the AS5048 until the encoder
-/// model lands. Byte-for-byte the crafted response the firmware decodes.
-struct FixedFramePeer {
-    frame: Vec<u8>,
-}
-
-impl DuplexPeer for FixedFramePeer {
-    fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
-        self.frame.clone()
-    }
-}
-
-/// The flagship check: drive the whole encoder->telemetry->USB path on the
-/// native scheduler, feeding the AS5048 MISO frame through a linked duplex peer,
-/// and read the resulting Teleplot text back out of the sim USB TX capture.
+/// The flagship check: command the AS5048 encoder model's angle through the unit
+/// boundary and read it back out of real firmware telemetry — model answers the
+/// firmware's actual READ-ANGLE polls over the duplex bus, IO_AS5048 decodes,
+/// telemetryTask reports, the sim USB capture carries the Teleplot text.
 fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1
-    const INJECTED_ANGLE: u64 = 0x1000; // frame 0x9000, bits[13:0]
+    const CMD_DEG: f64 = 90.0;
 
-    // Link a fixed-frame peer to the motor encoder's SPI endpoint: every transfer
-    // on AS5048_1 returns big-endian {0x90,0x00} = frame 0x9000 (bit15 even parity
-    // valid, bit14 error clear, angle 0x1000). The firmware registers its C endpoints
-    // at add_member; the engine's shared router couples the peer to one of them — the
-    // firmware is one initiator among many.
+    // Both encoder channels get a real model instance. Member order [models,
+    // firmware] gives zero-lag freshness: a model folds its commanded angle before
+    // the firmware's same-tick SPI polls read it. (Tick 1's first poll returns the
+    // model's power-on sentinel — an error frame — exactly like real hardware's
+    // first pipelined read; the second poll onward carries the angle.)
     let mut eng = Engine::new(TICK_US);
+    let motor = eng.add_member(As5048Model::new("as5048_motor", 0.0));
+    let dial = eng.add_member(As5048Model::new("dial", 0.0));
     eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
-    eng.link_duplex(
-        "spi:pcs_bldc:AS5048_1",
-        Rc::new(RefCell::new(FixedFramePeer { frame: vec![0x90, 0x00] })),
-    )
-    .expect("link AS5048_1 peer");
+    eng.link_duplex("spi:pcs_bldc:AS5048_1", motor).expect("link motor encoder");
+    eng.link_duplex("spi:pcs_bldc:AS5048_2", dial).expect("link dial encoder");
 
     // Both encoder channels register their SPI endpoints as :tx/:rx event entries —
     // the dial (AS5048_2) too, which stage 3 drives as the velocity demand.
@@ -448,21 +432,22 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     );
 
     // Pre-step config read (static value; the mirror is cold until the first step).
-    // Expected raw/angle derive from the firmware's own channel config (reverse maps
-    // raw to 16384 - raw): the check asserts the decode contract, not a frozen board
-    // convention.
+    // Expected raw/angle derive from the commanded angle plus the firmware's own
+    // channel config (reverse maps raw to 16384 - raw): the check asserts the
+    // decode contract, not a frozen board convention.
     let reverse = match fw.read_cvar(&format!("IO_AS5048_channelConfig[{CH}].reverse")) {
         Value::Bool(b) => b,
         other => panic!("IO_AS5048_channelConfig[{CH}].reverse read back as {other:?}, not Bool"),
     };
-    let exp_raw: u64 = if reverse { 16384 - INJECTED_ANGLE } else { INJECTED_ANGLE };
+    let wire_raw = ((CMD_DEG / 360.0) * 16384.0).round() as u64; // the model's frame
+    let exp_raw: u64 = if reverse { 16384 - wire_raw } else { wire_raw };
     let exp_deg = (exp_raw as f64) * 360.0 / 16384.0;
     let exp_deg_str = format!("{exp_deg:.2}");
 
-    // Open the USB port (telemetryTask skips its body otherwise) and drain the stale
-    // TX capture. The flush lands both during step 1's in-sync, before advance_tick.
-    // The peer answers each transfer synchronously mid-tick, so task_1ms decodes the
-    // frame on the very first tick.
+    // Command the shaft angle in degrees — the boundary converts to canonical rad.
+    // Open the USB port (telemetryTask skips its body otherwise) and drain the
+    // stale TX capture; the cvar flush lands during step 1's in-sync.
+    eng.write("vsig:as5048_motor:angle[deg]", CMD_DEG).expect("write angle[deg]");
     eng.write(&cid("HW_USB_sim_data.connected"), true).expect("write connected");
     eng.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
 
@@ -474,7 +459,8 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     // (3z) The SPI transactions land as event records: the AS5048 does two transfers
     // per tick, and events are force-recorded (never deduped), so :tx / :rx each
     // accumulate more entries than the 10 ticks would allow under level dedup. :tx
-    // carries the READ-ANGLE command (0xFFFF -> {0xFF,0xFF}); :rx the injected frame.
+    // carries the READ-ANGLE command (0xFFFF -> {0xFF,0xFF}); :rx the model's angle
+    // frame (raw 4096 + parity = 0x9000 -> {0x90,0x00}).
     let tx_id = SignalId::parse(&ep("AS5048_1", "tx")).expect("valid spi id");
     let rx_id = SignalId::parse(&ep("AS5048_1", "rx")).expect("valid spi id");
     let n_tx = eng.state().changes(&tx_id).map(|c| c.len()).unwrap_or(0);
@@ -500,7 +486,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         "HW_USB_sim_data.connected mirrors true after the flush".into(),
     );
 
-    // (3b) The decoded encoder statics reflect the injected SPI frame (auto-mirrored).
+    // (3b) The decoded encoder statics reflect the model's frame (auto-mirrored).
     let raw = eng
         .read(&cid(&format!("IO_AS5048_data.channels[{CH}].raw")))
         .ok()
@@ -516,7 +502,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
     rep.check(
-        "AS5048 decodes the injected SPI frame",
+        "AS5048 decodes the model's SPI frame",
         (raw == exp_raw) && ((deg - exp_deg).abs() < 0.05),
         format!("IO_AS5048_data.channels[0].raw = {raw} (expect {exp_raw}, reverse={reverse}), angle_deg = {deg:.2} (expect {exp_deg_str})"),
     );
@@ -537,7 +523,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
                 if has_keys { "present" } else { "MISSING" }),
     );
     rep.check(
-        "telemetry carries the injected angle end-to-end (exact)",
+        "telemetry carries the commanded angle end-to-end (exact)",
         has_angle && has_raw,
         format!("text contains angle {exp_deg_str} = {has_angle}, raw {exp_raw} = {has_raw}"),
     );

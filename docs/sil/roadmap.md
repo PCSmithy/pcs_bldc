@@ -47,13 +47,15 @@ driven and asserted purely through the State Table.
   `spi:<ep>:tx` / `:rx` event entries (`Value::Bytes`) for the historian. The
   sim `HW_SPI` `injectedRx` inject + MOSI loopback are removed; an unhandled
   transfer reads `0xFF` (a floating/disconnected bus).
-- ◐ **3. AS5048 encoder model** (instantiation-side; scaffolding landed —
-  `pcs_bldc_sil/src/as5048.rs`, owner writing the model body) — writable
-  `angle_rad`/`angle_deg` inputs; `raw_encoder_ticks` + framed SPI response
-  out (14-bit angle, even parity bit 15, error bit 14; the driver reads two
-  pipelined frames/tick). Two instances: motor encoder (SPI ch 1) and the
-  user dial (SPI ch 2) — velocity demand becomes
-  `st.write("vsig:dial:angle_deg", …)`.
+- ☑ **3. AS5048 encoder model** (`pcs_bldc_sil/src/as5048.rs`,
+  owner-implemented) — one `vsig:<name>:angle` input (canonical rad; unit
+  asks convert at the boundary) + `raw_encoder_ticks` out; u16-native
+  command parse (even parity, read/addr), one-frame response pipeline,
+  parity on every outgoing frame. Two instances linked in check 4: the
+  motor encoder answers the firmware's real READ-ANGLE polls
+  (`write angle[deg]=90` → telemetry `90.00`), the dial idles at 0 —
+  its demand path (`st.write("vsig:dial:angle[deg]", …)`) is exercised
+  in stage 6/7.
 - ☐ **4. PWM/bridge observation ports** — sim `HW_TIM` publishes normalized
   per-phase duty + per-phase enable + MOE as output ports (the D6 route
   source; duty ∈ [0,1], never raw CCR/ARR).
