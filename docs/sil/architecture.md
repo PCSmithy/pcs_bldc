@@ -334,8 +334,11 @@ sw/sil/                 Rust cargo workspace
                            Transport — a comms bus (tx → rx, completion timing)
                            Scenario  — the project's wiring (members/routes/trace)
   pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board
-                         (motor/encoder/sensor models, firmware config, routes);
-                         the binary that runs the sim.
+                         (motor/encoder/sensor models, firmware config, routes).
+                         A lib (src/) exposes the `Sil` fresh-world harness (loads +
+                         boots the firmware DLL, unloads on drop); each scenario is an
+                         independent `#[test]` in tests/*.rs; the perf bin (main.rs)
+                         prints the per-tick performance report.
 sw/fw/src/                firmware control ABI + native entry / fiber-port wiring
 sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs

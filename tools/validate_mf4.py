@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Validate voyant SIL MF4 traces: channels present, units correct, values sane.
 
-A round-trip check on the .mf4 files produced by the sanity suite (run it with
-`PCS_SIL_TRACE_DIR=build/traces`). Opens each trace with asammdf and asserts named
+A round-trip check on the per-test `.mf4` files the harness drops when
+`PCS_SIL_TRACE_DIR` is set (`PCS_SIL_TRACE_DIR=build/traces cargo test`, or via
+`tools/run_sil.sh` with the env exported). Each Sil-world test dumps `<test-fn>.mf4`;
+this validates the two flagship traces — `end_to_end.mf4` (the `end_to_end` test) and
+`adc_ports.mf4` (the `adc_ports` test). Opens each with asammdf and asserts named
 channels exist with the right unit and sample counts, a known value lands where the
-model says it should, and an enum channel renders text. Doubles as the stage-5
-model-validation instrument.
+model says it should, an enum channel renders text, and the firmware clock starts at
+~one tick and increments 1000 us/tick (value-only — no sim-axis alignment).
 
 Usage:
     python tools/validate_mf4.py [--dir build/traces]
@@ -57,8 +60,8 @@ def main():
     ap.add_argument("--dir", default="build/traces", help="directory holding the .mf4 traces")
     args = ap.parse_args()
 
-    e2e_path = os.path.join(args.dir, "check04_end_to_end.mf4")
-    adc_path = os.path.join(args.dir, "check08_adc_ports.mf4")
+    e2e_path = os.path.join(args.dir, "end_to_end.mf4")
+    adc_path = os.path.join(args.dir, "adc_ports.mf4")
 
     print(f"== {e2e_path} ==")
     m = MDF(e2e_path)
@@ -102,6 +105,27 @@ def main():
         cvar is not None and len(cvar.samples) > 0,
         f"n={0 if cvar is None else len(cvar.samples)}",
     )
+
+    # Firmware clock (value-only, no sim-axis alignment): from reset the first recorded
+    # sample is ~one tick and every step adds exactly 1000 us.
+    clk = channel(m, "cvar:pcs_bldc:lib_timer_data.currentTime_us")
+    if clk is None:
+        check("cvar:pcs_bldc:lib_timer_data.currentTime_us present", False)
+    else:
+        s = [int(x) for x in clk.samples]
+        check(
+            "firmware clock's first sample is ~one tick from reset (<= a few ticks)",
+            bool(s) and 1000 <= s[0] <= 5000,
+            f"first={s[0] if s else None}",
+        )
+        # Every real per-tick step is 1000 us; the only 0 diff is the ZOH terminal
+        # sample (a materialization artifact repeating the last value at run end).
+        nonzero = {b - a for a, b in zip(s, s[1:]) if b != a}
+        check(
+            "firmware clock increments 1000 us/tick",
+            nonzero == {1000},
+            f"nonzero step diffs seen: {sorted(nonzero)}",
+        )
 
     # An enum channel renders as TEXT via its value-to-text conversion (a numeric
     # channel would come back numeric). The enumerator *names* in this firmware build

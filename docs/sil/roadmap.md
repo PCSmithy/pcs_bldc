@@ -71,9 +71,25 @@ driven and asserted purely through the State Table.
   venv's `tools/mf4_build.py` (asammdf) over stdin to write `.mf4` — enum signals
   carry value-to-text conversions, `Bytes` signals are skipped, units come from
   the canonical registration, and a missing venv degrades to a raw `.bin` next to
-  the target (never loses data). `PCS_SIL_TRACE_DIR` gates the suite drops (checks
-  4/8/11); `tools/validate_mf4.py` round-trips the output. This is the
-  model-validation instrument for stage 5 — plot the plant against the firmware.
+  the target (never loses data). `PCS_SIL_TRACE_DIR` gates per-test drops (each `Sil`
+  world dumps `<test-fn>.mf4` on drop); `tools/validate_mf4.py` round-trips
+  `end_to_end.mf4` + `adc_ports.mf4`. This is the model-validation instrument for
+  stage 5 — plot the plant against the firmware.
+- ☑ **4.6. pytest-shaped test harness** — every SIL scenario is an independent
+  `#[test]` in `pcs_bldc_sil/tests/*.rs` over a fresh `Sil` world: `Sil::new()` loads
+  this board's firmware DLL, boots it from reset, and exposes the simulation as
+  `world.sim`; `Drop` dumps a per-test `<test-fn>.mf4` trace and unloads the library
+  (the last `Rc<Firmware>` drops → `FreeLibrary`), so the next world boots C statics
+  from scratch. voyant's `FirmwareMember` now owns the firmware via `Rc`, deleting the
+  lifetime parameter from `Engine`. A process-global mutex serializes vanilla
+  (threaded) `cargo test` — the sequential single-process baseline — and is uncontended
+  under cargo-nextest's process-per-test model (the parallel integration is the next
+  task; the harness is nextest-compatible by construction). `tests/lifecycle.rs` is the
+  reload gate: the fiber port re-inits cleanly on a fresh thread (a second `start()` on
+  the *same* thread aborts, which is why cargo test's thread-per-test + one world per
+  test is the model). The sanity-check bin shrinks to the perf report; `tools/run_sil.sh`
+  runs `cargo test` for the checks, then the perf bin. Firmware clocks assert
+  start-from-reset + 1000 us/tick, never sim-axis alignment.
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +

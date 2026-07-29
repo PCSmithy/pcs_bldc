@@ -7,6 +7,10 @@ publish = false
 [dependencies]
 voyant = { path = "../voyant" }
 
-[[bin]]
+[lib]
 name = "pcs_bldc_sil"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pcs_bldc_sil_perf"
 path = "src/main.rs"

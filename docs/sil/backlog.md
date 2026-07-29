@@ -18,6 +18,23 @@ DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
 upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
 but TX capture + parse needs no D8.
 
+## Fiber port: support repeated firmware boots on one thread
+
+**When:** before any reset-lifecycle test case (a scenario that reboots the
+firmware mid-test — owner wants these) or any single-thread runner that
+constructs more than one `Sil` world sequentially.
+
+**What (found by the stage-4.6 reload spike, 2026-07-28):** a second
+`sil_fw_start()` on the SAME OS thread aborts — `xPortStartScheduler` calls
+`ConvertThreadToFiber`, which returns NULL on an already-converted thread,
+and shutdown never calls `ConvertFiberToThread`. The `#[test]` harness
+sidesteps it (cargo test = fresh thread per test, one `Sil` per test), and
+`tests/lifecycle.rs` documents the working pattern. Fix:
+`ConvertFiberToThread` at scheduler end (Windows; the macOS ucontext port
+needs the equivalent teardown), then a lifecycle test proving N boots on one
+thread. Pairs with the designed member-level reset (re-enable a firmware
+member = full DLL reload ≈ boot from reset).
+
 ## Enum cvars mirror as DWARF placeholders (`<0>`, `<1>`), not enumerator names
 
 **When:** near-term — it degrades trace readability (every enum channel in an
