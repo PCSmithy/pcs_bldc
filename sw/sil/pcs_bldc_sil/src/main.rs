@@ -369,6 +369,8 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         (45_000..=55_000).contains(&dt_us),
         format!("lib_timer_data.currentTime_us +{dt_us} us"),
     );
+    // The first post-boot window: firmware-internal clocks start from reset here.
+    trace::maybe_dump(&eng, "check02_tasks_advance");
     rep.absorb(eng.take_logs());
 }
 
