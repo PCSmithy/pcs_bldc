@@ -37,6 +37,7 @@ mod trace;
 use as5048::As5048Model;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::time::Instant;
 use voyant::{
     vsig_id, DuplexHandle, DuplexPeer, Engine, EngineError, Firmware, FirmwareMember, LogEntry,
@@ -112,7 +113,7 @@ fn main() -> ExitCode {
     println!("=== pcs_bldc SIL sanity suite ===");
     println!("loading firmware: {}", path.display());
     let fw = match Firmware::load(&path) {
-        Ok(f) => f,
+        Ok(f) => Rc::new(f),
         Err(e) => {
             eprintln!("FATAL: failed to load firmware library: {e}");
             return ExitCode::FAILURE;
@@ -288,7 +289,7 @@ fn diag_per_tick_table(fw: &Firmware) {
 /// engine**, and assert each task advanced by roughly its expected count for its
 /// period. The engine samples the counters into its historian each tick, so the
 /// post-window values are read straight from the State Table.
-fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
+fn check_tasks_advance(fw: &Rc<Firmware>, rep: &mut Report) {
     const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];
     const N: u64 = 50;
 
@@ -307,7 +308,7 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
     // No per-signal declaration: the FirmwareMember auto-mirrors the whole cvar
     // namespace, so these counters are sampled into the historian each tick.
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
     for _ in 0..N {
         eng.step().expect("engine step");
     }
@@ -378,12 +379,12 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
 /// sampled cvar; the engine records it into its historian each tick. Assert the
 /// change-log accumulates and a ZOH historical lookup holds the prior sample;
 /// read an enum cvar symbolically.
-fn check_state_table(fw: &Firmware, rep: &mut Report) {
+fn check_state_table(fw: &Rc<Firmware>, rep: &mut Report) {
     let ramp = cvar("HW_ADC_data.channelData[0].counts[6]");
     let mut eng = Engine::new(TICK_US);
     // Auto-mirrored: counts[19] is under the array threshold, so counts[6] is
     // registered + sampled with no `sample_cvar` declaration.
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
 
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
@@ -428,7 +429,7 @@ fn check_state_table(fw: &Firmware, rep: &mut Report) {
 /// boundary and read it back out of real firmware telemetry — model answers the
 /// firmware's actual READ-ANGLE polls over the duplex bus, IO_AS5048 decodes,
 /// telemetryTask reports, the sim USB capture carries the Teleplot text.
-fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
+fn check_end_to_end(fw: &Rc<Firmware>, rep: &mut Report) {
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1
     const CMD_DEG: f64 = 90.0;
 
@@ -440,7 +441,7 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     let motor = eng.add_member(As5048Model::new("as5048_motor", 0.0));
     let dial = eng.add_member(As5048Model::new("dial", 0.0));
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
     eng.link_duplex("spi:pcs_bldc:AS5048_1", motor).expect("link motor encoder");
     eng.link_duplex("spi:pcs_bldc:AS5048_2", dial).expect("link dial encoder");
 
@@ -582,11 +583,11 @@ fn check_end_to_end(fw: &Firmware, rep: &mut Report) {
 /// is registered as a model, and the engine advances it with sim time and records
 /// it through the same historian machinery as cvar samples each [`Engine::step`].
 /// The firmware ticks alongside but is irrelevant to the model's own `vsig`.
-fn check_model_vsig(fw: &Firmware, rep: &mut Report) {
+fn check_model_vsig(fw: &Rc<Firmware>, rep: &mut Report) {
     let mut eng = Engine::new(TICK_US);
     eng.add_member(RampModel::new("demo", 1000.0, Some("counts"))); // +1.0 / ms
     // The firmware ticks alongside (irrelevant to the model's own vsig).
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
     let id = vsig_id("demo", "value").expect("valid vsig id");
     // Registered by the model at add, but not yet recorded (read -> Ok(None)).
     let registered = eng.read(id.as_str()).map(|v| v.is_none()).unwrap_or(false);
@@ -660,7 +661,7 @@ impl Member for CountsRampModel {
 /// *reads* but never writes (only the sim's injectRx writes `rx[]`), so a flushed
 /// value survives the tick and can be asserted after. Member order `[model, firmware]`
 /// gives zero-lag tracking; the model steps by 25 to stay within the byte.
-fn check_route_table(fw: &Firmware, rep: &mut Report) {
+fn check_route_table(fw: &Rc<Firmware>, rep: &mut Report) {
     const STEP: u32 = 25; // stays within a u8 destination byte
     let src = vsig_id("sensor", "counts").expect("valid vsig id");
     // The sim USB rx byte: read by the firmware, never written by it.
@@ -668,7 +669,7 @@ fn check_route_table(fw: &Firmware, rep: &mut Report) {
 
     let mut eng = Engine::new(TICK_US);
     eng.add_member(CountsRampModel::new("sensor", STEP));
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+    let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
     // rx is a 512-byte buffer, over the array threshold, so the driven element is
     // registered explicitly. A registered cvar the framework command-writes (the
     // route) is flushed into memory by the member automatically (fresh-dirty flush).
@@ -792,7 +793,7 @@ impl Member for LoopModel {
 /// registration order: the validator rejects it while zero-latency, accepts it once
 /// delayed. We catch the step error, rewire **live**, then assert the exact
 /// deterministic sequence.
-fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
+fn check_feedback_loop(fw: &Rc<Firmware>, rep: &mut Report) {
     let out = vsig_id("loop_model", "out").expect("valid vsig id");
     let inp = vsig_id("loop_model", "in").expect("valid vsig id");
     let counter = cvar("task1msRuns"); // firmware output (sampled)
@@ -800,7 +801,7 @@ fn check_feedback_loop(fw: &Firmware, rep: &mut Report) {
 
     let mut eng = Engine::new(TICK_US);
     eng.add_member(LoopModel::new("loop_model")); // idx 0
-    let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US); // idx 1
+    let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US); // idx 1
     // The rx byte lives in a 512-byte buffer (over threshold) -> register it
     // explicitly so the route can drive it. `task1msRuns` (the sampled counter) is a
     // top-level scalar, auto-mirrored with no declaration.
@@ -900,7 +901,7 @@ impl Member for VoltsModel {
 /// the firmware's port entry `vsig:pcs_bldc:ADC1_IN6`; the [`FirmwareMember`] caches it
 /// for C; and the driver converts volts -> counts with its own numBits/vref. Assert the
 /// exact quantization, and that a NEIGHBORING undriven input keeps its ramp (the fallback).
-fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
+fn check_adc_ports(fw: &Rc<Firmware>, rep: &mut Report) {
     const VOLTS: f64 = 1.234;
     // ADC1 regular input 6 (port ADC1_IN6) is driven; input 1 stays undriven.
     let port = SignalId::new("vsig", SOURCE, "ADC1_IN6", None).expect("valid port id");
@@ -909,7 +910,7 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
 
     let mut eng = Engine::new(TICK_US);
     eng.add_member(VoltsModel::new("pin_model", VOLTS));
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
 
     // The sim drivers register their ports during sil_fw_start; the FirmwareMember
     // applied them to the table at add_member. Filter to the ADC-named input ports:
@@ -980,10 +981,10 @@ fn check_adc_ports(fw: &Firmware, rep: &mut Report) {
 /// engine with a plain [`FirmwareMember`] (zero declarations), and assert the
 /// State Table entry both *tracks* (changes across the window) and *equals* a
 /// fresh DWARF read of the same static — with no `sample_cvar` anywhere.
-fn check_mirror_accuracy(fw: &Firmware, rep: &mut Report) {
+fn check_mirror_accuracy(fw: &Rc<Firmware>, rep: &mut Report) {
     let leaf = cvar("HW_ADC_data.tickCounter");
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
 
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
@@ -1256,7 +1257,7 @@ fn check_as5048_model(rep: &mut Report) {
 /// after a few ticks every port reads 0.0: registration + the dark boot state are
 /// what this check pins. Live tracking waits on the stage-6/7 gate-driver bring-up
 /// that lets drive engage, so it is deliberately not asserted here.
-fn check_pwm_ports(fw: &Firmware, rep: &mut Report) {
+fn check_pwm_ports(fw: &Rc<Firmware>, rep: &mut Report) {
     const PORTS: [&str; 7] = [
         "PWM_U_duty", "PWM_V_duty", "PWM_W_duty",
         "PWM_U_enabled", "PWM_V_enabled", "PWM_W_enabled",
@@ -1264,7 +1265,7 @@ fn check_pwm_ports(fw: &Firmware, rep: &mut Report) {
     ];
 
     let mut eng = Engine::new(TICK_US);
-    eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+    eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
 
     // Registered during sil_fw_start, applied to the table at add_member.
     let missing: Vec<String> = PORTS
@@ -1320,14 +1321,14 @@ fn check_pwm_ports(fw: &Firmware, rep: &mut Report) {
 ///
 /// The report names the Rust profile and DLL flavor (`PCS_SIL_DLL_FLAVOR`) so a
 /// copied-out table is self-describing.
-fn report_performance(fw: &Firmware) {
+fn report_performance(fw: &Rc<Firmware>) {
     const WARMUP: u64 = 100;
     const N: u64 = 1000;
 
     // Registered-leaf count: enable a throwaway member on a scratch table.
     let leaves = {
         let mut st = StateTable::new();
-        let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
         fwm.set_enabled(true, &mut st);
         fwm.cvar_leaf_count()
     };
@@ -1345,7 +1346,7 @@ fn report_performance(fw: &Firmware) {
             .expect("valid cvar id");
         let mut eng = Engine::new(TICK_US);
         eng.add_member(CountsRampModel::new("sensor", STEP));
-        let mut fwm = FirmwareMember::new(SOURCE, fw, TICK_US);
+        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
         fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
         eng.add_member(fwm);
         eng.add_route(src, dst).expect("add route");
@@ -1359,7 +1360,7 @@ fn report_performance(fw: &Firmware) {
     //     flush from the model/route overhead the full step adds.
     let sweep_us = {
         let mut eng = Engine::new(TICK_US);
-        eng.add_member(FirmwareMember::new(SOURCE, fw, TICK_US));
+        eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
         time_avg_us(WARMUP, N, || {
             eng.step().expect("engine step");
         })

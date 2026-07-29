@@ -60,8 +60,8 @@ use thiserror::Error;
 /// hands the caller a typed handle to the same cell the engine steps, so a dual-role
 /// member (also a [`DuplexPeer`]) links to a bus directly. `name` is cached at add so
 /// validation / lookup never borrows the cell.
-struct MemberEntry<'m> {
-    member: Rc<RefCell<dyn Member + 'm>>,
+struct MemberEntry {
+    member: Rc<RefCell<dyn Member>>,
     name: String,
     enabled: bool,
 }
@@ -76,13 +76,13 @@ pub enum EngineError {
 }
 
 /// The sim clock + step loop. Owns the State Table, Route Table, and members, and
-/// holds no backend handle — so a caller can keep its own `&Firmware` for ad-hoc
-/// white-box injection alongside the engine. `'b` bounds the members (a
-/// [`FirmwareMember`](crate::FirmwareMember) borrows its backend for `'b`).
-pub struct Engine<'b> {
+/// holds no backend handle — so a caller can keep its own `Rc<Firmware>` for ad-hoc
+/// white-box injection alongside the engine. Members are `'static` (a
+/// [`FirmwareMember`](crate::FirmwareMember) owns its firmware via [`Rc`]).
+pub struct Engine {
     state: StateTable,
     routes: RouteTable,
-    members: Vec<MemberEntry<'b>>,
+    members: Vec<MemberEntry>,
     /// The shared duplex router any initiating member (firmware or model) couples
     /// through; the engine drains + records its transactions each `step`.
     duplex: DuplexRouter,
@@ -97,7 +97,7 @@ pub struct Engine<'b> {
     zl_order: Vec<usize>,
 }
 
-impl<'b> Engine<'b> {
+impl Engine {
     /// A new engine advancing `tick_period_us` of sim time per [`step`](Self::step)
     /// (e.g. 1000 for a 1 kHz cadence). Sim time starts at 0; the first `step`
     /// records at `tick_period_us`.
@@ -136,12 +136,12 @@ impl<'b> Engine<'b> {
     /// The engine steps each member through `borrow_mut`; holding a `borrow_mut` on the
     /// returned handle across [`step`](Self::step) panics (single-threaded discipline,
     /// loud on misuse — the same rule as a duplex peer's cell).
-    pub fn add_member<M: Member + 'b>(&mut self, member: M) -> Rc<RefCell<M>> {
+    pub fn add_member<M: Member + 'static>(&mut self, member: M) -> Rc<RefCell<M>> {
         let rc = Rc::new(RefCell::new(member));
         let name = rc.borrow().name().to_string();
         rc.borrow_mut().set_enabled(true, &mut self.state);
         self.members.push(MemberEntry {
-            member: rc.clone() as Rc<RefCell<dyn Member + 'b>>,
+            member: rc.clone() as Rc<RefCell<dyn Member>>,
             name,
             enabled: true,
         });
@@ -533,10 +533,10 @@ mod tests {
         // order [model, firmware] makes it hold — the model records its vsig, the
         // firmware member's pre-advance zero-latency pass records it into the cvar
         // entry, and the firmware member flushes it.
-        let be = MockBackend::with_leaves(&["sensor_in"]);
+        let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
         let mut eng = Engine::new(1_000);
         eng.add_member(RampModel::new("ramp", 1000.0, None));
-        let fw = FirmwareMember::with_backend("fw", &be, 1_000);
+        let fw = FirmwareMember::with_backend("fw", be.clone(), 1_000);
         eng.add_member(fw);
         // The auto-mirrored cvar is registered under the member's own name ("fw").
         let sensor_in = SignalId::new("cvar", "fw", "sensor_in", None).unwrap();
@@ -554,10 +554,10 @@ mod tests {
 
     #[test]
     fn time_advances_by_tick_period() {
-        let be = MockBackend::with_leaves(&["counter"]);
+        let be = Rc::new(MockBackend::with_leaves(&["counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -592,10 +592,10 @@ mod tests {
 
     #[test]
     fn samples_registered_cvars_into_historian() {
-        let be = MockBackend::with_leaves(&["ramp_counter"]);
+        let be = Rc::new(MockBackend::with_leaves(&["ramp_counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "ramp_counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
 
         for _ in 0..3 {
             eng.step().unwrap();
@@ -621,9 +621,9 @@ mod tests {
 
     #[test]
     fn empty_step_advances_firmware_and_time() {
-        let be = MockBackend::default();
+        let be = Rc::new(MockBackend::default());
         let mut eng = Engine::new(2_000);
-        eng.add_member(FirmwareMember::with_backend("fw", &be, 2_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 2_000));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
@@ -633,9 +633,9 @@ mod tests {
 
     #[test]
     fn disabled_member_is_skipped_then_resumes() {
-        let be = MockBackend::default();
+        let be = Rc::new(MockBackend::default());
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
 
         assert!(eng.set_member_enabled("fw", false));
         eng.step().unwrap(); // skipped: no advance_tick
@@ -651,9 +651,9 @@ mod tests {
 
     #[test]
     fn route_source_unregistered_errors() {
-        let be = MockBackend::default();
+        let be = Rc::new(MockBackend::default());
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", &be, 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),
@@ -933,7 +933,7 @@ mod tests {
 
     // --- test-only helpers on the engine ---------------------------------
 
-    impl Engine<'_> {
+    impl Engine {
         /// Register + seed a signal directly on the engine's table (test scaffolding
         /// for wiring routes without a driving member).
         fn state_mut_seed(&mut self, id: &str, v: Value) {

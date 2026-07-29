@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
 use std::path::Path;
+use std::rc::Rc;
 
 /// The **internal execution seam** [`FirmwareMember`] drives one firmware instance
 /// through around each tick: `advance_tick`, white-box `cvar` read/write by path, and
@@ -850,11 +851,12 @@ fn select_anchor<'a>(
     None
 }
 
-/// A firmware instance as a [`Member`]. Borrows a concrete [`Firmware`] and drives
+/// A firmware instance as a [`Member`]. Owns a shared [`Rc<Firmware>`] and drives
 /// it through the internal `Backend` seam on the sim clock; it is the **only** thing
 /// that touches firmware memory (routes are table-mediated). The instance `name` is
 /// explicit, **not** derived from the DLL, so two boards can run one image as
-/// distinct members.
+/// distinct members. Shared ownership lets one struct own both firmware and engine
+/// (the last handle's drop unloads the library, so a fresh load boots from reset).
 ///
 /// Each [`advance`](Member::advance) accumulates sim time and, per full firmware-tick
 /// period, runs **three fixed phases** over its signal [`Binding`]s (ports are
@@ -889,9 +891,9 @@ fn select_anchor<'a>(
 /// handle (FUTURE: re-enable would reload the DLL — not implemented).
 ///
 /// [`RouteTable`]: crate::route::RouteTable
-pub struct FirmwareMember<'b> {
+pub struct FirmwareMember {
     name: String,
-    backend: &'b dyn Backend,
+    backend: Rc<dyn Backend>,
     tick_period_us: u64,
     /// Sim time accumulated toward the next firmware tick.
     accum_us: u64,
@@ -1020,12 +1022,12 @@ const SHADOW_MERGE_GAP: u64 = 64;
 /// [`FirmwareMember::set_array_threshold`].
 pub const DEFAULT_ARRAY_THRESHOLD: usize = 32;
 
-impl<'b> FirmwareMember<'b> {
-    /// Wrap a concrete [`Firmware`] as a member named `name`, advancing one
-    /// firmware tick per `tick_period_us` of sim time. The driver keeps its own
-    /// `&fw` alongside for ad-hoc white-box access; the member borrows it for the
-    /// engine.
-    pub fn new(name: &str, fw: &'b Firmware, tick_period_us: u64) -> Self {
+impl FirmwareMember {
+    /// Wrap a shared [`Rc<Firmware>`] as a member named `name`, advancing one
+    /// firmware tick per `tick_period_us` of sim time. The driver holds its own
+    /// clone of the `Rc` alongside for ad-hoc white-box access; the member owns
+    /// another clone for the engine.
+    pub fn new(name: &str, fw: Rc<Firmware>, tick_period_us: u64) -> Self {
         Self::with_backend(name, fw, tick_period_us)
     }
 
@@ -1033,7 +1035,7 @@ impl<'b> FirmwareMember<'b> {
     /// public constructor is [`new`](Self::new), which takes the concrete
     /// [`Firmware`]; this exists so unit tests can drive a `FirmwareMember` over
     /// a pure-Rust mock without a firmware DLL.
-    pub(crate) fn with_backend(name: &str, backend: &'b dyn Backend, tick_period_us: u64) -> Self {
+    pub(crate) fn with_backend(name: &str, backend: Rc<dyn Backend>, tick_period_us: u64) -> Self {
         Self {
             name: name.to_string(),
             backend,
@@ -1234,7 +1236,7 @@ impl<'b> FirmwareMember<'b> {
     /// merging with a link that already declared it). The engine force-records the
     /// resulting transactions after all members advance.
     fn in_sync_duplex(&mut self, ctx: &mut MemberCtx) {
-        let backend = self.backend;
+        let backend = Rc::clone(&self.backend);
         for b in &mut self.duplex {
             if b.router_handle.is_none() {
                 let handle = ctx.duplex().declare(&b.endpoint_id);
@@ -1271,7 +1273,7 @@ impl<'b> FirmwareMember<'b> {
         self.sweep_gen = self.sweep_gen.wrapping_add(1);
         let gen = self.sweep_gen;
         let cold = self.shadow_cold;
-        let backend = self.backend;
+        let backend = Rc::clone(&self.backend);
         // Move the reusable buffers out so the range loop can hold a `&mut` to
         // `self.ranges` while still touching scratch/visit_stamp/resolved.
         let mut scratch = std::mem::take(&mut self.scratch);
@@ -1380,7 +1382,7 @@ impl Binding {
     }
 }
 
-impl Member for FirmwareMember<'_> {
+impl Member for FirmwareMember {
     fn name(&self) -> &str {
         &self.name
     }
@@ -1428,7 +1430,7 @@ impl Member for FirmwareMember<'_> {
     }
 }
 
-impl FirmwareMember<'_> {
+impl FirmwareMember {
     /// Enumerate the firmware's traceable cvar leaves once (exclusion policy +
     /// includes applied), register each under this member's namespace, and cache
     /// the resolved leaf list for the sweep. Reports the registered-leaf count (and
@@ -1489,7 +1491,7 @@ impl FirmwareMember<'_> {
     /// and scratch buffers. Marks the shadow cold so the first sweep baselines the
     /// table.
     fn build_shadow(&mut self, st: &StateTable) {
-        let backend = self.backend;
+        let backend = Rc::clone(&self.backend);
         let mut resolved: Vec<SweptLeaf> = Vec::new();
         let mut path: Vec<PathLeaf> = Vec::new();
         for (id, read) in &self.cvar_leaves {
@@ -1806,11 +1808,11 @@ mod tests {
     fn firmware_member_auto_mirrors_the_cvar_namespace() {
         // No per-signal declaration: the member enumerates + registers the whole
         // (mock) namespace at enable and sweeps it into the historian each tick.
-        let be = MockBackend::with_leaves(&["counter"]);
+        let be = Rc::new(MockBackend::with_leaves(&["counter"]));
         be.write_cvar("counter", &Value::U32(7));
 
         let cid = id("cvar:dut:counter");
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // enumerates + registers cvar:dut:counter
@@ -1836,9 +1838,9 @@ mod tests {
         // The flush side: a command-written (dirty) cvar entry is pushed into
         // firmware memory before advance_tick. A route/test records the entry; the
         // member flushes the fresh id — no per-signal `drive` declaration.
-        let be = MockBackend::with_leaves(&["sensor_in"]);
+        let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
         let sid = id("cvar:dut:sensor_in");
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // auto-registers cvar:dut:sensor_in
@@ -1863,8 +1865,8 @@ mod tests {
         // The single-threaded flush≡all invariant, proven sparse: with three
         // mirrored leaves, only the ONE command-written entry is flushed; the
         // untouched two are never written back, yet all three still mirror.
-        let be = MockBackend::with_leaves(&["a", "b", "c"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let be = Rc::new(MockBackend::with_leaves(&["a", "b", "c"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -1886,8 +1888,8 @@ mod tests {
 
     #[test]
     fn auto_registration_is_idempotent_across_re_enable() {
-        let be = MockBackend::with_leaves(&["x", "y"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let be = Rc::new(MockBackend::with_leaves(&["x", "y"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!((st.len(), fm.cvar_leaf_count()), (2, 2));
@@ -1900,8 +1902,8 @@ mod tests {
 
     #[test]
     fn skip_by_prefix_drops_a_subtree() {
-        let be = MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let be = Rc::new(MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         fm.skip_cvar_registration_by_prefix("drop");
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
@@ -1999,8 +2001,8 @@ mod tests {
     fn firmware_member_applies_ports_and_mediates_io() {
         // The full mirror-synced port loop: table -> input cache -> C read,
         // then C write -> output buffer -> table. Native format end to end.
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
 
         // set_enabled applies the pending registrations immediately.
@@ -2021,8 +2023,8 @@ mod tests {
 
     #[test]
     fn undriven_port_reads_as_not_driven() {
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2044,8 +2046,8 @@ mod tests {
 
     #[test]
     fn port_registered_mid_run_applies_at_next_advance() {
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(st.len(), 2);
@@ -2091,9 +2093,9 @@ mod tests {
         // A registered output port the firmware writes each tick: the value reaches
         // its table entry after the member's out-sync drain — the D6 source path a
         // motor model consumes. No input, no route: just C write -> drain -> record.
-        let mock = OutPortMock { value: 0.75, ..Default::default() };
+        let mock = Rc::new(OutPortMock { value: 0.75, ..Default::default() });
         mock.ports.inner.borrow_mut().register("vsig", "duty", None, None, PortKind::Scalar);
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2347,11 +2349,11 @@ mod tests {
     fn shadow_sweep_cold_records_all_then_localizes_a_changed_chunk() {
         // One range [0,76): a@0 (chunk0), b@62 (spans chunk0/chunk1 — 62..66),
         // c@72 (chunk1). Merge gap keeps them in one range; chunk size is 64.
-        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        let be = Rc::new(ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]));
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2383,11 +2385,11 @@ mod tests {
         // of b: chunk0 stays equal, chunk1 changes -> b (via chunk1) and c decode,
         // a (chunk0 only) does not. Proves a boundary leaf is caught from either
         // chunk it overlaps.
-        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        let be = Rc::new(ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]));
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
@@ -2405,10 +2407,10 @@ mod tests {
     fn shadow_sweep_splits_ranges_across_large_gaps() {
         // a@0 and b@200 are farther apart than the merge gap -> two independent
         // ranges. A change in a's range must not re-decode b.
-        let be = ShadowMock::new(256, &[("a", 0), ("b", 200)]);
+        let be = Rc::new(ShadowMock::new(256, &[("a", 0), ("b", 200)]));
         be.set_u32(0, 1);
         be.set_u32(200, 2);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
@@ -2426,9 +2428,9 @@ mod tests {
         // The shadow tracks MEMORY: a leaf decodes exactly once per memory change (the
         // tick it changed) and not again on a subsequent unchanged tick — the shadow
         // absorbed the change.
-        let be = ShadowMock::new(16, &[("a", 0)]);
+        let be = Rc::new(ShadowMock::new(16, &[("a", 0)]));
         be.set_u32(0, 10);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         let a = id("cvar:dut:a");
