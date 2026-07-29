@@ -89,7 +89,8 @@ driven and asserted purely through the State Table.
   the *same* thread aborts, which is why cargo test's thread-per-test + one world per
   test is the model). The sanity-check bin shrinks to the perf report; `tools/run_sil.sh`
   runs `cargo test` for the checks, then the perf bin. Firmware clocks assert
-  start-from-reset + 1000 us/tick, never sim-axis alignment.
+  start-from-reset + 1000 us/tick, never sim-axis alignment. nextest integrated
+  (process-per-test parallel; run_sil.sh prefers it, cargo test remains the fallback).
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +

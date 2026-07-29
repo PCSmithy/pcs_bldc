@@ -98,13 +98,20 @@ LIB_ARG="$(cygpath -m "$LIB" 2>/dev/null || echo "$LIB")"
 export PCS_SIL_DLL="$LIB_ARG"
 
 # 3. Run the behavioral checks. Each scenario is an independent #[test] over a fresh
-#    Sil world (a firmware DLL loaded, booted from reset, unloaded on drop). Sequential
-#    single-process baseline today via `cargo test`; cargo-nextest (process-per-test,
-#    parallel) is the next task and slots in here unchanged. Exits nonzero on failure.
-echo "==> [3/4] Running SIL checks (cargo test) against $LIB_ARG"
+#    Sil world (a firmware DLL loaded, booted from reset, unloaded on drop). cargo
+#    nextest gives each test its own process, so the worlds parallelize with the world
+#    mutex uncontended; when nextest is absent, plain cargo test serializes them in one
+#    process. Exits nonzero on test failure either way.
 status=0
-cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
-  -p pcs_bldc_sil || status=$?
+if command -v cargo-nextest >/dev/null 2>&1; then
+  echo "==> [3/4] Running SIL checks (cargo nextest, process-per-test) against $LIB_ARG"
+  cargo nextest run ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
+    -p pcs_bldc_sil || status=$?
+else
+  echo "==> [3/4] cargo-nextest not on PATH; running SIL checks (cargo test) against $LIB_ARG"
+  cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
+    -p pcs_bldc_sil || status=$?
+fi
 if [ "$status" -ne 0 ]; then
   echo "==> SIL checks FAILED (exit $status)" >&2
   exit "$status"
