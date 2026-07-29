@@ -122,7 +122,7 @@ fn end_to_end() {
 
     // Pull the sim USB TX capture and confirm the Teleplot telemetry text.
     // Direct read: tx[] is over the mirror threshold — see backlog usb_cdc/teleplot.
-    let text = read_tx_capture(sim.fw());
+    let text = read_tx_capture(&sim.fw());
     let has_keys = text.contains("motor_angle:") && text.contains("motor_raw:");
     let has_angle = text.contains(&exp_deg_str);
     let has_raw = text.contains(&exp_raw.to_string());
@@ -143,7 +143,7 @@ fn end_to_end() {
     for _ in 0..6 {
         sim.step().expect("engine step");
     }
-    let text2 = read_tx_capture(sim.fw());
+    let text2 = read_tx_capture(&sim.fw());
     // motor_angle goes out in the fast (2 ms) tier every window; motor_raw is
     // slow-tier (200 ms) and won't appear in a short post-drain capture.
     assert!(

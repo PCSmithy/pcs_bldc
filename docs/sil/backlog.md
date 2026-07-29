@@ -30,22 +30,32 @@ green reading the dylib directly), but if the macOS pipeline ever depends
 on a sibling `.dSYM` bundle, the copy must bring it along
 (`<image>.dSYM` next to the temp copy).
 
-## Fiber port: support repeated firmware boots on one thread
+## ☑ Fiber port: support repeated firmware boots on one thread — DONE (2026-07-29)
 
-**When:** before any reset-lifecycle test case (a scenario that reboots the
-firmware mid-test — owner wants these) or any single-thread runner that
-constructs more than one `Sil` world sequentially.
+**Landed.** `xPortStartScheduler` owns the fiber conversion only when the thread
+is not already a fiber (a second image borrows the existing conversion), and
+`vPortEndScheduler` deletes the task fibers and calls `ConvertFiberToThread` when
+it owns the conversion — so repeated boots on one thread (`reload_cycles_same_thread`)
+and two images sharing one thread (`two_firmwares`) both work. The paired
+member-level reset also landed (see below): re-enable a firmware member = full DLL
+reload ≈ boot from reset, proven by `firmware_reset_lifecycle`.
 
-**What (found by the stage-4.6 reload spike, 2026-07-28):** a second
-`sil_fw_start()` on the SAME OS thread aborts — `xPortStartScheduler` calls
-`ConvertThreadToFiber`, which returns NULL on an already-converted thread,
-and shutdown never calls `ConvertFiberToThread`. The `#[test]` harness
-sidesteps it (cargo test = fresh thread per test, one `Sil` per test), and
-`tests/lifecycle.rs` documents the working pattern. Fix:
-`ConvertFiberToThread` at scheduler end (Windows; the macOS ucontext port
-needs the equivalent teardown), then a lifecycle test proving N boots on one
-thread. Pairs with the designed member-level reset (re-enable a firmware
-member = full DLL reload ≈ boot from reset).
+**Remaining (macOS only):** the macOS ucontext/asm port needs the equivalent
+un-convert teardown when it lands; the Windows fiber port is complete.
+
+## ☑ Firmware member reset lifecycle — DONE (2026-07-29)
+
+**Landed.** A disabled firmware member is held in reset (memory frozen, sim time
+flows — the engine skips disabled members). Re-enable with a reload recipe
+(`FirmwareMember::set_reload_path`, wired automatically by `Sil::load_firmware` to
+the temp copy) reboots a fresh image from the same path: shut the old image down,
+drop its `Rc` (sole ownership — `Sil` keeps only a `Weak`), `Firmware::load` the
+same path (statics reboot as the library refcount hits zero), `start()`, and rebuild
+every image-bound cache (DWARF leaves, cvar bindings, shadow ranges, port + duplex
+registrations) — State-Table entries re-registered idempotently, so signal history
+is preserved across the reload. Without a recipe, re-enable resumes advancing.
+`tests/reset.rs::firmware_reset_lifecycle` proves the sawtooth on one continuous sim
+timeline.
 
 ## Enum cvars mirror as DWARF placeholders (`<0>`, `<1>`), not enumerator names
 

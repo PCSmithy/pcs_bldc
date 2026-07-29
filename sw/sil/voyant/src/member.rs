@@ -96,13 +96,14 @@ pub trait Member {
 
     /// Enable or disable the member. The engine calls `set_enabled(true, st)` at add
     /// (members start enabled) and on any re-enable. Registering signals here is the
-    /// tidy convention, not a mandate — registration is legal any time, and idempotent
-    /// (re-enable is a benign no-op). Enable only *gates advance* today: a disabled
-    /// member's [`advance`](Member::advance) is skipped while sim time flows and its
-    /// signals hold their last value.
+    /// tidy convention, not a mandate — registration is legal any time, and idempotent.
+    /// A disabled member's [`advance`](Member::advance) is skipped while sim time flows
+    /// and its signals hold their last value (`set_enabled(false, _)` may do nothing).
     ///
-    /// FUTURE: re-enable *depth* (a firmware member reloading its DLL, a model
-    /// reinitializing) is not implemented; `set_enabled(false, _)` need do nothing.
+    /// Re-enable **depth** is member-kind-specific: a plain model re-registers as a
+    /// benign no-op, while a [`FirmwareMember`](crate::FirmwareMember) with a reload
+    /// recipe reboots its image from reset here (statics from scratch, caches rebuilt,
+    /// signal history preserved).
     fn set_enabled(&mut self, on: bool, st: &mut StateTable);
 }
 

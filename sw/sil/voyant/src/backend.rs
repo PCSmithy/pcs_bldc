@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The **internal execution seam** [`FirmwareMember`] drives one firmware instance
@@ -40,6 +40,13 @@ use std::rc::Rc;
 pub(crate) trait Backend {
     /// Advance one sim tick (run the firmware to its next quiescence).
     fn advance_tick(&self);
+
+    /// Tear down the firmware scheduler — the reload teardown seam
+    /// ([`FirmwareMember`] reboots a disabled-then-re-enabled member by shutting the
+    /// old image down here before dropping it). Default no-op for a lifecycle-less
+    /// backend (a test mock). Construction/`start` stay off the trait — the reload
+    /// path drives them on the concrete [`Firmware`] handle it loads.
+    fn shutdown(&self) {}
 
     /// Sample a firmware `static` by path into a logical [`Value`] — the read
     /// side of the State Table's `cvar` backing.
@@ -701,6 +708,10 @@ impl Backend for Firmware {
         Firmware::advance_tick(self);
     }
 
+    fn shutdown(&self) {
+        Firmware::shutdown(self);
+    }
+
     fn read_cvar(&self, path: &str) -> Value {
         Firmware::read_cvar(self, path)
     }
@@ -851,6 +862,20 @@ fn select_anchor<'a>(
     None
 }
 
+/// A do-nothing [`Backend`] that briefly occupies a [`FirmwareMember`]'s backend slot
+/// during a reload, so the old firmware `Rc` can be dropped (unloading its library)
+/// *before* the same image path is loaded again — `LoadLibrary` on a still-live path
+/// aliases the module's statics, so the old must be gone first. Never advanced.
+struct DeadBackend;
+
+impl Backend for DeadBackend {
+    fn advance_tick(&self) {}
+    fn read_cvar(&self, _path: &str) -> Value {
+        Value::U32(0)
+    }
+    fn write_cvar(&self, _path: &str, _v: &Value) {}
+}
+
 /// A firmware instance as a [`Member`]. Owns a shared [`Rc<Firmware>`] and drives
 /// it through the internal `Backend` seam on the sim clock; it is the **only** thing
 /// that touches firmware memory (routes are table-mediated). The instance `name` is
@@ -887,13 +912,29 @@ fn select_anchor<'a>(
 /// The cvar leaf list is enumerated + registered at enable (whole namespace minus the
 /// exclusion policy — [`exclude`](Self::exclude) / [`include`](Self::include));
 /// **pending ports are applied there too**, so ports registered during `sil_fw_start`
-/// become entries as soon as the member is added. Lifecycle stays on the [`Firmware`]
-/// handle (FUTURE: re-enable would reload the DLL — not implemented).
+/// become entries as soon as the member is added.
+///
+/// ## Reset lifecycle (disable holds reset; re-enable reboots)
+///
+/// A disabled member is **held in reset**: the engine skips its advance, so no tick
+/// runs, its memory is frozen, and sim time flows on without it. Re-enable depends on
+/// the **reload recipe** ([`set_reload_path`](Self::set_reload_path)): with a path set,
+/// re-enable is a full **boot from reset** — shut the old image down, drop its `Rc`
+/// (asserting sole ownership), [`Firmware::load`] the same path (statics reboot as the
+/// library refcount hits zero), `start()` it, and rebuild every image-bound cache
+/// (DWARF leaves, cvar bindings, shadow ranges, port + duplex registrations). The
+/// State-Table entries are re-registered idempotently, so **signal history is preserved
+/// across the reload** — one continuous timeline spanning both lives. Without a recipe,
+/// re-enable just resumes advancing (re-registers the cached leaves, re-baselines).
 ///
 /// [`RouteTable`]: crate::route::RouteTable
 pub struct FirmwareMember {
     name: String,
     backend: Rc<dyn Backend>,
+    /// The image path a genuine re-enable reboots from (the reload recipe). `None` →
+    /// re-enable resumes advancing, no reboot (a mock backend, or an intentionally
+    /// non-reloading member).
+    reload_path: Option<PathBuf>,
     tick_period_us: u64,
     /// Sim time accumulated toward the next firmware tick.
     accum_us: u64,
@@ -1039,6 +1080,7 @@ impl FirmwareMember {
         Self {
             name: name.to_string(),
             backend,
+            reload_path: None,
             tick_period_us,
             accum_us: 0,
             cvar_leaves: Vec::new(),
@@ -1076,6 +1118,14 @@ impl FirmwareMember {
     /// [`DEFAULT_ARRAY_THRESHOLD`]). Configure before adding the member.
     pub fn set_array_threshold(&mut self, n: usize) {
         self.array_threshold = n;
+    }
+
+    /// Set the **reload recipe**: the image path a genuine re-enable reboots from
+    /// (see the type docs' reset lifecycle). Once set, disabling then re-enabling the
+    /// member reloads a fresh image from `path` — statics from reset — on the same sim
+    /// timeline. Without it, re-enable resumes advancing. Configure before adding.
+    pub fn set_reload_path(&mut self, path: &Path) {
+        self.reload_path = Some(path.to_path_buf());
     }
 
     /// How many cvar leaves this member mirrors (0 until enabled). The per-tick
@@ -1407,26 +1457,32 @@ impl Member for FirmwareMember {
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
-        if on {
-            if !self.leaves_cached {
-                self.enumerate_and_register(st);
-            } else {
-                // Re-enable re-registers the cached leaves idempotently (no
-                // re-enumerate) and forces a cold sweep to re-baseline the table.
+        // Disable holds the member in reset: the engine skips its advance (memory
+        // frozen while sim time flows), so there is nothing to do on the way down.
+        if !on {
+            return;
+        }
+        // First enable (at add_member): enumerate the already-started image and apply
+        // any ports registered during `sil_fw_start`, so routes into them (and duplex
+        // `:tx`/`:rx` entries) are valid from the first step.
+        if !self.leaves_cached {
+            self.enumerate_and_register(st);
+            self.apply_pending_ports(st);
+            return;
+        }
+        // A genuine re-enable. With a reload recipe, reboot a fresh image from reset
+        // (history preserved); without one, resume advancing — re-register the cached
+        // leaves idempotently and force a cold sweep to re-baseline the table.
+        match self.reload_path.clone() {
+            Some(path) => self.reload(&path, st),
+            None => {
                 for (id, _) in &self.cvar_leaves {
                     let _ = st.register(id.clone(), None);
                 }
                 self.shadow_cold = true;
+                self.apply_pending_ports(st);
             }
-            // Ports registered before this member existed (during `sil_fw_start`)
-            // become table entries here — immediately at add_member — so routes into
-            // them (and duplex `:tx`/`:rx` entries) are valid from the first step.
-            // Later ones apply at next advance; the router declaration + C-handle
-            // wiring for each duplex endpoint happen at the first in-sync.
-            self.apply_pending_ports(st);
         }
-        // FUTURE: reload the DLL (boot-from-reset) on re-enable; today enable only
-        // gates advance (the engine skips a disabled member's tick).
     }
 }
 
@@ -1482,6 +1538,61 @@ impl FirmwareMember {
                 }
             ),
         );
+    }
+
+    /// Reboot the firmware image from reset — the reset-lifecycle re-enable path. Shut
+    /// the old image down (on the driver fiber; the port un-converts the thread here),
+    /// require **sole ownership** of its `Rc`, drop it so the library unloads and its
+    /// statics reset, load the SAME path afresh, `start()` it, swap it in, and rebuild
+    /// every image-bound cache against the fresh statics + ASLR slide. The State-Table
+    /// entries are re-registered idempotently by the rebuild, so **signal history is
+    /// preserved** — the boot lands on the same continuous sim timeline.
+    fn reload(&mut self, path: &Path, st: &mut StateTable) {
+        self.backend.shutdown();
+        let strong = Rc::strong_count(&self.backend);
+        assert_eq!(
+            strong, 1,
+            "firmware member {:?} cannot reload: firmware Rc has {strong} strong owners (expected sole ownership); something outside the member still holds the handle",
+            self.name
+        );
+        // Swap in a placeholder so the old `Rc` drops (FreeLibrary) BEFORE the same
+        // path loads again — a still-live path would alias the module's statics.
+        let old = std::mem::replace(&mut self.backend, Rc::new(DeadBackend));
+        drop(old);
+        let fw = Firmware::load(path).unwrap_or_else(|e| {
+            panic!("firmware member {:?} reload failed to load {}: {e}", self.name, path.display())
+        });
+        assert!(
+            fw.start(),
+            "firmware member {:?} reload: sil_fw_start() returned false",
+            self.name
+        );
+        self.backend = Rc::new(fw);
+        // Rebuild image-bound state, then re-enumerate/re-register + re-apply ports
+        // (C re-registers them at start; applying is idempotent on the table).
+        self.reset_image_caches();
+        self.enumerate_and_register(st);
+        self.apply_pending_ports(st);
+    }
+
+    /// Clear all image-bound state before a reload: the DWARF leaf list, the
+    /// shadow-sweep structures, port/duplex bindings, cursors, and the firmware-tick
+    /// accumulator (the rebooted clock restarts at 0). The State-Table entries stay —
+    /// re-registration is idempotent, preserving their history across the reboot.
+    fn reset_image_caches(&mut self) {
+        self.cvar_leaves.clear();
+        self.resolved.clear();
+        self.ranges.clear();
+        self.scratch.clear();
+        self.visit_stamp.clear();
+        self.path_leaves.clear();
+        self.ports.clear();
+        self.duplex.clear();
+        self.port_cursor = 0;
+        self.accum_us = 0;
+        self.sweep_gen = 0;
+        self.shadow_cold = true;
+        self.leaves_cached = false;
     }
 
     /// Build the Tier-1 shadow-sweep structures from the enumerated cvar leaves:

@@ -88,14 +88,19 @@ driven and asserted purely through the State Table.
   process-global mutex, taken at the first firmware load, serializes vanilla (threaded)
   `cargo test` — the sequential single-process baseline — and is uncontended under
   cargo-nextest's process-per-test model. `tests/lifecycle.rs` is the reload gate: the
-  fiber port re-inits cleanly on a fresh thread (a second `start()` on the *same* thread
-  aborts, which is why cargo test's thread-per-test + one firmware per test is the
-  model). `tests/multi_firmware.rs` (`two_firmwares`) is present and `#[ignore]`d pending
-  the fiber-port restart fix that lets a second `start()` share one thread. The
+  fiber port re-inits cleanly on a fresh thread **and** back-to-back on one thread (it
+  un-converts the thread at `shutdown`), so `reload_cycles_same_thread` boots N images
+  in a row on a single thread. `tests/multi_firmware.rs` (`two_firmwares`) runs two
+  images sharing one thread (the second borrows the first's fiber conversion). The
   sanity-check bin shrinks to the perf report; `tools/run_sil.sh` runs the checks, then
   the perf bin. Firmware clocks assert start-from-reset + 1000 us/tick, never sim-axis
   alignment. nextest integrated (process-per-test parallel; run_sil.sh prefers it, cargo
-  test remains the fallback).
+  test remains the fallback). **Reset lifecycle available** (`tests/reset.rs`): disabling
+  a firmware member holds it in reset (memory frozen, sim time flows); re-enabling with a
+  reload recipe (`FirmwareMember::set_reload_path`, wired by `Sil::load_firmware`) reboots
+  a fresh image from the same path — statics from reset, DWARF/bindings/ports/duplex
+  rebuilt, signal history preserved — on one continuous timeline. `firmware_reset_lifecycle`
+  proves the sawtooth (100 ms up, 100 ms dark, 100 ms up).
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +

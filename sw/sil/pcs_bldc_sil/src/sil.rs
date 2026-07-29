@@ -8,7 +8,7 @@
 use crate::{dll_path, trace, TICK_US};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use voyant::{Engine, Firmware, FirmwareMember};
@@ -31,11 +31,14 @@ static COPY_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// shuts every firmware down, unloads the libraries, and removes the temp copies.
 pub struct Sil {
     /// `Some` for a live world; taken to `None` during drop so the engine (and its
-    /// member `Rc`s) release before the firmware `Rc`s unload the libraries.
+    /// member `Rc`s) release before the temp copies are deleted.
     engine: Option<Engine>,
-    /// One `Rc` per loaded firmware, in load order. The engine's members hold the
-    /// other clones; both sides must drop before a library unloads.
-    firmwares: Vec<Rc<Firmware>>,
+    /// One `Weak` per loaded firmware, in load order. The member owns the **sole**
+    /// strong `Rc` (so a member can reload its own image from reset — a strong clone
+    /// here would break that sole-ownership assert); this weak drives `fw()` and
+    /// shutdown-on-drop, and reads `None` once a member has reloaded or the engine has
+    /// dropped it.
+    firmwares: Vec<Weak<Firmware>>,
     /// The temp DLL copies backing `firmwares`, in load order — deleted after unload.
     temp_paths: Vec<PathBuf>,
     /// Held from the first firmware load until drop (see [`WORLD_LOCK`]); `None` in a
@@ -71,10 +74,11 @@ impl Sil {
     /// process lock on the first load of this world. Copies the image to a unique temp
     /// file — `LoadLibrary` on one path aliases the module's statics, so the copy is
     /// what gives each instance (and a repeated load of one path) its own memory.
-    /// Loads it, asserts `start()`, tracks the `Rc<Firmware>` + copy for teardown, and
-    /// returns a [`FirmwareMember`] bound to it. Panics if the DLL is missing (build
-    /// it: `tools/run_sil.sh`), the copy fails, the load fails, or `start()` returns
-    /// false.
+    /// Loads it, asserts `start()`, hands the member the **sole** strong `Rc` (keeping
+    /// only a `Weak` here), wires the temp path as the member's reload recipe (so a
+    /// disable/re-enable reboots from reset), tracks the copy for teardown, and returns
+    /// the bound [`FirmwareMember`]. Panics if the DLL is missing (build it:
+    /// `tools/run_sil.sh`), the copy fails, the load fails, or `start()` returns false.
     pub fn load_firmware_from(&mut self, source_name: &str, path: &Path) -> FirmwareMember {
         if self.guard.is_none() {
             self.guard = Some(WORLD_LOCK.lock().unwrap_or_else(|p| p.into_inner()));
@@ -91,16 +95,25 @@ impl Sil {
                 .unwrap_or_else(|e| panic!("failed to load firmware {}: {e}", copy.display())),
         );
         assert!(fw.start(), "sil_fw_start() returned false");
-        self.firmwares.push(Rc::clone(&fw));
-        self.temp_paths.push(copy);
-        FirmwareMember::new(source_name, fw, TICK_US)
+        self.firmwares.push(Rc::downgrade(&fw));
+        self.temp_paths.push(copy.clone());
+        let mut member = FirmwareMember::new(source_name, fw, TICK_US);
+        // Reboot-from-reset recipe: re-enabling this member reloads the same temp copy.
+        member.set_reload_path(&copy);
+        member
     }
 
     /// The most-recently loaded firmware handle, for tests that verify firmware MEMORY
-    /// directly (route / feedback / mirror checks that read a `static`). Panics in a
-    /// zero-firmware world.
-    pub fn fw(&self) -> &Firmware {
-        self.firmwares.last().expect("no firmware loaded").as_ref()
+    /// directly (route / feedback / mirror checks that read a `static`). The member
+    /// owns the strong `Rc`; this upgrades the `Weak` to a shared clone (transient — it
+    /// does not perturb the member's sole ownership between steps). Panics in a
+    /// zero-firmware world, or if the tracked handle is stale (the member reloaded it).
+    pub fn fw(&self) -> Rc<Firmware> {
+        self.firmwares
+            .last()
+            .expect("no firmware loaded")
+            .upgrade()
+            .expect("firmware handle is stale (member reloaded or unloaded its image)")
     }
 
     /// Step the engine for `ms` milliseconds of sim time (`ms * 1000 / TICK_US` ticks),
@@ -159,12 +172,17 @@ impl Drop for Sil {
         if let Some(eng) = self.engine.as_ref() {
             trace::maybe_dump(eng, &name);
         }
-        // Shut every firmware down in reverse load order (LIFO teardown).
-        for fw in self.firmwares.iter().rev() {
-            fw.shutdown();
+        // Shut every still-live firmware down in reverse load order (LIFO teardown).
+        // A stale weak — a member that reloaded its image, or one already dropped —
+        // upgrades to `None` and is skipped; the member owns the strong `Rc`, so the
+        // upgrade succeeds while the engine is alive.
+        for weak in self.firmwares.iter().rev() {
+            if let Some(fw) = weak.upgrade() {
+                fw.shutdown();
+            }
         }
-        // Drop the engine (releasing each member's firmware `Rc`), then the world's own
-        // `Rc`s — the last clone's drop runs FreeLibrary.
+        // Drop the engine, releasing each member's firmware `Rc` — the last clone's
+        // drop runs FreeLibrary.
         self.engine = None;
         self.firmwares.clear();
         // Delete the temp copies, now that the libraries are unloaded (Windows refuses

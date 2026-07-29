@@ -241,10 +241,15 @@ sensors) are instantiation-side members.
 
 **Enable semantics.** Members start enabled when added. The engine **gates** a
 disabled member out — its `advance` is skipped while sim time keeps flowing, and
-its signals hold their last recorded value. `set_enabled` is where a member
-(re-)registers its signals (idempotent). FUTURE: member-kind-specific *re-enable
-depth* — a firmware member reloading its DLL (boot-from-reset), a model reinit'ing
-its integration state — is not implemented; today enable is gating only.
+its signals hold their last recorded value (a firmware member disabled = **held in
+reset**: memory frozen, sim time flowing). `set_enabled` is where a member
+(re-)registers its signals (idempotent) and runs its member-kind-specific *re-enable
+depth*. A `FirmwareMember` with a **reload recipe** (`set_reload_path`) reboots on
+re-enable: it shuts the old image down, drops its `Rc` (sole ownership), reloads the
+same path from reset, and rebuilds every image-bound cache — State-Table entries
+re-register idempotently, so signal history is preserved across the reload. Without a
+recipe, re-enable resumes advancing. A model member's own reinit (integration state)
+is the same seam when a model wants it.
 
 The per-tick order the engine runs — advance sim time → validate wiring if dirty →
 propagate delayed routes from a pre-tick snapshot → for each enabled member:
