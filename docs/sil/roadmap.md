@@ -82,9 +82,7 @@ driven and asserted purely through the State Table.
 - ☐ **6. Feedback + harness models** — current-sense model driving the
   existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
   every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
-  gestures via sim GPIO. **Prerequisite: the sim TIM2 timebase** — the sim
-  counter must advance with sim time (D9); today it is frozen, so
-  `lib_timer` elapsed time never moves (see the trap below).
+  gestures via sim GPIO.
 - ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
   → dial + button tap → assert the sector sequence advances, the rotor spins,
   currents stay under trip, telemetry reports motion; fault-injection
@@ -102,10 +100,10 @@ forgotten):
 - Drive stays blocked until `dev_gateDriver_isOperational()`: the sim I2C
   STATUS register must be seeded AND `task_200ms` must have completed a
   configure+status pass (first pass lands within ~200–400 ticks).
-- **The sim TIM2 counter is frozen** (nothing advances it at runtime), so
-  `lib_timer` elapsed time never moves in SIL — the 500 ms alignment dwell
-  never completes and `dev_switch` tap/hold gestures never classify. Fix
-  before stage 6/7: advance the sim timebase counter with sim time (D9).
+- ~~The sim TIM2 counter is frozen~~ — fixed 2026-07-28: `countsPerUs`-
+  configured sim TIM counters advance with sim time
+  (`HW_TIM_advanceTime`, called per tick from `sil_fw_advance_tick`);
+  check 2 asserts `lib_timer` time flows.
 
 **Deferred** (owner, 2026-07-12): **D8 interrupt controller** — the current
 control path is entirely cooperative in `task_1ms`, so D8 isn't needed until

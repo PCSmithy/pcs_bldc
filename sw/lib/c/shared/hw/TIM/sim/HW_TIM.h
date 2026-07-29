@@ -45,6 +45,8 @@ typedef struct
     uint32_t          period;
     uint32_t          counterWidthBits;   // 16 or 32; bounds period at init
     HW_TIM_countDir_E countDir;
+    uint32_t          countsPerUs;        // counter counts per sim microsecond
+                                          // (0 = counter does not track sim time)
 
     bool     configureBreakDeadTime;
     uint32_t deadTime;        // dead-time generator ticks (0..255)
@@ -78,6 +80,12 @@ typedef struct
 /* Public Function Declarations */
 
 bool HW_TIM_init(const HW_TIM_config_S * const config);
+
+// Advance sim time: each peripheral with countsPerUs > 0 advances its counter
+// by elapsed_us * countsPerUs, wrapping modulo (period + 1) in its count
+// direction. The platform tick calls this once per sim tick — it is the clock
+// behind the timebase peripherals (lib_timer's 1 us source rides TIM2).
+void HW_TIM_advanceTime(uint32_t elapsed_us);
 
 bool HW_TIM_getCounter(HW_TIM_peripheral_E peripheral, uint32_t * const out);
 bool HW_TIM_getPeripheral(HW_TIM_channels_E channel, HW_TIM_peripheral_E * const out);

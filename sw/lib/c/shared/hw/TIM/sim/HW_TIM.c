@@ -221,6 +221,27 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
     return ret;
 }
 
+void HW_TIM_advanceTime(uint32_t elapsed_us)
+{
+    if (data->initialized)
+    {
+        for (size_t p = 0U; p < data->config->numPeripherals; p++)
+        {
+            const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[p];
+            if (peripheralConfig->countsPerUs > 0U)
+            {
+                const uint64_t span   = (uint64_t)peripheralConfig->period + 1U;
+                const uint64_t counts = (uint64_t)elapsed_us * peripheralConfig->countsPerUs;
+                const uint64_t cur    = data->peripheralData[p].counter;
+                const uint64_t next   = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+                    ? ((cur + span) - (counts % span)) % span
+                    : (cur + counts) % span;
+                data->peripheralData[p].counter = (uint32_t)next;
+            }
+        }
+    }
+}
+
 // [impl->fw~hal_tim_003~1]
 bool HW_TIM_getCounter(HW_TIM_peripheral_E peripheral, uint32_t * const out)
 {

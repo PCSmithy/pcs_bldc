@@ -163,6 +163,7 @@
     .period           = 4294967295U, \
     .counterWidthBits = 32U, \
     .countDir         = HW_TIM_COUNT_UP, \
+    .countsPerUs      = 1U, \
     .configureTrgo          = false,
 
 // ----- target selection -----

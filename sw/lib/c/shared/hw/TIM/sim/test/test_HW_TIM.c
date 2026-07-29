@@ -326,6 +326,40 @@ static void test_clearBreakFlags(void)
     TEST_ASSERT_FALSE(HW_TIM_clearBreakFlags(HW_TIM_PERIPHERAL_COUNT));
 }
 
+// advanceTime drives only countsPerUs-configured counters: the timebase
+// peripheral tracks elapsed sim time (wrapping modulo period+1); a
+// countsPerUs=0 peripheral (the PWM carrier) stays put.
+static void test_advanceTime_tracks_sim_time(void)
+{
+    timPeripherals[BASE_PERIPH].countsPerUs = 1U;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    HW_TIM_advanceTime(1000U);
+    HW_TIM_advanceTime(1000U);
+
+    uint32_t base = 0U;
+    uint32_t pwm  = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &pwm));
+    TEST_ASSERT_EQUAL_UINT32(2000U, base);
+    TEST_ASSERT_EQUAL_UINT32(0U, pwm); // countsPerUs = 0: untouched
+}
+
+// Wrap: a small-period counter advances modulo (period + 1).
+static void test_advanceTime_wraps_at_period(void)
+{
+    timPeripherals[BASE_PERIPH].countsPerUs = 1U;
+    timPeripherals[BASE_PERIPH].period = 99U;
+    timPeripherals[BASE_PERIPH].counterWidthBits = 16U;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    HW_TIM_advanceTime(250U);
+
+    uint32_t base = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(50U, base); // 250 mod 100
+}
+
 /* ---- PWM/bridge observation ports ---- */
 
 // Every named channel registers a duty + enable port, and the advanced-control
@@ -456,6 +490,9 @@ int main(void)
     RUN_TEST(test_moe_set_get);
     RUN_TEST(test_moe_error_returns);
     RUN_TEST(test_clearBreakFlags);
+
+    RUN_TEST(test_advanceTime_tracks_sim_time);
+    RUN_TEST(test_advanceTime_wraps_at_period);
 
     RUN_TEST(test_ports_registered);
     RUN_TEST(test_unnamed_channel_registers_no_ports);

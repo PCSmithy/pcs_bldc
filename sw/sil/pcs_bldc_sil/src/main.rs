@@ -298,6 +298,10 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         .iter()
         .map(|c| fw.read_cvar(c).as_u64().unwrap_or(0))
         .collect();
+    let timebase_before = fw
+        .read_cvar("lib_timer_data.currentTime_us")
+        .as_u64()
+        .unwrap_or(0);
 
     let mut eng = Engine::new(TICK_US);
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
@@ -347,6 +351,23 @@ fn check_tasks_advance(fw: &Firmware, rep: &mut Report) {
         "telemetryTask advances (~25 / 50 ticks @ 2 ms)",
         (20..=30).contains(&d[3]),
         format!("telemRuns +{}", d[3]),
+    );
+
+    // The sim timebase flows: TIM2 advances with sim time, so lib_timer's
+    // accumulated microseconds track the 50-tick window (~50 ms). This is the
+    // clock behind the alignment dwell and the button tap/hold gestures.
+    let timebase_after = eng
+        .read(&cid("lib_timer_data.currentTime_us"))
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let dt_us = timebase_after.saturating_sub(timebase_before);
+    rep.check(
+        "lib_timer time flows with sim time (~50 ms / 50 ticks)",
+        (45_000..=55_000).contains(&dt_us),
+        format!("lib_timer_data.currentTime_us +{dt_us} us"),
     );
     rep.absorb(eng.take_logs());
 }
