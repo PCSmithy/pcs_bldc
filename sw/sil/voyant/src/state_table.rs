@@ -536,6 +536,12 @@ impl StateTable {
         self.current_time_us = time_us;
     }
 
+    /// The current sim time (the last [`set_time`](Self::set_time)) — e.g. a
+    /// trace dump's run end time.
+    pub fn now_us(&self) -> u64 {
+        self.current_time_us
+    }
+
     /// Register a signal (optionally with a unit).
     ///
     /// **Idempotent**: re-registering with an *identical* unit is a benign no-op — a

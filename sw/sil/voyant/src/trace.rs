@@ -5,7 +5,7 @@
 //! ## Wire format (all integers little-endian)
 //!
 //! ```text
-//! header : magic b"VYTR" | version u32 (=1) | signal_count u32
+//! header : magic b"VYTR" | version u32 (=2) | end_time_us u64 | signal_count u32
 //! signal : id_len u32 | id utf8
 //!          unit_len u32 | unit utf8   (empty = no unit)
 //!          dtype u8                   (see the DT_* tags)
@@ -29,8 +29,9 @@ use std::io::{self, Write};
 
 /// Stream magic (greppable).
 pub const MAGIC: &[u8; 4] = b"VYTR";
-/// Framing format version.
-pub const FORMAT_VERSION: u32 = 1;
+/// Framing format version. v2 adds the run end time (u64 µs) after the version,
+/// so a ZOH-materializing reader can extend every signal to the end of the run.
+pub const FORMAT_VERSION: u32 = 2;
 
 // dtype tags (u8).
 pub const DT_F32: u8 = 0;
@@ -69,6 +70,7 @@ pub fn write_trace<W: Write>(
 
     w.write_all(MAGIC)?;
     write_u32(w, FORMAT_VERSION)?;
+    write_u64(w, st.now_us())?;
     write_u32(w, emit.len() as u32)?;
     for (id, samples) in &emit {
         write_signal(w, id.as_str(), st.unit_of(id), samples)?;
@@ -218,6 +220,7 @@ mod tests {
         let mut r = Reader { b: bytes, o: 0 };
         assert_eq!(r.take(4), MAGIC, "magic");
         assert_eq!(r.u32(), FORMAT_VERSION, "version");
+        let _end_time_us = r.u64();
         let count = r.u32();
         let mut out = Vec::new();
         for _ in 0..count {

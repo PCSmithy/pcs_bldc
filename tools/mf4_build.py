@@ -12,11 +12,19 @@ Usage:
     python tools/mf4_build.py --in trace.bin --out trace.mf4     # a saved stream
 
 Wire format (little-endian; mirrors sw/sil/voyant/src/trace.rs):
-    header : b"VYTR" | version u32 (=1) | signal_count u32
+    header : b"VYTR" | version u32 (=2) | end_time_us u64 | signal_count u32
+             (v1 headers — no end_time_us — are still accepted)
     signal : id (u32 len + utf8) | unit (u32 len + utf8) | dtype u8 |
              sample_count u64 | timestamps (u64 us each) |
              values (native scalar each; bool->u8, enum->u32 ordinal) |
              enum table [enum only]: entry_count u32, then (ordinal u32, name)*
+
+The historian is a change-log with zero-order-hold semantics, so this builder
+MATERIALIZES the ZOH for viewing: each signal is step-doubled (the previous
+value re-emitted at every change time, so linear interpolation draws flats and
+steps, not ramps) and extended with a terminal sample at the run end time —
+a constant signal renders as a line spanning the whole run, and the plot is
+scrubbable to the end.
 """
 
 import argparse
@@ -27,7 +35,7 @@ import numpy as np
 from asammdf import MDF, Signal
 
 MAGIC = b"VYTR"
-VERSION = 1
+SUPPORTED_VERSIONS = (1, 2)
 
 DT_F32, DT_F64, DT_I32, DT_U32, DT_U64, DT_BOOL, DT_ENUM = range(7)
 NP_DTYPE = {
@@ -78,14 +86,30 @@ def value_to_text(pairs):
     return conv
 
 
+def materialize_zoh(times, values, end_time_s):
+    """Step-double a change-log so linear interpolation renders true ZOH.
+
+    (t0,v0), (t1,v0), (t1,v1), (t2,v1), (t2,v2), ... — the previous value
+    re-emitted at each change time — plus a terminal (end_time, v_last) when
+    the run extends past the last change.
+    """
+    out_t = np.repeat(times, 2)[1:]
+    out_v = np.repeat(values, 2)[:-1]
+    if end_time_s > out_t[-1]:
+        out_t = np.append(out_t, end_time_s)
+        out_v = np.append(out_v, out_v[-1])
+    return out_t, out_v
+
+
 def parse(data):
-    """Parse the stream into a list of asammdf Signals."""
+    """Parse the stream into a list of ZOH-materialized asammdf Signals."""
     r = Reader(data)
     if r.take(4) != MAGIC:
         raise ValueError("bad magic (not a voyant trace stream)")
     version = r.u32()
-    if version != VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise ValueError(f"unsupported trace version {version}")
+    end_time_s = (r.u64() / 1e6) if version >= 2 else 0.0
     count = r.u32()
 
     signals = []
@@ -104,6 +128,7 @@ def parse(data):
             pairs = [(r.u32(), r.string()) for _ in range(r.u32())]
             conversion = value_to_text(pairs)
 
+        times, values = materialize_zoh(times, values, end_time_s)
         signals.append(
             Signal(
                 samples=values,

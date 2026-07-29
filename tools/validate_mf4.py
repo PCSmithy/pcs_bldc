@@ -63,13 +63,22 @@ def main():
     print(f"== {e2e_path} ==")
     m = MDF(e2e_path)
 
-    angle = check_unit(m, "vsig:as5048_motor:angle", "rad")
+    # ZOH materialization: even a once-written signal spans the run (change sample
+    # + terminal sample at run end), so every channel is scrubbable in the GUI.
+    angle = check_unit(m, "vsig:as5048_motor:angle", "rad", min_samples=2)
+    run_end = 0.0
     if angle is not None:
         last = float(angle.samples[-1])
         check(
             "angle ends at ~pi/2 (90 deg commanded -> 1.5708 rad)",
             abs(last - 1.5707963) < 1e-3,
             f"last={last:.6f}",
+        )
+        run_end = float(angle.timestamps[-1])
+        check(
+            "angle extends to the run end (ZOH terminal sample)",
+            run_end > float(angle.timestamps[0]),
+            f"span {angle.timestamps[0]:.6f}..{run_end:.6f} s",
         )
 
     raw = check_unit(m, "vsig:as5048_motor:raw_encoder_ticks", "counts")
@@ -78,7 +87,13 @@ def main():
         check("raw_encoder_ticks ends at 4096 (16384/4)", last == 4096, f"last={last}")
 
     # PWM_U_duty: registered unitless -> asammdf must show an EMPTY unit, not a default.
-    duty = check_unit(m, "vsig:pcs_bldc:PWM_U_duty", "")
+    duty = check_unit(m, "vsig:pcs_bldc:PWM_U_duty", "", min_samples=2)
+    if duty is not None and run_end > 0.0:
+        check(
+            "PWM_U_duty (constant 0) spans to the same run end",
+            abs(float(duty.timestamps[-1]) - run_end) < 1e-9,
+            f"last t={float(duty.timestamps[-1]):.6f} s",
+        )
 
     # A firmware cvar is present with samples (cvars carry no unit).
     cvar = channel(m, "cvar:pcs_bldc:task1msRuns")
