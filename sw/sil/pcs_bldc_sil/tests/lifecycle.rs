@@ -8,7 +8,7 @@
 //! dropped world unloads the library (last `Rc` gone), and the next load boots C
 //! statics from scratch.
 
-use pcs_bldc_sil::{dll_path, lock_world, Sil};
+use pcs_bldc_sil::{dll_path, lock_world, Sil, SOURCE};
 use voyant::Firmware;
 
 /// Drive one raw load → start → tick → read → shutdown cycle, asserting the
@@ -56,24 +56,24 @@ fn reload_cycles_reset_on_fresh_threads() {
 fn boot_is_fresh() {
     // A single fresh world (this test's own cargo-test thread): the firmware boots
     // from reset and its clock climbs exactly one tick per engine step.
-    let mut world = Sil::new();
-    let fwm = world.firmware_member();
-    world.sim.add_member(fwm);
+    let mut sim = Sil::new();
+    let fwm = sim.load_firmware(SOURCE);
+    sim.add_member(fwm);
 
     assert_eq!(
-        world.fw().read_cvar("task1msRuns").as_u64().unwrap(),
+        sim.fw().read_cvar("task1msRuns").as_u64().unwrap(),
         0,
         "task1msRuns is 0 before the first step"
     );
     assert_eq!(
-        world.fw().read_cvar("lib_timer_data.currentTime_us").as_u64().unwrap(),
+        sim.fw().read_cvar("lib_timer_data.currentTime_us").as_u64().unwrap(),
         0,
         "firmware clock starts at 0 from reset"
     );
 
     for k in 1..=5u64 {
-        world.sim.step().expect("engine step");
-        let time = world
+        sim.step().expect("engine step");
+        let time = sim
             .fw()
             .read_cvar("lib_timer_data.currentTime_us")
             .as_u64()

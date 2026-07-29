@@ -2,8 +2,8 @@
 //! boundary (`angle[deg]` in, canonical rad stored), quantization + wrap, the
 //! pipelined READ-ANGLE wire frame, and the parity-error path.
 
-use pcs_bldc_sil::{As5048Model, TICK_US};
-use voyant::{DuplexPeer, Engine, Value};
+use pcs_bldc_sil::{As5048Model, Sil};
+use voyant::{DuplexPeer, Value};
 
 /// Decode an AS5048 wire frame (big-endian: byte 0 = bits 15..8) into
 /// `(parity_ok, error_flag, raw14)`. Even parity: the count of ones across all 16
@@ -21,9 +21,9 @@ fn as5048_model_content() {
     const READ_ANGLE: [u8; 2] = [0xFF, 0xFF]; // parity 1, read 1, addr 0x3FFF
     const BAD_PARITY: [u8; 2] = [0x7F, 0xFF]; // 15 ones -> parity invalid
 
-    let mut eng = Engine::new(TICK_US);
-    let motor = eng.add_member(As5048Model::new("as5048_motor", 0.0));
-    let dial = eng.add_member(As5048Model::new("dial", 0.0));
+    let mut sim = Sil::new();
+    let motor = sim.add_member(As5048Model::new("as5048_motor", 0.0));
+    let dial = sim.add_member(As5048Model::new("dial", 0.0));
 
     // One `angle` signal per instance (canonical rad — units are a boundary
     // conversion, never part of the id) plus the raw-ticks output.
@@ -33,7 +33,7 @@ fn as5048_model_content() {
         .collect();
     let missing: Vec<&str> = expected
         .iter()
-        .filter(|id| !eng.state().signals().any(|s| s.as_str() == **id))
+        .filter(|id| !sim.state().signals().any(|s| s.as_str() == **id))
         .map(String::as_str)
         .collect();
     assert!(
@@ -43,9 +43,9 @@ fn as5048_model_content() {
 
     // Command 90 deg through the unit boundary (canonical storage is rad); one step
     // folds it into the model and publishes the quantized output.
-    eng.write("vsig:as5048_motor:angle[deg]", 90.0).expect("write angle[deg] = 90");
-    eng.step().expect("engine step");
-    let raw = eng
+    sim.write("vsig:as5048_motor:angle[deg]", 90.0).expect("write angle[deg] = 90");
+    sim.step().expect("engine step");
+    let raw = sim
         .read("vsig:as5048_motor:raw_encoder_ticks")
         .ok()
         .flatten()
@@ -72,15 +72,15 @@ fn as5048_model_content() {
     // A negative command wraps into [0, 2pi) — and because the wrapped value differs
     // from the raw command, this also proves the model PUBLISHES its folded angle back
     // to the table (the signal is model state, not an echo of the last write).
-    eng.write("vsig:as5048_motor:angle[deg]", -90.0).expect("write angle[deg] = -90");
-    eng.step().expect("engine step");
-    let wrapped_deg = eng
+    sim.write("vsig:as5048_motor:angle[deg]", -90.0).expect("write angle[deg] = -90");
+    sim.step().expect("engine step");
+    let wrapped_deg = sim
         .read("vsig:as5048_motor:angle[deg]")
         .ok()
         .flatten()
         .as_ref()
         .and_then(Value::as_f64);
-    let raw_neg = eng
+    let raw_neg = sim
         .read("vsig:as5048_motor:raw_encoder_ticks")
         .ok()
         .flatten()

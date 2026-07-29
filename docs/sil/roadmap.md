@@ -76,21 +76,26 @@ driven and asserted purely through the State Table.
   `end_to_end.mf4` + `adc_ports.mf4`. This is the model-validation instrument for
   stage 5 — plot the plant against the firmware.
 - ☑ **4.6. pytest-shaped test harness** — every SIL scenario is an independent
-  `#[test]` in `pcs_bldc_sil/tests/*.rs` over a fresh `Sil` world: `Sil::new()` loads
-  this board's firmware DLL, boots it from reset, and exposes the simulation as
-  `world.sim`; `Drop` dumps a per-test `<test-fn>.mf4` trace and unloads the library
-  (the last `Rc<Firmware>` drops → `FreeLibrary`), so the next world boots C statics
-  from scratch. voyant's `FirmwareMember` now owns the firmware via `Rc`, deleting the
-  lifetime parameter from `Engine`. A process-global mutex serializes vanilla
-  (threaded) `cargo test` — the sequential single-process baseline — and is uncontended
-  under cargo-nextest's process-per-test model (the parallel integration is the next
-  task; the harness is nextest-compatible by construction). `tests/lifecycle.rs` is the
-  reload gate: the fiber port re-inits cleanly on a fresh thread (a second `start()` on
-  the *same* thread aborts, which is why cargo test's thread-per-test + one world per
-  test is the model). The sanity-check bin shrinks to the perf report; `tools/run_sil.sh`
-  runs `cargo test` for the checks, then the perf bin. Firmware clocks assert
-  start-from-reset + 1000 us/tick, never sim-axis alignment. nextest integrated
-  (process-per-test parallel; run_sil.sh prefers it, cargo test remains the fallback).
+  `#[test]` in `pcs_bldc_sil/tests/*.rs` over a `Sil`: **the simulation itself**, which
+  derefs to its `Engine` (so `sim.add_member` / `sim.link_duplex` / `sim.step` are
+  direct). `Sil::new()` is a zero-firmware world — model-only scenarios (`duplex`,
+  `encoder`) are first-class; `sim.load_firmware(name)` boots one firmware instance per
+  call, its image copied to a unique temp path so N instances (and repeated loads of one
+  path) each get their own module statics. `Drop` dumps a per-test `<test-fn>.mf4`
+  trace, shuts every firmware down in reverse load order, unloads the libraries (the
+  last `Rc<Firmware>` drops → `FreeLibrary`), and deletes the temp copies. voyant's
+  `FirmwareMember` owns its firmware via `Rc`, so `Engine` carries no lifetime. A
+  process-global mutex, taken at the first firmware load, serializes vanilla (threaded)
+  `cargo test` — the sequential single-process baseline — and is uncontended under
+  cargo-nextest's process-per-test model. `tests/lifecycle.rs` is the reload gate: the
+  fiber port re-inits cleanly on a fresh thread (a second `start()` on the *same* thread
+  aborts, which is why cargo test's thread-per-test + one firmware per test is the
+  model). `tests/multi_firmware.rs` (`two_firmwares`) is present and `#[ignore]`d pending
+  the fiber-port restart fix that lets a second `start()` share one thread. The
+  sanity-check bin shrinks to the perf report; `tools/run_sil.sh` runs the checks, then
+  the perf bin. Firmware clocks assert start-from-reset + 1000 us/tick, never sim-axis
+  alignment. nextest integrated (process-per-test parallel; run_sil.sh prefers it, cargo
+  test remains the fallback).
 - ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +

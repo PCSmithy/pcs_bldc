@@ -49,16 +49,15 @@ fn adc_ports() {
     let driven_counts = "HW_ADC_data.channelData[0].counts[6]";
     let neighbor_counts = "HW_ADC_data.channelData[0].counts[1]";
 
-    let mut world = Sil::new();
-    world.sim.add_member(VoltsModel::new("pin_model", VOLTS));
-    let fwm = world.firmware_member();
-    world.sim.add_member(fwm);
+    let mut sim = Sil::new();
+    sim.add_member(VoltsModel::new("pin_model", VOLTS));
+    let fwm = sim.load_firmware(SOURCE);
+    sim.add_member(fwm);
 
     // The sim drivers register their ports during sil_fw_start; the FirmwareMember
     // applied them to the table at add_member. The board config enables 10 regular
     // inputs (5 per ADC), so 10 ADC-named input ports exist under this member's name.
-    let n_ports = world
-        .sim
+    let n_ports = sim
         .state()
         .signals()
         .filter(|s| (s.sig_type() == "vsig") && (s.source() == SOURCE) && s.name().starts_with("ADC"))
@@ -66,16 +65,14 @@ fn adc_ports() {
     assert_eq!(n_ports, 10, "sim ADC registered one input port per enabled input");
 
     // Route the model's volts into the port (native format: volts -> volts).
-    world
-        .sim
-        .add_route(vsig_id("pin_model", "volts").expect("valid vsig id"), port.clone())
+    sim.add_route(vsig_id("pin_model", "volts").expect("valid vsig id"), port.clone())
         .expect("add route");
 
     // Expected counts: mirror of the sim driver's volts->counts math, with
     // numBits/vref read via DWARF from the sim channel config. Static config, read
     // before the step loop while the mirror is still cold.
-    let vref = world.fw().read_cvar("HW_ADC_channelConfig[0].vref").as_f64().unwrap_or(0.0);
-    let num_bits = world.fw().read_cvar("HW_ADC_channelConfig[0].numBits").as_u64().unwrap_or(0);
+    let vref = sim.fw().read_cvar("HW_ADC_channelConfig[0].vref").as_f64().unwrap_or(0.0);
+    let num_bits = sim.fw().read_cvar("HW_ADC_channelConfig[0].numBits").as_u64().unwrap_or(0);
     let max_counts = (1u64 << num_bits) - 1;
     let scaled = ((VOLTS / vref) * (max_counts as f64)) + 0.5;
     let expected = if scaled >= (max_counts as f64) {
@@ -90,9 +87,9 @@ fn adc_ports() {
     let mut driven: Vec<u64> = Vec::new();
     let mut neighbor: Vec<u64> = Vec::new();
     for _ in 0..6 {
-        world.sim.step().expect("engine step");
-        driven.push(world.sim.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
-        neighbor.push(world.sim.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
+        sim.step().expect("engine step");
+        driven.push(sim.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
+        neighbor.push(sim.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
     }
     let settled = &driven[2..];
     assert!(
@@ -115,28 +112,28 @@ fn pwm_ports() {
         "TIM1_MOE",
     ];
 
-    let mut world = Sil::new();
-    let fwm = world.firmware_member();
-    world.sim.add_member(fwm);
+    let mut sim = Sil::new();
+    let fwm = sim.load_firmware(SOURCE);
+    sim.add_member(fwm);
 
     // Registered during sil_fw_start, applied to the table at add_member.
     let missing: Vec<String> = PORTS
         .iter()
         .map(|p| format!("vsig:{SOURCE}:{p}"))
-        .filter(|id| !world.sim.state().signals().any(|s| s.as_str() == id))
+        .filter(|id| !sim.state().signals().any(|s| s.as_str() == id))
         .collect();
     assert!(missing.is_empty(), "sim HW_TIM registers 7 PWM/bridge ports; missing: {missing:?}");
 
     // app_motorControl re-commands the dark bridge every tick, so the ports publish 0
     // through the production setters — read them back after a few steps.
     for _ in 0..5 {
-        world.sim.step().expect("engine step");
+        sim.step().expect("engine step");
     }
     let wrong: Vec<String> = PORTS
         .iter()
         .filter_map(|p| {
             let id = format!("vsig:{SOURCE}:{p}");
-            let v = world.sim.read(&id).ok().flatten().as_ref().and_then(Value::as_f64);
+            let v = sim.read(&id).ok().flatten().as_ref().and_then(Value::as_f64);
             match v {
                 Some(0.0) => None,
                 other => Some(format!("{p}={other:?}")),

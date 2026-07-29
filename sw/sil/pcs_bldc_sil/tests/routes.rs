@@ -2,7 +2,7 @@
 //! `cvar` via the FirmwareMember flush (with suspend/resume), and a genuine
 //! two-member feedback loop needs the delayed (ZOH-cut) backward edge.
 
-use pcs_bldc_sil::{cvar, CountsRampModel, Sil};
+use pcs_bldc_sil::{cvar, CountsRampModel, Sil, SOURCE};
 use voyant::{vsig_id, EngineError, LogLevel, Member, MemberCtx, RouteError, SignalId, StateTable, Value};
 
 #[test]
@@ -13,23 +13,23 @@ fn route_drives_firmware_cvar_from_model() {
     // value survives the tick and can be asserted after.
     let dst = cvar("HW_USB_sim_data.rx[0]");
 
-    let mut world = Sil::new();
-    world.sim.add_member(CountsRampModel::new("sensor", STEP));
-    let mut fwm = world.firmware_member();
+    let mut sim = Sil::new();
+    sim.add_member(CountsRampModel::new("sensor", STEP));
+    let mut fwm = sim.load_firmware(SOURCE);
     // rx is a 512-byte buffer, over the array threshold, so the driven element is
     // registered explicitly. A registered cvar the framework command-writes (the
     // route) is flushed into memory by the member automatically (fresh-dirty flush).
     fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
-    world.sim.add_member(fwm);
-    world.sim.add_route(src.clone(), dst.clone()).expect("add route");
+    sim.add_member(fwm);
+    sim.add_route(src.clone(), dst.clone()).expect("add route");
 
     // Active route: firmware memory tracks the model exactly, step by step. Direct
     // reads assert the routed value reached firmware MEMORY (the member's flush).
     let mut tracked = true;
     let mut last = 0u64;
     for tick in 1..=4u64 {
-        world.sim.step().expect("engine step");
-        let got = world.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
+        sim.step().expect("engine step");
+        let got = sim.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
         tracked &= got == (tick * STEP as u64);
         last = got;
     }
@@ -42,11 +42,10 @@ fn route_drives_firmware_cvar_from_model() {
     // Suspend: the model keeps advancing, but the route stops recording the dest
     // entry, so the firmware member re-flushes the held value — firmware memory must
     // NOT follow the model.
-    world.sim.suspend_route(&src, &dst).expect("suspend");
-    world.sim.step().expect("engine step");
-    let held = world.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
-    let model_now = world
-        .sim
+    sim.suspend_route(&src, &dst).expect("suspend");
+    sim.step().expect("engine step");
+    let held = sim.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
+    let model_now = sim
         .read(src.as_str())
         .ok()
         .flatten()
@@ -59,11 +58,10 @@ fn route_drives_firmware_cvar_from_model() {
     );
 
     // Resume: the destination jumps to the model's current value again.
-    world.sim.resume_route(&src, &dst).expect("resume");
-    world.sim.step().expect("engine step");
-    let resumed = world.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
-    let model_after = world
-        .sim
+    sim.resume_route(&src, &dst).expect("resume");
+    sim.step().expect("engine step");
+    let resumed = sim.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
+    let model_after = sim
         .read(src.as_str())
         .ok()
         .flatten()
@@ -138,21 +136,21 @@ fn feedback_loop() {
     let counter = cvar("task1msRuns"); // firmware output (sampled)
     let rx = cvar("HW_USB_sim_data.rx[0]"); // firmware input (driven)
 
-    let mut world = Sil::new();
-    world.sim.add_member(LoopModel::new("loop_model")); // idx 0
-    let mut fwm = world.firmware_member(); // idx 1
+    let mut sim = Sil::new();
+    sim.add_member(LoopModel::new("loop_model")); // idx 0
+    let mut fwm = sim.load_firmware(SOURCE); // idx 1
     fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
-    world.sim.add_member(fwm);
+    sim.add_member(fwm);
 
     // Forward edge: model out -> firmware rx byte (zero-latency, model before fw).
-    world.sim.add_route(out.clone(), rx.clone()).expect("add forward route");
+    sim.add_route(out.clone(), rx.clone()).expect("add forward route");
     // Backward edge as ZERO-latency first: firmware counter -> model in. This is a
     // backward edge (source firmware is registered AFTER the consuming model), so the
     // validator must reject it at the next step.
-    world.sim.add_route(counter.clone(), inp.clone()).expect("add backward route");
+    sim.add_route(counter.clone(), inp.clone()).expect("add backward route");
 
     let rejected = matches!(
-        world.sim.step(),
+        sim.step(),
         Err(EngineError::Route(RouteError::BackwardRoute { .. }))
     );
     assert!(
@@ -162,8 +160,8 @@ fn feedback_loop() {
 
     // Fix the wiring LIVE: drop the zero-latency backward edge, re-add it delayed (the
     // explicit ZOH sample/actuation cut). Rewire-at-runtime is legal.
-    world.sim.remove_route(&counter, &inp).expect("remove backward route");
-    world.sim.add_delayed_route(counter.clone(), inp.clone()).expect("add delayed backward route");
+    sim.remove_route(&counter, &inp).expect("remove backward route");
+    sim.add_delayed_route(counter.clone(), inp.clone()).expect("add delayed backward route");
 
     // Predicted deterministic sequence for rx[0] read after each step:
     //   step 1: model in is unset (fw counter not yet sampled by this engine) -> 0.
@@ -171,12 +169,12 @@ fn feedback_loop() {
     //             so rx[0] = (base + (k-1)) % 200.
     // `base` is the firmware counter right before the first successful step (the
     // rejected step returned early and did NOT advance the firmware).
-    let base = world.fw().read_cvar(counter.name()).as_u64().unwrap_or(0);
+    let base = sim.fw().read_cvar(counter.name()).as_u64().unwrap_or(0);
     const N: u64 = 6;
     let got: Vec<u64> = (1..=N)
         .map(|_| {
-            world.sim.step().expect("engine step");
-            world.fw().read_cvar(rx.name()).as_u64().unwrap_or(0)
+            sim.step().expect("engine step");
+            sim.fw().read_cvar(rx.name()).as_u64().unwrap_or(0)
         })
         .collect();
     let predicted: Vec<u64> = (1..=N)

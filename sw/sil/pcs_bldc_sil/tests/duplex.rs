@@ -1,9 +1,9 @@
 //! The DuplexTransfer primitive is engine-scoped and generic: two instantiation-side
-//! model members couple over an SPI endpoint with no firmware in the transfer. No
-//! [`Sil`] world (no firmware) — a bare engine suffices.
+//! model members couple over an SPI endpoint with no firmware in the transfer. A
+//! zero-firmware [`Sil`] world hosts the engine.
 
-use pcs_bldc_sil::TICK_US;
-use voyant::{vsig_id, DuplexHandle, DuplexPeer, Engine, Member, MemberCtx, SignalId, StateTable, Value};
+use pcs_bldc_sil::Sil;
+use voyant::{vsig_id, DuplexHandle, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
 
 /// A duplex responder model — one struct, both roles: as a [`DuplexPeer`] it answers
 /// each SPI transfer with its current 14-bit angle framed big-endian; as a [`Member`]
@@ -66,19 +66,19 @@ fn model_to_model_duplex() {
     const ENDPOINT: &str = "spi:dial_initiator:cs";
     const STEP: u16 = 0x0100;
 
-    let mut eng = Engine::new(TICK_US);
+    let mut sim = Sil::new();
     // The responder is a shared member: added by value (idx 0), then linked to the bus
     // by its handle. It advances before the initiator (idx 1) reads each tick, so its
     // angle starts at 0x0000 and the initiator sees 0x0100, 0x0200, 0x0300.
-    let responder = eng.add_member(DialResponder { name: "dial_responder".into(), angle: 0x0000, step: STEP });
-    let handle = eng.link_duplex(ENDPOINT, responder).expect("link the model responder peer");
-    eng.add_member(DialInitiator { name: "dial_initiator".into(), handle });
+    let responder = sim.add_member(DialResponder { name: "dial_responder".into(), angle: 0x0000, step: STEP });
+    let handle = sim.link_duplex(ENDPOINT, responder).expect("link the model responder peer");
+    sim.add_member(DialInitiator { name: "dial_initiator".into(), handle });
 
     for _ in 0..3 {
-        eng.step().expect("engine step");
+        sim.step().expect("engine step");
     }
 
-    let read = eng
+    let read = sim
         .read("vsig:dial_initiator:read_angle")
         .ok()
         .flatten()
@@ -94,9 +94,9 @@ fn model_to_model_duplex() {
     // (one transfer/tick, never deduped -> three entries each).
     let tx_id = SignalId::parse(&format!("{ENDPOINT}:tx")).expect("valid spi id");
     let rx_id = SignalId::parse(&format!("{ENDPOINT}:rx")).expect("valid spi id");
-    let n_tx = eng.state().changes(&tx_id).map(|c| c.len()).unwrap_or(0);
-    let n_rx = eng.state().changes(&rx_id).map(|c| c.len()).unwrap_or(0);
-    let last_rx = eng.state().current_value(&rx_id).ok().flatten();
+    let n_tx = sim.state().changes(&tx_id).map(|c| c.len()).unwrap_or(0);
+    let n_rx = sim.state().changes(&rx_id).map(|c| c.len()).unwrap_or(0);
+    let last_rx = sim.state().current_value(&rx_id).ok().flatten();
     assert!(
         (n_tx == 3) && (n_rx == 3) && (last_rx == Some(Value::Bytes(vec![0x03, 0x00]))),
         "engine records model duplex as :tx/:rx events: {n_tx} tx + {n_rx} rx; last rx = {last_rx:?}"

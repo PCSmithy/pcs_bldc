@@ -18,6 +18,18 @@ DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
 upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
 but TX capture + parse needs no D8.
 
+## macOS: `load_firmware`'s image copy and DWARF location
+
+**When:** watch the first macOS CI run after the Sil temp-copy harness; act
+only if it fails DWARF resolution.
+
+**What:** `Sil::load_firmware` copies the firmware image to a unique temp
+path per instance. voyant reads DWARF from the loaded image file itself
+(the byte copy carries whatever the direct load carried, and macOS CI was
+green reading the dylib directly), but if the macOS pipeline ever depends
+on a sibling `.dSYM` bundle, the copy must bring it along
+(`<image>.dSYM` next to the temp copy).
+
 ## Fiber port: support repeated firmware boots on one thread
 
 **When:** before any reset-lifecycle test case (a scenario that reboots the

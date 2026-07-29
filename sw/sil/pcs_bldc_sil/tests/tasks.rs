@@ -1,7 +1,7 @@
 //! All four real FreeRTOS tasks advance under the sim scheduler, and the sim
 //! timebase (lib_timer, fed by TIM2) flows with sim time.
 
-use pcs_bldc_sil::{cid, cvar, Sil, TICK_US};
+use pcs_bldc_sil::{cid, cvar, Sil, SOURCE, TICK_US};
 use voyant::{SignalId, Value};
 
 #[test]
@@ -9,16 +9,17 @@ fn tasks_advance() {
     const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];
     const N: u64 = 50;
 
-    let mut world = Sil::new();
+    let mut sim = Sil::new();
+    let fwm = sim.load_firmware(SOURCE);
 
     // Fresh from reset: the firmware clock starts at 0. (The heartbeat counters are
     // near-0 too — boot leaves the USB task at 1 — so the window is measured as a
     // delta, not an absolute.)
     let before: Vec<u64> = COUNTERS
         .iter()
-        .map(|c| world.fw().read_cvar(c).as_u64().unwrap_or(0))
+        .map(|c| sim.fw().read_cvar(c).as_u64().unwrap_or(0))
         .collect();
-    let timebase_before = world
+    let timebase_before = sim
         .fw()
         .read_cvar("lib_timer_data.currentTime_us")
         .as_u64()
@@ -28,18 +29,15 @@ fn tasks_advance() {
     let ids: Vec<SignalId> = COUNTERS.iter().map(|c| cvar(c)).collect();
     // No per-signal declaration: the FirmwareMember auto-mirrors the whole cvar
     // namespace, so these counters are sampled into the historian each tick.
-    let fwm = world.firmware_member();
-    world.sim.add_member(fwm);
+    sim.add_member(fwm);
     for _ in 0..N {
-        world.sim.step().expect("engine step");
+        sim.step().expect("engine step");
     }
     // Post-window counter values come from the engine's own historian (auto-mirrored).
     let after: Vec<u64> = ids
         .iter()
         .map(|id| {
-            world
-                .sim
-                .read(id.as_str())
+            sim.read(id.as_str())
                 .ok()
                 .flatten()
                 .as_ref()
@@ -60,8 +58,7 @@ fn tasks_advance() {
     // The sim timebase flows: TIM2 advances with sim time, so lib_timer's
     // accumulated microseconds equal exactly one tick per step (the clock behind the
     // alignment dwell and the button tap/hold gestures).
-    let timebase_after = world
-        .sim
+    let timebase_after = sim
         .read(&cid("lib_timer_data.currentTime_us"))
         .ok()
         .flatten()

@@ -335,10 +335,12 @@ sw/sil/                 Rust cargo workspace
                            Scenario  — the project's wiring (members/routes/trace)
   pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board
                          (motor/encoder/sensor models, firmware config, routes).
-                         A lib (src/) exposes the `Sil` fresh-world harness (loads +
-                         boots the firmware DLL, unloads on drop); each scenario is an
-                         independent `#[test]` in tests/*.rs; the perf bin (main.rs)
-                         prints the per-tick performance report.
+                         A lib (src/) exposes `Sil` — the simulation itself, derefing
+                         to its `Engine`. `Sil::new()` is a zero-firmware world;
+                         `sim.load_firmware(name)` boots one instance per call (image
+                         copied per load), and drop unloads + deletes the copies. Each
+                         scenario is an independent `#[test]` in tests/*.rs; the perf
+                         bin (main.rs) prints the per-tick performance report.
 sw/fw/src/                firmware control ABI + native entry / fiber-port wiring
 sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs

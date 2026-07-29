@@ -1,12 +1,14 @@
 //! pcs_bldc SIL harness — the instantiation's test-facing surface.
 //!
-//! Each scenario is an independent `#[test]` in `tests/*.rs` over a fresh [`Sil`]
-//! world: [`Sil::new`] loads this board's firmware DLL, boots it from reset, and
-//! exposes the simulation as [`Sil::sim`]; on drop it dumps a per-test `.mf4` trace
-//! (when `PCS_SIL_TRACE_DIR` is set) and unloads the library so the next `Sil::new`
-//! boots statics from scratch. A process-global mutex serializes vanilla (threaded)
-//! `cargo test`; under cargo-nextest each test is its own process and the mutex is
-//! uncontended — the harness is nextest-compatible by construction.
+//! Each scenario is an independent `#[test]` in `tests/*.rs` over a [`Sil`]: the
+//! simulation itself, which derefs to its [`Engine`]. [`Sil::new`] is a zero-firmware
+//! world; [`Sil::load_firmware`] boots one instance per call, its image copied to a
+//! unique temp path so each has its own statics. On drop `Sil` dumps a per-test `.mf4`
+//! trace (when `PCS_SIL_TRACE_DIR` is set), shuts firmwares down, unloads them, and
+//! deletes the copies. A process-global mutex, taken at the first firmware load,
+//! serializes vanilla (threaded) `cargo test`; under cargo-nextest each test is its
+//! own process and the mutex is uncontended — the harness is nextest-compatible by
+//! construction.
 //!
 //! Board models and helpers ([`As5048Model`], [`trace`], [`TICK_US`], the DLL path
 //! resolution) live here so both the tests and the perf bin share one surface.
