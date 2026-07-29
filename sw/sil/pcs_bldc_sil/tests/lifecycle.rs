@@ -1,12 +1,11 @@
-//! World lifecycle: the firmware DLL reloads from reset every world, and the
-//! fiber port re-initializes cleanly on a fresh thread.
+//! World lifecycle: the firmware DLL reloads from reset every world, and the fiber
+//! port re-initializes cleanly whether on a fresh thread or the same one.
 //!
-//! This is the harness gate. The fiber port converts its thread to a Windows fiber
-//! at `start()` and never converts back, so a second `start()` on the *same* thread
-//! aborts — which is exactly why each `#[test]` runs on its own freshly-spawned
-//! thread and constructs exactly one world. These tests prove the reload cycle: a
-//! dropped world unloads the library (last `Rc` gone), and the next load boots C
-//! statics from scratch.
+//! The fiber port converts its thread to a Windows fiber at `start()` and un-converts
+//! at `shutdown()`, so each boot starts clean — a second `start()` on the same thread
+//! is fine. These tests prove the reload cycle: a dropped world unloads the library
+//! (last `Rc` gone), and the next load boots C statics from scratch, both across
+//! fresh threads and back-to-back on one thread.
 
 use pcs_bldc_sil::{dll_path, lock_world, Sil, SOURCE};
 use voyant::Firmware;
@@ -49,6 +48,18 @@ fn reload_cycles_reset_on_fresh_threads() {
         std::thread::spawn(move || reset_cycle(cycle))
             .join()
             .expect("reload cycle thread");
+    }
+}
+
+#[test]
+fn reload_cycles_same_thread() {
+    // The capability the fiber restart fix exists for: N boot -> run -> shutdown
+    // cycles on ONE thread (no spawned threads), each from reset. The port
+    // un-converts the thread at shutdown, so every cycle's `start()` converts a
+    // plain thread again and boots clean.
+    let _guard = lock_world();
+    for cycle in 0..3 {
+        reset_cycle(cycle);
     }
 }
 

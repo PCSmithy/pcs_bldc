@@ -6,7 +6,6 @@ use pcs_bldc_sil::Sil;
 use voyant::Value;
 
 #[test]
-#[ignore = "second sil_fw_start on one thread aborts in the fiber port; un-ignored by the fiber restart fix"]
 fn two_firmwares() {
     let mut sim = Sil::new();
     let board_a = sim.load_firmware("board_a");

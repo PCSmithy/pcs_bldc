@@ -11,7 +11,14 @@
  * Validated by the D1 spike (sw/sil/spike/d1-tick): deterministic + ~5000x
  * realtime. See docs/sil/freertos-tick.md, docs/sil/performance.md.
  *
- * Windows-only for now; macOS (ucontext / asm) is a later roadmap item.
+ * The port is restartable and shareable per thread. It converts the thread to a
+ * fiber only when the thread is not already one (a second firmware image on the
+ * same thread borrows the existing conversion), and vPortEndScheduler deletes the
+ * task fibers and un-converts when it owns the conversion — so repeated boots on
+ * one thread and multi-image worlds both work.
+ *
+ * Windows-only for now; macOS (ucontext / asm) is a later roadmap item — its
+ * teardown needs the equivalent un-convert on the owning image.
  */
 #include <windows.h>
 
@@ -19,6 +26,9 @@
 #include "task.h"
 
 #define PORT_FIBER_STACK_BYTES   ( 64u * 1024u )
+
+/* Upper bound on task fibers tracked for teardown (idle + timer + app tasks). */
+#define PORT_MAX_TASK_FIBERS     ( 32u )
 
 /* Per-task state stashed at the top of the task's FreeRTOS stack region. The
  * first member of TCB_t is pxTopOfStack, which holds whatever
@@ -38,6 +48,12 @@ extern void * volatile pxCurrentTCB;
 #define prvCurrentThreadState()   ( ( ThreadState_t * ) *( ( void ** ) pxCurrentTCB ) )
 
 static void *               pvMainFiber       = NULL;
+/* pdTRUE when this port instance converted the thread to a fiber (so teardown
+ * un-converts it); pdFALSE when it borrowed a conversion another image made. */
+static BaseType_t           xOwnsConversion   = pdFALSE;
+/* Every task fiber created in pxPortInitialiseStack, for teardown deletion. */
+static void *               pvTaskFibers[ PORT_MAX_TASK_FIBERS ];
+static UBaseType_t          uxTaskFiberCount  = 0;
 static volatile UBaseType_t uxCriticalNesting = 0;
 static volatile BaseType_t  xSchedulerStopped = pdFALSE;
 
@@ -71,14 +87,31 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
     ts->pvFiber  = CreateFiber( PORT_FIBER_STACK_BYTES, prvFiberEntry, ts );
     configASSERT( ts->pvFiber != NULL );
 
+    /* Track the fiber so vPortEndScheduler can delete it at teardown. */
+    configASSERT( uxTaskFiberCount < PORT_MAX_TASK_FIBERS );
+    pvTaskFibers[ uxTaskFiberCount ] = ts->pvFiber;
+    uxTaskFiberCount++;
+
     /* Returned value becomes pxTopOfStack == TCB first member. */
     return ( StackType_t * ) ts;
 }
 
 BaseType_t xPortStartScheduler( void )
 {
-    pvMainFiber = ConvertThreadToFiber( NULL );
-    configASSERT( pvMainFiber != NULL );
+    /* Own the conversion only if the thread is not already a fiber. A second
+     * firmware image on a thread another image converted borrows that existing
+     * conversion (its own port statics record ownership independently). */
+    if( IsThreadAFiber() == FALSE )
+    {
+        pvMainFiber = ConvertThreadToFiber( NULL );
+        configASSERT( pvMainFiber != NULL );
+        xOwnsConversion = pdTRUE;
+    }
+    else
+    {
+        pvMainFiber = GetCurrentFiber();
+        xOwnsConversion = pdFALSE;
+    }
 
     xSchedulerStopped = pdFALSE;
 
@@ -92,7 +125,36 @@ BaseType_t xPortStartScheduler( void )
 
 void vPortEndScheduler( void )
 {
+    void * const pvCurrent = GetCurrentFiber();
+
+    /* Teardown runs on the driver/main fiber (the framework calls it while the
+     * firmware is quiescent), never from a task. */
+    configASSERT( pvCurrent == pvMainFiber );
+
     xSchedulerStopped = pdTRUE;
+
+    /* Delete every task fiber (never the running one) and clear the bookkeeping. */
+    for( UBaseType_t i = 0; i < uxTaskFiberCount; i++ )
+    {
+        if( ( pvTaskFibers[ i ] != NULL ) && ( pvTaskFibers[ i ] != pvCurrent ) )
+        {
+            DeleteFiber( pvTaskFibers[ i ] );
+        }
+        pvTaskFibers[ i ] = NULL;
+    }
+    uxTaskFiberCount = 0;
+
+    /* Un-convert only the image that owns the conversion, so a fresh
+     * ConvertThreadToFiber on the SAME thread succeeds on the next boot; an image
+     * that borrowed a conversion leaves it intact for the owner to release. */
+    if( xOwnsConversion != pdFALSE )
+    {
+        const BOOL xConverted = ConvertFiberToThread();
+        configASSERT( xConverted != FALSE );
+        ( void ) xConverted;
+        xOwnsConversion = pdFALSE;
+    }
+    pvMainFiber = NULL;
 }
 
 /* Cooperative context switch: pick the next task and swap to its fiber. Called
