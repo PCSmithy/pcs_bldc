@@ -64,6 +64,10 @@ set(PCS_OPT_LEVEL "-Og" CACHE STRING "Optimization level for the embedded build"
 add_compile_options(
   ${_mcu_flags}
   -Wall -Wextra -Wpedantic
+  # The FPU is single-precision: an implicit float->double promotion means
+  # libgcc soft-double (~1.2 KB flash) plus slow soft-float math. Promote on
+  # purpose (explicit cast) or not at all.
+  -Wdouble-promotion
   -ffunction-sections -fdata-sections
   -fno-common
   ${PCS_OPT_LEVEL}
