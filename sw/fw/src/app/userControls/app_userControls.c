@@ -230,7 +230,7 @@ void app_userControls_run1ms(void)
         }
 
         // set outputs
-        app_motorControl_setMode(data->config->motor, IS_FLOAT_NOT_EQUAL(data->velocityRequest_radPerSec, 0.0f) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP : APP_MOTORCONTROL_MODE_OFF);
+        app_motorControl_setMode(data->config->motor, (data->mode == APP_USERCONTROLS_MODE_VELOCITY) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP : APP_MOTORCONTROL_MODE_OFF);
         app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec);
     }
 }

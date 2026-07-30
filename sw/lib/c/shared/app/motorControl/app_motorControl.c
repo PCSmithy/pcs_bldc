@@ -257,43 +257,37 @@ void app_motorControl_run1ms(void)
                             // TODO - compute duty cycle from velocity error
                             const float32_t duty01 = MIN_OF(fabsf(channelData->velocitySetpointCurrent_radPerSec) / channelConfig->maxVelocity_radPerSec, APP_MOTORCONTROL_MAX_DUTY_01);
 
-
-                            if (IS_FLOAT_NOT_EQUAL(duty01, ZERO))
+                            // Each branch applies the field at its bucket's LOWER edge
+                            // (0/60/../300 deg), so an unbiased lookup under-rotates the
+                            // field by 0..60 deg. Biasing by +30 deg rounds the target
+                            // to the NEAREST producible field angle instead, keeping the
+                            // effective lead at 60..120 deg for either rotation sign.
+                            const float32_t sector_rad = fmodf((target + RAD_30DEG), TWO_PI);
+                            if (sector_rad < RAD_60DEG)
                             {
-                                // Each branch applies the field at its bucket's LOWER edge
-                                // (0/60/../300 deg), so an unbiased lookup under-rotates the
-                                // field by 0..60 deg. Biasing by +30 deg rounds the target
-                                // to the NEAREST producible field angle instead, keeping the
-                                // effective lead at 60..120 deg for either rotation sign.
-                                const float32_t sector_rad = fmodf((target + RAD_30DEG), TWO_PI);
-                                if (sector_rad < RAD_60DEG)
-                                {
-                                    SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);
-                                }
-                                else if (sector_rad < RAD_120DEG)
-                                {
-                                    SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);
-                                }
-                                else if (sector_rad < RAD_180DEG)
-                                {
-                                    SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);
-                                }
-                                else if (sector_rad < RAD_240DEG)
-                                {
-                                    SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);
-                                }
-                                else if (sector_rad < RAD_300DEG)
-                                {
-                                    SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);
-                                }
-                                else // angle < 360
-                                {
-                                    SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);
-                                }
-
-                                isAnyPhaseEnabled = true;
+                                SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);
                             }
-
+                            else if (sector_rad < RAD_120DEG)
+                            {
+                                SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);
+                            }
+                            else if (sector_rad < RAD_180DEG)
+                            {
+                                SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);
+                            }
+                            else if (sector_rad < RAD_240DEG)
+                            {
+                                SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);
+                            }
+                            else if (sector_rad < RAD_300DEG)
+                            {
+                                SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);
+                            }
+                            else // angle < 360
+                            {
+                                SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);
+                            }
+                            isAnyPhaseEnabled = true;
                         }
                         break;
                 }

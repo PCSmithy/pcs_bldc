@@ -26,7 +26,11 @@ the bridge is enabled it invokes the active commutation method with the
 speed target, motor shaft angle, and phase currents, applying the method's
 per-phase duty and output-enable commands through IO_bridge; an enable
 request takes effect only with dev_gateDriver_isOperational true and no
-fault latched, the bridge otherwise held disabled.
+fault latched, the bridge otherwise held disabled. Engagement follows the
+enable (run/stop) state, not the instantaneous speed target: while enabled
+and the active method aligned, the bridge master output enable stays
+asserted through a zero target — the phases idle at zero duty — and only a
+disable request or a latched fault deasserts it.
 
 Acceptance:
 - While enabled, the active method's commands reach IO_bridge every cycle.
@@ -34,6 +38,11 @@ Acceptance:
   latched, leaves the bridge disabled.
 - While disabled, no method runs and the bridge output enable stays
   deasserted.
+- Engagement follows the enable (run/stop) state, not the instantaneous
+  speed target.
+- A zero speed target while enabled and aligned holds the master output
+  enable asserted, the phases idling at zero duty; zero demand alone never
+  deasserts it.
 
 Covers:
 - sys~mc_005~1
