@@ -101,15 +101,28 @@ driven and asserted purely through the State Table.
   a fresh image from the same path — statics from reset, DWARF/bindings/ports/duplex
   rebuilt, signal history preserved — on one continuous timeline. `firmware_reset_lifecycle`
   proves the sawtooth (100 ms up, 100 ms dark, 100 ms up).
-- ☐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
+- ◐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
   phase voltages, six-step aware: a disabled phase floats) into a
   trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +
   inertia/friction mechanical; model-owned integrator, sub-stepped if the
-  electrical τ demands it).
-- ☐ **6. Feedback + harness models** — current-sense model driving the
+  electrical τ demands it). Scaffolding landed — `src/motor.rs`: the seven
+  PWM/bridge observation inputs wired, unit-registered outputs
+  (`angle`/`velocity`/`phase_current_{u,v,w}`/`torque`), the electrical +
+  mechanical dynamics left as owner TODOs. `tests/motor.rs` closes the loop
+  motor→encoder→firmware on stub state (angle routes into the AS5048 model,
+  quantized back over SPI). Owner writes the physics.
+- ◐ **6. Feedback + harness models** — current-sense model driving the
   existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
   every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
-  gestures via sim GPIO.
+  gestures via sim GPIO. Alignment harness landed — `tests/alignment.rs`
+  drives the button-to-alignment path end to end: I2C STATUS seeded
+  (`HW_I2C_data.buses[1].devices[0].regMem[128]`), the four ADC ports held at
+  zero current, a button tap injected via the `HW_GPIO_data.inputLevel[port]
+  [bit]` static (the `cachedInput` mirror is recomputed from `inputLevel` at
+  the top of every tick — before `dev_switch` reads it — so it can't hold an
+  injected value; the resolver now addresses flat multi-dim DWARF leaves),
+  dial demand turned. The current-sense **model** itself is the remaining
+  piece (the ports are held constant here, not plant-driven).
 - ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
   → dial + button tap → assert the sector sequence advances, the rotor spins,
   currents stay under trip, telemetry reports motion; fault-injection

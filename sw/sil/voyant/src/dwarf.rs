@@ -288,34 +288,54 @@ impl DwarfMap {
 
         // Array: expand elements, applying the threshold / include policy.
         if let Some(&elem) = self.0.arrays.get(&ty) {
-            let n = match self.0.array_dims.get(&ty) {
-                Some(dims) if (dims.len() == 1) && (dims[0] > 0) => dims[0],
+            let dims = match self.0.array_dims.get(&ty) {
+                Some(dims) if !dims.is_empty() && dims.iter().all(|&d| d > 0) => dims.clone(),
                 _ => {
-                    // Multi-dimensional or unknown length: not indexable by the
-                    // single-index resolver, so exclude whole.
+                    // Unknown-length array: not indexable, so exclude whole.
                     ctx.excluded_arrays += 1;
                     return;
                 }
             };
-            let over = (n as usize) > ctx.threshold;
-            if over && !wanted(&path, ctx.includes) {
+            let total: u64 = dims.iter().product();
+            // A multi-dimensional array is never auto-mirrored: the resolver
+            // addresses `[i][j]` row-major, but expanding the whole grid would bloat
+            // the mirror, so only the element(s) an include reaches are kept.
+            let force = ((total as usize) > ctx.threshold) || (dims.len() > 1);
+            if force && !wanted(&path, ctx.includes) {
                 ctx.excluded_arrays += 1;
                 return;
             }
             let elem = self.peel(elem);
-            for i in 0..n {
-                let child = format!("{path}[{i}]");
-                // On a force-expanded over-threshold array, keep only the
-                // element(s) an include actually reaches.
-                if over && !wanted(&child, ctx.includes) {
-                    continue;
+            let mut idx = vec![0u64; dims.len()];
+            loop {
+                let mut child = path.clone();
+                for &i in &idx {
+                    child.push('[');
+                    child.push_str(&i.to_string());
+                    child.push(']');
                 }
-                self.walk_leaves(child, elem, depth + 1, ctx);
-                if ctx.capped {
-                    return;
+                // On a force-expanded (over-threshold or multi-dim) array, keep only
+                // the element(s) an include actually reaches.
+                if !force || wanted(&child, ctx.includes) {
+                    self.walk_leaves(child, elem, depth + 1, ctx);
+                    if ctx.capped {
+                        return;
+                    }
+                }
+                // Row-major increment, last dimension fastest.
+                let mut d = dims.len();
+                loop {
+                    if d == 0 {
+                        return;
+                    }
+                    d -= 1;
+                    idx[d] += 1;
+                    if idx[d] < dims[d] {
+                        break;
+                    }
+                    idx[d] = 0;
                 }
             }
-            return;
         }
 
         // Leaf: a traceable scalar or enum, else a skipped non-data type.
@@ -343,12 +363,30 @@ impl DwarfMap {
     }
 
     /// Apply `[i][j]...` to an array type, advancing `addr` and returning the
-    /// (peeled) element type.
+    /// (peeled) element type. A flat multi-dimensional array (GCC emits one
+    /// `array_type` with N `subrange` children) consumes N indices row-major against
+    /// its extents; a 1-D array (or one with no recorded dims) consumes one.
     fn index(&self, addr: &mut u64, mut ty: usize, indices: &[usize]) -> Option<usize> {
-        for &i in indices {
+        let mut consumed = 0usize;
+        while consumed < indices.len() {
             let elem = self.peel(*self.0.arrays.get(&ty)?);
             let elem_size = *self.0.sizes.get(&elem)?;
-            *addr += (i as u64) * elem_size;
+            let ndims = self.0.array_dims.get(&ty).map_or(1, |d| d.len().max(1));
+            if ndims > 1 {
+                let dims = &self.0.array_dims[&ty];
+                if (indices.len() - consumed) < ndims {
+                    return None;
+                }
+                let mut flat = 0u64;
+                for k in 0..ndims {
+                    flat = (flat * dims[k]) + (indices[consumed + k] as u64);
+                }
+                *addr += flat * elem_size;
+                consumed += ndims;
+            } else {
+                *addr += (indices[consumed] as u64) * elem_size;
+                consumed += 1;
+            }
             ty = elem;
         }
         Some(ty)
@@ -840,6 +878,28 @@ mod tests {
         let en = dw.enumerate_leaves(32, &["s.big".to_string()]);
         let big_leaves = en.paths.iter().filter(|p| p.starts_with("s.big[")).count();
         assert_eq!(big_leaves, 100);
+    }
+
+    #[test]
+    fn include_forces_a_multidim_element() {
+        let dw = synthetic();
+        let en = dw.enumerate_leaves(32, &["grid[1][2]".to_string()]);
+        // Exactly the one reached element joins; no other grid cell does.
+        assert!(en.paths.contains(&"grid[1][2]".to_string()));
+        assert_eq!(en.paths.iter().filter(|p| p.starts_with("grid[")).count(), 1);
+        // s.big stays excluded; grid is now force-expanded to its one element.
+        assert_eq!(en.excluded_arrays, 1);
+    }
+
+    #[test]
+    fn resolve_addresses_a_flat_multidim_element() {
+        let dw = synthetic();
+        // grid[2][3] of u32 @0x3000: [1][2] is row-major offset (1*3 + 2)*4 = 20.
+        let (addr, leaf) = dw.resolve("grid[1][2]").expect("grid[1][2] resolves");
+        assert_eq!(addr, 0x3000 + 20);
+        assert!(matches!(leaf, Leaf::Scalar(Scalar::U32)));
+        // A partial index (fewer than the array's dimensions) does not resolve.
+        assert!(dw.resolve("grid[1]").is_none());
     }
 
     #[test]

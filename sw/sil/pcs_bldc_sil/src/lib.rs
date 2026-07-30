@@ -15,11 +15,13 @@
 
 pub mod as5048;
 pub mod models;
+pub mod motor;
 mod sil;
 pub mod trace;
 
 pub use as5048::As5048Model;
 pub use models::CountsRampModel;
+pub use motor::{MotorModel, MotorParams};
 pub use sil::{lock_world, Sil};
 
 use std::path::{Path, PathBuf};
