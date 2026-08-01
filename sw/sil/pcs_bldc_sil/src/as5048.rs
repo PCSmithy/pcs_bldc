@@ -15,18 +15,26 @@
 //! the firmware polls READ-ANGLE `0xFFFF`, two pipelined transfers per tick.
 
 use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
+use prng::Prng;
 
 const ANGLE_RESOLUTION_TICKS_PER_REV: u64 = 16384;
+const ANGLE_RESOLUTION_TICKS_PER_REV_F32: f32 = ANGLE_RESOLUTION_TICKS_PER_REV as f32;
 const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
 const SPI_COMMAND_LEN: usize = 2;
 
 const REG_ADDR_ANGLE: u16 = 0x3FFF;
+
+
+fn get_lsb(angle_rad: f32) -> f32 {
+    angle_rad * ANGLE_RESOLUTION_TICKS_PER_REV_F32 / TWO_PI
+}
 
 /// An AS5048 encoder instance. Registers `angle` (in, canonical rad; unit asks
 /// convert at the table boundary) and `raw_encoder_ticks` (out, quantized).
 pub struct As5048Model {
     name: String,
 
+    current_angle_lsb: f32,
     current_angle_rad: f32,
     current_angle_raw: u16,
 
@@ -35,17 +43,30 @@ pub struct As5048Model {
     /// (parity is applied at emission). Power-on sentinel `0xFFFF` reads as a
     /// parity-valid error frame — a bus nobody has commanded yet.
     response_frame: u16,
+
+    sigma_lsb: f32,
+    rng: Option<Prng>,
 }
 
 impl As5048Model {
     pub fn new(name: &str, current_angle_rad: f32) -> Self {
         Self {
             name: name.to_string(),
+            current_angle_lsb: get_lsb(current_angle_rad),
             current_angle_rad,
             current_angle_raw: 0,
             spi_error: false,
             response_frame: 0xFFFF,
+            sigma_lsb: 0.0,
+            rng: None,
         }
+    }
+
+    pub fn with_noise(mut self, sigma_lsb: f32, seed: u64) -> Self {
+        self.sigma_lsb = sigma_lsb;
+        self.rng = Some(Prng::new(seed));
+
+        self
     }
 
     fn angle_id(&self) -> SignalId {
@@ -68,6 +89,7 @@ impl Member for As5048Model {
                 .ok().flatten()
                 .and_then(|v| v.as_f32()) {
             self.current_angle_rad = angle_rad;
+            self.current_angle_lsb = get_lsb(angle_rad);
         }
 
         self.current_angle_rad = self.current_angle_rad.rem_euclid(TWO_PI);
@@ -105,7 +127,16 @@ impl DuplexPeer for As5048Model {
                 let addr = command_frame & 0x3FFF;
 
                 if read && (addr == REG_ADDR_ANGLE) {
-                    self.response_frame = self.current_angle_raw & 0x3FFF;
+                    // apply noise (if enabled) to lsb angle
+                    let mut measurement_noise: f32 = 0.0;
+                    if self.sigma_lsb > 0.0 {
+                        if let Some(rng) = self.rng.as_mut() {
+                            measurement_noise = rng.next_gauss() as f32 * self.sigma_lsb;
+                        }
+                    }
+
+                    let noisy = self.current_angle_lsb + measurement_noise;
+                    self.response_frame = noisy.round().rem_euclid(ANGLE_RESOLUTION_TICKS_PER_REV_F32) as u16 & 0x3FFF;
                 }
 
                 if !read {

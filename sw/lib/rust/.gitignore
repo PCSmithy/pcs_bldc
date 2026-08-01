@@ -1,0 +1,4 @@
+# Standalone crate runs (e.g. `cargo nextest run` from a crate dir) drop a
+# per-crate target/ and lock; consuming workspaces own the real Cargo.lock.
+target/
+Cargo.lock

@@ -58,7 +58,7 @@ impl Default for MotorParams {
 /// mechanical + electrical state as `vsig` outputs (`angle`, `velocity`,
 /// `phase_current_{u,v,w}`, `torque`) and, each tick, reads the firmware's bridge
 /// commands. The dynamics are the owner's to write; this scaffold wires the seams and
-/// holds the state at its initial values.
+/// holds the state at its initial values. // TODO - remove all these "owner" comments, any narrative comments before merging back to main
 pub struct MotorModel {
     name: String,
     /// The `<source>` whose `vsig:<source>:PWM_*` ports carry the bridge command —

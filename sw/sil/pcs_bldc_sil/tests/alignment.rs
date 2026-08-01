@@ -88,8 +88,8 @@ fn button_tap_triggers_alignment() {
 
     // Models before firmware: the motor encoder answers the firmware's real SPI polls
     // (nonzero shaft angle), the dial idles at 0 until turned.
-    let motor = sim.add_member(As5048Model::new("as5048_motor", MOTOR_ANGLE_RAD));
-    let dial = sim.add_member(As5048Model::new("dial", 0.0));
+    let motor = sim.add_member(As5048Model::new("as5048_motor", MOTOR_ANGLE_RAD).with_noise(1.52, 0));
+    let dial = sim.add_member(As5048Model::new("dial", 0.0).with_noise(1.22, 1));
 
     // Force-register the two over-threshold / multi-dim statics this scenario writes,
     // before the member enumerates its mirror.

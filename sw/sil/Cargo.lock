@@ -113,8 +113,13 @@ dependencies = [
 name = "pcs_bldc_sil"
 version = "0.0.0"
 dependencies = [
+ "prng",
  "voyant",
 ]
+
+[[package]]
+name = "prng"
+version = "0.0.0"
 
 [[package]]
 name = "proc-macro2"

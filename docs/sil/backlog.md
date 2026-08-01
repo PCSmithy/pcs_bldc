@@ -18,10 +18,7 @@ DWARF-reading `HW_USB_sim_data.tx[]` byte-by-byte (what `read_tx_capture` in
 upcall). The full comms design wants D8 one-shot delivery for rx *timing*,
 but TX capture + parse needs no D8.
 
-## Encoder sensor noise — characterize from the bench, model it (owner-implemented)
-
-**When:** near-term — the next encoder-model work session; the sim↔reality gap
-it closes is already documented (below).
+## Encoder sensor noise — mode-flapping regression scenario (remaining piece)
 
 **Why (owner observation, 2026-07-29):** real AS5048s never read a static 0 —
 the dial's noise floor made the mode-flapping bug manifest *immediately* on
@@ -29,16 +26,15 @@ hardware (LED flicker), while the noiseless sim encoder surfaced the same bug
 as alignment latency instead. A model without noise cannot reproduce
 noise-triggered failure modes.
 
-**Plan:**
-- **Characterize:** bench capture of `motor_raw` telemetry with a static rotor
-  (a few thousand samples) → sigma in LSBs + histogram shape; model what is
-  measured, not the datasheet.
-- **Model (owner writes it):** seeded deterministic PRNG local to
-  `As5048Model` (small xorshift + Gaussian shaper, no crate), noise added in
-  the ANGLE domain before 14-bit quantization, drawn per SPI transfer (each
-  pipelined poll sees a fresh sample). Opt-in via `.with_noise(sigma_lsb,
-  seed)` — default noiseless so every exact assert stands. Per-instance seeds
-  decorrelate dial and motor. Determinism per D7: same seed → bit-identical.
+**Done (2026-08-01):** characterization (baseline notebook, deconvolved
+sigma 1.52/1.22 LSB, Gaussian + white), the model
+(`As5048Model::with_noise(sigma_lsb, seed)`, `sw/lib/rust/prng` SplitMix64 +
+CLT-12 — pure-arithmetic Gaussian, deterministic per D7; default noiseless,
+per-instance seeds), and the statistical harness (`tests/encoder_noise.rs`
+at the SPI boundary; prng tests run standalone from the crate dir, not via
+`run_sil.sh` — owner ruling). Alignment runs both encoders noisy.
+
+**Remaining:**
 - **Regression scenario (harness-side):** noisy dial hovering at zero, armed —
   asserts `TIM1_MOE` and the mode hold rock-solid across the noisy window:
   the sim reproduction of the bench condition that exposed the flapping bug,
