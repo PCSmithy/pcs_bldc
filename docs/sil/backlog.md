@@ -3,6 +3,30 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## Motor model: undriven terminal voltages are approximate below the diode window
+
+**When:** the vsense hardware-matching work (comparing sim terminal voltages
+against phase-vsense bench captures) — the coast segments will disagree with
+hardware by construction until both pieces land.
+
+**What:** two related refinements, both about undriven legs while line-to-line
+BEMF is below the conduction window (`e_max − e_min < vbus + 2·v_d`):
+
+- **Exact diode-pair engagement.** The step-5 window check is per-terminal
+  with a `v_n = 0` all-open convention, so it "clamps" the most-negative
+  phase even though a single diode into an isolated wye has no return path.
+  The clamp carries ~zero current (KCL), so dynamics are untouched, but the
+  reported `terminal_voltage_*`/`neutral_voltage` are convention-colored:
+  during a sub-window coast `v_n` reads `Ke·ω − v_d` with 0-V blips at clamp
+  handover (verified against `six_step_spins_then_coasts_at_tau_mech.mf4`,
+  2026-08-07). Fix: engage diodes pairwise on the line-to-line condition;
+  below it, no leg clamps and the all-open convention takes over honestly.
+- **Divider-defined float level (vsense model, stage 6).** Physically the
+  all-open terminal potentials vs ground are set by the vsense divider
+  network, not the machine (bench: dark bridge floats ~7 V together). The
+  motor model's convention can stay neutral; the vsense model owns mapping
+  true terminal state → what the ADC sees, including the float level.
+
 ## `usb_cdc` / `teleplot` sig_type — telemetry captured as table signals
 
 **When:** near-term — first sprint after commutation SIL, or opportunistically

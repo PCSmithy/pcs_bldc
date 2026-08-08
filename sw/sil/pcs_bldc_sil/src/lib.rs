@@ -10,19 +10,22 @@
 //! own process and the mutex is uncontended — the harness is nextest-compatible by
 //! construction.
 //!
-//! Board models and helpers ([`As5048Model`], [`trace`], [`TICK_US`], the DLL path
-//! resolution) live here so both the tests and the perf bin share one surface.
+//! Board models and helpers ([`As5048Model`], [`wire_bridge`], [`trace`], [`TICK_US`],
+//! the DLL path resolution) live here so both the tests and the perf bin share one
+//! surface.
 
 pub mod as5048;
 pub mod models;
 pub mod motor;
 mod sil;
 pub mod trace;
+pub mod wiring;
 
 pub use as5048::As5048Model;
 pub use models::CountsRampModel;
 pub use motor::{MotorModel, MotorParams};
 pub use sil::{lock_world, Sil};
+pub use wiring::{wire_bridge, BridgeRoutes};
 
 use std::path::{Path, PathBuf};
 use voyant::SignalId;

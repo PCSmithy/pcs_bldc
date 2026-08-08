@@ -101,16 +101,22 @@ driven and asserted purely through the State Table.
   a fresh image from the same path — statics from reset, DWARF/bindings/ports/duplex
   rebuilt, signal history preserved — on one continuous timeline. `firmware_reset_lifecycle`
   proves the sawtooth (100 ms up, 100 ms dark, 100 ms up).
-- ◐ **5. Inverter + motor model** — averaged-duty inverter (duty × Vbus →
-  phase voltages, six-step aware: a disabled phase floats) into a
-  trapezoidal-BEMF BLDC model (14 pole pairs; R/L electrical +
-  inertia/friction mechanical; model-owned integrator, sub-stepped if the
-  electrical τ demands it). Scaffolding landed — `src/motor.rs`: the seven
-  PWM/bridge observation inputs wired, unit-registered outputs
-  (`angle`/`velocity`/`phase_current_{u,v,w}`/`torque`), the electrical +
-  mechanical dynamics left as owner TODOs. `tests/motor.rs` closes the loop
-  motor→encoder→firmware on stub state (angle routes into the AS5048 model,
-  quantized back over SPI). Owner writes the physics.
+- ☑ **5. Inverter + motor model** (owner-implemented physics) — averaged-duty
+  inverter into a trapezoidal-BEMF BLDC model, f64 throughout: per-leg hybrid
+  ideal-diode modes (Driven / Clamped(rail) / Open — demag freewheel to exact
+  zero, voltage re-engagement with anti-chatter margin), R/L phases about a
+  floating neutral, J/B mechanics, semi-implicit Euler at 1 µs sub-steps.
+  Ports follow the declare-your-own-namespace convention: inputs
+  `vsig:<motor>:{duty,enable}_{u,v,w}/moe/vbus` fed by `wire_bridge`'s seven
+  delayed routes (`src/wiring.rs`; suspend-and-write = bridge fault
+  injection, proven in `tests/motor.rs`); outputs add
+  `terminal_voltage_*`/`bemf_*`/`neutral_voltage` for vsense matching.
+  `tests/motor_dynamics.rs` (8 physics tests, model-only worlds, per-test
+  MF4 drops) pins locked-rotor analytics, demag both rails, KCL through
+  commutation, coast at τ_mech = J/B, SVPWM common-mode rejection, and
+  collapsed-bus diode rectification — expectations derived from the params.
+  Known approximation (backlogged): per-terminal diode window below the
+  line-to-line conduction threshold colors undriven terminal voltages.
 - ◐ **6. Feedback + harness models** — current-sense model driving the
   existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
   every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
