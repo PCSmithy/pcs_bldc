@@ -9,6 +9,7 @@ use voyant::{vsig_id, RampModel, Value};
 fn vsig_ramp_advances_and_records() {
     let mut sim = Sil::new();
     sim.add_member(RampModel::new("demo", 1000.0, Some("counts"))); // +1.0 / ms
+
     // The firmware ticks alongside (irrelevant to the model's own vsig).
     let fwm = sim.load_firmware(SOURCE);
     sim.add_member(fwm);

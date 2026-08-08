@@ -56,7 +56,10 @@ impl Member for DialInitiator {
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
-            let _ = st.register(vsig_id(&self.name, "read_angle").expect("valid vsig id"), None);
+            let _ = st.register(
+                vsig_id(&self.name, "read_angle").expect("valid vsig id"),
+                None,
+            );
         }
     }
 }
@@ -70,9 +73,18 @@ fn model_to_model_duplex() {
     // The responder is a shared member: added by value (idx 0), then linked to the bus
     // by its handle. It advances before the initiator (idx 1) reads each tick, so its
     // angle starts at 0x0000 and the initiator sees 0x0100, 0x0200, 0x0300.
-    let responder = sim.add_member(DialResponder { name: "dial_responder".into(), angle: 0x0000, step: STEP });
-    let handle = sim.link_duplex(ENDPOINT, responder).expect("link the model responder peer");
-    sim.add_member(DialInitiator { name: "dial_initiator".into(), handle });
+    let responder = sim.add_member(DialResponder {
+        name: "dial_responder".into(),
+        angle: 0x0000,
+        step: STEP,
+    });
+    let handle = sim
+        .link_duplex(ENDPOINT, responder)
+        .expect("link the model responder peer");
+    sim.add_member(DialInitiator {
+        name: "dial_initiator".into(),
+        handle,
+    });
 
     for _ in 0..3 {
         sim.step().expect("engine step");

@@ -14,8 +14,8 @@
 //! The response to command N arrives in transfer N+1 (one-frame pipeline);
 //! the firmware polls READ-ANGLE `0xFFFF`, two pipelined transfers per tick.
 
-use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
 use prng::Prng;
+use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
 
 const ANGLE_RESOLUTION_TICKS_PER_REV: u64 = 16384;
 const ANGLE_RESOLUTION_TICKS_PER_REV_F32: f32 = ANGLE_RESOLUTION_TICKS_PER_REV as f32;
@@ -23,7 +23,6 @@ const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
 const SPI_COMMAND_LEN: usize = 2;
 
 const REG_ADDR_ANGLE: u16 = 0x3FFF;
-
 
 fn get_lsb(angle_rad: f32) -> f32 {
     angle_rad * ANGLE_RESOLUTION_TICKS_PER_REV_F32 / TWO_PI
@@ -84,18 +83,28 @@ impl Member for As5048Model {
 
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         // Commanded input
-        if let Some(angle_rad) = ctx.st
-                .current_value(&self.angle_id())
-                .ok().flatten()
-                .and_then(|v| v.as_f32()) {
+        if let Some(angle_rad) = ctx
+            .st
+            .current_value(&self.angle_id())
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_f32())
+        {
             self.current_angle_rad = angle_rad;
             self.current_angle_lsb = get_lsb(angle_rad);
         }
 
         self.current_angle_rad = self.current_angle_rad.rem_euclid(TWO_PI);
-        self.current_angle_raw = (self.current_angle_rad * (ANGLE_RESOLUTION_TICKS_PER_REV as f32) / TWO_PI).round() as u16;
-        let _ = ctx.st.record(&self.raw_id(), Value::U32(self.current_angle_raw as u32));
-        let _ = ctx.st.record(&self.angle_id(), Value::F64(f64::from(self.current_angle_rad)));
+        self.current_angle_raw = (self.current_angle_rad * (ANGLE_RESOLUTION_TICKS_PER_REV as f32)
+            / TWO_PI)
+            .round() as u16;
+        let _ = ctx
+            .st
+            .record(&self.raw_id(), Value::U32(self.current_angle_raw as u32));
+        let _ = ctx.st.record(
+            &self.angle_id(),
+            Value::F64(f64::from(self.current_angle_rad)),
+        );
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -108,7 +117,6 @@ impl Member for As5048Model {
 
 impl DuplexPeer for As5048Model {
     fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
-
         // Emit the response armed by the PREVIOUS command (one-frame pipeline).
         let mut resp_frame: u16 = match self.spi_error {
             true => {
@@ -136,7 +144,9 @@ impl DuplexPeer for As5048Model {
                     }
 
                     let noisy = self.current_angle_lsb + measurement_noise;
-                    self.response_frame = noisy.round().rem_euclid(ANGLE_RESOLUTION_TICKS_PER_REV_F32) as u16 & 0x3FFF;
+                    self.response_frame =
+                        noisy.round().rem_euclid(ANGLE_RESOLUTION_TICKS_PER_REV_F32) as u16
+                            & 0x3FFF;
                 }
 
                 if !read {

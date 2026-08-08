@@ -22,7 +22,10 @@ use std::time::Instant;
 use voyant::{vsig_id, Engine, Firmware, FirmwareMember, Member, SignalId, StateTable};
 
 fn main() -> ExitCode {
-    let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(dll_path);
+    let path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(dll_path);
 
     println!("=== pcs_bldc SIL performance report ===");
     println!("loading firmware: {}", path.display());
@@ -75,32 +78,46 @@ fn diag_per_tick_table(fw: &Firmware) {
     };
 
     println!("\n-- DIAG: per-tick firmware scheduling table (PCS_SIL_DIAG=1) --");
-    println!("         DLL flavor: {}", std::env::var("PCS_SIL_DLL_FLAVOR").unwrap_or_else(|_| "unknown".into()));
+    println!(
+        "         DLL flavor: {}",
+        std::env::var("PCS_SIL_DLL_FLAVOR").unwrap_or_else(|_| "unknown".into())
+    );
 
     // Resolved runtime addresses of the statics the table reads. If two distinct
     // statics collapse to one address here, their reads alias — a per-variable
     // DWARF-resolution fault (e.g. same-TU file-scope `static`s on Mach-O).
     println!("         resolved addresses (watch for collisions):");
     for p in [
-        "xTickCount", "task1msRuns", "task10msRuns", "telemRuns",
-        "task200msRuns", "taskUsbRuns",
+        "xTickCount",
+        "task1msRuns",
+        "task10msRuns",
+        "telemRuns",
+        "task200msRuns",
+        "taskUsbRuns",
     ] {
-        let a = fw.resolve_addr(p).map(|a| format!("{a:#018x}")).unwrap_or_else(|| "n/a".into());
+        let a = fw
+            .resolve_addr(p)
+            .map(|a| format!("{a:#018x}"))
+            .unwrap_or_else(|| "n/a".into());
         println!("           {p:<16} {a}");
     }
 
-    println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
-             "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb");
+    println!(
+        "         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
+        "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb"
+    );
     // Row 0 = post-boot baseline (all tasks just blocked; no tick applied yet).
     for i in 0..=TICKS {
-        println!("         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
-                 i,
-                 rd("xTickCount"),
-                 rd("xNextTaskUnblockTime"),
-                 rd("task1msRuns"),
-                 rd("task10msRuns"),
-                 rd("telemRuns"),
-                 rd("taskUsbRuns"));
+        println!(
+            "         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
+            i,
+            rd("xTickCount"),
+            rd("xNextTaskUnblockTime"),
+            rd("task1msRuns"),
+            rd("task10msRuns"),
+            rd("telemRuns"),
+            rd("taskUsbRuns")
+        );
         if i < TICKS {
             fw.advance_tick();
         }
@@ -139,7 +156,8 @@ fn report_performance(fw: &Rc<Firmware>) {
     let full_us = {
         const STEP: u32 = 25; // stays within the u8 destination byte
         let src = vsig_id("sensor", "counts").expect("valid vsig id");
-        let dst = SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None).expect("valid cvar id");
+        let dst =
+            SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None).expect("valid cvar id");
         let mut eng = Engine::new(TICK_US);
         eng.add_member(CountsRampModel::new("sensor", STEP));
         let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
@@ -174,7 +192,11 @@ fn report_performance(fw: &Rc<Firmware>) {
     let sweep_over_fw_us = sweep_us - fw_us;
     let model_route_us = full_us - sweep_us;
 
-    let rust_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let rust_profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     let dll_flavor = std::env::var("PCS_SIL_DLL_FLAVOR")
         .unwrap_or_else(|_| "unknown (build via tools/run_sil.sh)".into());
     // ×realtime = sim-time-per-tick / wall-time-per-tick = TICK_US / (µs/tick).
@@ -184,9 +206,18 @@ fn report_performance(fw: &Rc<Firmware>) {
     println!("         Rust profile: {rust_profile}    firmware DLL: {dll_flavor}");
     println!("         {leaves} cvar leaves mirrored/tick    (sim tick = {TICK_US} µs, avg over {N} ticks)");
     println!("         phase                              µs/tick   ×realtime");
-    println!("         firmware advance_tick alone        {fw_us:>7.2}   {:>6.1}×", xrt(fw_us));
-    println!("         full engine step (measured)        {full_us:>7.2}   {:>6.1}×", xrt(full_us));
-    println!("         firmware-member step (sweep+flush) {sweep_us:>7.2}   {:>6.1}×", xrt(sweep_us));
+    println!(
+        "         firmware advance_tick alone        {fw_us:>7.2}   {:>6.1}×",
+        xrt(fw_us)
+    );
+    println!(
+        "         full engine step (measured)        {full_us:>7.2}   {:>6.1}×",
+        xrt(full_us)
+    );
+    println!(
+        "         firmware-member step (sweep+flush) {sweep_us:>7.2}   {:>6.1}×",
+        xrt(sweep_us)
+    );
     println!("         empty engine step (floor)          {floor_us:>7.2}");
     println!("         derived: full - firmware           {derived_us:>7.2}   (sweep+flush+ports+routes+table)");
     println!("           of which shadow sweep+flush      {sweep_over_fw_us:>7.2}   (member step - firmware)");

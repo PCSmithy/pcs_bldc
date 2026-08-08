@@ -15,12 +15,23 @@ fn mirror_tracks_firmware_memory() {
     let mut vals: Vec<Option<u64>> = Vec::new();
     for _ in 0..6 {
         sim.step().expect("engine step");
-        vals.push(sim.read(leaf.as_str()).ok().flatten().as_ref().and_then(Value::as_u64));
+        vals.push(
+            sim.read(leaf.as_str())
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(Value::as_u64),
+        );
     }
     // Single-threaded: the mirror at the end of the last tick equals firmware memory
     // now. `mem_now` is a direct DWARF read — the ground truth the mirror is checked
     // against.
-    let table_now = sim.read(leaf.as_str()).ok().flatten().as_ref().and_then(Value::as_u64);
+    let table_now = sim
+        .read(leaf.as_str())
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(Value::as_u64);
     let mem_now = sim.fw().read_cvar(leaf.name()).as_u64();
     let tracks = table_now.is_some() && (table_now == mem_now);
     let changed = vals.windows(2).any(|w| w[0] != w[1]);

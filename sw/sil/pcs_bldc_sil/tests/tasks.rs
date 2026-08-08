@@ -45,7 +45,11 @@ fn tasks_advance() {
                 .unwrap_or(0)
         })
         .collect();
-    let d: Vec<u64> = before.iter().zip(&after).map(|(b, a)| a.saturating_sub(*b)).collect();
+    let d: Vec<u64> = before
+        .iter()
+        .zip(&after)
+        .map(|(b, a)| a.saturating_sub(*b))
+        .collect();
 
     // 1 ms task fires once per tick; 10 ms every 10; telemetry every 2 ms; USB
     // delays 1 tick per iteration (so ~once per tick). Tolerance bands, not exact

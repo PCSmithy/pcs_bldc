@@ -18,17 +18,33 @@ fn reset_cycle(cycle: usize) {
     assert!(fw.start(), "cycle {cycle}: sil_fw_start");
 
     let runs_before = fw.read_cvar("task1msRuns").as_u64().unwrap();
-    let time_before = fw.read_cvar("lib_timer_data.currentTime_us").as_u64().unwrap();
-    assert_eq!(runs_before, 0, "cycle {cycle}: task1msRuns must be 0 from reset");
-    assert_eq!(time_before, 0, "cycle {cycle}: firmware clock must start at 0 from reset");
+    let time_before = fw
+        .read_cvar("lib_timer_data.currentTime_us")
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        runs_before, 0,
+        "cycle {cycle}: task1msRuns must be 0 from reset"
+    );
+    assert_eq!(
+        time_before, 0,
+        "cycle {cycle}: firmware clock must start at 0 from reset"
+    );
 
     const K: u64 = 5;
     for _ in 0..K {
         fw.advance_tick();
     }
-    let time_after = fw.read_cvar("lib_timer_data.currentTime_us").as_u64().unwrap();
+    let time_after = fw
+        .read_cvar("lib_timer_data.currentTime_us")
+        .as_u64()
+        .unwrap();
     let runs_after = fw.read_cvar("task1msRuns").as_u64().unwrap();
-    assert_eq!(time_after, K * 1000, "cycle {cycle}: +1000 us/tick while alive");
+    assert_eq!(
+        time_after,
+        K * 1000,
+        "cycle {cycle}: +1000 us/tick while alive"
+    );
     assert_eq!(runs_after, K, "cycle {cycle}: task_1ms fires once per tick");
 
     fw.shutdown();
@@ -77,7 +93,10 @@ fn boot_is_fresh() {
         "task1msRuns is 0 before the first step"
     );
     assert_eq!(
-        sim.fw().read_cvar("lib_timer_data.currentTime_us").as_u64().unwrap(),
+        sim.fw()
+            .read_cvar("lib_timer_data.currentTime_us")
+            .as_u64()
+            .unwrap(),
         0,
         "firmware clock starts at 0 from reset"
     );

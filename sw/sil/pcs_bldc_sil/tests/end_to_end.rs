@@ -12,7 +12,10 @@ fn read_tx_capture(fw: &Firmware) -> String {
     let len = fw.read_cvar("HW_USB_sim_data.txLen").as_u64().unwrap_or(0);
     let mut bytes = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let b = fw.read_cvar(&format!("HW_USB_sim_data.tx[{i}]")).as_u64().unwrap_or(0) as u8;
+        let b = fw
+            .read_cvar(&format!("HW_USB_sim_data.tx[{i}]"))
+            .as_u64()
+            .unwrap_or(0) as u8;
         bytes.push(b);
     }
     String::from_utf8_lossy(&bytes).into_owned()
@@ -33,8 +36,10 @@ fn end_to_end() {
     let dial = sim.add_member(As5048Model::new("dial", 0.0));
     let fwm = sim.load_firmware(SOURCE);
     sim.add_member(fwm);
-    sim.link_duplex("spi:pcs_bldc:AS5048_1", motor).expect("link motor encoder");
-    sim.link_duplex("spi:pcs_bldc:AS5048_2", dial).expect("link dial encoder");
+    sim.link_duplex("spi:pcs_bldc:AS5048_1", motor)
+        .expect("link motor encoder");
+    sim.link_duplex("spi:pcs_bldc:AS5048_2", dial)
+        .expect("link dial encoder");
 
     // Both encoder channels register their SPI endpoints as :tx/:rx event entries —
     // the dial (AS5048_2) too, which stage 3 drives as the velocity demand.
@@ -54,7 +59,10 @@ fn end_to_end() {
     // Expected raw/angle derive from the commanded angle plus the firmware's own
     // channel config (reverse maps raw to 16384 - raw): the check asserts the decode
     // contract, not a frozen board convention.
-    let reverse = match sim.fw().read_cvar(&format!("IO_AS5048_channelConfig[{CH}].reverse")) {
+    let reverse = match sim
+        .fw()
+        .read_cvar(&format!("IO_AS5048_channelConfig[{CH}].reverse"))
+    {
         Value::Bool(b) => b,
         other => panic!("IO_AS5048_channelConfig[{CH}].reverse read back as {other:?}, not Bool"),
     };
@@ -66,9 +74,12 @@ fn end_to_end() {
     // Command the shaft angle in degrees — the boundary converts to canonical rad.
     // Open the USB port (telemetryTask skips its body otherwise) and drain the stale
     // TX capture; the cvar flush lands during step 1's in-sync.
-    sim.write("vsig:as5048_motor:angle[deg]", CMD_DEG).expect("write angle[deg]");
-    sim.write(&cid("HW_USB_sim_data.connected"), true).expect("write connected");
-    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
+    sim.write("vsig:as5048_motor:angle[deg]", CMD_DEG)
+        .expect("write angle[deg]");
+    sim.write(&cid("HW_USB_sim_data.connected"), true)
+        .expect("write connected");
+    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
+        .expect("drain txLen");
 
     // task_1ms samples the encoder each tick; telemetry fires every 2 ms.
     for _ in 0..10 {
@@ -98,7 +109,10 @@ fn end_to_end() {
         sim.read(&cid("HW_USB_sim_data.connected")).ok().flatten(),
         Some(Value::Bool(true))
     );
-    assert!(connected, "sim USB marked connected via table write + flush");
+    assert!(
+        connected,
+        "sim USB marked connected via table write + flush"
+    );
 
     // The decoded encoder statics reflect the model's frame (auto-mirrored).
     let raw = sim
@@ -139,7 +153,8 @@ fn end_to_end() {
     // Drain the capture (txLen back to 0, flushed on the next step's in-sync before
     // telemetry runs) and re-verify the next windows refill it — proves the path
     // keeps flowing and the drain works.
-    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32).expect("drain txLen");
+    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
+        .expect("drain txLen");
     for _ in 0..6 {
         sim.step().expect("engine step");
     }

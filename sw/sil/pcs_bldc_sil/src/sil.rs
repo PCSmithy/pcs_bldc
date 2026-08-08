@@ -88,8 +88,12 @@ impl Sil {
             "firmware DLL not found at {}; build it first: tools/run_sil.sh",
             path.display()
         );
-        let copy = unique_temp_copy(path)
-            .unwrap_or_else(|e| panic!("copy firmware {} to a temp file failed: {e}", path.display()));
+        let copy = unique_temp_copy(path).unwrap_or_else(|e| {
+            panic!(
+                "copy firmware {} to a temp file failed: {e}",
+                path.display()
+            )
+        });
         let fw = Rc::new(
             Firmware::load(&copy)
                 .unwrap_or_else(|e| panic!("failed to load firmware {}: {e}", copy.display())),
@@ -157,7 +161,10 @@ pub fn lock_world() -> MutexGuard<'static, ()> {
 /// original file name (and extension, which `LoadLibrary` needs) behind a unique
 /// prefix. Returns the copy's path.
 fn unique_temp_copy(src: &Path) -> std::io::Result<PathBuf> {
-    let stem = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "fw".into());
+    let stem = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "fw".into());
     let n = COPY_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dst = std::env::temp_dir().join(format!("pcs_sil_{}_{}_{}", std::process::id(), n, stem));
     std::fs::copy(src, &dst)?;
@@ -190,7 +197,10 @@ impl Drop for Sil {
         for p in self.temp_paths.drain(..) {
             if let Err(e) = std::fs::remove_file(&p) {
                 if p.exists() {
-                    eprintln!("         sil: could not delete temp firmware {}: {e}", p.display());
+                    eprintln!(
+                        "         sil: could not delete temp firmware {}: {e}",
+                        p.display()
+                    );
                 }
             }
         }

@@ -33,7 +33,11 @@ impl Member for CountsRampModel {
         self.counts = self.counts.wrapping_add(self.step);
         let id = self.counts_id();
         if let Err(e) = ctx.st.record(&id, Value::U32(self.counts)) {
-            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+            ctx.st.log(
+                LogLevel::Warning,
+                &self.name,
+                format!("record {id} failed: {e}"),
+            );
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {

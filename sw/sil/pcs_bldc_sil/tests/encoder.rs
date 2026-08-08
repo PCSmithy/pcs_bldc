@@ -13,7 +13,11 @@ fn as5048_decode(frame: &[u8]) -> Option<(bool, bool, u16)> {
         return None;
     }
     let f = u16::from_be_bytes([frame[0], frame[1]]);
-    Some((f.count_ones().is_multiple_of(2), (f & 0x4000) != 0, f & 0x3FFF))
+    Some((
+        f.count_ones().is_multiple_of(2),
+        (f & 0x4000) != 0,
+        f & 0x3FFF,
+    ))
 }
 
 #[test]
@@ -29,7 +33,11 @@ fn as5048_model_content() {
     // conversion, never part of the id) plus the raw-ticks output.
     let expected: Vec<String> = ["as5048_motor", "dial"]
         .iter()
-        .flat_map(|m| ["angle", "raw_encoder_ticks"].iter().map(move |s| format!("vsig:{m}:{s}")))
+        .flat_map(|m| {
+            ["angle", "raw_encoder_ticks"]
+                .iter()
+                .map(move |s| format!("vsig:{m}:{s}"))
+        })
         .collect();
     let missing: Vec<&str> = expected
         .iter()
@@ -43,7 +51,8 @@ fn as5048_model_content() {
 
     // Command 90 deg through the unit boundary (canonical storage is rad); one step
     // folds it into the model and publishes the quantized output.
-    sim.write("vsig:as5048_motor:angle[deg]", 90.0).expect("write angle[deg] = 90");
+    sim.write("vsig:as5048_motor:angle[deg]", 90.0)
+        .expect("write angle[deg] = 90");
     sim.step().expect("engine step");
     let raw = sim
         .read("vsig:as5048_motor:raw_encoder_ticks")
@@ -72,7 +81,8 @@ fn as5048_model_content() {
     // A negative command wraps into [0, 2pi) — and because the wrapped value differs
     // from the raw command, this also proves the model PUBLISHES its folded angle back
     // to the table (the signal is model state, not an echo of the last write).
-    sim.write("vsig:as5048_motor:angle[deg]", -90.0).expect("write angle[deg] = -90");
+    sim.write("vsig:as5048_motor:angle[deg]", -90.0)
+        .expect("write angle[deg] = -90");
     sim.step().expect("engine step");
     let wrapped_deg = sim
         .read("vsig:as5048_motor:angle[deg]")

@@ -33,11 +33,21 @@ fn read_bool(sim: &Sil, path: &str) -> bool {
 }
 
 fn read_f64(sim: &Sil, path: &str) -> f64 {
-    sim.read(&cid(path)).ok().flatten().as_ref().and_then(Value::as_f64).unwrap_or(f64::NAN)
+    sim.read(&cid(path))
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN)
 }
 
 fn read_u64(sim: &Sil, path: &str) -> u64 {
-    sim.read(&cid(path)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0)
+    sim.read(&cid(path))
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 fn port(sim: &Sil, name: &str) -> f64 {
@@ -73,7 +83,11 @@ fn gate_operational(sim: &Sil) -> bool {
 /// `modeCurrent` is SIX_STEP_TRAP (enum value 1). The mirror reports it as the
 /// enumerator name when DWARF names it, or `<1>` otherwise — accept both.
 fn mode_is_six_step(sim: &Sil) -> bool {
-    match sim.read(&cid("app_motorControl_data.channels[0].modeCurrent")).ok().flatten() {
+    match sim
+        .read(&cid("app_motorControl_data.channels[0].modeCurrent"))
+        .ok()
+        .flatten()
+    {
         Some(Value::Enum(s)) => s.contains("SIX_STEP") || s == "<1>",
         other => panic!("modeCurrent mirrored as {other:?}, not an enum"),
     }
@@ -88,7 +102,8 @@ fn button_tap_triggers_alignment() {
 
     // Models before firmware: the motor encoder answers the firmware's real SPI polls
     // (nonzero shaft angle), the dial idles at 0 until turned.
-    let motor = sim.add_member(As5048Model::new("as5048_motor", MOTOR_ANGLE_RAD).with_noise(1.52, 0));
+    let motor =
+        sim.add_member(As5048Model::new("as5048_motor", MOTOR_ANGLE_RAD).with_noise(1.52, 0));
     let dial = sim.add_member(As5048Model::new("dial", 0.0).with_noise(1.22, 1));
 
     // Force-register the two over-threshold / multi-dim statics this scenario writes,
@@ -98,43 +113,62 @@ fn button_tap_triggers_alignment() {
     fwm.register_cvar_in_state_table(I2C_STATUS_REG);
     sim.add_member(fwm);
 
-    sim.link_duplex("spi:pcs_bldc:AS5048_1", motor).expect("link motor encoder");
-    sim.link_duplex("spi:pcs_bldc:AS5048_2", dial).expect("link dial encoder");
+    sim.link_duplex("spi:pcs_bldc:AS5048_1", motor)
+        .expect("link motor encoder");
+    sim.link_duplex("spi:pcs_bldc:AS5048_2", dial)
+        .expect("link dial encoder");
 
     // --- Defuse the bring-up traps (all through the table) --------------------------
 
     // Current-sense: hold each phase shunt at its 1.65 V zero-current midpoint and the
     // bus shunt at 0 V (ground-referenced). Ports are ZOH — one write holds. Mapping +
     // scalings per IO_bridge_channels.c: U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11.
-    sim.write("vsig:pcs_bldc:ADC1_IN6", 1.65).expect("phase U zero current");
-    sim.write("vsig:pcs_bldc:ADC2_IN7", 1.65).expect("phase V zero current");
-    sim.write("vsig:pcs_bldc:ADC1_IN8", 1.65).expect("phase W zero current");
-    sim.write("vsig:pcs_bldc:ADC2_IN11", 0.0).expect("bus zero current");
+    sim.write("vsig:pcs_bldc:ADC1_IN6", 1.65)
+        .expect("phase U zero current");
+    sim.write("vsig:pcs_bldc:ADC2_IN7", 1.65)
+        .expect("phase V zero current");
+    sim.write("vsig:pcs_bldc:ADC1_IN8", 1.65)
+        .expect("phase W zero current");
+    sim.write("vsig:pcs_bldc:ADC2_IN11", 0.0)
+        .expect("bus zero current");
 
     // Gate driver: seed STATUS with LOCK set + faults clear so the 200 ms configure +
     // status pass reads operational.
     // TODO - set through i2c sig_type (similar to spi).
-    sim.write(&cid(I2C_STATUS_REG), GATEDRIVER_STATUS_LOCKED).expect("seed gate STATUS");
+    sim.write(&cid(I2C_STATUS_REG), GATEDRIVER_STATUS_LOCKED)
+        .expect("seed gate STATUS");
 
     // Button idle: drive PB10 HIGH (released). The sim's inputLevel defaults LOW, which
     // — active-low — would read as pressed; HIGH gives a clean released baseline.
     // TODO - set through GPIO vsig.
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH).expect("button idle high");
+    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH)
+        .expect("button idle high");
 
     // --- Let the button settle + the gate driver come up ----------------------------
     sim.run_for_ms(300);
-    assert!(gate_operational(&sim), "gate driver operational after a 200 ms configure+status pass");
-    assert!(!read_bool(&sim, "app_motorControl_data.channels[0].faultLatched"), "no fault before drive");
+    assert!(
+        gate_operational(&sim),
+        "gate driver operational after a 200 ms configure+status pass"
+    );
+    assert!(
+        !read_bool(&sim, "app_motorControl_data.channels[0].faultLatched"),
+        "no fault before drive"
+    );
     // The bridge is dark before any drive command: U duty sits at 0.
     let duty_dark = port(&sim, "PWM_U_duty");
-    assert_eq!(duty_dark, 0.0, "bridge dark (U duty 0) before the drive command");
+    assert_eq!(
+        duty_dark, 0.0,
+        "bridge dark (U duty 0) before the drive command"
+    );
 
     // --- Button tap: press then release inside the fault-clear hold window ----------
     // Press (LOW), held past the 20 ms debounce so dev_switch latches ACTIVE.
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_LOW).expect("button press");
+    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_LOW)
+        .expect("button press");
     sim.run_for_ms(30);
     // Release (HIGH), held past debounce so dev_switch latches INACTIVE → tap.
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH).expect("button release");
+    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH)
+        .expect("button release");
     sim.run_for_ms(30);
 
     // The lone tap becomes a run/stop toggle once the 300 ms double-tap window elapses.
@@ -143,17 +177,39 @@ fn button_tap_triggers_alignment() {
     sim.run_for_ms(320);
 
     // --- Assert the alignment dwell drives the documented pattern -------------------
-    assert!(mode_is_six_step(&sim), "arming (not the dial) put motor control into SIX_STEP");
+    assert!(
+        mode_is_six_step(&sim),
+        "arming (not the dial) put motor control into SIX_STEP"
+    );
     assert!(
         !read_bool(&sim, "app_motorControl_data.channels[0].isAligned"),
         "still aligning during the dwell"
     );
     let duty_u = port(&sim, "PWM_U_duty");
-    assert!((duty_u - ALIGN_DUTY).abs() < 0.02, "alignment holds U at ~0.1 duty, got {duty_u}");
-    assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "U enabled during alignment");
-    assert_eq!(port(&sim, "PWM_V_enabled"), 1.0, "V enabled during alignment");
-    assert_eq!(port(&sim, "PWM_W_enabled"), 0.0, "W held off during alignment");
-    assert_eq!(port(&sim, "TIM1_MOE"), 1.0, "master output enable on during alignment");
+    assert!(
+        (duty_u - ALIGN_DUTY).abs() < 0.02,
+        "alignment holds U at ~0.1 duty, got {duty_u}"
+    );
+    assert_eq!(
+        port(&sim, "PWM_U_enabled"),
+        1.0,
+        "U enabled during alignment"
+    );
+    assert_eq!(
+        port(&sim, "PWM_V_enabled"),
+        1.0,
+        "V enabled during alignment"
+    );
+    assert_eq!(
+        port(&sim, "PWM_W_enabled"),
+        0.0,
+        "W held off during alignment"
+    );
+    assert_eq!(
+        port(&sim, "TIM1_MOE"),
+        1.0,
+        "master output enable on during alignment"
+    );
 
     // --- Ride out the 500 ms dwell; capture the U-duty trace ------------------------
     // TODO - refactor this once the Expectation Engine exists
@@ -163,13 +219,15 @@ fn button_tap_triggers_alignment() {
     for ms in 1..=520u64 {
         sim.run_for_ms(1);
         duty_trace.push(port(&sim, "PWM_U_duty"));
-        if aligned_at_ms.is_none()
-            && read_bool(&sim, "app_motorControl_data.channels[0].isAligned")
+        if aligned_at_ms.is_none() && read_bool(&sim, "app_motorControl_data.channels[0].isAligned")
         {
             aligned_at_ms = Some(ms);
         }
     }
-    assert!(aligned_at_ms.is_some(), "isAligned latched within the dwell window");
+    assert!(
+        aligned_at_ms.is_some(),
+        "isAligned latched within the dwell window"
+    );
 
     // --- The captured offset equals the encoder's decoded shaft angle ---------------
     // Derive the expected rad from what we commanded plus the firmware's own reverse
@@ -179,10 +237,17 @@ fn button_tap_triggers_alignment() {
         Value::Bool(true)
     );
     let wire_raw = (f64::from(MOTOR_ANGLE_RAD) * 16384.0 / (2.0 * std::f64::consts::PI)).round();
-    let decoded_raw = if reverse { 16384.0 - wire_raw } else { wire_raw };
+    let decoded_raw = if reverse {
+        16384.0 - wire_raw
+    } else {
+        wire_raw
+    };
     let expected_offset_rad = decoded_raw * 2.0 * std::f64::consts::PI / 16384.0;
 
-    let offset = read_f64(&sim, "app_motorControl_data.channels[0].alignmentOffset_rad");
+    let offset = read_f64(
+        &sim,
+        "app_motorControl_data.channels[0].alignmentOffset_rad",
+    );
     let decoded_rad = read_f64(&sim, "IO_AS5048_data.channels[0].angle_rad");
     assert!(
         (offset - expected_offset_rad).abs() < 0.01,
@@ -196,11 +261,21 @@ fn button_tap_triggers_alignment() {
     // --- Zero demand idles the phases without dropping the bridge --------------------
     // Aligned, armed, dial at zero: the phases carry zero duty while the master output
     // enable holds asserted across the whole window — the bridge does not flap.
-    assert!(max_phase_duty(&sim) < 0.02, "phases idle at zero duty once aligned at zero demand");
+    assert!(
+        max_phase_duty(&sim) < 0.02,
+        "phases idle at zero duty once aligned at zero demand"
+    );
     for _ in 0..50 {
         sim.run_for_ms(1);
-        assert_eq!(port(&sim, "TIM1_MOE"), 1.0, "MOE holds asserted across the zero-demand window");
-        assert!(max_phase_duty(&sim) < 0.02, "phases stay idle across the zero-demand window");
+        assert_eq!(
+            port(&sim, "TIM1_MOE"),
+            1.0,
+            "MOE holds asserted across the zero-demand window"
+        );
+        assert!(
+            max_phase_duty(&sim) < 0.02,
+            "phases stay idle across the zero-demand window"
+        );
     }
     assert!(
         read_bool(&sim, "app_motorControl_data.channels[0].isAligned"),
@@ -210,18 +285,29 @@ fn button_tap_triggers_alignment() {
     // --- First dial turn commutates immediately on the stored offset ----------------
     // +90 deg from the arm baseline → command +0.5 → half-scale duty. No second dwell:
     // isAligned stays latched and the drive duty appears within a few control cycles.
-    sim.write("vsig:dial:angle[deg]", 90.0).expect("turn the dial");
+    sim.write("vsig:dial:angle[deg]", 90.0)
+        .expect("turn the dial");
     sim.run_for_ms(5);
     assert!(
         read_bool(&sim, "app_motorControl_data.channels[0].isAligned"),
         "no second dwell: alignment stays latched through the first dial turn"
     );
-    assert_eq!(port(&sim, "TIM1_MOE"), 1.0, "MOE still asserted while commutating");
+    assert_eq!(
+        port(&sim, "TIM1_MOE"),
+        1.0,
+        "MOE still asserted while commutating"
+    );
     let driven = max_phase_duty(&sim);
-    assert!(driven > 0.2, "commutation drive appears at once on the first dial turn, got {driven}");
+    assert!(
+        driven > 0.2,
+        "commutation drive appears at once on the first dial turn, got {driven}"
+    );
 
     // --- No fault latched anywhere along the way ------------------------------------
-    assert!(!read_bool(&sim, "app_motorControl_data.channels[0].faultLatched"), "no fault latched");
+    assert!(
+        !read_bool(&sim, "app_motorControl_data.channels[0].faultLatched"),
+        "no fault latched"
+    );
     assert!(
         read_u64(&sim, "app_motorControl_data.channels[0].encoderFaultCount") < 5,
         "encoder fault count stays under the trip limit"

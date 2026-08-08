@@ -31,7 +31,11 @@ impl Member for VoltsModel {
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         let id = self.volts_id();
         if let Err(e) = ctx.st.record(&id, Value::F64(self.volts)) {
-            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+            ctx.st.log(
+                LogLevel::Warning,
+                &self.name,
+                format!("record {id} failed: {e}"),
+            );
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -60,19 +64,35 @@ fn adc_ports() {
     let n_ports = sim
         .state()
         .signals()
-        .filter(|s| (s.sig_type() == "vsig") && (s.source() == SOURCE) && s.name().starts_with("ADC"))
+        .filter(|s| {
+            (s.sig_type() == "vsig") && (s.source() == SOURCE) && s.name().starts_with("ADC")
+        })
         .count();
-    assert_eq!(n_ports, 10, "sim ADC registered one input port per enabled input");
+    assert_eq!(
+        n_ports, 10,
+        "sim ADC registered one input port per enabled input"
+    );
 
     // Route the model's volts into the port (native format: volts -> volts).
-    sim.add_route(vsig_id("pin_model", "volts").expect("valid vsig id"), port.clone())
-        .expect("add route");
+    sim.add_route(
+        vsig_id("pin_model", "volts").expect("valid vsig id"),
+        port.clone(),
+    )
+    .expect("add route");
 
     // Expected counts: mirror of the sim driver's volts->counts math, with
     // numBits/vref read via DWARF from the sim channel config. Static config, read
     // before the step loop while the mirror is still cold.
-    let vref = sim.fw().read_cvar("HW_ADC_channelConfig[0].vref").as_f64().unwrap_or(0.0);
-    let num_bits = sim.fw().read_cvar("HW_ADC_channelConfig[0].numBits").as_u64().unwrap_or(0);
+    let vref = sim
+        .fw()
+        .read_cvar("HW_ADC_channelConfig[0].vref")
+        .as_f64()
+        .unwrap_or(0.0);
+    let num_bits = sim
+        .fw()
+        .read_cvar("HW_ADC_channelConfig[0].numBits")
+        .as_u64()
+        .unwrap_or(0);
     let max_counts = (1u64 << num_bits) - 1;
     let scaled = ((VOLTS / vref) * (max_counts as f64)) + 0.5;
     let expected = if scaled >= (max_counts as f64) {
@@ -88,8 +108,22 @@ fn adc_ports() {
     let mut neighbor: Vec<u64> = Vec::new();
     for _ in 0..6 {
         sim.step().expect("engine step");
-        driven.push(sim.read(&cid(driven_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
-        neighbor.push(sim.read(&cid(neighbor_counts)).ok().flatten().as_ref().and_then(Value::as_u64).unwrap_or(0));
+        driven.push(
+            sim.read(&cid(driven_counts))
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        neighbor.push(
+            sim.read(&cid(neighbor_counts))
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
     }
     let settled = &driven[2..];
     assert!(
@@ -107,8 +141,12 @@ fn adc_ports() {
 #[test]
 fn pwm_ports() {
     const PORTS: [&str; 7] = [
-        "PWM_U_duty", "PWM_V_duty", "PWM_W_duty",
-        "PWM_U_enabled", "PWM_V_enabled", "PWM_W_enabled",
+        "PWM_U_duty",
+        "PWM_V_duty",
+        "PWM_W_duty",
+        "PWM_U_enabled",
+        "PWM_V_enabled",
+        "PWM_W_enabled",
         "TIM1_MOE",
     ];
 
@@ -122,7 +160,10 @@ fn pwm_ports() {
         .map(|p| format!("vsig:{SOURCE}:{p}"))
         .filter(|id| !sim.state().signals().any(|s| s.as_str() == id))
         .collect();
-    assert!(missing.is_empty(), "sim HW_TIM registers 7 PWM/bridge ports; missing: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "sim HW_TIM registers 7 PWM/bridge ports; missing: {missing:?}"
+    );
 
     // app_motorControl re-commands the dark bridge every tick, so the ports publish 0
     // through the production setters — read them back after a few steps.
@@ -133,7 +174,12 @@ fn pwm_ports() {
         .iter()
         .filter_map(|p| {
             let id = format!("vsig:{SOURCE}:{p}");
-            let v = sim.read(&id).ok().flatten().as_ref().and_then(Value::as_f64);
+            let v = sim
+                .read(&id)
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(Value::as_f64);
             match v {
                 Some(0.0) => None,
                 other => Some(format!("{p}={other:?}")),

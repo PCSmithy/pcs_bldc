@@ -14,9 +14,16 @@ const QUANTIZER_VAR_LSB2: f64 = 1.0 / 12.0;
 /// Decode a response frame into its 14-bit angle, asserting even parity over all 16
 /// bits and a clear error flag.
 fn decode_angle(frame: &[u8]) -> u16 {
-    assert_eq!(frame.len(), 2, "response is a 2-byte frame, got {frame:02X?}");
+    assert_eq!(
+        frame.len(),
+        2,
+        "response is a 2-byte frame, got {frame:02X?}"
+    );
     let f = u16::from_be_bytes([frame[0], frame[1]]);
-    assert!(f.count_ones().is_multiple_of(2), "even parity over frame {f:04X}");
+    assert!(
+        f.count_ones().is_multiple_of(2),
+        "even parity over frame {f:04X}"
+    );
     assert_eq!(f & 0x4000, 0, "error flag clear in frame {f:04X}");
     f & 0x3FFF
 }
@@ -25,7 +32,9 @@ fn decode_angle(frame: &[u8]) -> u16 {
 /// transfer N+1, so a priming transfer absorbs the power-on sentinel.
 fn poll_ticks(model: &mut As5048Model, n: usize) -> Vec<u16> {
     let _ = model.transfer(&READ_ANGLE);
-    (0..n).map(|_| decode_angle(&model.transfer(&READ_ANGLE))).collect()
+    (0..n)
+        .map(|_| decode_angle(&model.transfer(&READ_ANGLE)))
+        .collect()
 }
 
 /// Residuals in LSB about the commanded angle.
@@ -47,7 +56,11 @@ fn std_dev(xs: &[f64]) -> f64 {
 /// Pearson correlation of two equal-length series.
 fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
     let (mx, my) = (mean(xs), mean(ys));
-    let cov: f64 = xs.iter().zip(ys.iter()).map(|(x, y)| (x - mx) * (y - my)).sum();
+    let cov: f64 = xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(x, y)| (x - mx) * (y - my))
+        .sum();
     let sx: f64 = xs.iter().map(|x| (x - mx) * (x - mx)).sum::<f64>().sqrt();
     let sy: f64 = ys.iter().map(|y| (y - my) * (y - my)).sum::<f64>().sqrt();
     cov / (sx * sy)
@@ -61,7 +74,11 @@ fn noiseless_default_is_exact() {
     let mut model = As5048Model::new("as5048_quiet", std::f32::consts::PI);
     let ticks = poll_ticks(&mut model, POLLS);
 
-    let off: Vec<u16> = ticks.iter().copied().filter(|t| *t != MID_SCALE_TICKS).collect();
+    let off: Vec<u16> = ticks
+        .iter()
+        .copied()
+        .filter(|t| *t != MID_SCALE_TICKS)
+        .collect();
     assert!(
         off.is_empty(),
         "a model without `with_noise` reports the exact quantized angle on every poll; \
@@ -97,7 +114,8 @@ fn statistics_match_configured_sigma() {
     const SEED: u64 = 0x5EED_0003;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut model = As5048Model::new("as5048_stats", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
+    let mut model =
+        As5048Model::new("as5048_stats", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
     let res = residuals(&poll_ticks(&mut model, POLLS), ANGLE_LSB);
 
     let (m, sd) = (mean(&res), std_dev(&res));
@@ -121,7 +139,8 @@ fn whiteness_lag1() {
     const SEED: u64 = 0x5EED_0004;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut model = As5048Model::new("as5048_white", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
+    let mut model =
+        As5048Model::new("as5048_white", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
     let res = residuals(&poll_ticks(&mut model, POLLS), ANGLE_LSB);
 
     let ac1 = pearson(&res[..POLLS - 1], &res[1..]);
@@ -139,8 +158,10 @@ fn distinct_seeds_decorrelate() {
     const SEED_B: u64 = 0xA11C_E005;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut a = As5048Model::new("as5048_seed_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_A);
-    let mut b = As5048Model::new("as5048_seed_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_B);
+    let mut a =
+        As5048Model::new("as5048_seed_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_A);
+    let mut b =
+        As5048Model::new("as5048_seed_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_B);
 
     let (ta, tb) = (poll_ticks(&mut a, POLLS), poll_ticks(&mut b, POLLS));
     assert_ne!(ta, tb, "distinct seeds produce distinct streams");
@@ -163,7 +184,11 @@ fn wraparound_at_zero() {
     let mut model = As5048Model::new("as5048_wrap", 0.0).with_noise(SIGMA_LSB, SEED);
     let ticks = poll_ticks(&mut model, POLLS);
 
-    let mid: Vec<u16> = ticks.iter().copied().filter(|t| (*t >= LOW_MAX) && (*t <= HIGH_MIN)).collect();
+    let mid: Vec<u16> = ticks
+        .iter()
+        .copied()
+        .filter(|t| (*t >= LOW_MAX) && (*t <= HIGH_MIN))
+        .collect();
     assert!(
         mid.is_empty(),
         "noise about zero stays within a few LSB of the wrap point; {} mid-range samples: {mid:?}",

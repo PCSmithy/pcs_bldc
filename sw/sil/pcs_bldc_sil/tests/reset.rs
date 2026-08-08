@@ -4,7 +4,7 @@
 //! timeline. The historian preserves the clock signal's history across the reload, so
 //! its change-log is a sawtooth: 100 ms up, 100 ms dark, 100 ms up.
 
-use pcs_bldc_sil::{cid, cvar, Sil, TICK_US, SOURCE};
+use pcs_bldc_sil::{cid, cvar, Sil, SOURCE, TICK_US};
 
 /// The mirrored firmware clock, a `uint64_t` static swept into the State Table each
 /// tick. Read out of the table (not DWARF), so it FREEZES while the member is disabled.
@@ -36,7 +36,10 @@ fn firmware_reset_lifecycle() {
 
     // (b) Disabled 100 ms: held in reset — the mirrored clock is FROZEN (no sweep runs)
     // while sim time keeps flowing.
-    assert!(sim.set_member_enabled(SOURCE, false), "member found to disable");
+    assert!(
+        sim.set_member_enabled(SOURCE, false),
+        "member found to disable"
+    );
     sim.run_for_ms(100);
     assert_eq!(table_clock(&sim), alive_us, "clock frozen while disabled");
     assert_eq!(
@@ -47,9 +50,16 @@ fn firmware_reset_lifecycle() {
 
     // (c) Re-enable 100 ms: a fresh image boots from reset — the clock climbs from 0 to
     // 100 * TICK_US again, NOT cumulatively to 300 * TICK_US.
-    assert!(sim.set_member_enabled(SOURCE, true), "member found to re-enable");
+    assert!(
+        sim.set_member_enabled(SOURCE, true),
+        "member found to re-enable"
+    );
     sim.run_for_ms(100);
-    assert_eq!(table_clock(&sim), alive_us, "clock climbs from reset, not cumulative");
+    assert_eq!(
+        table_clock(&sim),
+        alive_us,
+        "clock climbs from reset, not cumulative"
+    );
 
     // (d) The historian for the clock spans BOTH lives — history preserved across the
     // reload's re-registration. Its change-log is the sawtooth.
@@ -70,7 +80,9 @@ fn firmware_reset_lifecycle() {
     );
     // Life 1 climbs to the peak before the gap.
     assert!(
-        stamped.iter().any(|(t, v)| (*t <= now_life1_end) && (*v == alive_us)),
+        stamped
+            .iter()
+            .any(|(t, v)| (*t <= now_life1_end) && (*v == alive_us)),
         "life-1 climb reaches the peak: {stamped:?}"
     );
     // The reset edge: the first post-re-enable sample drops back to the first tick.

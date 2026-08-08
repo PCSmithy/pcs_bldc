@@ -3,7 +3,9 @@
 //! two-member feedback loop needs the delayed (ZOH-cut) backward edge.
 
 use pcs_bldc_sil::{cvar, CountsRampModel, Sil, SOURCE};
-use voyant::{vsig_id, EngineError, LogLevel, Member, MemberCtx, RouteError, SignalId, StateTable, Value};
+use voyant::{
+    vsig_id, EngineError, LogLevel, Member, MemberCtx, RouteError, SignalId, StateTable, Value,
+};
 
 #[test]
 fn route_drives_firmware_cvar_from_model() {
@@ -113,7 +115,11 @@ impl Member for LoopModel {
         self.out = (input % 200) as u32;
         let id = self.out_id();
         if let Err(e) = ctx.st.record(&id, Value::U32(self.out)) {
-            ctx.st.log(LogLevel::Warning, &self.name, format!("record {id} failed: {e}"));
+            ctx.st.log(
+                LogLevel::Warning,
+                &self.name,
+                format!("record {id} failed: {e}"),
+            );
         }
     }
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -143,11 +149,13 @@ fn feedback_loop() {
     sim.add_member(fwm);
 
     // Forward edge: model out -> firmware rx byte (zero-latency, model before fw).
-    sim.add_route(out.clone(), rx.clone()).expect("add forward route");
+    sim.add_route(out.clone(), rx.clone())
+        .expect("add forward route");
     // Backward edge as ZERO-latency first: firmware counter -> model in. This is a
     // backward edge (source firmware is registered AFTER the consuming model), so the
     // validator must reject it at the next step.
-    sim.add_route(counter.clone(), inp.clone()).expect("add backward route");
+    sim.add_route(counter.clone(), inp.clone())
+        .expect("add backward route");
 
     let rejected = matches!(
         sim.step(),
@@ -160,8 +168,10 @@ fn feedback_loop() {
 
     // Fix the wiring LIVE: drop the zero-latency backward edge, re-add it delayed (the
     // explicit ZOH sample/actuation cut). Rewire-at-runtime is legal.
-    sim.remove_route(&counter, &inp).expect("remove backward route");
-    sim.add_delayed_route(counter.clone(), inp.clone()).expect("add delayed backward route");
+    sim.remove_route(&counter, &inp)
+        .expect("remove backward route");
+    sim.add_delayed_route(counter.clone(), inp.clone())
+        .expect("add delayed backward route");
 
     // Predicted deterministic sequence for rx[0] read after each step:
     //   step 1: model in is unset (fw counter not yet sampled by this engine) -> 0.
