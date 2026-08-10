@@ -52,7 +52,7 @@ fn world(params: MotorParams, initial_angle_rad: f64, vbus: f64) -> World {
     };
     let mut eng = Engine::with_state(TICK_US, StateTable::with_config(config));
     eng.add_member(MotorModel::new(MOTOR, initial_angle_rad).with_params(params));
-    eng.write(&format!("vsig:{MOTOR}:vbus"), vbus)
+    eng.write(&format!("vsig:{MOTOR}:v_bus"), vbus)
         .expect("write vbus");
     World(eng)
 }
@@ -152,6 +152,7 @@ fn locked_params(r_ohm: f64, l_h: f64) -> MotorParams {
         pole_pairs: 7,
         j_kg_m2: 1.0e3,
         b_nm_per_rad_s: 1.0e2,
+        t_c_nm: 0.0,
         v_d: 0.8,
     }
 }
@@ -167,6 +168,7 @@ fn spin_params() -> MotorParams {
         pole_pairs: 2,
         j_kg_m2: 2.0e-4,
         b_nm_per_rad_s: 1.0e-4,
+        t_c_nm: 0.0,
         v_d: 0.8,
     }
 }
@@ -285,6 +287,7 @@ fn alignment_torque_pulls_to_equilibrium() {
         pole_pairs: POLE_PAIRS,
         j_kg_m2: 1.0e-4,
         b_nm_per_rad_s: 0.03,
+        t_c_nm: 0.0,
         v_d: 0.8,
     };
     let equilibrium = (5.0 * PI / 6.0) / f64::from(POLE_PAIRS);
@@ -554,6 +557,7 @@ fn svpwm_common_mode_rejected() {
         pole_pairs: 2,
         j_kg_m2: 1.0e-4,
         b_nm_per_rad_s: 1.0e-3,
+        t_c_nm: 0.0,
         v_d: 0.8,
     };
     let mut plain = world(params, 0.3, VBUS_V);
@@ -632,7 +636,7 @@ fn overspeed_coast_engages_diodes() {
     );
 
     // One tick collapses the bus and releases the bridge together.
-    eng.write(&format!("vsig:{MOTOR}:vbus"), COLLAPSED_VBUS_V)
+    eng.write(&format!("vsig:{MOTOR}:v_bus"), COLLAPSED_VBUS_V)
         .expect("write collapsed vbus");
     drive(&mut eng, [0.0; 3], [false; 3], false);
 
@@ -694,4 +698,154 @@ fn overspeed_coast_engages_diodes() {
         "conduction stops once the BEMF falls back inside the window: {QUIET_TICKS} ticks \
          below the band read {quiet:?}"
     );
+}
+
+/// The bench-measured bus voltage the Coulomb tests drive with (PD contract).
+const MEASURED_VBUS_V: f64 = 19.57;
+
+/// Alignment-vector spring stiffness at equilibrium for a U-high/V-low pair on the
+/// sinusoidal machine: d(Te)/d(theta_mech) = sqrt(3)·Ke·I·p.
+fn align_spring(p: &MotorParams, duty: f64, vbus: f64) -> f64 {
+    let i = duty * vbus / (2.0 * p.r_ohm);
+    3.0_f64.sqrt() * p.ke_v_per_mech_rad_s * i * f64::from(p.pole_pairs)
+}
+
+#[test]
+fn stiction_parks_rotor_exactly() {
+    // With Coulomb friction the settled rotor is parked: velocity exactly zero, angle
+    // bit-frozen, within the T_c/K stick band of the alignment equilibrium.
+    const DUTY: f64 = 0.1;
+    const SETTLE_TICKS: usize = 600;
+    const FROZEN_TICKS: usize = 50;
+
+    let p = MotorParams::default();
+    let eq = (5.0 * PI / 6.0) / f64::from(p.pole_pairs);
+    let start = eq - 0.10;
+    let stick_band = p.t_c_nm / align_spring(&p, DUTY, MEASURED_VBUS_V);
+
+    let mut eng = world(p, start, MEASURED_VBUS_V);
+    drive(&mut eng, [DUTY, 0.0, 0.0], [true, true, false], true);
+    step_n(&mut eng, SETTLE_TICKS);
+    let settled = sample(&eng);
+    let mut frozen = true;
+    for _ in 0..FROZEN_TICKS {
+        eng.step().expect("engine step");
+        let s = sample(&eng);
+        frozen &= (s.angle == settled.angle) && (s.velocity == 0.0);
+    }
+    println!(
+        "stiction_parks_rotor_exactly: settled {:.6} rad vs eq {eq:.6} (stick band \
+         ±{stick_band:.6}), velocity {:.3e}",
+        settled.angle, settled.velocity
+    );
+
+    assert_eq!(
+        settled.velocity, 0.0,
+        "the parked rotor is exactly at rest: {:.3e} rad/s",
+        settled.velocity
+    );
+    assert!(
+        frozen,
+        "the parked angle is bit-frozen across {FROZEN_TICKS} ticks"
+    );
+    assert!(
+        (settled.angle - eq).abs() < (stick_band + 0.02),
+        "the park lands within the stick band of equilibrium: {:.6} rad vs {eq:.6} \
+         ±{stick_band:.6}",
+        settled.angle
+    );
+}
+
+#[test]
+fn breakaway_threshold_matches_coulomb() {
+    // At the max-torque rotor position the drive breaks stiction only above
+    // duty* = 2·R·T_c / (sqrt(3)·Ke·vbus): below it the rotor never moves at all.
+    const HOLD_TICKS: usize = 200;
+
+    let p = MotorParams::default();
+    let eq = (5.0 * PI / 6.0) / f64::from(p.pole_pairs);
+    let start = eq - (PI / 2.0) / f64::from(p.pole_pairs); // 90° electrical: max torque
+    let duty_star =
+        2.0 * p.r_ohm * p.t_c_nm / (3.0_f64.sqrt() * p.ke_v_per_mech_rad_s * MEASURED_VBUS_V);
+    println!("breakaway_threshold_matches_coulomb: duty* = {duty_star:.5}");
+
+    let mut below = world(p, start, MEASURED_VBUS_V);
+    drive(
+        &mut below,
+        [0.6 * duty_star, 0.0, 0.0],
+        [true, true, false],
+        true,
+    );
+    step_n(&mut below, HOLD_TICKS);
+    let s = sample(&below);
+    assert_eq!(
+        (s.angle, s.velocity),
+        (start, 0.0),
+        "under-threshold drive never moves the rotor: {:?}",
+        (s.angle, s.velocity)
+    );
+
+    let mut above = world(p, start, MEASURED_VBUS_V);
+    drive(
+        &mut above,
+        [2.0 * duty_star, 0.0, 0.0],
+        [true, true, false],
+        true,
+    );
+    step_n(&mut above, HOLD_TICKS);
+    let s = sample(&above);
+    assert!(
+        (s.angle - start).abs() > 1.0e-3,
+        "over-threshold drive breaks the rotor away: moved {:.3e} rad",
+        (s.angle - start).abs()
+    );
+}
+
+#[test]
+fn coast_stops_exactly_in_finite_time() {
+    // Coulomb friction ends a coast at exact zero within the analytic
+    // t = (J/B)·ln(1 + B·omega0/T_c), where pure viscous decay never truly stops.
+    const SPIN_TICKS: usize = 800;
+    const QUIET_TICKS: usize = 50;
+
+    let p = MotorParams::default();
+    let mut eng = world(p, PI / 8.0, MEASURED_VBUS_V);
+    let mut angle = PI / 8.0;
+    for _ in 0..SPIN_TICKS {
+        commutate(&mut eng, angle, p.pole_pairs, 0.9);
+        eng.step().expect("engine step");
+        angle = sample(&eng).angle;
+    }
+    let w0 = sample(&eng).velocity;
+    assert!(
+        w0 > 3.0,
+        "six-step spins the measured motor up: {w0:.3} rad/s"
+    );
+
+    drive(&mut eng, [0.0; 3], [false; 3], false);
+    let t_stop_s = (p.j_kg_m2 / p.b_nm_per_rad_s) * (1.0 + p.b_nm_per_rad_s * w0 / p.t_c_nm).ln();
+    let budget = (2.0 * t_stop_s / TICK_S) as usize;
+    let mut stopped_at = None;
+    for k in 0..budget {
+        eng.step().expect("engine step");
+        if sample(&eng).velocity == 0.0 {
+            stopped_at = Some(k);
+            break;
+        }
+    }
+    let k_stop = stopped_at.unwrap_or_else(|| {
+        panic!(
+            "the coast reaches exactly zero within 2x the analytic {t_stop_s:.3} s \
+             (omega0 = {w0:.3})"
+        )
+    });
+    println!(
+        "coast_stops_exactly_in_finite_time: omega0 = {w0:.3} rad/s, stopped at \
+         {:.3} s vs analytic {t_stop_s:.3} s",
+        (k_stop as f64) * TICK_S
+    );
+    for _ in 0..QUIET_TICKS {
+        eng.step().expect("engine step");
+        assert_eq!(sample(&eng).velocity, 0.0, "the stopped rotor stays parked");
+    }
 }

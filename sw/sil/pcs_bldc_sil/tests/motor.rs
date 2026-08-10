@@ -129,6 +129,7 @@ fn bridge_route_suspension_injects_faults() {
     const BOOT_TICKS: usize = 300;
     const INJECT_TICKS: usize = 20;
     const RELEASE_TICKS: usize = 10;
+    const RELEASE_BUDGET_TICKS: usize = 500;
     const INJECTED_DUTY: f64 = 0.6;
     const INJECTED_VBUS_V: f64 = 24.0;
     const CURRENT_FLOOR_A: f64 = 0.05;
@@ -158,7 +159,7 @@ fn bridge_route_suspension_injects_faults() {
         .suspend_all(&mut sim)
         .expect("suspend the bridge routes");
     for (id, value) in [
-        ("vsig:motor:vbus", INJECTED_VBUS_V),
+        ("vsig:motor:v_bus", INJECTED_VBUS_V),
         ("vsig:motor:duty_u", INJECTED_DUTY),
         ("vsig:motor:enable_u", 1.0),
         ("vsig:motor:enable_v", 1.0),
@@ -188,22 +189,39 @@ fn bridge_route_suspension_injects_faults() {
          its dark-bridge duty: {firmware_duty}"
     );
 
-    // Resume: the firmware's dark bridge takes the inputs back and the legs demagnetize.
+    // Resume: the firmware's dark bridge takes the inputs back. The plant rings down
+    // first (the injection swung the rotor), and this world's historian carries the
+    // default 1e-3 deadband, so a decaying tail's last sub-epsilon sample lingers in
+    // the table — per D7, assertions here cannot be tighter than that deadband.
+    const PARKED_TOL: f64 = 2.0e-3;
     bridge
         .resume_all(&mut sim)
         .expect("resume the bridge routes");
-    for _ in 0..RELEASE_TICKS {
+    let currents = |sim: &Sil| {
+        [
+            read(sim, "vsig:motor:phase_current_u"),
+            read(sim, "vsig:motor:phase_current_v"),
+            read(sim, "vsig:motor:phase_current_w"),
+        ]
+    };
+    let parked = |sim: &Sil| {
+        (read(sim, "vsig:motor:velocity").abs() < PARKED_TOL)
+            && currents(sim).iter().all(|i| i.abs() < PARKED_TOL)
+    };
+    let mut parked_at = None;
+    for k in 0..RELEASE_BUDGET_TICKS {
         sim.step().expect("engine step");
+        if parked(&sim) {
+            parked_at = Some(k);
+            break;
+        }
     }
     let released_duty = read(&sim, "vsig:motor:duty_u");
     let released_moe = read(&sim, "vsig:motor:moe");
-    let currents = [
-        read(&sim, "vsig:motor:phase_current_u"),
-        read(&sim, "vsig:motor:phase_current_v"),
-        read(&sim, "vsig:motor:phase_current_w"),
-    ];
     println!(
-        "  after resume: duty_u = {released_duty}, moe = {released_moe}, currents = {currents:?}"
+        "  after resume: duty_u = {released_duty}, moe = {released_moe}, parked at \
+         {parked_at:?} ticks, currents = {:?}",
+        currents(&sim)
     );
     assert_eq!(
         (released_duty, released_moe),
@@ -211,9 +229,18 @@ fn bridge_route_suspension_injects_faults() {
         "the resumed routes hand the inputs back to the firmware: duty_u = \
          {released_duty}, moe = {released_moe}"
     );
-    assert_eq!(
-        currents,
-        [0.0, 0.0, 0.0],
-        "the released legs freewheel to exactly zero: {currents:?}"
+    assert!(
+        parked_at.is_some(),
+        "the plant parks (every current and the velocity within the historian \
+         deadband) inside {RELEASE_BUDGET_TICKS} ticks: {:?}",
+        currents(&sim)
     );
+    for _ in 0..RELEASE_TICKS {
+        sim.step().expect("engine step");
+        assert!(
+            parked(&sim),
+            "the parked plant stays dark: {:?}",
+            currents(&sim)
+        );
+    }
 }
