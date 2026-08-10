@@ -61,8 +61,9 @@ typedef struct
 /* Public Function Declarations */
 bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 
-// Records the write for SIL inspection (see HW_GPIO_sim.h). `pin` is a
-// single-bit mask matching the stm32g4 GPIO_PIN_x encoding.
+// Publishes the new level on the observation port of every configured output
+// pin the mask touches. `pin` is a single-bit (or multi-bit) mask matching the
+// stm32g4 GPIO_PIN_x encoding.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 // Sample and cache every configured input pin's level (from the injected SIL

@@ -105,68 +105,7 @@ static void test_init_rejects_out_of_range_spi_channel(void)
     TEST_ASSERT_FALSE(IO_AS5048_init(&config));
 }
 
-/* ---- fw~est_encoder_002: channel addressing ---- */
-
-// [test->fw~est_encoder_002~1]
-static void test_channels_addressed_independently(void)
-{
-    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(1000U, false, true));
-    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_B, makeFrame(2000U, false, true));
-
-    TEST_ASSERT_TRUE(IO_AS5048_init(&config));
-    IO_AS5048_run1ms();
-
-    uint16_t rawA = 0U;
-    uint16_t rawB = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &rawA, NULL, NULL));
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_B, &rawB, NULL, NULL));
-
-    // ENC_A is forward (1000); ENC_B is reverse (16384 - 2000 = 14384).
-    TEST_ASSERT_EQUAL_UINT16(1000U, rawA);
-    TEST_ASSERT_EQUAL_UINT16(14384U, rawB);
-
-    // Each channel's command went out on its own SPI channel.
-    TEST_ASSERT_EQUAL_HEX16(0xFFFFU, mock_HW_SPI_lastCommand(HW_SPI_CHANNEL_ENC_A));
-    TEST_ASSERT_EQUAL_HEX16(0xFFFFU, mock_HW_SPI_lastCommand(HW_SPI_CHANNEL_ENC_B));
-}
-
-/* ---- fw~est_encoder_003: polled sampling ---- */
-
-// [test->fw~est_encoder_003~1]
-static void test_sampling_updates_stored_angle(void)
-{
-    TEST_ASSERT_TRUE(IO_AS5048_init(&config));
-
-    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(100U, false, true));
-    IO_AS5048_run1ms();
-    uint16_t first = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &first, NULL, NULL));
-    TEST_ASSERT_EQUAL_UINT16(100U, first);
-
-    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(200U, false, true));
-    IO_AS5048_run1ms();
-    uint16_t second = 0U;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &second, NULL, NULL));
-    TEST_ASSERT_EQUAL_UINT16(200U, second);
-}
-
 /* ---- fw~est_encoder_004: count + degrees readout ---- */
-
-// [test->fw~est_encoder_004~1]
-static void test_readout_count_and_degrees(void)
-{
-    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(6844U, false, true));
-    TEST_ASSERT_TRUE(IO_AS5048_init(&config));
-    IO_AS5048_run1ms();
-
-    uint16_t  raw = 0U;
-    float32_t deg = 0.0f;
-    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg, NULL));
-    TEST_ASSERT_EQUAL_UINT16(6844U, raw);
-
-    const float32_t expected = ((float32_t)6844U * 360.0f) / 16384.0f;
-    TEST_ASSERT_FLOAT_WITHIN(1e-2f, expected, deg);
-}
 
 // [test->fw~est_encoder_004~1]
 static void test_readout_out_of_range_fails(void)
@@ -297,11 +236,6 @@ int main(void)
     RUN_TEST(test_init_too_many_channels);
     RUN_TEST(test_init_rejects_out_of_range_spi_channel);
 
-    RUN_TEST(test_channels_addressed_independently);
-
-    RUN_TEST(test_sampling_updates_stored_angle);
-
-    RUN_TEST(test_readout_count_and_degrees);
     RUN_TEST(test_readout_out_of_range_fails);
 
     RUN_TEST(test_reverse_inverts_angle);

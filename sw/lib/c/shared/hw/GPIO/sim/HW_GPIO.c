@@ -1,6 +1,7 @@
 /* Includes */
 #include "HW_GPIO.h"
 #include "HW_GPIO_sim.h"
+#include "SIL_ports.h"
 
 /* Defines */
 
@@ -12,15 +13,16 @@ typedef struct
     const HW_GPIO_config_S * config;
     bool initialized;
 
-    // Per-pin recorded write state for SIL inspection. Indexed by port
-    // then by bit position (0..15) within the pin mask.
-    HW_GPIO_level_E level[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
-    uint32_t        writeCount[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
-
     // Per-pin injected input level and EXTI registration for SIL tests.
     HW_GPIO_level_E        inputLevel[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
     HW_GPIO_extiCallback_F extiCallback[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
     void *                 extiContext[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
+
+    // SIL output-port handles (SIL_PORTS_HANDLE_INVALID when unregistered): the
+    // level each configured output pin is driving, for a model to consume.
+    // Indexed by port, then by the pin's index in that port's config array.
+    // Publication is event-driven from HW_GPIO_writePin.
+    int32_t outputHandle[HW_GPIO_PORT_COUNT][HW_GPIO_SIM_PINS_PER_PORT];
 
     // Polled-input cache (mirror of the stm32g4 driver): inputMask marks the
     // configured GPIO_MODE_INPUT pins, cachedInput holds their last sample.
@@ -29,6 +31,10 @@ typedef struct
 } HW_GPIO_data_S;
 
 /* Private Function Declarations */
+
+static bool HW_GPIO_private_pinConfigValid(const HW_GPIO_pinConfig_S * const pinConfig);
+static size_t HW_GPIO_private_numPins(const HW_GPIO_portConfig_S * const portConfig);
+static void HW_GPIO_private_publishOutputs(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 /* Private Data Definitions */
 
@@ -43,6 +49,31 @@ static bool HW_GPIO_private_pinConfigValid(const HW_GPIO_pinConfig_S * const pin
     const bool pinValid  = ((pinConfig->pin != 0U) && ((pinConfig->pin & ~0xFFFFUL) == 0U));
     const bool modeValid = (pinConfig->mode <= HW_GPIO_MODE_INTERRUPT);
     return ((pinValid) && (modeValid));
+}
+
+// Declared pin count, clamped to the one-handle-per-config-entry table (a port
+// has at most 16 lines, so a longer array cannot describe distinct pins).
+static size_t HW_GPIO_private_numPins(const HW_GPIO_portConfig_S * const portConfig)
+{
+    return ((portConfig->numPins < HW_GPIO_SIM_PINS_PER_PORT)
+        ? portConfig->numPins : HW_GPIO_SIM_PINS_PER_PORT);
+}
+
+// Publish the driven level on every configured output pin the write touched. A
+// pin mask may carry several lines; any overlap publishes that entry's port.
+// Null-safe: an unnamed or non-output pin's handle stays invalid and the write
+// no-ops.
+static void HW_GPIO_private_publishOutputs(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
+{
+    const HW_GPIO_portConfig_S * const portConfig = &data->config->ports[port];
+    const size_t numPins = HW_GPIO_private_numPins(portConfig);
+    for (size_t i = 0U; i < numPins; i++)
+    {
+        if ((portConfig->pins[i].pin & pin) != 0U)
+        {
+            SIL_ports_write(data->outputHandle[port][i], (level == HW_GPIO_LEVEL_HIGH) ? 1.0 : 0.0);
+        }
+    }
 }
 
 /* Public Function Definitions */
@@ -69,21 +100,49 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
 
         if (allValid)
         {
-            // Record input pins so HW_GPIO_run1ms() knows what to poll.
+            // Record input pins so HW_GPIO_run1ms() knows what to poll, and
+            // register one observation port per named output pin.
             for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
             {
                 const HW_GPIO_portConfig_S * const portConfig = &config->ports[port];
-                for (size_t pin = 0U; pin < portConfig->numPins; pin++)
+                for (size_t i = 0U; i < HW_GPIO_SIM_PINS_PER_PORT; i++)
+                {
+                    data->outputHandle[port][i] = SIL_PORTS_HANDLE_INVALID;
+                }
+
+                const size_t numPins = HW_GPIO_private_numPins(portConfig);
+                for (size_t pin = 0U; pin < numPins; pin++)
                 {
                     if (portConfig->pins[pin].mode == HW_GPIO_MODE_INPUT)
                     {
                         data->inputMask[port] |= (uint16_t)portConfig->pins[pin].pin;
+                    }
+                    else if ((portConfig->pins[pin].mode == HW_GPIO_MODE_OUTPUT) &&
+                             (portConfig->pins[pin].pinNameStr != NULL))
+                    {
+                        data->outputHandle[port][pin] =
+                            SIL_ports_register("vsig", portConfig->pins[pin].pinNameStr, NULL);
+                    }
+                    else
+                    {
+                        // Interrupt inputs and unnamed pins register nothing.
                     }
                 }
             }
 
             data->config      = config;
             data->initialized = true;
+
+            // Publish the boot state: every output pin reads low until firmware
+            // drives it. The writes buffer in the framework until the first out-sync.
+            for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
+            {
+                const size_t numPins = HW_GPIO_private_numPins(&config->ports[port]);
+                for (size_t pin = 0U; pin < numPins; pin++)
+                {
+                    SIL_ports_write(data->outputHandle[port][pin], 0.0);
+                }
+            }
             ret = true;
         }
     }
@@ -93,18 +152,9 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config)
 // [impl->fw~hal_gpio_003~1]
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)
 {
-    if (port < HW_GPIO_PORT_COUNT)
+    if ((data->initialized) && (port < HW_GPIO_PORT_COUNT))
     {
-        // A pin mask may carry more than one bit; record each so tests
-        // can inspect any pin the driver drove.
-        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
-        {
-            if ((pin & (1UL << bit)) != 0U)
-            {
-                data->level[port][bit] = level;
-                data->writeCount[port][bit]++;
-            }
-        }
+        HW_GPIO_private_publishOutputs(port, pin, level);
     }
 }
 
@@ -159,55 +209,22 @@ bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_ext
     return ret;
 }
 
-HW_GPIO_level_E HW_GPIO_sim_getLevel(HW_GPIO_port_E port, uint32_t pin)
-{
-    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
-    if (port < HW_GPIO_PORT_COUNT)
-    {
-        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
-        {
-            if ((pin & (1UL << bit)) != 0U)
-            {
-                level = data->level[port][bit];
-                break;
-            }
-        }
-    }
-    return level;
-}
-
-uint32_t HW_GPIO_sim_getWriteCount(HW_GPIO_port_E port, uint32_t pin)
-{
-    uint32_t count = 0U;
-    if (port < HW_GPIO_PORT_COUNT)
-    {
-        for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
-        {
-            if ((pin & (1UL << bit)) != 0U)
-            {
-                count = data->writeCount[port][bit];
-                break;
-            }
-        }
-    }
-    return count;
-}
-
 void HW_GPIO_sim_reset(void)
 {
     for (HW_GPIO_port_E port = 0U; port < HW_GPIO_PORT_COUNT; port++)
     {
         for (uint32_t bit = 0U; bit < HW_GPIO_SIM_PINS_PER_PORT; bit++)
         {
-            data->level[port][bit]        = HW_GPIO_LEVEL_LOW;
-            data->writeCount[port][bit]   = 0U;
             data->inputLevel[port][bit]   = HW_GPIO_LEVEL_LOW;
             data->extiCallback[port][bit] = NULL;
             data->extiContext[port][bit]  = NULL;
+            data->outputHandle[port][bit] = SIL_PORTS_HANDLE_INVALID;
         }
         data->inputMask[port]   = 0U;
         data->cachedInput[port] = 0U;
     }
+    data->config      = NULL;
+    data->initialized = false;
 }
 
 void HW_GPIO_sim_setInputLevel(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level)

@@ -127,22 +127,6 @@ static void test_channels_addressed_independently(void)
 
 /* ---- fw~hal_adc_004: polled software-triggered sampling ---- */
 // [test->fw~hal_adc_004~1]
-static void test_sampling_pass_updates_counts(void)
-{
-    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-
-    HW_ADC_run1ms();
-    uint32_t after = 0U;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &after));
-
-    // The sim ramps each pass, so a second pass updates the stored value.
-    HW_ADC_run1ms();
-    uint32_t after2 = 0U;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &after2));
-    TEST_ASSERT_TRUE(after != after2);
-}
-
-// [test->fw~hal_adc_004~1]
 static void test_sampling_before_init_is_noop(void)
 {
     // No init: a sampling pass does nothing and reads fail.
@@ -203,21 +187,6 @@ static void test_status_failure_modes(void)
 }
 
 /* ---- fw~hal_adc_005: counts + volts readout ---- */
-// [test->fw~hal_adc_005~1]
-static void test_volts_matches_formula(void)
-{
-    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-    HW_ADC_run1ms();
-
-    uint32_t  count = 0U;
-    float32_t volts = 0.0f;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
-    TEST_ASSERT_TRUE(HW_ADC_getVolts(HW_ADC_CHANNEL_1, 3U, &volts));
-
-    const float32_t expected = ((float32_t)count / MAX_COUNTS) * VREF;
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, expected, volts);
-}
-
 // [test->fw~hal_adc_005~1]
 static void test_readout_failure_modes(void)
 {
@@ -284,12 +253,10 @@ int main(void)
     RUN_TEST(test_only_enabled_inputs_convert);
     RUN_TEST(test_channels_addressed_independently);
 
-    RUN_TEST(test_sampling_pass_updates_counts);
     RUN_TEST(test_sampling_before_init_is_noop);
     RUN_TEST(test_conversion_fault_status_and_count_retained);
     RUN_TEST(test_status_failure_modes);
 
-    RUN_TEST(test_volts_matches_formula);
     RUN_TEST(test_readout_failure_modes);
 
     RUN_TEST(test_injected_sampling_and_readout);

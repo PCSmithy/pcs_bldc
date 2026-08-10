@@ -5,11 +5,6 @@
 
 /* Defines */
 
-// Largest transfer the model captures. Tests stay well under this; transfers
-// longer than this still move data through the caller's buffers, only the
-// captured copy is clamped.
-#define HW_SPI_SIM_MAX_XFER    (256U)
-
 // Single-bit pin mask range mirroring the stm32g4 GPIO_PIN_x encoding,
 // so CS validation matches the embedded target without pulling in HAL.
 #define HW_SPI_SIM_PIN_MAX     (0x8000U)
@@ -36,10 +31,6 @@ typedef struct
     size_t    length;
     bool      pending;
 
-    // Transmit capture.
-    uint8_t lastTx[HW_SPI_SIM_MAX_XFER];
-    size_t  lastTxLen;
-
     // SIL duplex endpoint (SIL_PORTS_HANDLE_INVALID when unregistered): a
     // transfer upcalls the linked peer for the MISO response frame.
     int32_t duplexHandle;
@@ -47,11 +38,6 @@ typedef struct
     // Fault injection.
     bool stall;
     bool forceError;
-
-    // Chip-select records for the last transfer.
-    uint32_t        csAssertCount;
-    HW_GPIO_level_E csAssertLevel;
-    HW_GPIO_level_E csDeassertLevel;
 } HW_SPI_channelData_S;
 
 typedef struct
@@ -68,7 +54,6 @@ static bool HW_SPI_private_channelConfigValid(const HW_SPI_config_S * const conf
 static void HW_SPI_private_clearChannel(HW_SPI_channel_E channel);
 static void HW_SPI_private_assertCs(HW_SPI_channel_E channel);
 static void HW_SPI_private_deassertCs(HW_SPI_channel_E channel);
-static void HW_SPI_private_captureTx(HW_SPI_channel_E channel);
 static void HW_SPI_private_fillRx(HW_SPI_channel_E channel);
 static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, uint8_t * txData, uint8_t * rxData, size_t length);
 
@@ -126,12 +111,8 @@ static void HW_SPI_private_clearChannel(HW_SPI_channel_E channel)
     cd->rxData          = NULL;
     cd->length          = 0U;
     cd->pending         = false;
-    cd->lastTxLen       = 0U;
     cd->stall           = false;
     cd->forceError      = false;
-    cd->csAssertCount   = 0U;
-    cd->csAssertLevel   = HW_GPIO_LEVEL_LOW;
-    cd->csDeassertLevel = HW_GPIO_LEVEL_LOW;
 }
 
 // [impl->fw~hal_spi_004~1]
@@ -142,8 +123,6 @@ static void HW_SPI_private_assertCs(HW_SPI_channel_E channel)
     {
         const HW_SPI_csGpioConfig_S * const cs = &channelConfig->csGpioConfig;
         HW_GPIO_writePin(cs->port, cs->pin, cs->activeLevel);
-        data->channels[channel].csAssertLevel = cs->activeLevel;
-        data->channels[channel].csAssertCount++;
     }
 }
 
@@ -156,21 +135,6 @@ static void HW_SPI_private_deassertCs(HW_SPI_channel_E channel)
         const HW_SPI_csGpioConfig_S * const cs = &channelConfig->csGpioConfig;
         const HW_GPIO_level_E inactive = (cs->activeLevel == HW_GPIO_LEVEL_LOW) ? HW_GPIO_LEVEL_HIGH : HW_GPIO_LEVEL_LOW;
         HW_GPIO_writePin(cs->port, cs->pin, inactive);
-        data->channels[channel].csDeassertLevel = inactive;
-    }
-}
-
-static void HW_SPI_private_captureTx(HW_SPI_channel_E channel)
-{
-    HW_SPI_channelData_S * const cd = &data->channels[channel];
-    if ((cd->op == HW_SPI_OP_TX) || (cd->op == HW_SPI_OP_TXRX))
-    {
-        const size_t copyLen = (cd->length < HW_SPI_SIM_MAX_XFER) ? cd->length : HW_SPI_SIM_MAX_XFER;
-        for (size_t i = 0U; i < copyLen; i++)
-        {
-            cd->lastTx[i] = cd->txData[i];
-        }
-        cd->lastTxLen = cd->length;
     }
 }
 
@@ -232,7 +196,6 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
         cd->length = length;
 
         HW_SPI_private_assertCs(channel);
-        HW_SPI_private_captureTx(channel);
 
         if (mode == HW_SPI_TRANSFERMODE_SW)
         {
@@ -373,23 +336,6 @@ void HW_SPI_sim_tick(void)
     }
 }
 
-size_t HW_SPI_sim_getLastTx(HW_SPI_channel_E channel, uint8_t * out, size_t maxLength)
-{
-    size_t txLen = 0U;
-    if ((channel < HW_SPI_CHANNEL_COUNT) && (out != NULL))
-    {
-        const HW_SPI_channelData_S * const cd = &data->channels[channel];
-        txLen = cd->lastTxLen;
-        const size_t captured = (cd->lastTxLen < HW_SPI_SIM_MAX_XFER) ? cd->lastTxLen : HW_SPI_SIM_MAX_XFER;
-        const size_t copyLen  = (captured < maxLength) ? captured : maxLength;
-        for (size_t i = 0U; i < copyLen; i++)
-        {
-            out[i] = cd->lastTx[i];
-        }
-    }
-    return txLen;
-}
-
 void HW_SPI_sim_setStall(HW_SPI_channel_E channel, bool stall)
 {
     if (channel < HW_SPI_CHANNEL_COUNT)
@@ -404,34 +350,4 @@ void HW_SPI_sim_setForceError(HW_SPI_channel_E channel, bool forceError)
     {
         data->channels[channel].forceError = forceError;
     }
-}
-
-uint32_t HW_SPI_sim_getCsAssertCount(HW_SPI_channel_E channel)
-{
-    uint32_t count = 0U;
-    if (channel < HW_SPI_CHANNEL_COUNT)
-    {
-        count = data->channels[channel].csAssertCount;
-    }
-    return count;
-}
-
-HW_GPIO_level_E HW_SPI_sim_getCsAssertLevel(HW_SPI_channel_E channel)
-{
-    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
-    if (channel < HW_SPI_CHANNEL_COUNT)
-    {
-        level = data->channels[channel].csAssertLevel;
-    }
-    return level;
-}
-
-HW_GPIO_level_E HW_SPI_sim_getCsDeassertLevel(HW_SPI_channel_E channel)
-{
-    HW_GPIO_level_E level = HW_GPIO_LEVEL_LOW;
-    if (channel < HW_SPI_CHANNEL_COUNT)
-    {
-        level = data->channels[channel].csDeassertLevel;
-    }
-    return level;
 }
