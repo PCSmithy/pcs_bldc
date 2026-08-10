@@ -50,15 +50,10 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// White-box per-tick scheduling table, gated by `PCS_SIL_DIAG=1` (no-op otherwise).
-/// Straight after boot, advance the firmware one raw tick at a time and, each tick,
-/// DWARF-read the FreeRTOS kernel's own view — `xTickCount` and `xNextTaskUnblockTime`
-/// (the earliest tick any blocked task is scheduled to wake) — alongside the per-task
-/// heartbeat counters. A general-purpose remote debugger for scheduling /
-/// DWARF-resolution questions; the resolved-address list surfaces per-variable DWARF
-/// faults directly (two distinct statics collapsing to one address means their reads
-/// alias). Reads are panic-guarded so a firmware built without a given static degrades
-/// that column to `n/a` rather than aborting.
+/// White-box per-tick scheduling table, gated by `PCS_SIL_DIAG=1` (no-op otherwise):
+/// advance the firmware one raw tick at a time and DWARF-read the FreeRTOS kernel's own
+/// view alongside the per-task heartbeats. The resolved-address list surfaces DWARF
+/// faults directly — two statics on one address means their reads alias.
 fn diag_per_tick_table(fw: &Firmware) {
     if std::env::var("PCS_SIL_DIAG").ok().as_deref() != Some("1") {
         return;
@@ -126,16 +121,10 @@ fn diag_per_tick_table(fw: &Firmware) {
     std::panic::set_hook(prev_hook);
 }
 
-/// Phase-isolated performance report (informational). Times each phase over `N` ticks
-/// after a warm-up and prints µs/tick + ×realtime. `std::time` is fine here — driver
-/// code, not sim-deterministic state. The phases isolate the cost:
-///   1. firmware `advance_tick()` alone (no engine machinery);
-///   2. full engine `step()` (a model + a `FirmwareMember` + a route);
-///   3. firmware-member-only step (the sweep+flush floor);
-///   4. empty engine `step()` (the engine's floor);
-///
-/// plus the derived splits. The report names the Rust profile and DLL flavor
-/// (`PCS_SIL_DLL_FLAVOR`) so a copied-out table is self-describing.
+/// Phase-isolated performance report (informational): time each phase over `N` ticks
+/// after a warm-up and print µs/tick + ×realtime, plus the derived splits. The four
+/// phases isolate a raw firmware tick, a full engine step, a firmware-member-only step
+/// (sweep+flush) and an empty engine step (the floor).
 fn report_performance(fw: &Rc<Firmware>) {
     const WARMUP: u64 = 100;
     const N: u64 = 1000;

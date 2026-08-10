@@ -2,29 +2,20 @@
 //! a button tap arms it, the alignment vector physically swings the rotor and the offset is
 //! captured from that physics, then a dial turn spins the shaft under closed-loop commutation.
 
-use pcs_bldc_sil::{
-    cid, wire_bridge, wire_current_sense, As5048Model, CurrentSenseModel, MotorModel, MotorParams,
-    Sil, SOURCE,
+use pcs_bldc_sil::board::{
+    board, decoded_bus_a, decoded_phase_a, fault_latched, gate_operational, port, ALIGN_DUTY,
+    ALIGN_DWELL_MS, BUS_TRIP_A, DIAL, GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW,
+    INPUT_LEVEL_PB10, MOTOR, PHASE_TRIP_A, VBUS_V,
 };
+use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil, BRIDGE_PORTS};
 use std::f64::consts::{PI, TAU};
-use voyant::{vsig_id, Value};
-
-const MOTOR: &str = "motor";
-const ENCODER: &str = "as5048_motor";
-const DIAL: &str = "dial";
-const SENSE: &str = "current_sense";
+use voyant::Value;
 
 /// Shaft start, deliberately off the alignment vector so the dwell has to pull it there.
 const INITIAL_ANGLE_RAD: f64 = 0.8;
-const VBUS_V: f64 = 24.0;
 
-/// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.c`.
-const ALIGN_DUTY: f64 = 0.1;
-const ALIGN_DWELL_MS: u64 = 500;
-
-/// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.c`.
-const PHASE_TRIP_A: f64 = 2.0;
-const BUS_TRIP_A: f64 = 1.5;
+/// The master output enable, named off the wiring table.
+const MOE: &str = BRIDGE_PORTS[6].0;
 
 /// `APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC` (200 rpm) and the pole pairs both the
 /// firmware channel config and the plant carry.
@@ -34,70 +25,23 @@ const POLE_PAIRS: f64 = 14.0;
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
 const DIAL_FULL_SCALE_DEG: f64 = 180.0;
 
-// Button: PB10, active LOW (idle HIGH via pull-up). Port B is enum index 1, bit 10.
-const INPUT_LEVEL_PB10: &str = "HW_GPIO_data.inputLevel[1][10]";
-const GPIO_LEVEL_LOW: u32 = 0;
-const GPIO_LEVEL_HIGH: u32 = 1;
-
-// Gate-driver STATUS (reg 0x80 = 128) on the sim I2C register file: BUS_2, sole device.
-const I2C_STATUS_REG: &str = "HW_I2C_data.buses[1].devices[0].regMem[128]";
-const GATEDRIVER_STATUS_LOCKED: u32 = 0x80;
-
 /// Electrical angle at which the (U high, V low) alignment vector holds the rotor for this
 /// trapezoidal shape: where the U and V BEMF shapes meet with U on its falling edge.
 const ALIGN_FIELD_RAD_E: f64 = 5.0 * PI / 6.0;
 /// One six-step branch advances the applied field by 60 electrical degrees.
 const SECTOR_RAD_E: f64 = PI / 3.0;
 
-fn read_bool(sim: &Sil, path: &str) -> bool {
-    matches!(sim.read(&cid(path)).ok().flatten(), Some(Value::Bool(true)))
-}
-
-fn read_f64(sim: &Sil, path: &str) -> f64 {
-    sim.read(&cid(path))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_f64)
-        .unwrap_or(f64::NAN)
-}
-
-fn read_u64(sim: &Sil, path: &str) -> u64 {
-    sim.read(&cid(path))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-}
-
-fn vsig(sim: &Sil, source: &str, local: &str) -> f64 {
-    sim.read(&format!("vsig:{source}:{local}"))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_f64)
-        .unwrap_or(f64::NAN)
-}
-
-fn port(sim: &Sil, name: &str) -> f64 {
-    vsig(sim, SOURCE, name)
+/// One plant signal (`vsig:motor:<local>`).
+fn plant(sim: &Sil, local: &str) -> f64 {
+    sim.read_f64(&vid(MOTOR, local))
 }
 
 fn duties(sim: &Sil) -> [f64; 3] {
-    [
-        port(sim, "PWM_U_duty"),
-        port(sim, "PWM_V_duty"),
-        port(sim, "PWM_W_duty"),
-    ]
+    std::array::from_fn(|k| port(sim, BRIDGE_PORTS[k].0))
 }
 
 fn enables(sim: &Sil) -> [f64; 3] {
-    [
-        port(sim, "PWM_U_enabled"),
-        port(sim, "PWM_V_enabled"),
-        port(sim, "PWM_W_enabled"),
-    ]
+    std::array::from_fn(|k| port(sim, BRIDGE_PORTS[3 + k].0))
 }
 
 fn max_phase_duty(sim: &Sil) -> f64 {
@@ -128,20 +72,8 @@ fn sector_from_ports(sim: &Sil) -> Option<usize> {
 /// (`app_motorControl.c`, the +30 deg bucket bias on a +90 deg lead).
 fn lead_deg(sim: &Sil) -> Option<f64> {
     let field_e = ALIGN_FIELD_RAD_E + (sector_from_ports(sim)? as f64) * SECTOR_RAD_E;
-    let rotor_e = vsig(sim, MOTOR, "angle") * POLE_PAIRS;
+    let rotor_e = plant(sim, "angle") * POLE_PAIRS;
     Some((field_e - rotor_e).rem_euclid(TAU).to_degrees())
-}
-
-/// Channel-0 gate driver reads operational (mirrors `dev_gateDriver_isOperational`).
-fn gate_operational(sim: &Sil) -> bool {
-    let c = |f: &str| read_bool(sim, &format!("dev_gateDriver_data.channels[0].{f}"));
-    c("configured")
-        && c("statusOk")
-        && c("locked")
-        && !c("resetLatched")
-        && !c("vdsProtection")
-        && !c("thermalShutdown")
-        && !c("vccUndervoltage")
 }
 
 fn mode_is_six_step(sim: &Sil) -> bool {
@@ -155,71 +87,24 @@ fn mode_is_six_step(sim: &Sil) -> bool {
     }
 }
 
-fn fault_latched(sim: &Sil) -> bool {
-    read_bool(sim, "app_motorControl_data.channels[0].faultLatched")
-}
-
-/// One phase current in amps as the firmware itself decoded it on its last 1 ms pass.
-fn decoded_phase_a(sim: &Sil, phase: usize) -> f64 {
-    read_f64(
-        sim,
-        &format!("app_motorControl_data.channels[0].phaseCurrent_a[{phase}]"),
-    )
-}
-
-fn decoded_bus_a(sim: &Sil) -> f64 {
-    read_f64(sim, "app_motorControl_data.channels[0].busCurrent")
+fn is_aligned(sim: &Sil) -> bool {
+    sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned"))
 }
 
 fn peak_decoded_a(sim: &Sil) -> f64 {
     (0..3).fold(0.0_f64, |m, k| m.max(decoded_phase_a(sim, k).abs()))
 }
 
-/// The full board world: plant → its encoder → the dial → the sense chain → firmware, every
-/// route live, so the physics drives the firmware and the firmware drives the physics.
-fn world() -> Sil {
-    let mut sim = Sil::new();
-
-    sim.add_member(MotorModel::new(MOTOR, INITIAL_ANGLE_RAD));
-    let encoder = sim.add_member(As5048Model::new(ENCODER, 0.0).with_noise(1.52, 0));
-    let dial = sim.add_member(As5048Model::new(DIAL, 0.0).with_noise(1.22, 1));
-    sim.add_member(CurrentSenseModel::new(SENSE));
-
-    let mut fwm = sim.load_firmware(SOURCE);
-    fwm.register_cvar_in_state_table(INPUT_LEVEL_PB10);
-    fwm.register_cvar_in_state_table(I2C_STATUS_REG);
-    sim.add_member(fwm);
-
-    // The plant's shaft angle is the encoder's input — the test never writes it.
-    sim.add_route(
-        vsig_id(MOTOR, "angle").expect("valid vsig id"),
-        vsig_id(ENCODER, "angle").expect("valid vsig id"),
-    )
-    .expect("route the shaft angle into the commutation encoder");
-    sim.link_duplex("spi:pcs_bldc:AS5048_1", encoder)
-        .expect("link the commutation encoder");
-    sim.link_duplex("spi:pcs_bldc:AS5048_2", dial)
-        .expect("link the dial encoder");
-    wire_bridge(&mut sim, SOURCE, MOTOR).expect("wire the bridge into the plant");
-    wire_current_sense(&mut sim, MOTOR, SENSE, SOURCE).expect("wire the sense chain");
-
-    sim.write(&format!("vsig:{MOTOR}:v_bus"), VBUS_V)
-        .expect("energize the bus");
-    sim.write(&cid(I2C_STATUS_REG), GATEDRIVER_STATUS_LOCKED)
-        .expect("seed gate STATUS");
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH)
-        .expect("button idle high");
-    sim
-}
-
 /// Boot past the gate-driver bring-up, then tap the button and let the double-tap window
 /// elapse, so the lone tap toggles run — the arm that starts the alignment dwell.
 fn boot_and_arm(sim: &mut Sil) {
-    sim.run_for_ms(300);
+    sim.run_for_ms(GATE_BRINGUP_MS);
     assert!(gate_operational(sim), "gate driver operational after boot");
     assert!(!fault_latched(sim), "no fault before drive");
     assert_eq!(max_phase_duty(sim), 0.0, "bridge dark before the arm");
 
+    // Press (LOW) then release (HIGH), each held past the 20 ms debounce so dev_switch
+    // latches ACTIVE then INACTIVE — a tap.
     sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_LOW)
         .expect("button press");
     sim.run_for_ms(30);
@@ -249,15 +134,12 @@ fn alignment_pulls_rotor_and_captures_offset() {
     let expected_current_a = (ALIGN_DUTY * VBUS_V) / (2.0 * params.r_ohm);
     let equilibrium = alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
 
-    let mut sim = world();
+    let Board { mut sim, .. } = board(INITIAL_ANGLE_RAD);
     boot_and_arm(&mut sim);
 
     // --- The dwell drives the documented alignment pattern -----------------------------
     assert!(mode_is_six_step(&sim), "the arm put the drive in SIX_STEP");
-    assert!(
-        !read_bool(&sim, "app_motorControl_data.channels[0].isAligned"),
-        "still aligning at the top of the dwell"
-    );
+    assert!(!is_aligned(&sim), "still aligning at the top of the dwell");
     let duty_u = port(&sim, "PWM_U_duty");
     assert!(
         (duty_u - ALIGN_DUTY).abs() < 0.02,
@@ -266,7 +148,7 @@ fn alignment_pulls_rotor_and_captures_offset() {
     assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "U enabled");
     assert_eq!(port(&sim, "PWM_V_enabled"), 1.0, "V enabled");
     assert_eq!(port(&sim, "PWM_W_enabled"), 0.0, "W held off");
-    assert_eq!(port(&sim, "TIM1_MOE"), 1.0, "master output enable on");
+    assert_eq!(port(&sim, MOE), 1.0, "master output enable on");
 
     // --- Ride the dwell, sampling the plant's answer every millisecond ------------------
     let mut aligned_at_ms: Option<u64> = None;
@@ -277,17 +159,16 @@ fn alignment_pulls_rotor_and_captures_offset() {
     let mut decoded_u = Vec::with_capacity(ALIGN_DWELL_MS as usize + 20);
     for ms in 1..=(ALIGN_DWELL_MS + 20) {
         sim.run_for_ms(1);
-        peak_velocity = peak_velocity.max(vsig(&sim, MOTOR, "velocity").abs());
+        peak_velocity = peak_velocity.max(plant(&sim, "velocity").abs());
         peak_current = peak_current.max(peak_decoded_a(&sim));
         peak_bus = peak_bus.max(decoded_bus_a(&sim).abs());
-        angle.push(vsig(&sim, MOTOR, "angle"));
+        angle.push(plant(&sim, "angle"));
         decoded_u.push(decoded_phase_a(&sim, 0));
         assert!(
             !fault_latched(&sim),
             "no fault latched during the dwell at {ms} ms"
         );
-        if aligned_at_ms.is_none() && read_bool(&sim, "app_motorControl_data.channels[0].isAligned")
-        {
+        if aligned_at_ms.is_none() && is_aligned(&sim) {
             aligned_at_ms = Some(ms);
         }
     }
@@ -314,7 +195,7 @@ fn alignment_pulls_rotor_and_captures_offset() {
          {peak_velocity:.4} rad/s, velocity at latch {:+.4} rad/s, isAligned at \
          {aligned_at_ms} ms",
         (offset_err_rad * POLE_PAIRS).to_degrees(),
-        vsig(&sim, MOTOR, "velocity")
+        plant(&sim, "velocity")
     );
     println!(
         "alignment: angle trace @0/100/200/300/400/500 ms = {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} \
@@ -370,14 +251,13 @@ fn alignment_pulls_rotor_and_captures_offset() {
     );
 
     // --- The offset is the encoder's decode of the shaft the dwell left behind ----------
-    let offset = read_f64(
-        &sim,
+    let offset = sim.read_f64(&cid(
         "app_motorControl_data.channels[0].alignmentOffset_rad",
-    );
+    ));
     println!(
         "alignment: alignmentOffset {offset:.6} rad vs plant angle at latch \
          {angle_at_latch:.6} rad (encoder decode now {:.6} rad)",
-        read_f64(&sim, "IO_AS5048_data.channels[0].angle_rad")
+        sim.read_f64(&cid("IO_AS5048_data.channels[0].angle_rad"))
     );
     assert!(
         (offset - angle_at_latch).abs() < OFFSET_MATCH_RAD,
@@ -389,7 +269,7 @@ fn alignment_pulls_rotor_and_captures_offset() {
         "no fault latched across the whole alignment"
     );
     assert!(
-        read_u64(&sim, "app_motorControl_data.channels[0].encoderFaultCount") < 5,
+        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount")) < 5,
         "encoder fault count stays under the trip limit"
     );
 }
@@ -402,37 +282,70 @@ fn dial_demand_spins_rotor_closed_loop() {
     const RAMP_STEP_DEG: f64 = 10.0;
     const RAMP_DWELL_MS: u64 = 20;
     const RUN_MS: u64 = 3000;
+    const IDLE_MS: u64 = 50;
     /// Friction-limited terminal speed if commutation delivered the full flat-top torque
     /// (ke * 2 * i / B); the floors below are fractions of it.
     const IDEAL_TERMINAL_RAD_S: f64 = 0.9 * VBUS_V / (2.0 * 32.0) * 2.0 * 0.01 / 1.0e-4;
     const VELOCITY_FLOOR_RAD_S: f64 = 0.2 * IDEAL_TERMINAL_RAD_S;
     const REVOLUTION_FLOOR: f64 = 3.0;
 
-    let mut sim = world();
+    let Board { mut sim, .. } = board(INITIAL_ANGLE_RAD);
     boot_and_arm(&mut sim);
     sim.run_for_ms(ALIGN_DWELL_MS + 20);
-    assert!(
-        read_bool(&sim, "app_motorControl_data.channels[0].isAligned"),
-        "alignment completed before the dial turn"
-    );
-    let offset_err_rad = read_f64(
-        &sim,
+    assert!(is_aligned(&sim), "alignment completed before the dial turn");
+    let offset_err_rad = sim.read_f64(&cid(
         "app_motorControl_data.channels[0].alignmentOffset_rad",
-    ) - alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
+    )) - alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
+
+    // --- Aligned and armed at zero demand: the phases idle, the bridge does not flap ----
+    for _ in 0..IDLE_MS {
+        sim.run_for_ms(1);
+        assert_eq!(
+            port(&sim, MOE),
+            1.0,
+            "MOE holds asserted across the zero-demand window"
+        );
+        assert!(
+            max_phase_duty(&sim) < 0.02,
+            "phases stay idle across the zero-demand window"
+        );
+    }
+    assert!(
+        is_aligned(&sim),
+        "alignment is retained across the zero-demand window"
+    );
+
+    // --- The first dial turn commutates at once on the stored offset --------------------
+    // +90 deg -> command +0.5 -> half-scale duty, within a few control cycles and with no
+    // second dwell. The accumulator sums wrapped deltas, so this excursion nets out of the
+    // ramp below (which ends at the same 180 deg of travel).
+    sim.write(&vid(DIAL, "angle[deg]"), 90.0)
+        .expect("turn the dial");
+    sim.run_for_ms(5);
+    assert!(
+        is_aligned(&sim),
+        "no second dwell: alignment stays latched through the first dial turn"
+    );
+    assert_eq!(port(&sim, MOE), 1.0, "MOE still asserted while commutating");
+    let driven = max_phase_duty(&sim);
+    assert!(
+        driven > 0.2,
+        "commutation drive appears at once on the first dial turn, got {driven}"
+    );
 
     // Wind the dial up in steps: app_userControls accumulates wrapped deltas, so a ramp
     // reads as travel while a single jump past 180 deg would wrap the wrong way.
     let mut deg = 0.0;
     while deg < DIAL_TARGET_DEG {
         deg = (deg + RAMP_STEP_DEG).min(DIAL_TARGET_DEG);
-        sim.write(&format!("vsig:{DIAL}:angle[deg]"), deg)
+        sim.write(&vid(DIAL, "angle[deg]"), deg)
             .expect("turn the dial");
         sim.run_for_ms(RAMP_DWELL_MS);
     }
     let command = DIAL_TARGET_DEG / DIAL_FULL_SCALE_DEG;
 
     let mut travel = 0.0_f64;
-    let mut prev_angle = vsig(&sim, MOTOR, "angle");
+    let mut prev_angle = plant(&sim, "angle");
     let mut peak_velocity = 0.0_f64;
     let mut peak_current = 0.0_f64;
     let mut peak_bus = 0.0_f64;
@@ -447,10 +360,9 @@ fn dial_demand_spins_rotor_closed_loop() {
          {DIAL_TARGET_DEG} deg -> command {command:.3} -> setpoint {:.4} rad/s (of \
          {MAX_VELOCITY_RAD_S:.4} max), duty {:.3}",
         (offset_err_rad * POLE_PAIRS).to_degrees(),
-        read_f64(
-            &sim,
+        sim.read_f64(&cid(
             "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec"
-        ),
+        )),
         max_phase_duty(&sim)
     );
     println!("spin:    t_ms  velocity   travel  sector   lead  duty   peak|i|    i_bus");
@@ -460,7 +372,7 @@ fn dial_demand_spins_rotor_closed_loop() {
         assert!(!fault_latched(&sim), "no fault latched at {ms} ms");
         assert!(mode_is_six_step(&sim), "mode stays SIX_STEP at {ms} ms");
 
-        let a = vsig(&sim, MOTOR, "angle");
+        let a = plant(&sim, "angle");
         let mut step = a - prev_angle;
         if step > PI {
             step -= TAU;
@@ -470,7 +382,7 @@ fn dial_demand_spins_rotor_closed_loop() {
         travel += step;
         prev_angle = a;
 
-        peak_velocity = peak_velocity.max(vsig(&sim, MOTOR, "velocity").abs());
+        peak_velocity = peak_velocity.max(plant(&sim, "velocity").abs());
         peak_current = peak_current.max(peak_decoded_a(&sim));
         peak_bus = peak_bus.max(decoded_bus_a(&sim).abs());
         if let Some(s) = sector_from_ports(&sim) {
@@ -486,7 +398,7 @@ fn dial_demand_spins_rotor_closed_loop() {
         if ms % 100 == 0 {
             println!(
                 "spin:  {ms:>6}  {:+8.3}  {travel:+7.2}  {:>6}  {:>5.0}  {:.3}   {:.4}   {:.4}",
-                vsig(&sim, MOTOR, "velocity"),
+                plant(&sim, "velocity"),
                 sector_from_ports(&sim)
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "-".into()),
@@ -498,7 +410,7 @@ fn dial_demand_spins_rotor_closed_loop() {
         }
     }
 
-    let final_velocity = vsig(&sim, MOTOR, "velocity");
+    let final_velocity = plant(&sim, "velocity");
     let revolutions = travel / TAU;
     println!(
         "spin: final velocity {final_velocity:+.3} rad/s (peak {peak_velocity:.3}, floor \
@@ -532,7 +444,7 @@ fn dial_demand_spins_rotor_closed_loop() {
         "bus current stays under the {BUS_TRIP_A} A trip: {peak_bus:.4} A"
     );
     assert!(
-        read_u64(&sim, "app_motorControl_data.channels[0].encoderFaultCount") < 5,
+        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount")) < 5,
         "encoder fault count stays under the trip limit"
     );
 }

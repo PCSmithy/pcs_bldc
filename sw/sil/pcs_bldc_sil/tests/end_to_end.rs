@@ -3,6 +3,7 @@
 //! firmware's actual READ-ANGLE polls over the duplex bus, IO_AS5048 decodes,
 //! telemetryTask reports, and the sim USB capture carries the Teleplot text.
 
+use pcs_bldc_sil::board::COUNTS_PER_REV;
 use pcs_bldc_sil::{cid, As5048Model, Sil, SOURCE};
 use voyant::{Firmware, SignalId, Value};
 
@@ -57,7 +58,7 @@ fn end_to_end() {
     );
 
     // Expected raw/angle derive from the commanded angle plus the firmware's own
-    // channel config (reverse maps raw to 16384 - raw): the check asserts the decode
+    // channel config (reverse maps raw to COUNTS_PER_REV - raw): the check asserts the decode
     // contract, not a frozen board convention.
     let reverse = match sim
         .fw()
@@ -66,9 +67,10 @@ fn end_to_end() {
         Value::Bool(b) => b,
         other => panic!("IO_AS5048_channelConfig[{CH}].reverse read back as {other:?}, not Bool"),
     };
-    let wire_raw = ((CMD_DEG / 360.0) * 16384.0).round() as u64; // the model's frame
-    let exp_raw: u64 = if reverse { 16384 - wire_raw } else { wire_raw };
-    let exp_deg = (exp_raw as f64) * 360.0 / 16384.0;
+    let counts = COUNTS_PER_REV as u64;
+    let wire_raw = ((CMD_DEG / 360.0) * COUNTS_PER_REV).round() as u64; // the model's frame
+    let exp_raw: u64 = if reverse { counts - wire_raw } else { wire_raw };
+    let exp_deg = (exp_raw as f64) * 360.0 / COUNTS_PER_REV;
     let exp_deg_str = format!("{exp_deg:.2}");
 
     // Command the shaft angle in degrees — the boundary converts to canonical rad.
@@ -105,30 +107,15 @@ fn end_to_end() {
     );
 
     // The connected flag reached firmware (the mirror reads it back true).
-    let connected = matches!(
-        sim.read(&cid("HW_USB_sim_data.connected")).ok().flatten(),
-        Some(Value::Bool(true))
-    );
+    let connected = sim.read_bool(&cid("HW_USB_sim_data.connected"));
     assert!(
         connected,
         "sim USB marked connected via table write + flush"
     );
 
     // The decoded encoder statics reflect the model's frame (auto-mirrored).
-    let raw = sim
-        .read(&cid(&format!("IO_AS5048_data.channels[{CH}].raw")))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let deg = sim
-        .read(&cid(&format!("IO_AS5048_data.channels[{CH}].angle_deg")))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
+    let raw = sim.read_u64(&cid(&format!("IO_AS5048_data.channels[{CH}].raw")));
+    let deg = sim.read_f64(&cid(&format!("IO_AS5048_data.channels[{CH}].angle_deg")));
     assert!(
         (raw == exp_raw) && ((deg - exp_deg).abs() < 0.05),
         "AS5048 decodes the model's SPI frame: raw = {raw} (expect {exp_raw}, reverse={reverse}), angle_deg = {deg:.2} (expect {exp_deg_str})"

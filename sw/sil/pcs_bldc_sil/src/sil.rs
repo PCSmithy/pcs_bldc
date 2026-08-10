@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use voyant::{Engine, Firmware, FirmwareMember};
+use voyant::{Engine, Firmware, FirmwareMember, StateTable, StateTableConfig, Value};
 
 /// Process-global lock, taken at a world's first [`load_firmware`](Sil::load_firmware)
 /// and held until drop, so vanilla (threaded) `cargo test` serializes access to the
@@ -59,6 +59,42 @@ impl Sil {
         }
     }
 
+    /// A zero-firmware world whose State Table runs `config` — `epsilon: 0.0` for checks
+    /// asserting exact values the default 1e-3 change deadband would blur.
+    pub fn with_config(config: StateTableConfig) -> Self {
+        Sil {
+            engine: Some(Engine::with_state(TICK_US, StateTable::with_config(config))),
+            firmwares: Vec::new(),
+            temp_paths: Vec::new(),
+            guard: None,
+        }
+    }
+
+    /// One signal as an `f64`, or `NaN` when it is unregistered or unset.
+    pub fn read_f64(&self, id: &str) -> f64 {
+        self.read(id)
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN)
+    }
+
+    /// One signal as a `u64`, or 0 when it is unregistered or unset.
+    pub fn read_u64(&self, id: &str) -> u64 {
+        self.read(id)
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    /// One signal as a `bool` — true only for a live [`Value::Bool(true)`](Value::Bool).
+    pub fn read_bool(&self, id: &str) -> bool {
+        matches!(self.read(id).ok().flatten(), Some(Value::Bool(true)))
+    }
+
     /// Load and boot one firmware instance from the build-tree default
     /// ([`dll_path`]), named `source_name` for its `cvar:<source>:…` namespace.
     /// Returns the bound [`FirmwareMember`] — configure it (e.g.
@@ -70,15 +106,12 @@ impl Sil {
         self.load_firmware_from(source_name, &path)
     }
 
-    /// [`load_firmware`](Self::load_firmware) from an explicit library path. Takes the
-    /// process lock on the first load of this world. Copies the image to a unique temp
-    /// file — `LoadLibrary` on one path aliases the module's statics, so the copy is
-    /// what gives each instance (and a repeated load of one path) its own memory.
-    /// Loads it, asserts `start()`, hands the member the **sole** strong `Rc` (keeping
-    /// only a `Weak` here), wires the temp path as the member's reload recipe (so a
-    /// disable/re-enable reboots from reset), tracks the copy for teardown, and returns
-    /// the bound [`FirmwareMember`]. Panics if the DLL is missing (build it:
-    /// `tools/run_sil.sh`), the copy fails, the load fails, or `start()` returns false.
+    /// [`load_firmware`](Self::load_firmware) from an explicit library path, taking the
+    /// process lock on this world's first load. The image is copied to a unique temp file
+    /// — `LoadLibrary` on one path aliases the module's statics, so the copy is what gives
+    /// each instance its own memory — and that copy is also the member's reload recipe, so
+    /// a disable/re-enable reboots from reset. Panics if the DLL is missing (build it:
+    /// `tools/run_sil.sh`), the copy or load fails, or `start()` returns false.
     pub fn load_firmware_from(&mut self, source_name: &str, path: &Path) -> FirmwareMember {
         if self.guard.is_none() {
             self.guard = Some(WORLD_LOCK.lock().unwrap_or_else(|p| p.into_inner()));
@@ -107,11 +140,9 @@ impl Sil {
         member
     }
 
-    /// The most-recently loaded firmware handle, for tests that verify firmware MEMORY
-    /// directly (route / feedback / mirror checks that read a `static`). The member
-    /// owns the strong `Rc`; this upgrades the `Weak` to a shared clone (transient — it
-    /// does not perturb the member's sole ownership between steps). Panics in a
-    /// zero-firmware world, or if the tracked handle is stale (the member reloaded it).
+    /// The most-recently loaded firmware handle, for checks that read a `static` out of
+    /// firmware MEMORY directly. Panics in a zero-firmware world, or if the tracked handle
+    /// is stale (the member reloaded its image).
     pub fn fw(&self) -> Rc<Firmware> {
         self.firmwares
             .last()

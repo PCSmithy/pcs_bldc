@@ -2,7 +2,7 @@
 //! counts by the driver), and sim TIM output ports publish the commanded bridge
 //! state (dark at boot).
 
-use pcs_bldc_sil::{cid, Sil, SOURCE};
+use pcs_bldc_sil::{cid, vid, Sil, BRIDGE_PORTS, SOURCE};
 use voyant::{vsig_id, LogLevel, Member, MemberCtx, SignalId, StateTable, Value};
 
 /// A model holding one output `volts` constant — the simplest plant/sensor stand-in
@@ -108,22 +108,8 @@ fn adc_ports() {
     let mut neighbor: Vec<u64> = Vec::new();
     for _ in 0..6 {
         sim.step().expect("engine step");
-        driven.push(
-            sim.read(&cid(driven_counts))
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-        );
-        neighbor.push(
-            sim.read(&cid(neighbor_counts))
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-        );
+        driven.push(sim.read_u64(&cid(driven_counts)));
+        neighbor.push(sim.read_u64(&cid(neighbor_counts)));
     }
     let settled = &driven[2..];
     assert!(
@@ -140,24 +126,14 @@ fn adc_ports() {
 
 #[test]
 fn pwm_ports() {
-    const PORTS: [&str; 7] = [
-        "PWM_U_duty",
-        "PWM_V_duty",
-        "PWM_W_duty",
-        "PWM_U_enabled",
-        "PWM_V_enabled",
-        "PWM_W_enabled",
-        "TIM1_MOE",
-    ];
-
     let mut sim = Sil::new();
     let fwm = sim.load_firmware(SOURCE);
     sim.add_member(fwm);
 
     // Registered during sil_fw_start, applied to the table at add_member.
-    let missing: Vec<String> = PORTS
+    let missing: Vec<String> = BRIDGE_PORTS
         .iter()
-        .map(|p| format!("vsig:{SOURCE}:{p}"))
+        .map(|(p, _)| vid(SOURCE, p))
         .filter(|id| !sim.state().signals().any(|s| s.as_str() == id))
         .collect();
     assert!(
@@ -170,20 +146,11 @@ fn pwm_ports() {
     for _ in 0..5 {
         sim.step().expect("engine step");
     }
-    let wrong: Vec<String> = PORTS
+    let wrong: Vec<String> = BRIDGE_PORTS
         .iter()
-        .filter_map(|p| {
-            let id = format!("vsig:{SOURCE}:{p}");
-            let v = sim
-                .read(&id)
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(Value::as_f64);
-            match v {
-                Some(0.0) => None,
-                other => Some(format!("{p}={other:?}")),
-            }
+        .filter_map(|(p, _)| {
+            let v = sim.read_f64(&vid(SOURCE, p));
+            (v != 0.0).then(|| format!("{p}={v}"))
         })
         .collect();
     assert!(

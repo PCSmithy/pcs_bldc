@@ -90,15 +90,9 @@ fn model_to_model_duplex() {
         sim.step().expect("engine step");
     }
 
-    let read = sim
-        .read("vsig:dial_initiator:read_angle")
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64);
+    let read = sim.read_u64("vsig:dial_initiator:read_angle");
     assert_eq!(
-        read,
-        Some(0x0300),
+        read, 0x0300,
         "initiator reads the responder's frame synchronously (no firmware)"
     );
 

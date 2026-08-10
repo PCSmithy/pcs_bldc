@@ -1,80 +1,55 @@
 //! The current-sense model's contract in a model-only world: port registration with
-//! canonical units, the zero-current baseline, the affine transfer, and the amplifier
-//! rails that saturate fault-level current and swallow regen on the bus.
+//! canonical units, the affine transfer (zero current included), and the amplifier rails
+//! that saturate fault-level current and swallow regen on the bus.
 
-use pcs_bldc_sil::{CurrentSenseModel, CurrentSenseParams, TICK_US};
-use voyant::Engine;
+use pcs_bldc_sil::board::SENSE;
+use pcs_bldc_sil::{vid, CurrentSenseModel, CurrentSenseParams, Sil};
+use voyant::vsig_id;
 
-const SENSE: &str = "current_sense";
 const PHASE_INPUTS: [&str; 3] = ["i_u", "i_v", "i_w"];
 const PHASE_OUTPUTS: [&str; 3] = ["i_u_vsense", "i_v_vsense", "i_w_vsense"];
 
-fn read(eng: &Engine, id: &str) -> f64 {
-    eng.read(id)
-        .unwrap_or_else(|e| panic!("read {id}: {e}"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("{id} has no value"))
-}
-
 /// A model-only world holding the four input currents, stepped until the outputs carry
-/// them. Returns the engine and the parameters the model runs with.
-fn driven(phase_a: [f64; 3], bus_a: f64) -> (Engine, CurrentSenseParams) {
+/// them. Returns the world and the parameters the model runs with.
+fn driven(phase_a: [f64; 3], bus_a: f64) -> (Sil, CurrentSenseParams) {
     let params = CurrentSenseParams::default();
-    let mut eng = Engine::new(TICK_US);
-    eng.add_member(CurrentSenseModel::new(SENSE));
+    let mut sim = Sil::new();
+    sim.add_member(CurrentSenseModel::new(SENSE));
     for (local, amps) in PHASE_INPUTS.iter().zip(phase_a) {
-        eng.write(&format!("vsig:{SENSE}:{local}"), amps)
+        sim.write(&vid(SENSE, local), amps)
             .unwrap_or_else(|e| panic!("write {local}: {e}"));
     }
-    eng.write(&format!("vsig:{SENSE}:i_bus"), bus_a)
-        .expect("write i_bus");
+    sim.write(&vid(SENSE, "i_bus"), bus_a).expect("write i_bus");
     for _ in 0..3 {
-        eng.step().expect("engine step");
+        sim.step().expect("engine step");
     }
-    (eng, params)
-}
-
-#[test]
-fn zero_current_reads_bias() {
-    // Undriven inputs are zero current, so each output sits exactly at its channel's
-    // bias: the phase midpoint on the phase pins, ground on the bus pin. This holds
-    // for the scaffold and for the implemented transfer alike (i = 0 ⇒ v = bias).
-    let params = CurrentSenseParams::default();
-    let mut eng = Engine::new(TICK_US);
-    eng.add_member(CurrentSenseModel::new(SENSE));
-    for _ in 0..5 {
-        eng.step().expect("engine step");
-    }
-
-    for c in ["i_u_vsense", "i_v_vsense", "i_w_vsense"] {
-        let v = read(&eng, &format!("vsig:{SENSE}:{c}"));
-        assert_eq!(
-            v, params.phase_bias_v,
-            "zero current reads the phase midpoint on {c}: {v} V"
-        );
-    }
-    let v_bus = read(&eng, &format!("vsig:{SENSE}:i_bus_vsense"));
-    assert_eq!(
-        v_bus, params.bus_bias_v,
-        "zero current reads ground on the bus pin: {v_bus} V"
-    );
+    (sim, params)
 }
 
 #[test]
 fn ports_register_with_units() {
-    // All eight ports exist after enable: current inputs writable in amps, voltage
-    // outputs readable in volts.
-    let mut eng = Engine::new(TICK_US);
-    eng.add_member(CurrentSenseModel::new(SENSE));
-    eng.step().expect("engine step");
+    // All eight ports exist after enable, carrying the canonical units of what they
+    // stand for: currents in amps on the way in, pin voltages in volts on the way out.
+    let mut sim = Sil::new();
+    sim.add_member(CurrentSenseModel::new(SENSE));
+    sim.step().expect("engine step");
 
-    for local in ["i_u", "i_v", "i_w", "i_bus"] {
-        eng.write(&format!("vsig:{SENSE}:{local}"), 1.0)
-            .unwrap_or_else(|e| panic!("write {local}: {e}"));
-    }
-    for local in ["i_u_vsense", "i_v_vsense", "i_w_vsense", "i_bus_vsense"] {
-        let v = read(&eng, &format!("vsig:{SENSE}:{local}"));
-        assert!(v.is_finite(), "{local} reads a finite voltage: {v}");
+    for (local, unit) in [
+        ("i_u", "A"),
+        ("i_v", "A"),
+        ("i_w", "A"),
+        ("i_bus", "A"),
+        ("i_u_vsense", "V"),
+        ("i_v_vsense", "V"),
+        ("i_w_vsense", "V"),
+        ("i_bus_vsense", "V"),
+    ] {
+        let id = vsig_id(SENSE, local).expect("valid vsig id");
+        assert_eq!(
+            sim.state().unit_of(&id),
+            Some(unit),
+            "{local} registered with unit {unit}"
+        );
     }
 }
 
@@ -85,20 +60,36 @@ fn transfer_is_affine() {
     const PHASE_A: [f64; 3] = [3.0, -3.0, 0.5];
     const BUS_A: f64 = 2.0;
 
-    let (eng, params) = driven(PHASE_A, BUS_A);
+    let (sim, params) = driven(PHASE_A, BUS_A);
     for (local, amps) in PHASE_OUTPUTS.iter().zip(PHASE_A) {
-        let v = read(&eng, &format!("vsig:{SENSE}:{local}"));
+        let v = sim.read_f64(&vid(SENSE, local));
         let expected = params.phase_bias_v + params.phase_gain_v_per_a * amps;
         assert_eq!(
             v, expected,
             "{local} carries bias + gain · {amps} A = {expected} V, got {v} V"
         );
     }
-    let v_bus = read(&eng, &format!("vsig:{SENSE}:i_bus_vsense"));
+    let v_bus = sim.read_f64(&vid(SENSE, "i_bus_vsense"));
     let expected_bus = params.bus_bias_v + BUS_A * params.bus_gain_v_per_a;
     assert_eq!(
         v_bus, expected_bus,
         "the bus pin carries bias + gain · {BUS_A} A = {expected_bus} V, got {v_bus} V"
+    );
+
+    // The i = 0 case of the same law: each output sits exactly at its channel's bias —
+    // the phase midpoint on the phase pins, ground on the (ground-referenced) bus pin.
+    let (zero, params) = driven([0.0; 3], 0.0);
+    for local in PHASE_OUTPUTS {
+        let v = zero.read_f64(&vid(SENSE, local));
+        assert_eq!(
+            v, params.phase_bias_v,
+            "zero current reads the phase midpoint on {local}: {v} V"
+        );
+    }
+    let v_bus = zero.read_f64(&vid(SENSE, "i_bus_vsense"));
+    assert_eq!(
+        v_bus, params.bus_bias_v,
+        "zero current reads ground on the bus pin: {v_bus} V"
     );
 }
 
@@ -109,10 +100,10 @@ fn saturation_rails() {
     const PHASE_A: [f64; 3] = [20.0, -20.0, 0.0];
     const BUS_A: f64 = 20.0;
 
-    let (eng, params) = driven(PHASE_A, BUS_A);
-    let v_high = read(&eng, &format!("vsig:{SENSE}:i_u_vsense"));
-    let v_low = read(&eng, &format!("vsig:{SENSE}:i_v_vsense"));
-    let v_bus = read(&eng, &format!("vsig:{SENSE}:i_bus_vsense"));
+    let (sim, params) = driven(PHASE_A, BUS_A);
+    let v_high = sim.read_f64(&vid(SENSE, "i_u_vsense"));
+    let v_low = sim.read_f64(&vid(SENSE, "i_v_vsense"));
+    let v_bus = sim.read_f64(&vid(SENSE, "i_bus_vsense"));
     assert_eq!(
         (v_high, v_low),
         (params.vref_v, 0.0),
@@ -130,8 +121,8 @@ fn regen_reads_zero() {
     // back into the supply reads as no current at all.
     const BUS_A: f64 = -2.0;
 
-    let (eng, _params) = driven([0.0; 3], BUS_A);
-    let v_bus = read(&eng, &format!("vsig:{SENSE}:i_bus_vsense"));
+    let (sim, _params) = driven([0.0; 3], BUS_A);
+    let v_bus = sim.read_f64(&vid(SENSE, "i_bus_vsense"));
     assert_eq!(
         v_bus, 0.0,
         "{BUS_A} A of regen reads 0 V on the bus pin, not a negative voltage: {v_bus} V"

@@ -2,30 +2,21 @@
 //! the noiseless default, seed reproducibility, the residual's moments and whiteness,
 //! seed independence, and symmetric wrap at zero.
 
-use pcs_bldc_sil::As5048Model;
+use pcs_bldc_sil::board::{COUNTS_PER_REV as TICKS_PER_REV, ENCODER_NOISE_LSB as SIGMA_LSB};
+use pcs_bldc_sil::{decode_frame, As5048Model};
 use voyant::DuplexPeer;
 
 const READ_ANGLE: [u8; 2] = [0xFF, 0xFF]; // parity 1, read 1, addr 0x3FFF
-const TICKS_PER_REV: f64 = 16384.0;
-const SIGMA_LSB: f32 = 1.52;
 /// Quantizer variance the model's `round()` adds on top of the injected noise.
 const QUANTIZER_VAR_LSB2: f64 = 1.0 / 12.0;
 
-/// Decode a response frame into its 14-bit angle, asserting even parity over all 16
-/// bits and a clear error flag.
+/// A response frame's 14-bit angle, asserting even parity and a clear error flag.
 fn decode_angle(frame: &[u8]) -> u16 {
-    assert_eq!(
-        frame.len(),
-        2,
-        "response is a 2-byte frame, got {frame:02X?}"
-    );
-    let f = u16::from_be_bytes([frame[0], frame[1]]);
-    assert!(
-        f.count_ones().is_multiple_of(2),
-        "even parity over frame {f:04X}"
-    );
-    assert_eq!(f & 0x4000, 0, "error flag clear in frame {f:04X}");
-    f & 0x3FFF
+    let (parity_ok, error, raw) = decode_frame(frame)
+        .unwrap_or_else(|| panic!("response is a 2-byte frame, got {frame:02X?}"));
+    assert!(parity_ok, "even parity over frame {frame:02X?}");
+    assert!(!error, "error flag clear in frame {frame:02X?}");
+    raw
 }
 
 /// Pump `n` READ-ANGLE polls. The one-frame pipeline means command N is answered in

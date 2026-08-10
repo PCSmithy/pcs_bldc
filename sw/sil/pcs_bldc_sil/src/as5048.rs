@@ -28,6 +28,20 @@ fn get_lsb(angle_rad: f32) -> f32 {
     angle_rad * ANGLE_RESOLUTION_TICKS_PER_REV_F32 / TWO_PI
 }
 
+/// Unpack a wire frame (big-endian, byte 0 = bits 15..8) into `(parity_ok, error_flag,
+/// raw14)`. Even parity: the ones across all 16 bits, the parity bit included, are even.
+/// `None` for anything that is not a 2-byte frame.
+pub fn decode_frame(frame: &[u8]) -> Option<(bool, bool, u16)> {
+    (frame.len() == SPI_COMMAND_LEN).then(|| {
+        let f = u16::from_be_bytes([frame[0], frame[1]]);
+        (
+            f.count_ones().is_multiple_of(2),
+            (f & 0x4000) != 0,
+            f & 0x3FFF,
+        )
+    })
+}
+
 /// An AS5048 encoder instance. Registers `angle` (in, canonical rad; unit asks
 /// convert at the table boundary) and `raw_encoder_ticks` (out, quantized).
 pub struct As5048Model {

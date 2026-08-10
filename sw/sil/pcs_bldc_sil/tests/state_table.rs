@@ -16,8 +16,7 @@ fn historian_zoh_and_enum() {
     let mut samples = Vec::new();
     for _ in 1..=6u64 {
         sim.step().expect("engine step");
-        let v = sim.read(ramp.as_str()).ok().flatten();
-        samples.push(v.as_ref().and_then(Value::as_u64).unwrap_or(0));
+        samples.push(sim.read_u64(ramp.as_str()));
     }
 
     let changed = samples.windows(2).any(|w| w[0] != w[1]);

@@ -7,7 +7,7 @@
 //! (last `Rc` gone), and the next load boots C statics from scratch, both across
 //! fresh threads and back-to-back on one thread.
 
-use pcs_bldc_sil::{dll_path, lock_world, Sil, SOURCE};
+use pcs_bldc_sil::{dll_path, lock_world};
 use voyant::Firmware;
 
 /// Drive one raw load → start → tick → read → shutdown cycle, asserting the
@@ -76,38 +76,5 @@ fn reload_cycles_same_thread() {
     let _guard = lock_world();
     for cycle in 0..3 {
         reset_cycle(cycle);
-    }
-}
-
-#[test]
-fn boot_is_fresh() {
-    // A single fresh world (this test's own cargo-test thread): the firmware boots
-    // from reset and its clock climbs exactly one tick per engine step.
-    let mut sim = Sil::new();
-    let fwm = sim.load_firmware(SOURCE);
-    sim.add_member(fwm);
-
-    assert_eq!(
-        sim.fw().read_cvar("task1msRuns").as_u64().unwrap(),
-        0,
-        "task1msRuns is 0 before the first step"
-    );
-    assert_eq!(
-        sim.fw()
-            .read_cvar("lib_timer_data.currentTime_us")
-            .as_u64()
-            .unwrap(),
-        0,
-        "firmware clock starts at 0 from reset"
-    );
-
-    for k in 1..=5u64 {
-        sim.step().expect("engine step");
-        let time = sim
-            .fw()
-            .read_cvar("lib_timer_data.currentTime_us")
-            .as_u64()
-            .unwrap();
-        assert_eq!(time, 1000 * k, "firmware clock is +1000 us/tick (tick {k})");
     }
 }

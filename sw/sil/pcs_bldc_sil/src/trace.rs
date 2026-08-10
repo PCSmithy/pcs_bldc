@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use voyant::Engine;
 
 /// The env var that gates + directs trace drops (the output directory).
-pub const TRACE_DIR_ENV: &str = "PCS_SIL_TRACE_DIR";
+const TRACE_DIR_ENV: &str = "PCS_SIL_TRACE_DIR";
 
 /// Drop `<PCS_SIL_TRACE_DIR>/<name>.mf4` from the engine's historian, if the env var
 /// is set; a no-op otherwise. Warnings print but never abort the suite.

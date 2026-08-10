@@ -3,7 +3,6 @@
 //! separate `cvar:<board>:…` namespaces and advance independently.
 
 use pcs_bldc_sil::Sil;
-use voyant::Value;
 
 #[test]
 fn two_firmwares() {
@@ -17,14 +16,7 @@ fn two_firmwares() {
         sim.step().expect("engine step");
     }
 
-    let runs = |sim: &Sil, board: &str| {
-        sim.read(&format!("cvar:{board}:task1msRuns"))
-            .ok()
-            .flatten()
-            .as_ref()
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    };
+    let runs = |sim: &Sil, board: &str| sim.read_u64(&format!("cvar:{board}:task1msRuns"));
     let a_runs = runs(&sim, "board_a");
     let b_runs = runs(&sim, "board_b");
     assert!(

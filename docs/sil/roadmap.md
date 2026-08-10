@@ -117,7 +117,7 @@ driven and asserted purely through the State Table.
   collapsed-bus diode rectification — expectations derived from the params.
   Known approximation (backlogged): per-terminal diode window below the
   line-to-line conduction threshold colors undriven terminal voltages.
-- ☑ **6. Feedback + harness models** — alignment harness (`tests/alignment.rs`
+- ☑ **6. Feedback + harness models** — alignment harness (`tests/north_star.rs`
   drives the button-to-alignment path: I2C STATUS seeded via
   `HW_I2C_data.buses[1].devices[0].regMem[128]`, button tap via the
   `HW_GPIO_data.inputLevel[port][bit]` static, dial demand turned) and the

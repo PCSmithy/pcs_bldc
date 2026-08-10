@@ -3,7 +3,6 @@
 //! DWARF read of the same static — with no `sample_cvar` anywhere.
 
 use pcs_bldc_sil::{cvar, Sil, SOURCE};
-use voyant::Value;
 
 #[test]
 fn mirror_tracks_firmware_memory() {
@@ -12,31 +11,20 @@ fn mirror_tracks_firmware_memory() {
     let fwm = sim.load_firmware(SOURCE);
     sim.add_member(fwm);
 
-    let mut vals: Vec<Option<u64>> = Vec::new();
+    let mut vals: Vec<u64> = Vec::new();
     for _ in 0..6 {
         sim.step().expect("engine step");
-        vals.push(
-            sim.read(leaf.as_str())
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(Value::as_u64),
-        );
+        vals.push(sim.read_u64(leaf.as_str()));
     }
     // Single-threaded: the mirror at the end of the last tick equals firmware memory
     // now. `mem_now` is a direct DWARF read — the ground truth the mirror is checked
     // against.
-    let table_now = sim
-        .read(leaf.as_str())
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64);
+    let table_now = sim.read_u64(leaf.as_str());
     let mem_now = sim.fw().read_cvar(leaf.name()).as_u64();
-    let tracks = table_now.is_some() && (table_now == mem_now);
+    let tracks = mem_now == Some(table_now);
     let changed = vals.windows(2).any(|w| w[0] != w[1]);
     assert!(
         tracks && changed,
-        "cvar mirror tracks firmware memory (auto-derived): table {table_now:?} == memory {mem_now:?}; window {vals:?}"
+        "cvar mirror tracks firmware memory (auto-derived): table {table_now} == memory {mem_now:?}; window {vals:?}"
     );
 }

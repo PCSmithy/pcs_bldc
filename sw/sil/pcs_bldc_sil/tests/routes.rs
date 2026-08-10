@@ -47,13 +47,7 @@ fn route_drives_firmware_cvar_from_model() {
     sim.suspend_route(&src, &dst).expect("suspend");
     sim.step().expect("engine step");
     let held = sim.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
-    let model_now = sim
-        .read(src.as_str())
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let model_now = sim.read_u64(src.as_str());
     assert!(
         (held == last) && (model_now > held),
         "suspended route stops driving: rx[0] held at {held} while model advanced to {model_now}"
@@ -63,13 +57,7 @@ fn route_drives_firmware_cvar_from_model() {
     sim.resume_route(&src, &dst).expect("resume");
     sim.step().expect("engine step");
     let resumed = sim.fw().read_cvar(dst.name()).as_u64().unwrap_or(0);
-    let model_after = sim
-        .read(src.as_str())
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let model_after = sim.read_u64(src.as_str());
     assert!(
         resumed == model_after,
         "resumed route drives the destination again: rx[0] = {resumed} (expect current model {model_after})"

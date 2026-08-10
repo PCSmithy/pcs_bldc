@@ -3,7 +3,7 @@
 //! the model's own signal.
 
 use pcs_bldc_sil::{Sil, SOURCE};
-use voyant::{vsig_id, RampModel, Value};
+use voyant::{vsig_id, RampModel};
 
 #[test]
 fn vsig_ramp_advances_and_records() {
@@ -27,9 +27,9 @@ fn vsig_ramp_advances_and_records() {
         sim.step().expect("engine step");
     }
     let n_changes = sim.state().changes(&id).map(|c| c.len()).unwrap_or(0);
-    let last = sim.read(id.as_str()).ok().flatten();
+    let last = sim.read_f64(id.as_str());
     assert!(
-        (n_changes == 5) && matches!(&last, Some(Value::F64(v)) if (*v - 5.0).abs() < 1e-9),
-        "vsig advances with sim time: {n_changes} change-log entries, current = {last:?} (expect F64(5.0))"
+        (n_changes == 5) && ((last - 5.0).abs() < 1e-9),
+        "vsig advances with sim time: {n_changes} change-log entries, current = {last} (expect 5.0)"
     );
 }

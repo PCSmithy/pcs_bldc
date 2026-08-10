@@ -3,8 +3,9 @@
 
 use voyant::{vsig_id, Engine, SignalId};
 
-/// The firmware bridge port paired with the motor input it drives, in wiring order.
-const BRIDGE_PORTS: [(&str, &str); 7] = [
+/// The firmware bridge port paired with the motor input it drives, in wiring order:
+/// the three duties, the three enables, then the master output enable.
+pub const BRIDGE_PORTS: [(&str, &str); 7] = [
     ("PWM_U_duty", "duty_u"),
     ("PWM_V_duty", "duty_v"),
     ("PWM_W_duty", "duty_w"),

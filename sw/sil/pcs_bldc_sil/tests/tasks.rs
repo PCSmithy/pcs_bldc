@@ -2,7 +2,7 @@
 //! timebase (lib_timer, fed by TIM2) flows with sim time.
 
 use pcs_bldc_sil::{cid, cvar, Sil, SOURCE, TICK_US};
-use voyant::{SignalId, Value};
+use voyant::SignalId;
 
 #[test]
 fn tasks_advance() {
@@ -34,17 +34,7 @@ fn tasks_advance() {
         sim.step().expect("engine step");
     }
     // Post-window counter values come from the engine's own historian (auto-mirrored).
-    let after: Vec<u64> = ids
-        .iter()
-        .map(|id| {
-            sim.read(id.as_str())
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-        })
-        .collect();
+    let after: Vec<u64> = ids.iter().map(|id| sim.read_u64(id.as_str())).collect();
     let d: Vec<u64> = before
         .iter()
         .zip(&after)
@@ -62,13 +52,7 @@ fn tasks_advance() {
     // The sim timebase flows: TIM2 advances with sim time, so lib_timer's
     // accumulated microseconds equal exactly one tick per step (the clock behind the
     // alignment dwell and the button tap/hold gestures).
-    let timebase_after = sim
-        .read(&cid("lib_timer_data.currentTime_us"))
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let timebase_after = sim.read_u64(&cid("lib_timer_data.currentTime_us"));
     assert_eq!(
         timebase_after,
         N * TICK_US,

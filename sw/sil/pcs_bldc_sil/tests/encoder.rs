@@ -2,28 +2,16 @@
 //! boundary (`angle[deg]` in, canonical rad stored), quantization + wrap, the
 //! pipelined READ-ANGLE wire frame, and the parity-error path.
 
-use pcs_bldc_sil::{As5048Model, Sil};
-use voyant::{DuplexPeer, Value};
-
-/// Decode an AS5048 wire frame (big-endian: byte 0 = bits 15..8) into
-/// `(parity_ok, error_flag, raw14)`. Even parity: the count of ones across all 16
-/// bits (parity bit included) must be even.
-fn as5048_decode(frame: &[u8]) -> Option<(bool, bool, u16)> {
-    if frame.len() != 2 {
-        return None;
-    }
-    let f = u16::from_be_bytes([frame[0], frame[1]]);
-    Some((
-        f.count_ones().is_multiple_of(2),
-        (f & 0x4000) != 0,
-        f & 0x3FFF,
-    ))
-}
+use pcs_bldc_sil::board::COUNTS_PER_REV;
+use pcs_bldc_sil::{decode_frame, As5048Model, Sil};
+use voyant::DuplexPeer;
 
 #[test]
 fn as5048_model_content() {
     const READ_ANGLE: [u8; 2] = [0xFF, 0xFF]; // parity 1, read 1, addr 0x3FFF
     const BAD_PARITY: [u8; 2] = [0x7F, 0xFF]; // 15 ones -> parity invalid
+    /// 90 deg, in counts.
+    const QUARTER_REV: u16 = (COUNTS_PER_REV / 4.0) as u16;
 
     let mut sim = Sil::new();
     let motor = sim.add_member(As5048Model::new("as5048_motor", 0.0));
@@ -54,16 +42,11 @@ fn as5048_model_content() {
     sim.write("vsig:as5048_motor:angle[deg]", 90.0)
         .expect("write angle[deg] = 90");
     sim.step().expect("engine step");
-    let raw = sim
-        .read("vsig:as5048_motor:raw_encoder_ticks")
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64);
+    let raw = sim.read_u64("vsig:as5048_motor:raw_encoder_ticks");
     assert_eq!(
         raw,
-        Some(4096),
-        "model quantizes 90 deg -> 4096 counts (16384/4), got {raw:?}"
+        u64::from(QUARTER_REV),
+        "model quantizes 90 deg -> {QUARTER_REV} counts (a quarter revolution), got {raw}"
     );
 
     // Two pipelined READ-ANGLE transfers: the response to command N arrives in
@@ -72,9 +55,9 @@ fn as5048_model_content() {
         let mut m = motor.borrow_mut();
         (m.transfer(&READ_ANGLE), m.transfer(&READ_ANGLE))
     };
-    let decoded = as5048_decode(&second);
+    let decoded = decode_frame(&second);
     assert!(
-        matches!(decoded, Some((true, false, 4096))),
+        matches!(decoded, Some((true, false, QUARTER_REV))),
         "READ-ANGLE response decodes on the wire: frames {first:02X?} then {second:02X?}; second -> {decoded:?}"
     );
 
@@ -84,21 +67,12 @@ fn as5048_model_content() {
     sim.write("vsig:as5048_motor:angle[deg]", -90.0)
         .expect("write angle[deg] = -90");
     sim.step().expect("engine step");
-    let wrapped_deg = sim
-        .read("vsig:as5048_motor:angle[deg]")
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_f64);
-    let raw_neg = sim
-        .read("vsig:as5048_motor:raw_encoder_ticks")
-        .ok()
-        .flatten()
-        .as_ref()
-        .and_then(Value::as_u64);
+    let wrapped_deg = sim.read_f64("vsig:as5048_motor:angle[deg]");
+    let raw_neg = sim.read_u64("vsig:as5048_motor:raw_encoder_ticks");
+    let three_quarter_rev = u64::from(QUARTER_REV) * 3;
     assert!(
-        matches!(wrapped_deg, Some(d) if (d - 270.0).abs() < 0.05) && (raw_neg == Some(12288)),
-        "-90 deg wraps to 270 deg and 12288 counts: angle[deg] reads {wrapped_deg:?}, raw = {raw_neg:?}"
+        ((wrapped_deg - 270.0).abs() < 0.05) && (raw_neg == three_quarter_rev),
+        "-90 deg wraps to 270 deg and {three_quarter_rev} counts: angle[deg] reads          {wrapped_deg}, raw = {raw_neg}"
     );
 
     // A parity-corrupt command must surface as the error flag in a later response (on
@@ -108,7 +82,7 @@ fn as5048_model_content() {
         let _ = d.transfer(&BAD_PARITY);
         d.transfer(&READ_ANGLE)
     };
-    let decoded_err = as5048_decode(&err_resp);
+    let decoded_err = decode_frame(&err_resp);
     assert!(
         matches!(decoded_err, Some((_, true, _))),
         "parity-corrupt command raises the error flag: frame {err_resp:02X?} -> {decoded_err:?}"

@@ -1,20 +1,13 @@
 //! pcs_bldc SIL harness — the instantiation's test-facing surface.
 //!
-//! Each scenario is an independent `#[test]` in `tests/*.rs` over a [`Sil`]: the
-//! simulation itself, which derefs to its [`Engine`]. [`Sil::new`] is a zero-firmware
-//! world; [`Sil::load_firmware`] boots one instance per call, its image copied to a
-//! unique temp path so each has its own statics. On drop `Sil` dumps a per-test `.mf4`
-//! trace (when `PCS_SIL_TRACE_DIR` is set), shuts firmwares down, unloads them, and
-//! deletes the copies. A process-global mutex, taken at the first firmware load,
-//! serializes vanilla (threaded) `cargo test`; under cargo-nextest each test is its
-//! own process and the mutex is uncontended — the harness is nextest-compatible by
-//! construction.
-//!
-//! Board models and helpers ([`As5048Model`], [`wire_bridge`], [`trace`], [`TICK_US`],
-//! the DLL path resolution) live here so both the tests and the perf bin share one
-//! surface.
+//! Each scenario is an independent `#[test]` in `tests/*.rs` over a [`Sil`] (see its
+//! docs): the simulation itself, which derefs to its [`Engine`]. [`board`] assembles
+//! the whole-board world — plant, encoders, sense front end, firmware, every route
+//! live — and the models, wiring and helpers around it live here so the tests and the
+//! perf bin share one surface.
 
 pub mod as5048;
+pub mod board;
 pub mod current_sense;
 pub mod models;
 pub mod motor;
@@ -22,12 +15,13 @@ mod sil;
 pub mod trace;
 pub mod wiring;
 
-pub use as5048::As5048Model;
+pub use as5048::{decode_frame, As5048Model};
+pub use board::{board, Board};
 pub use current_sense::{CurrentSenseModel, CurrentSenseParams};
 pub use models::CountsRampModel;
 pub use motor::{MotorModel, MotorParams};
 pub use sil::{lock_world, Sil};
-pub use wiring::{wire_bridge, wire_current_sense, BridgeRoutes, CurrentSenseRoutes};
+pub use wiring::{wire_bridge, wire_current_sense, BRIDGE_PORTS};
 
 use std::path::{Path, PathBuf};
 use voyant::SignalId;
@@ -73,4 +67,9 @@ pub fn cvar(path: &str) -> SignalId {
 /// (`sim.write`/`sim.read`), which parses the id itself.
 pub fn cid(path: &str) -> String {
     format!("cvar:{SOURCE}:{path}")
+}
+
+/// The `vsig:<source>:<local>` id **string**, for the same string-keyed API.
+pub fn vid(source: &str, local: &str) -> String {
+    format!("vsig:{source}:{local}")
 }

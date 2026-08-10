@@ -2,66 +2,30 @@
 //! locked-rotor divider, alignment, demagnetization, KCL through commutation, coast time
 //! constants, common-mode rejection, and diode rectification on a collapsed bus.
 
-use pcs_bldc_sil::{MotorModel, MotorParams, TICK_US};
+use pcs_bldc_sil::board::{MOTOR, VBUS_V};
+use pcs_bldc_sil::{vid, MotorModel, MotorParams, Sil, TICK_US};
 use std::f64::consts::{PI, TAU};
-use voyant::{Engine, StateTable, StateTableConfig};
+use voyant::StateTableConfig;
 
-const MOTOR: &str = "motor";
-const VBUS_V: f64 = 24.0;
 const TICK_S: f64 = (TICK_US as f64) * 1e-6;
 
 const DUTY_PORTS: [&str; 3] = ["duty_u", "duty_v", "duty_w"];
 const ENABLE_PORTS: [&str; 3] = ["enable_u", "enable_v", "enable_w"];
 const MOE_PORT: &str = "moe";
 
-/// Owns the engine and dumps a `<test-fn>.mf4` historian trace on drop, gated by
-/// `PCS_SIL_TRACE_DIR` — the same per-test drop a `Sil` world performs.
-struct World(Engine);
-
-impl Drop for World {
-    fn drop(&mut self) {
-        let name = std::thread::current()
-            .name()
-            .unwrap_or("motor_dynamics")
-            .to_string();
-        pcs_bldc_sil::trace::maybe_dump(&self.0, &name);
-    }
-}
-
-impl std::ops::Deref for World {
-    type Target = Engine;
-    fn deref(&self) -> &Engine {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for World {
-    fn deref_mut(&mut self) -> &mut Engine {
-        &mut self.0
-    }
-}
-
 /// A model-only world: the motor alone with its bus energized, and exact change
 /// detection so every milliamp of model state reaches the table — the default 1e-3
 /// epsilon is a deadband wider than several of the quantities under test. Nothing
 /// routes into the motor's inputs, so the tests drive them by direct write.
-fn world(params: MotorParams, initial_angle_rad: f64, vbus: f64) -> World {
+fn world(params: MotorParams, initial_angle_rad: f64, vbus: f64) -> Sil {
     let config = StateTableConfig {
         epsilon: 0.0,
         ..StateTableConfig::default()
     };
-    let mut eng = Engine::with_state(TICK_US, StateTable::with_config(config));
-    eng.add_member(MotorModel::new(MOTOR, initial_angle_rad).with_params(params));
-    eng.write(&format!("vsig:{MOTOR}:v_bus"), vbus)
-        .expect("write vbus");
-    World(eng)
-}
-
-fn read(eng: &Engine, id: &str) -> f64 {
-    eng.read(id)
-        .unwrap_or_else(|e| panic!("read {id}: {e}"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("{id} has no value"))
+    let mut sim = Sil::with_config(config);
+    sim.add_member(MotorModel::new(MOTOR, initial_angle_rad).with_params(params));
+    sim.write(&vid(MOTOR, "v_bus"), vbus).expect("write vbus");
+    sim
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,38 +46,32 @@ impl Sample {
     }
 }
 
-fn sample(eng: &Engine) -> Sample {
+fn sample(eng: &Sil) -> Sample {
     Sample {
-        angle: read(eng, &format!("vsig:{MOTOR}:angle")),
-        velocity: read(eng, &format!("vsig:{MOTOR}:velocity")),
+        angle: eng.read_f64(&vid(MOTOR, "angle")),
+        velocity: eng.read_f64(&vid(MOTOR, "velocity")),
         current: [
-            read(eng, &format!("vsig:{MOTOR}:phase_current_u")),
-            read(eng, &format!("vsig:{MOTOR}:phase_current_v")),
-            read(eng, &format!("vsig:{MOTOR}:phase_current_w")),
+            eng.read_f64(&vid(MOTOR, "phase_current_u")),
+            eng.read_f64(&vid(MOTOR, "phase_current_v")),
+            eng.read_f64(&vid(MOTOR, "phase_current_w")),
         ],
-        torque: read(eng, &format!("vsig:{MOTOR}:torque")),
+        torque: eng.read_f64(&vid(MOTOR, "torque")),
     }
 }
 
 /// Publish one bridge command: per-phase duty + enable and the master output enable.
-fn drive(eng: &mut Engine, duty: [f64; 3], enabled: [bool; 3], moe: bool) {
+fn drive(eng: &mut Sil, duty: [f64; 3], enabled: [bool; 3], moe: bool) {
     for (k, (d, en)) in duty.iter().zip(enabled.iter()).enumerate() {
-        eng.write(&format!("vsig:{MOTOR}:{}", DUTY_PORTS[k]), *d)
+        eng.write(&vid(MOTOR, DUTY_PORTS[k]), *d)
             .expect("write duty");
-        eng.write(
-            &format!("vsig:{MOTOR}:{}", ENABLE_PORTS[k]),
-            f64::from(u8::from(*en)),
-        )
-        .expect("write enable");
+        eng.write(&vid(MOTOR, ENABLE_PORTS[k]), f64::from(u8::from(*en)))
+            .expect("write enable");
     }
-    eng.write(
-        &format!("vsig:{MOTOR}:{MOE_PORT}"),
-        f64::from(u8::from(moe)),
-    )
-    .expect("write MOE");
+    eng.write(&vid(MOTOR, MOE_PORT), f64::from(u8::from(moe)))
+        .expect("write MOE");
 }
 
-fn step_n(eng: &mut Engine, n: usize) {
+fn step_n(eng: &mut Sil, n: usize) {
     for _ in 0..n {
         eng.step().expect("engine step");
     }
@@ -130,7 +88,7 @@ fn sector_of(theta_e: f64) -> usize {
 
 /// Commutate for the shaft angle just observed: the two flat-top phases carry current in
 /// the sign of their BEMF shape and the ramping phase floats. Returns the sector driven.
-fn commutate(eng: &mut Engine, angle_rad: f64, pole_pairs: u8, duty: f64) -> usize {
+fn commutate(eng: &mut Sil, angle_rad: f64, pole_pairs: u8, duty: f64) -> usize {
     let sector = sector_of(angle_rad * f64::from(pole_pairs));
     let (high, low) = SECTOR_DRIVE[sector];
     let mut d = [0.0; 3];
@@ -636,7 +594,7 @@ fn overspeed_coast_engages_diodes() {
     );
 
     // One tick collapses the bus and releases the bridge together.
-    eng.write(&format!("vsig:{MOTOR}:v_bus"), COLLAPSED_VBUS_V)
+    eng.write(&vid(MOTOR, "v_bus"), COLLAPSED_VBUS_V)
         .expect("write collapsed vbus");
     drive(&mut eng, [0.0; 3], [false; 3], false);
 
