@@ -19,10 +19,6 @@
 // non-blocking completion — none of which has real hardware on the native
 // target. Receive data comes from the linked duplex peer over SIL_ports.
 
-// Clear per-channel sim state (capture, CS records, faults, pending
-// transfers). Does not change the registered configuration.
-void HW_SPI_sim_reset(void);
-
 // Complete every pending non-blocking (interrupt/DMA) transfer: fill its
 // receive buffer, deassert CS, set final status, and fire the channel's
 // completion callback exactly once.

@@ -360,12 +360,6 @@ bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorC
         snapshot->magneticAngle_rad = channelData->magneticAngle_rad;
         snapshot->velocitySetpoint_radPerSec = channelData->velocitySetpointCurrent_radPerSec;
 
-        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
-        {
-            snapshot->phaseCurrent_a[phase] = channelData->phaseCurrent_a[phase];
-        }
-        snapshot->busCurrent_a = channelData->busCurrent;
-
         // Coarse state the ring reads for fw~mc_009 (the ring carries that impl
         // tag): fault wins, else the live bridge-enable distinguishes driving
         // from idle.

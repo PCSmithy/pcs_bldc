@@ -342,14 +342,6 @@ HW_SPI_status_E HW_SPI_getStatus(HW_SPI_channel_E channel)
 
 /* SIL control + inspection (HW_SPI_sim.h) */
 
-void HW_SPI_sim_reset(void)
-{
-    for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
-    {
-        HW_SPI_private_clearChannel(channel);
-    }
-}
-
 // [impl->fw~hal_spi_005~1]
 void HW_SPI_sim_tick(void)
 {

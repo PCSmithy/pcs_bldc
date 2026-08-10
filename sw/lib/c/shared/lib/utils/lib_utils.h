@@ -42,9 +42,3 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 #define MAX_OF(a, b) ((a) > (b) ? (a) : (b))
 
 #define SIGN(a) ((a) > 0U ? (1) : (-1))
-
-// f-suffixed: an unsuffixed literal promotes the comparison to double, pulling
-// libgcc's soft-double routines (~1.2 KB flash) onto the single-precision FPU.
-#define EPSILON (1e-6f)
-#define IS_FLOAT_EQUAL(a, b) (bool)(fabsf((a) - (b)) < EPSILON)
-#define IS_FLOAT_NOT_EQUAL(a, b) !IS_FLOAT_EQUAL((a), (b))

@@ -62,8 +62,6 @@ typedef struct
     bool                     isAligned;
     float32_t                magneticAngle_rad;            // rotor electrical angle
     float32_t                velocitySetpoint_radPerSec;   // signed commanded speed target
-    float32_t                phaseCurrent_a[IO_BRIDGE_PHASE_COUNT];
-    float32_t                busCurrent_a;
 } app_motorControl_snapshot_S;
 
 /* Public Function Declarations */
