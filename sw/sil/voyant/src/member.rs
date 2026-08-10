@@ -63,17 +63,18 @@ impl<'a> MemberCtx<'a> {
     /// Run a synchronous duplex transfer on `handle`: `tx` in, the linked peer's `rx`
     /// back this same call. `None` = an unlinked endpoint (a floating bus). Resolve
     /// `handle` once at wiring time (from
-    /// [`Engine::link_duplex`](crate::engine::Engine::link_duplex) /
-    /// [`Engine::duplex_handle`](crate::engine::Engine::duplex_handle)).
+    /// [`Engine::link_duplex`](crate::engine::Engine::link_duplex)).
     pub fn duplex_transfer(&mut self, handle: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
         self.duplex.transfer(handle, tx)
     }
+}
 
-    /// The shared duplex router — the firmware member declares its C-registered
-    /// endpoints and installs a router clone into its rendezvous through this.
-    pub(crate) fn duplex(&self) -> &DuplexRouter {
-        self.duplex
-    }
+/// Advance a member with a throwaway (empty) duplex router — for tests whose
+/// member registers no duplex endpoints.
+#[cfg(test)]
+pub(crate) fn advance_unwired(m: &mut dyn Member, dt_us: u64, st: &mut StateTable) {
+    let router = DuplexRouter::new();
+    m.advance(dt_us, &mut MemberCtx::new(st, &router));
 }
 
 /// An executable participant in the sim. The engine drives every member through
@@ -171,13 +172,6 @@ impl Member for RampModel {
 mod tests {
     use super::*;
 
-    /// Advance a member with a throwaway (empty) duplex router — for tests that
-    /// exercise `vsig`/State-Table behavior, not duplex.
-    fn advance(m: &mut dyn Member, dt_us: u64, st: &mut StateTable) {
-        let router = DuplexRouter::new();
-        m.advance(dt_us, &mut MemberCtx::new(st, &router));
-    }
-
     #[test]
     fn vsig_id_is_canonical() {
         let id = vsig_id("motor", "angle_rad").unwrap();
@@ -210,7 +204,7 @@ mod tests {
 
         for tick in 1..=4u64 {
             st.set_time(tick * 1_000);
-            advance(&mut m, 1_000, &mut st);
+            advance_unwired(&mut m, 1_000, &mut st);
         }
         // value 1,2,3,4 all beyond epsilon -> four change-log entries.
         assert_eq!(st.changes(&id).unwrap().len(), 4);
@@ -226,7 +220,7 @@ mod tests {
         let mut m: Box<dyn Member> = Box::new(RampModel::new("ramp", 1.0, None));
         m.set_enabled(true, &mut st);
         st.set_time(1_000_000);
-        advance(m.as_mut(), 1_000_000, &mut st); // 1 s -> value 1.0
+        advance_unwired(m.as_mut(), 1_000_000, &mut st); // 1 s -> value 1.0
         assert_eq!(m.name(), "ramp");
         let id = vsig_id("ramp", "value").unwrap();
         assert_eq!(st.current_value(&id).unwrap(), Some(Value::F64(1.0)));

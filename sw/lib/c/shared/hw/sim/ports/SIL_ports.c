@@ -17,8 +17,7 @@ typedef struct
 /* Private Function Declarations */
 
 static int32_t SIL_ports_private_register(const char * const sigType, const char * const localName,
-                                          const char * const modifier, const char * const unit,
-                                          int32_t kind);
+                                          const char * const unit, int32_t kind);
 
 /* Private Data Definitions */
 
@@ -28,8 +27,7 @@ static SIL_ports_data_S * const data = &SIL_ports_data;
 /* Private Function Definitions */
 
 static int32_t SIL_ports_private_register(const char * const sigType, const char * const localName,
-                                          const char * const modifier, const char * const unit,
-                                          int32_t kind)
+                                          const char * const unit, int32_t kind)
 {
     int32_t handle = SIL_PORTS_HANDLE_INVALID;
     if ((data->installed) &&
@@ -37,8 +35,7 @@ static int32_t SIL_ports_private_register(const char * const sigType, const char
         (sigType != NULL) &&
         (localName != NULL))
     {
-        handle = data->hooks.registerSignal(data->hooks.context, sigType, localName,
-                                            modifier, unit, kind);
+        handle = data->hooks.registerSignal(data->hooks.context, sigType, localName, unit, kind);
     }
     return handle;
 }
@@ -60,14 +57,14 @@ void SIL_ports_setHooks(const SIL_ports_hooks_S * const hooks)
 }
 
 int32_t SIL_ports_register(const char * const sigType, const char * const localName,
-                           const char * const modifier, const char * const unit)
+                           const char * const unit)
 {
-    return SIL_ports_private_register(sigType, localName, modifier, unit, SIL_PORTS_KIND_SCALAR);
+    return SIL_ports_private_register(sigType, localName, unit, SIL_PORTS_KIND_SCALAR);
 }
 
 int32_t SIL_ports_registerDuplex(const char * const sigType, const char * const localName)
 {
-    return SIL_ports_private_register(sigType, localName, NULL, NULL, SIL_PORTS_KIND_DUPLEX);
+    return SIL_ports_private_register(sigType, localName, NULL, SIL_PORTS_KIND_DUPLEX);
 }
 
 bool SIL_ports_read(int32_t handle, double * const out)

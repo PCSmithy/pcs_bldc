@@ -43,7 +43,7 @@
 //! [`FirmwareMember`](crate::FirmwareMember) driving its own backend, so
 //! multi-firmware is just multiple `FirmwareMember`s peering in one engine.
 
-use crate::duplex::{DuplexHandle, DuplexPeer, DuplexRouter};
+use crate::duplex::{tx_rx_ids, DuplexHandle, DuplexPeer, DuplexRouter};
 use crate::log::{LogEntry, LogLevel};
 use crate::member::{Member, MemberCtx};
 use crate::route::{RouteError, RouteTable};
@@ -233,19 +233,11 @@ impl Engine {
         let handle = self.duplex.declare(endpoint_id);
         self.duplex.link(endpoint_id, peer);
         // Register the `:tx` / `:rx` event entries (idempotent with a firmware declare).
-        let tx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("tx"))
-            .expect("bus id + tx");
-        let rx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("rx"))
-            .expect("bus id + rx");
+        let (tx_id, rx_id) =
+            tx_rx_ids(sid.sig_type(), sid.source(), sid.name()).map_err(|e| bad(&e.to_string()))?;
         let _ = self.state.register(tx_id, None);
         let _ = self.state.register(rx_id, None);
         Ok(handle)
-    }
-
-    /// The [`DuplexHandle`] of a declared duplex endpoint (`None` if not yet declared) —
-    /// an initiating model resolves its handle here at wiring time.
-    pub fn duplex_handle(&self, endpoint_id: &str) -> Option<DuplexHandle> {
-        self.duplex.handle_of(endpoint_id)
     }
 
     /// Advance the whole system one tick (the canonical order — see the module
@@ -326,10 +318,8 @@ impl Engine {
                     continue;
                 }
             };
-            let tx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("tx"))
-                .expect("bus id + tx");
-            let rx_id = SignalId::new(sid.sig_type(), sid.source(), sid.name(), Some("rx"))
-                .expect("bus id + rx");
+            let (tx_id, rx_id) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name())
+                .expect("a valid bus id yields valid tx/rx ids");
             if let Err(e) = self.state.force_record(&tx_id, Value::Bytes(tx)) {
                 self.state
                     .log(LogLevel::Warning, "duplex", format!("duplex tx record {tx_id} failed: {e}"));

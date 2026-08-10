@@ -7,7 +7,6 @@ typedef struct
     void *  lastContext;
     char    lastSigType[32];
     char    lastLocalName[32];
-    char    lastModifier[32];
     char    lastUnit[32];
     int32_t lastKind;
     int32_t registerReturn;
@@ -47,13 +46,11 @@ static void copyStr(char * const dst, const char * const src, size_t dstSize)
 }
 
 static int32_t fakeRegister(void * context, const char * sigType,
-                            const char * localName, const char * modifier,
-                            const char * unit, int32_t kind)
+                            const char * localName, const char * unit, int32_t kind)
 {
     fakeLog.lastContext = context;
     copyStr(fakeLog.lastSigType, sigType, sizeof(fakeLog.lastSigType));
     copyStr(fakeLog.lastLocalName, localName, sizeof(fakeLog.lastLocalName));
-    copyStr(fakeLog.lastModifier, modifier, sizeof(fakeLog.lastModifier));
     copyStr(fakeLog.lastUnit, unit, sizeof(fakeLog.lastUnit));
     fakeLog.lastKind = kind;
     return fakeLog.registerReturn;
@@ -130,7 +127,7 @@ void tearDown(void)
 static void test_no_hooks_register_returns_invalid(void)
 {
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID,
-                            SIL_ports_register("vsig", "adc_in", NULL, "V"));
+                            SIL_ports_register("vsig", "adc_in", "V"));
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID,
                             SIL_ports_registerDuplex("spi", "AS5048_1"));
 }
@@ -165,7 +162,7 @@ static void test_register_passes_through(void)
     installFakeHooks();
     fakeLog.registerReturn = 7;
 
-    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "ADC1_IN6", NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "ADC1_IN6", "V"));
     TEST_ASSERT_EQUAL_PTR(&contextTag, fakeLog.lastContext);
     TEST_ASSERT_EQUAL_STRING("vsig", fakeLog.lastSigType);
     TEST_ASSERT_EQUAL_STRING("ADC1_IN6", fakeLog.lastLocalName);
@@ -173,7 +170,7 @@ static void test_register_passes_through(void)
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_KIND_SCALAR, fakeLog.lastKind);
 }
 
-static void test_register_duplex_passes_kind_no_modifier(void)
+static void test_register_duplex_passes_kind_no_unit(void)
 {
     installFakeHooks();
     fakeLog.registerReturn = 3;
@@ -181,7 +178,6 @@ static void test_register_duplex_passes_kind_no_modifier(void)
     TEST_ASSERT_EQUAL_INT32(3, SIL_ports_registerDuplex("spi", "AS5048_1"));
     TEST_ASSERT_EQUAL_STRING("spi", fakeLog.lastSigType);
     TEST_ASSERT_EQUAL_STRING("AS5048_1", fakeLog.lastLocalName);
-    TEST_ASSERT_EQUAL_STRING("", fakeLog.lastModifier); // NULL modifier -> empty
     TEST_ASSERT_EQUAL_STRING("", fakeLog.lastUnit);     // NULL unit -> empty
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_KIND_DUPLEX, fakeLog.lastKind);
 }
@@ -191,8 +187,8 @@ static void test_register_rejects_null_names_locally(void)
     installFakeHooks();
     fakeLog.registerReturn = 7;
     // NULL sigType/localName never reach the hook.
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register(NULL, "x", NULL, "V"));
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", NULL, NULL, "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register(NULL, "x", "V"));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", NULL, "V"));
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_registerDuplex(NULL, "x"));
     TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_registerDuplex("spi", NULL));
 }
@@ -284,10 +280,10 @@ static void test_clearing_hooks_restores_noop_behavior(void)
 {
     installFakeHooks();
     fakeLog.registerReturn = 7;
-    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "x", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT32(7, SIL_ports_register("vsig", "x", NULL));
 
     SIL_ports_setHooks(NULL);
-    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", "x", NULL, NULL));
+    TEST_ASSERT_EQUAL_INT32(SIL_PORTS_HANDLE_INVALID, SIL_ports_register("vsig", "x", NULL));
     double out = 0.0;
     TEST_ASSERT_FALSE(SIL_ports_read(7, &out));
     SIL_ports_write(7, 1.0);
@@ -307,7 +303,7 @@ int main(void)
     RUN_TEST(test_no_hooks_write_is_noop);
     RUN_TEST(test_no_hooks_duplex_transfer_returns_false);
     RUN_TEST(test_register_passes_through);
-    RUN_TEST(test_register_duplex_passes_kind_no_modifier);
+    RUN_TEST(test_register_duplex_passes_kind_no_unit);
     RUN_TEST(test_register_rejects_null_names_locally);
     RUN_TEST(test_read_passes_through_when_driven);
     RUN_TEST(test_read_false_when_never_driven);

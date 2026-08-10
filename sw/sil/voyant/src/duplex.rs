@@ -15,6 +15,20 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::signal::{ParseError, SignalId};
+
+/// The `:tx` / `:rx` event-entry ids of a duplex endpoint, built from the endpoint's
+/// own segments — the one place that pair is spelled.
+pub(crate) fn tx_rx_ids(
+    sig_type: &str,
+    source: &str,
+    name: &str,
+) -> Result<(SignalId, SignalId), ParseError> {
+    let tx = SignalId::new(sig_type, source, name, Some("tx"))?;
+    let rx = SignalId::new(sig_type, source, name, Some("rx"))?;
+    Ok((tx, rx))
+}
+
 /// The responder side of a duplex transaction. A transfer calls [`transfer`](Self::transfer)
 /// synchronously: the peer consumes `tx`, updates its own internal state, and returns
 /// the `rx` frame the initiator reads back before the call returns.
@@ -28,9 +42,8 @@ pub trait DuplexPeer {
 }
 
 /// A dense handle for a declared duplex endpoint. An initiator resolves it once at
-/// wiring time (from [`Engine::link_duplex`](crate::engine::Engine::link_duplex) or
-/// [`Engine::duplex_handle`](crate::engine::Engine::duplex_handle)) and passes it to
-/// every transfer — no per-transfer string hashing.
+/// wiring time (from [`Engine::link_duplex`](crate::engine::Engine::link_duplex)) and
+/// passes it to every transfer — no per-transfer string hashing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DuplexHandle(usize);
 
@@ -93,6 +106,7 @@ impl DuplexRouter {
     }
 
     /// The handle of a declared endpoint (`None` if not yet declared).
+    #[cfg(test)]
     pub(crate) fn handle_of(&self, id: &str) -> Option<DuplexHandle> {
         self.inner.borrow().handles.get(id).copied()
     }
@@ -153,20 +167,21 @@ mod tests {
     /// A fixed-response peer that records every tx frame it saw.
     struct RecordingPeer {
         resp: Vec<u8>,
-        seen: Rc<RefCell<Vec<Vec<u8>>>>,
+        seen: Vec<Vec<u8>>,
     }
 
     impl DuplexPeer for RecordingPeer {
         fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
-            self.seen.borrow_mut().push(tx.to_vec());
+            self.seen.push(tx.to_vec());
             self.resp.clone()
         }
     }
 
+    /// Keep a clone of the returned handle to read `seen` back after a transfer.
     fn peer(resp: Vec<u8>) -> Rc<RefCell<RecordingPeer>> {
         Rc::new(RefCell::new(RecordingPeer {
             resp,
-            seen: Rc::new(RefCell::new(Vec::new())),
+            seen: Vec::new(),
         }))
     }
 
@@ -184,17 +199,13 @@ mod tests {
     #[test]
     fn transfer_roundtrips_and_buffers_the_exchange() {
         let r = DuplexRouter::new();
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let p = Rc::new(RefCell::new(RecordingPeer {
-            resp: vec![0x90, 0x00],
-            seen: Rc::clone(&seen),
-        }));
+        let p = peer(vec![0x90, 0x00]);
         let h = r.declare("spi:enc:cs");
-        r.link("spi:enc:cs", p);
+        r.link("spi:enc:cs", p.clone());
 
         let rx = r.transfer(h, &[0xFF, 0xFF]);
         assert_eq!(rx, Some(vec![0x90, 0x00])); // synchronous response
-        assert_eq!(*seen.borrow(), vec![vec![0xFF, 0xFF]]); // peer saw the tx
+        assert_eq!(p.borrow().seen, vec![vec![0xFF, 0xFF]]); // peer saw the tx
 
         let drained = r.drain();
         assert_eq!(drained, vec![("spi:enc:cs".to_string(), vec![0xFF, 0xFF], vec![0x90, 0x00])]);

@@ -453,7 +453,7 @@ impl RouteTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::member::{vsig_id, Member, RampModel};
+    use crate::member::{advance_unwired, vsig_id, Member, RampModel};
 
     fn cvar(name: &str) -> SignalId {
         SignalId::new("cvar", "dut", name, None).unwrap()
@@ -845,10 +845,9 @@ mod tests {
         rt.add(src, dst.clone()).unwrap();
         let order = plan(&rt);
 
-        let router = crate::duplex::DuplexRouter::new();
         for tick in 1..=3u64 {
             st.set_time(tick * 1_000);
-            model.advance(1_000, &mut crate::member::MemberCtx::new(&mut st, &router));
+            advance_unwired(&mut model, 1_000, &mut st);
             rt.propagate_zero_latency(&mut st, &order).unwrap();
             assert_eq!(st.current_value(&dst).unwrap(), Some(Value::F64(tick as f64)));
         }

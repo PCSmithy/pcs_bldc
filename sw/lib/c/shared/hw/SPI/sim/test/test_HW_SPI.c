@@ -18,9 +18,9 @@ static uint8_t canned[8];
 static size_t  cannedLen;
 
 static int32_t hookRegister(void * ctx, const char * sigType, const char * localName,
-                            const char * modifier, const char * unit, int32_t kind)
+                            const char * unit, int32_t kind)
 {
-    (void)ctx; (void)sigType; (void)localName; (void)modifier; (void)unit; (void)kind;
+    (void)ctx; (void)sigType; (void)localName; (void)unit; (void)kind;
     return 0; // one valid handle for every endpoint; the tests drive one channel
 }
 

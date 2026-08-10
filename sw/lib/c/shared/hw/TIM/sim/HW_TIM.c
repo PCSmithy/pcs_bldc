@@ -181,7 +181,7 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 {
                     char name[HW_TIM_SIM_PORT_NAME_MAX];
                     (void)snprintf(name, sizeof(name), "%s_MOE", peripheralConfig->nameStr);
-                    data->moeHandle[p] = SIL_ports_register("vsig", name, NULL, NULL);
+                    data->moeHandle[p] = SIL_ports_register("vsig", name, NULL);
                 }
             }
 
@@ -197,9 +197,9 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 {
                     char name[HW_TIM_SIM_PORT_NAME_MAX];
                     (void)snprintf(name, sizeof(name), "%s_duty", channelConfig->channelNameStr);
-                    data->dutyHandle[ch] = SIL_ports_register("vsig", name, NULL, NULL);
+                    data->dutyHandle[ch] = SIL_ports_register("vsig", name, NULL);
                     (void)snprintf(name, sizeof(name), "%s_enabled", channelConfig->channelNameStr);
-                    data->enabledHandle[ch] = SIL_ports_register("vsig", name, NULL, NULL);
+                    data->enabledHandle[ch] = SIL_ports_register("vsig", name, NULL);
                 }
             }
             data->initialized = true;

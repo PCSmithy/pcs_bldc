@@ -143,7 +143,7 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
                         (channelConfig->inputs[input].inputNameStr != NULL))
                     {
                         data->portHandles[ch][input] =
-                            SIL_ports_register("vsig", channelConfig->inputs[input].inputNameStr, NULL, "V");
+                            SIL_ports_register("vsig", channelConfig->inputs[input].inputNameStr, "V");
                     }
                 }
             }

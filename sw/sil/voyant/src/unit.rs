@@ -87,11 +87,6 @@ impl UnitRegistry {
         }
     }
 
-    /// Whether `name` is a registered unit.
-    pub fn is_registered(&self, name: &str) -> bool {
-        self.units.contains_key(name)
-    }
-
     /// The dimension a unit belongs to, `None` if unregistered.
     pub fn dimension_of(&self, name: &str) -> Option<&str> {
         self.units.get(name).map(|d| d.dimension.as_str())

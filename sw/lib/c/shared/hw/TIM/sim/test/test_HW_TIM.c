@@ -29,9 +29,9 @@ static bool     portWritten[MAX_PORTS];
 static int32_t  portCount;
 
 static int32_t hookRegister(void * ctx, const char * sigType, const char * localName,
-                            const char * modifier, const char * unit, int32_t kind)
+                            const char * unit, int32_t kind)
 {
-    (void)ctx; (void)sigType; (void)modifier; (void)unit; (void)kind;
+    (void)ctx; (void)sigType; (void)unit; (void)kind;
     int32_t handle = portCount;
     if (portCount < MAX_PORTS)
     {
