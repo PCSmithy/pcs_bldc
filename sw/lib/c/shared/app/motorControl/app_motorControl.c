@@ -60,6 +60,8 @@ typedef struct
     uint16_t encoderFaultCount;   // consecutive invalid encoder reads
 
     float32_t duty[IO_BRIDGE_PHASE_COUNT];
+    float32_t phaseCurrent_a[IO_BRIDGE_PHASE_COUNT];
+    float32_t busCurrent;
     bool enable[IO_BRIDGE_PHASE_COUNT];
 } app_motorControl_channelData_S;
 
@@ -91,17 +93,23 @@ static void app_motorControl_private_updateOvercurrentLatch(
 
     for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
     {
-        if ((IO_bridge_getPhaseCurrent(channelConfig->bridge, (IO_bridge_phase_E)phase, &amps)) &&
-            (fabsf(amps) > OVERCURRENT_PHASE_TRIP_A))
+        if (IO_bridge_getPhaseCurrent(channelConfig->bridge, (IO_bridge_phase_E)phase, &amps))
         {
-            channelData->faultLatched = true;
+            channelData->phaseCurrent_a[phase] = amps;
+            if (fabsf(amps) > OVERCURRENT_PHASE_TRIP_A)
+            {
+                channelData->faultLatched = true;
+            }
         }
     }
 
-    if ((IO_bridge_getBusCurrent(channelConfig->bridge, &amps)) &&
-        (fabsf(amps) > OVERCURRENT_BUS_TRIP_A))
+    if (IO_bridge_getBusCurrent(channelConfig->bridge, &amps))
     {
-        channelData->faultLatched = true;
+        channelData->busCurrent = amps;
+        if (fabsf(amps) > OVERCURRENT_BUS_TRIP_A)
+        {
+            channelData->faultLatched = true;
+        }
     }
 }
 
@@ -351,6 +359,12 @@ bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorC
         snapshot->isAligned         = channelData->isAligned;
         snapshot->magneticAngle_rad = channelData->magneticAngle_rad;
         snapshot->velocitySetpoint_radPerSec = channelData->velocitySetpointCurrent_radPerSec;
+
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            snapshot->phaseCurrent_a[phase] = channelData->phaseCurrent_a[phase];
+        }
+        snapshot->busCurrent_a = channelData->busCurrent;
 
         // Coarse state the ring reads for fw~mc_009 (the ring carries that impl
         // tag): fault wins, else the live bridge-enable distinguishes driving
