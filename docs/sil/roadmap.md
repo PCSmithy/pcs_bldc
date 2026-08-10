@@ -7,6 +7,48 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
+## Commutation sprint — full-loop motor commutation ☑ (2026-07-12 → 2026-08-10)
+
+**North star achieved:** the firmware's six-step drive commutates a simulated
+motor end to end — button tap → alignment physically swings the rotor →
+offset captured from the plant → dial demand → closed-loop spin — driven and
+asserted purely through the State Table (`tests/north_star.rs`). Up for
+merge as PR #4.
+
+Stages, all ☑ (current-state detail lives in the design docs + tests):
+
+1. String-keyed table write/read — tests interact with voyant, never a
+   `Firmware` handle.
+2. DuplexTransfer — synchronous member↔member serial transactions
+   ([`state-route-tables.md`](state-route-tables.md)).
+3. AS5048 encoder model (owner physics, `src/as5048.rs`).
+4. PWM/bridge observation ports; plus MF4 trace export
+   ([`signal-trace.md`](signal-trace.md)), the pytest-shaped `Sil` harness,
+   and the firmware reset lifecycle ([`architecture.md`](architecture.md)).
+5. Inverter + motor model (owner physics, `src/motor.rs`;
+   `tests/motor_dynamics.rs` pins the analytics against the params).
+6. Current-sense model + zero-latency sense wiring (`src/current_sense.rs`,
+   `src/wiring.rs`); alignment harness.
+7. North-star closed-loop scenario (`tests/north_star.rs`).
+
+**Bring-up traps** (each costs a day if forgotten):
+
+- Undriven ADC ports ramp to ~3.3 V ≈ 16 A computed phase current → the
+  overcurrent latch trips almost immediately: current-sense ports must be
+  driven every tick.
+- Un-injected SPI reads back `0xFFFF` (error flag set) → the encoder-fault
+  latch trips after 5 consecutive ticks: both AS5048 channels need valid
+  frames.
+- Drive stays blocked until `dev_gateDriver_isOperational()`: the sim I2C
+  STATUS register must be seeded AND `task_200ms` must have completed a
+  configure+status pass (first pass lands within ~200–400 ticks).
+
+**Deferred out of the sprint:** D8 interrupt controller (the
+interrupt-driven-control sprint that follows); `usb_cdc`/`teleplot`
+sig_type (filed near the top of `backlog.md`).
+
+---
+
 ## Phase 0 — Worktree + architecture
 **Goal:** branch, worktree, agreed ground rules, planning docs.
 **Exit:** `architecture.md` decisions table reflects reality.
@@ -91,7 +133,7 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   - `signal`: `SignalId` (owned, validated `sig_type:source:name[:modifier]`) +
     the logical `Value` (`F32/F64/I32/U32/U64/Bool/Enum/Bytes`) + `approx_eq`.
   - `state_table`: registry + **per-signal change-logged history** + current
-    cache + injection **overrides** + **per-signal epsilon** (default 1e-3) +
+    cache + **per-signal epsilon** (default 1e-3) +
     time-based retention (`None`=unbounded fast mode). `record`/`force_record`/
     `current_value` (O(1))/`value_at` (O(log n) ZOH). *No FFI — pure data.*
   - `backend`: the **cvar sample-resolver** — `read_cvar`/`write_cvar` coerce
@@ -109,12 +151,15 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   sources from the State Table cache, then writes all dests — order-independent,
   one hop/tick). Sources are any entry (`vsig`/`cvar`); `cvar` dests are driven
   via `Backend::write_cvar` (DWARF path = id `name`). Per-route `suspend`/`resume`
-  for fault injection (pairs with the table `override`); `vsig` dests deferred to
+  for fault injection (suspend + direct write; the table `override` it once paired
+  with was removed 2026-07-12); `vsig` dests deferred to
   a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
   firmware `cvar`, suspend/resume gating).
 - ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
   config-time registration by name; C→Rust upcall vtable for runtime
-  registration; port dispatch shim (ISR entry/exit, FromISR/yield)
+  registration; port dispatch shim (ISR entry/exit, FromISR/yield) —
+  **deferred** (owner, 2026-07-12) to the interrupt-driven-control sprint;
+  the current firmware control path is fully cooperative in `task_1ms`
 - ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
   Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
   advance sim time (monotonic, wall-clock-free) → advance models (registration
@@ -134,10 +179,13 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
 **Exit:** firmware commands PWM → motor model spins → encoder/ADC feed back →
 a basic control action is observable end-to-end.
 
-- ☐ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
-- ☐ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
-- ☐ Encoder (AS5048) model → routed into fw SPI-rx state
-- ☐ Current / voltage / temp sensor models → routed into fw ADC counts
+Landed via the commutation sprint (above).
+
+- ☑ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
+- ☑ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
+- ☑ Encoder (AS5048) model → duplex-linked to the fw SPI driver
+- ☑ Current sensor model → routed into fw ADC ports (voltage/temp sensors
+  remain with the vsense-matching work)
 
 ## Phase 4 — Fast mode + Python/pytest
 **Goal:** scripted, deterministic, parallel regression.

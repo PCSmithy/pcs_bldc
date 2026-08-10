@@ -814,6 +814,8 @@ bool sil_fw_start(void)
 
 void sil_fw_advance_tick(void)
 {
+    // Hardware time first, so tasks waking this tick read a fresh timebase.
+    HW_TIM_advanceTime(1000000U / configTICK_RATE_HZ);
     vSilAdvanceTick();
 }
 

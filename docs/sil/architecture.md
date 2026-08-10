@@ -166,16 +166,24 @@ firmware bursts are instantaneous, with one fidelity trade noted in
 ## Member model
 
 Everything the sim executes is a **`Member`** — the framework's single, uniform
-seam. The [`Engine`](#5-sim-core-rust) holds a `Vec<Box<dyn Member>>` and drives
-each one *only* through this trait, in registration order (deterministic):
+seam. The [`Engine`](#5-sim-core-rust) holds shared members (`Rc<RefCell<dyn
+Member>>`) and drives each one *only* through this trait, in registration order
+(deterministic). `add_member` takes the member **by value** and returns a typed
+handle (`Rc<RefCell<M>>`): ignorable for a plain model, or — when `M` also impls
+`DuplexPeer` — linked straight to a bus so one struct fills both roles.
 
 ```rust
 pub trait Member {
-    fn name(&self) -> &str;                                  // instance name = <source> of its signals
-    fn advance(&mut self, dt_us: u64, st: &mut StateTable);  // one deterministic step
+    fn name(&self) -> &str;                                    // instance name = <source> of its signals
+    fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx);    // one deterministic step
     fn set_enabled(&mut self, on: bool, st: &mut StateTable);
 }
 ```
+
+`MemberCtx` is the initiator seam the engine hands each `advance`: `ctx.st` is the
+State Table (register / record / read), and `ctx.duplex_transfer(handle, tx)` runs a
+synchronous serial exchange against a linked peer (the model-side twin of the
+firmware's C SPI upcall — both drive the engine's one shared `DuplexRouter`).
 
 Members do **not** declare their signals (`signals()`) and are **not** pulled
 (`read()`). Instead a member treats the State Table as its live workspace: it
@@ -196,14 +204,14 @@ firmware seam" to internal plumbing behind the member. It is constructed with an
 explicit instance **`name`** (not derived from the DLL — two boards may run the
 same image as distinct members) and a firmware tick period; its `advance`
 accumulates sim time and, per elapsed firmware-tick period, **flushes** the *fresh*
-(route-/test-/pin-written) `cvar`s in its namespace into firmware memory, runs one
+(route-/test-written) `cvar`s in its namespace into firmware memory, runs one
 `advance_tick`, then **sweeps** its whole cvar leaf list back out into the table
 (`record_mirror`). The cvar mirror is **automatic** — the member enumerates the
 firmware's traceable namespace from DWARF at enable (minus a built-in
 array-size/pointer exclusion policy; `exclude`/`include` tune it) and mirrors it
 with **no per-signal declarations** (the D12 end-state). The flush is sparse (a
-State Table **dirty set** tracks command writes; a pinned cvar re-asserts every
-tick). It is the **only** thing that touches firmware memory — routes never do
+State Table **dirty set** tracks command writes; writes are one-shot,
+last-writer-wins). It is the **only** thing that touches firmware memory — routes never do
 (they are table-mediated; see
 [`state-route-tables.md`](state-route-tables.md) §2). Lifecycle (`start`/`shutdown`)
 stays an explicit call on the concrete `Firmware` handle the driver holds.
@@ -233,10 +241,15 @@ sensors) are instantiation-side members.
 
 **Enable semantics.** Members start enabled when added. The engine **gates** a
 disabled member out — its `advance` is skipped while sim time keeps flowing, and
-its signals hold their last recorded value. `set_enabled` is where a member
-(re-)registers its signals (idempotent). FUTURE: member-kind-specific *re-enable
-depth* — a firmware member reloading its DLL (boot-from-reset), a model reinit'ing
-its integration state — is not implemented; today enable is gating only.
+its signals hold their last recorded value (a firmware member disabled = **held in
+reset**: memory frozen, sim time flowing). `set_enabled` is where a member
+(re-)registers its signals (idempotent) and runs its member-kind-specific *re-enable
+depth*. A `FirmwareMember` with a **reload recipe** (`set_reload_path`) reboots on
+re-enable: it shuts the old image down, drops its `Rc` (sole ownership), reloads the
+same path from reset, and rebuilds every image-bound cache — State-Table entries
+re-register idempotently, so signal history is preserved across the reload. Without a
+recipe, re-enable resumes advancing. A model member's own reinit (integration state)
+is the same seam when a model wants it.
 
 The per-tick order the engine runs — advance sim time → validate wiring if dirty →
 propagate delayed routes from a pre-tick snapshot → for each enabled member:
@@ -326,8 +339,13 @@ sw/sil/                 Rust cargo workspace
                            Transport — a comms bus (tx → rx, completion timing)
                            Scenario  — the project's wiring (members/routes/trace)
   pcs_bldc_sil/          THE INSTANTIATION: impls voyant's traits for this board
-                         (motor/encoder/sensor models, firmware config, routes);
-                         the binary that runs the sim.
+                         (motor/encoder/sensor models, firmware config, routes).
+                         A lib (src/) exposes `Sil` — the simulation itself, derefing
+                         to its `Engine`. `Sil::new()` is a zero-firmware world;
+                         `sim.load_firmware(name)` boots one instance per call (image
+                         copied per load), and drop unloads + deletes the copies. Each
+                         scenario is an independent `#[test]` in tests/*.rs; the perf
+                         bin (main.rs) prints the per-tick performance report.
 sw/fw/src/                firmware control ABI + native entry / fiber-port wiring
 sw/lib/c/shared/hw/*/sim/ bottom-layer sim drivers (no sim getters/setters)
 docs/sil/                 these docs

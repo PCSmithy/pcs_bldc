@@ -42,7 +42,3 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 #define MAX_OF(a, b) ((a) > (b) ? (a) : (b))
 
 #define SIGN(a) ((a) > 0U ? (1) : (-1))
-
-#define EPSILON (1e-6)
-#define IS_FLOAT_EQUAL(a, b) (bool)(fabsf((a) - (b)) < EPSILON)
-#define IS_FLOAT_NOT_EQUAL(a, b) !IS_FLOAT_EQUAL((a), (b))

@@ -83,10 +83,14 @@ able to hold an entry for *every* firmware static with zero firmware changes.
 - Native lib is built with `-g` and `-O0` (already in `native.cmake`). **-O0
   matters**: every `static` (including function-local statics) keeps a real,
   stable address and isn't elided, so the whole set is enumerable and
-  addressable.
+  addressable. The optimized (`-O3`) SIL flavor mostly preserves this, with one
+  wrinkle the reader handles: SRA can decompose an aggregate static into a
+  `DW_OP_piece` composite location (some members folded away entirely) — live
+  members still resolve through their piece addresses; folded ones don't.
 - Parse the lib once with the `object` (ELF/Mach-O/PE) + `gimli` (DWARF)
-  crates to build a map: `name → { link address, type }`. DWARF gives struct
-  layout, enums, arrays — so nested members flatten to addressable leaves
+  crates to build a map: `name → { link location, type }` (a location is a
+  whole-object address or a piece list). DWARF gives struct layout, enums,
+  arrays — so nested members flatten to addressable leaves
   (`HW_ADC_data.channelData[0].counts[3]` = base + offset).
 - In-process, a global lives in our own address space — reading/writing it is a
   pointer dereference, **no ptrace / no cross-process memory API**.

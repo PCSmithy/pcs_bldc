@@ -355,6 +355,29 @@ static void test_off_request_disables_bridge_same_cycle(void)
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
+// [test->fw~mc_006~1]
+// A zero speed target while enabled and aligned idles the phases at zero duty
+// but holds the master output enable asserted — the bridge stays up across a
+// run of zero-demand cycles (no flapping), and a fault still forces it off.
+static void test_zero_demand_holds_bridge_enabled(void)
+{
+    alignAtZero();                             // aligned, operational, dwell done
+
+    commutateAt(30.0f, 0.0f);                  // zero demand while enabled + aligned
+    TEST_ASSERT_TRUE(bridgeEnabled());         // MOE stays asserted at zero duty
+    TEST_ASSERT_EQUAL_UINT32(0U, drivenCompare());   // phases idle at zero duty
+
+    for (int i = 0; i < 8; i++)
+    {
+        commutateAt(30.0f, 0.0f);
+        TEST_ASSERT_TRUE(bridgeEnabled());     // does not flap cycle to cycle
+    }
+
+    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);  // a fault still kills the bridge
+    app_motorControl_run1ms();
+    TEST_ASSERT_FALSE(bridgeEnabled());
+}
+
 /* ---- state view + fault-clear (data contract for the ring, fw~mc_009) ---- */
 
 // The snapshot state tracks disabled -> enabled -> faulted.
@@ -596,6 +619,7 @@ int main(void)
     RUN_TEST(test_gate_blocks_bridge_when_not_operational);
     RUN_TEST(test_gate_blocks_bridge_while_fault_latched);
     RUN_TEST(test_off_request_disables_bridge_same_cycle);
+    RUN_TEST(test_zero_demand_holds_bridge_enabled);
 
     RUN_TEST(test_state_view_tracks_disabled_enabled_faulted);
     RUN_TEST(test_velocity_setpoint_exposed);

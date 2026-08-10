@@ -12,9 +12,20 @@ use thiserror::Error;
 /// Segment names, by index (a future `tool` segment could prepend this).
 const SEGMENT_NAMES: [&str; 4] = ["sig_type", "source", "name", "modifier"];
 
-/// Recognized `sig_type` values. Comms buses (`usb_cdc`/`spi`/…) join as they
-/// land.
-pub const APPROVED_SIG_TYPES: &[&str] = &["cvar", "vsig"];
+/// Recognized `sig_type` values. `spi` is the first comms bus — its transactions
+/// land as `tx`/`rx` event records (`Value::Bytes`); the rest (`usb_cdc`/`i2c`/…)
+/// join as they land.
+pub const APPROVED_SIG_TYPES: &[&str] = &["cvar", "vsig", "spi"];
+
+/// The comms `sig_type`s that carry duplex (request/response) transactions — a
+/// duplex endpoint's `sig_type` must be one of these. `spi` is the first; `i2c` /
+/// `uart` join as their bus drivers land.
+pub const DUPLEX_BUS_SIG_TYPES: &[&str] = &["spi"];
+
+/// Whether `sig_type` names a duplex transaction bus (see [`DUPLEX_BUS_SIG_TYPES`]).
+pub fn is_duplex_bus(sig_type: &str) -> bool {
+    DUPLEX_BUS_SIG_TYPES.contains(&sig_type)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ParseError {
@@ -114,6 +125,39 @@ pub enum Value {
 }
 
 impl Value {
+    // Decoders paired with the `From` constructors: extract a native scalar,
+    // coercing within the numeric family; `None` = wrong variant for the ask.
+    // Only the shapes with consumers — add more when a call shape needs them.
+
+    /// Decode to `f32` (`F64` narrows lossily — model working precision).
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Value::F32(x) => Some(*x),
+            Value::F64(x) => Some(*x as f32),
+            _ => None,
+        }
+    }
+
+    /// Decode to `f64` (the float family, losslessly).
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::F32(x) => Some(f64::from(*x)),
+            Value::F64(x) => Some(*x),
+            _ => None,
+        }
+    }
+
+    /// Decode to `u64` (unsigned family + `Bool`; a negative `I32` is `None`).
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Value::U32(x) => Some(u64::from(*x)),
+            Value::U64(x) => Some(*x),
+            Value::I32(x) => u64::try_from(*x).ok(),
+            Value::Bool(b) => Some(u64::from(*b)),
+            _ => None,
+        }
+    }
+
     /// Change comparison for the historian: floats within `epsilon` (absolute),
     /// everything else exact. Different variants always compare unequal.
     pub fn approx_eq(&self, other: &Self, epsilon: f64) -> bool {
@@ -128,6 +172,25 @@ impl Value {
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+// `From` conversions so table writes take bare literals (`write(id, true)`,
+// `write(id, 90.0)`). Only the variants the scenario API actually drives — bool /
+// u32 / f64 — are provided; add more when a call shape needs them.
+impl From<bool> for Value {
+    fn from(x: bool) -> Self {
+        Value::Bool(x)
+    }
+}
+impl From<u32> for Value {
+    fn from(x: u32) -> Self {
+        Value::U32(x)
+    }
+}
+impl From<f64> for Value {
+    fn from(x: f64) -> Self {
+        Value::F64(x)
     }
 }
 
@@ -149,6 +212,17 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_decoders_coerce_within_family_and_refuse_across() {
+        assert_eq!(Value::F64(90.0).as_f32(), Some(90.0f32));
+        assert_eq!(Value::F32(1.5).as_f64(), Some(1.5f64));
+        assert_eq!(Value::U32(7).as_u64(), Some(7));
+        assert_eq!(Value::I32(-1).as_u64(), None); // negative refuses, not wraps
+        assert_eq!(Value::Bool(true).as_u64(), Some(1));
+        assert_eq!(Value::U32(7).as_f32(), None); // no cross-family coercion
+        assert_eq!(Value::Bytes(vec![1]).as_f64(), None);
+    }
 
     #[test]
     fn parses_cvar_without_modifier() {

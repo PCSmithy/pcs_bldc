@@ -1,2 +1,7 @@
 requests
 playwright
+numpy
+asammdf
+matplotlib
+ipykernel
+pyserial

@@ -6,7 +6,12 @@ publish = false
 
 [dependencies]
 voyant = { path = "../voyant" }
+prng = { path = "../../lib/rust/prng" }
+
+[lib]
+name = "pcs_bldc_sil"
+path = "src/lib.rs"
 
 [[bin]]
-name = "pcs_bldc_sil"
+name = "pcs_bldc_sil_perf"
 path = "src/main.rs"

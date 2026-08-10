@@ -87,25 +87,47 @@ if [ ! -f "$LIB" ]; then
   exit 1
 fi
 
-# 2. SIL Rust framework
-echo "==> [2/3] Building SIL framework (cargo, $PROFILE)"
+# 2. SIL Rust framework (lib + integration tests + perf bin)
+echo "==> [2/4] Building SIL framework (cargo, $PROFILE)"
 cargo build ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST"
 
-# 3. Run the sim sanity suite. On Windows (MSYS) the Rust binary needs a
-#    Windows-style path for LoadLibrary; cygpath handles that and is a no-op
-#    elsewhere. The suite exits nonzero if any check FAILs; capture the status
-#    explicitly so we still print a summary line either way. The DLL flavor is
-#    passed via env so the suite's perf report can name it.
+# On Windows (MSYS) the Rust harness needs a Windows-style path for LoadLibrary;
+# cygpath handles that and is a no-op elsewhere. Pass the freshly-built DLL to the
+# tests + bin via PCS_SIL_DLL so they load exactly this image (matching the profile).
 LIB_ARG="$(cygpath -m "$LIB" 2>/dev/null || echo "$LIB")"
-echo "==> [3/3] Running SIL sanity suite against $LIB_ARG"
+export PCS_SIL_DLL="$LIB_ARG"
+
+# 3. Run the behavioral checks. Each scenario is an independent #[test] over a fresh
+#    Sil world (a firmware DLL loaded, booted from reset, unloaded on drop). cargo
+#    nextest gives each test its own process, so the worlds parallelize with the world
+#    mutex uncontended; when nextest is absent, plain cargo test serializes them in one
+#    process. Exits nonzero on test failure either way.
 status=0
+if command -v cargo-nextest >/dev/null 2>&1; then
+  echo "==> [3/4] Running SIL checks (cargo nextest, process-per-test) against $LIB_ARG"
+  cargo nextest run ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
+    -p pcs_bldc_sil || status=$?
+else
+  echo "==> [3/4] cargo-nextest not on PATH; running SIL checks (cargo test) against $LIB_ARG"
+  cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
+    -p pcs_bldc_sil || status=$?
+fi
+if [ "$status" -ne 0 ]; then
+  echo "==> SIL checks FAILED (exit $status)" >&2
+  exit "$status"
+fi
+echo "==> SIL checks PASSED"
+
+# 4. Performance report (informational). The DLL flavor is named so a copied-out table
+#    is self-describing; a nonzero exit still fails the run.
+echo "==> [4/4] Running SIL performance report"
 PCS_SIL_DLL_FLAVOR="$DLL_FLAVOR" \
   cargo run --quiet ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
-  -p pcs_bldc_sil -- "$LIB_ARG" || status=$?
+  -p pcs_bldc_sil || status=$?
 
 if [ "$status" -eq 0 ]; then
-  echo "==> SIL sanity suite PASSED"
+  echo "==> SIL suite PASSED"
 else
-  echo "==> SIL sanity suite FAILED (exit $status)" >&2
+  echo "==> SIL performance report FAILED (exit $status)" >&2
 fi
 exit "$status"

@@ -1,0 +1,9 @@
+[package]
+name = "prng"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Pseudo Random Number Generator - using the splitmix64 algorithm"
+
+[dependencies]
+

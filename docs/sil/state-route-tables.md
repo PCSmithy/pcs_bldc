@@ -25,7 +25,7 @@ lives, not what kind of member owns it:
 |---|---|---|---|
 | `cvar` | table **mirror** of authoritative memory inside a firmware instance | every C `static` (+ nested members, array elements) | DWARF map + ASLR slide → live in-process address ([`ffi-boundary.md`](ffi-boundary.md) §4); sampled into the table each firmware tick |
 | `vsig` | **framework-resident** — the entry's value *is* the authority (no external mirror); it abides entirely within the framework | a model/peer member's state (inputs, outputs, internals) | pushed into the table by the member each advance |
-| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** — a framework-resident transport payload (a future backing regime) | logical packet payloads on a serial bus | a framework queue, fed by a sim-HW-driver C→Rust upcall (*Comms entries* below) |
+| `usb_cdc` / `spi` / `i2c` / `uart` | **comms** — a framework-resident transport payload | logical packet payloads on a serial bus | `spi` has landed as **duplex transactions**: an engine-owned `DuplexRouter` couples any initiating member to a linked peer synchronously, and the engine records each exchange as `:tx`/`:rx` event entries (`Value::Bytes`). `usb_cdc`/`i2c`/`uart` join as they land (*Comms entries* below) |
 
 **Open registration — no inference of member type from `sig_type`.** Registration
 is a runtime act any member performs directly on the table; it is never
@@ -81,6 +81,55 @@ Every entry has a canonical key: **`<sig_type>:<source>:<local>[:<modifier>]`**.
 Examples: `cvar:pcs_bldc:HW_ADC_data.channelData[0].counts[6]`,
 `vsig:motor:phase_u_voltage`, `spi:encoder:rx:decoded`.
 
+### Units (one signal per quantity; conversion at the boundary)
+
+**One physical quantity is ONE signal, stored in ONE canonical unit.** Units
+are never part of a signal's identity — there is no `angle_deg` alongside an
+`angle_rad`, and no unit segment in the key. A caller who wants a different
+unit asks for a *conversion at the table boundary*; the stored history stays
+a single canonical series.
+
+- **Canonical unit = the unit declared at `register(id, Some("rad"))`.** The
+  declaration is load-bearing: it names the unit every stored sample is in.
+  Convention: SI (or the SI-derived natural unit) for dimensioned quantities;
+  signals with no meaningful unit (duty in [0,1], raw counts, flags) register
+  `None` and get no conversion service — bare access only.
+- **The unit ask** rides the string-keyed API as a bracket suffix on the id:
+  `write("vsig:as5048_motor:angle[deg]", 90.0)` converts deg→canonical on the
+  way in; `read("…:angle[deg]")` converts on the way out. The suffix is
+  per-call, parsed off before id resolution — it is never stored and never
+  distinguishes entries. A **bare id operates in the canonical unit.**
+  A trailing **non-numeric** bracket is the unit ask; an **all-digit** bracket
+  (`counts[6]`) is a cvar array index and stays part of the id. Unit names may
+  not start with a digit, so the two never collide.
+- **Conversion registry:** a runtime table `unit → (dimension, scale, offset)`
+  relative to the dimension's base unit; a conversion resolves ask-unit →
+  base → canonical and requires both units to share a dimension. Linear
+  (scale + offset) only — that covers deg/rad, RPM/rad·s⁻¹, mV/V, °C/K.
+  Built-ins ship for the units the sim uses; `add_unit(name, dimension,
+  scale, offset)` extends it at runtime.
+- **Fail loud, never guess:** unknown unit, dimension mismatch
+  (`angle[V]`), a unit ask on a `None`-unit signal, or a conversion against a
+  non-float column is an `Err` — no silent pass-through.
+- **Boundary-only.** Conversion lives exclusively in the string-keyed
+  `write`/`read` layer (tests, scenarios, Python bindings). Routes, the
+  mirror sweep, ports, and members always move canonical values natively —
+  the native-format principle and the typed hot-path lanes are untouched.
+  `cvar`s are whatever unit the firmware chose; the table never infers or
+  converts them (they register `None` unless a human declares otherwise).
+
+Worked example: the encoder model registers `vsig:as5048_motor:angle`
+(canonical `rad`). A test writes `angle[deg] = 90.0`; the table stores
+`1.5708`; the model reads canonical radians; a later
+`read("…:angle[deg]")` returns `90.0`. Coherent by construction — there is
+nothing to keep in sync.
+
+Non-goals (deliberate): no `uom`/dimensional-analysis dependency (runtime
+string-keyed values fight compile-time quantity types; linear conversions
+don't need them); no compound-unit algebra; no hot-path conversion. Future
+(unbuilt): route validation could check dimension compatibility across a
+route's endpoints — the wiring-error class unit metadata exists to catch.
+
 ### Firmware "ports" (ordinary Signals, registered from C)
 
 **"Port" is firmware-member vocabulary, not a voyant concept.** Table-side, a
@@ -109,9 +158,9 @@ exist.
 - **Native format.** Port values flow member-to-member in native units
   (volts→volts). The sim HW driver owns any conversion to its C-memory
   representation (volts→counts per its own numBits/vref) — the conversion lives
-  where real hardware does it. Values are `double` scalars today; typed
-  variants are the documented extension path (transport/event payloads arrive
-  with the D5 comms work).
+  where real hardware does it. Scalar ports carry a `double` (pins are levels);
+  bus transactions do not flow through the port cache at all — they use the
+  synchronous **DuplexTransfer** primitive (*Comms entries* below).
 - **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
   State Table mid-tick. Per firmware tick the member runs **three fixed phases**
   over its signal *bindings* (ports, cvars — each an optional in-half and/or
@@ -134,26 +183,24 @@ exist.
   reads through **pre-resolved handles** (address/type cached at enable), never
   re-resolving DWARF per tick.
 - **In-sync flush is sparse — only the *fresh* cvars.** The State Table marks a
-  **dirty set**: `record` / `force_record` (route, test, model output) and a pin
-  (`set_override(id, true)`) mark the id dirty; the mirror sweep (`record_mirror`)
-  does **not**. Each tick the member flushes its namespace's dirty ids
-  (`take_dirty`, source-scoped) ∪ its pinned ids, filtered to `cvar`. This is
-  sound because the sim is single-threaded: between one tick's sweep and the
-  next tick's flush no firmware code runs, so a table entry differs from memory
-  **iff** the framework command-wrote it — "flush fresh" ≡ "flush all", done
-  cheaply. A **pinned cvar flushes every tick** (a pin is a continuous drive the
-  firmware may overwrite mid-tick, so it is re-asserted each tick — the fault-
-  injection semantics of `set_override` on a cvar), and a mirror record on a
-  pinned entry is **ignored** exactly like a command `record`, so the sweep can
-  never un-pin the view.
+  **dirty set**: `record` / `force_record` (route, test, model output) mark the id
+  dirty; the mirror sweep (`record_mirror`) does **not**. Each tick the member
+  flushes its namespace's dirty ids (`take_dirty`, source-scoped), filtered to
+  `cvar`. This is sound because the sim is single-threaded: between one tick's
+  sweep and the next tick's flush no firmware code runs, so a table entry differs
+  from memory **iff** the framework command-wrote it — "flush fresh" ≡ "flush
+  all", done cheaply. Writes are one-shot, last-writer-wins: if firmware
+  overwrites a value mid-tick, the sweep mirrors that back and the framework does
+  not re-assert — a value persists only as long as nothing else writes it.
 - **Exclusion policy (built-in).** Enumeration expands nested struct members and
   array elements to scalar leaves, but an array with more than a size threshold
   (**default 32**) is excluded whole — this drops FreeRTOS task stacks, `ucHeap`,
   512-byte scratch buffers, etc. Multi-dimensional and unknown-length arrays, and
   non-data leaves (pointers, functions, opaque aggregates), are skipped too; a
   depth/leaf-count safety cap guards pathological DWARF. A firmware member can
-  `exclude(prefix)` a noisy subtree or `include(path)` a specific over-threshold
-  leaf it needs to drive (e.g. one byte of a 256-byte SPI injection buffer).
+  `skip_cvar_registration_by_prefix(prefix)` a noisy subtree or
+  `register_cvar_in_state_table(path)` a specific over-threshold leaf it needs to
+  drive (e.g. one byte of a 256-byte SPI injection buffer).
 - **Input vs output is behavioral, not metadata.** Input ports carry commanded
   values (table → cache → C read); output ports carry firmware-produced values
   (C write → table). A signal has no direction metadata — the same port may do
@@ -167,6 +214,12 @@ exist.
   input (local name = the channel config's `inputNameStr`, unit `V`). A driven
   port commands that input's pin voltage; an undriven one keeps the synthetic
   ramp.
+- **Output ports** publish driver-produced state out of the firmware. The sim
+  `HW_TIM` is the first consumer: it registers one duty + one enable port per PWM
+  channel plus a per-peripheral master output enable
+  (`PWM_{U,V,W}_{duty,enabled}`, `TIM1_MOE`), publishing the commanded bridge
+  state (normalized duty ∈ [0,1], 0/1 flags) event-driven from its setters — the
+  D6 route source a motor model consumes.
 
 ### Comms entries (the framework is the wire)
 
@@ -176,11 +229,28 @@ calls a **C→Rust upcall** with each payload; the framework (1) records it in t
 comms entry's history and (2) routes it to the destination (a peer model now, an
 external transport — the real desktop app, D5 — later).
 
+- **Request/response buses use DuplexTransfer** (landed for `spi`) — a **generic,
+  engine-scoped primitive**. An engine-owned `DuplexRouter` couples any initiating
+  [member](architecture.md#member-model) to a linked
+  [`DuplexPeer`](architecture.md#member-model): the initiator runs a synchronous
+  exchange (tx in, the peer's rx back within the same call), and the engine
+  force-records it as `:tx`/`:rx` event entries after all members advance. A model
+  initiates through `MemberCtx::duplex_transfer`; a **firmware** member is just one
+  initiator among many — its C SPI upcall forwards into the **same** router. Endpoints
+  are `spi:<owning-member>:<local>`; linking one nobody has declared yet is legal
+  (a pending link that resolves when the endpoint is declared; a still-dangling link
+  warns once). **Limitation:** the primitive is synchronous, so it needs a Rust-side
+  responder (a peer/model). Two firmware instances on one bus (the multi-device stretch)
+  cannot answer each other synchronously — firmware↔firmware duplex rides the **D8
+  delayed-response** extension (`backlog.md`). Streaming buses (`usb_cdc` telemetry
+  capture) still want the plain upcall→queue.
 - **Logical payloads, not raw bytes.** We own the sim-HW driver code, so a comms
   entry holds the *logical contents* of the packet (a `Value::Record`/`Bytes`
   shaped by the transport), not a bitstream — far nicer to assert on and route.
-- **Timing.** A transaction's completion schedules a **one-shot interrupt** (D8)
-  quantized to the base `dt`; rx is delivered then.
+- **Timing.** A synchronous DuplexTransfer delivers rx within the same tick. A
+  non-blocking (DMA/IT) transaction's completion instead schedules a **one-shot
+  interrupt** (D8) quantized to the base `dt`; rx is delivered then. Streaming
+  capture + D8 timing remain future.
 - **History is uniform.** A comms entry is a historian like any other — just a
   timeseries of `Value`s (here, packets) rather than scalars (D12).
 - Comms is **designed-in now, built after** the model + interrupt (D8) layers,
@@ -203,7 +273,7 @@ Design rules:
   table-only act, because a `cvar` entry is the table's *mirror* of firmware
   memory and a `vsig` entry *abides* in the framework. **Members sync their own
   mirrors** on their own clock: a `FirmwareMember` **flushes** the *fresh* (route-/
-  test-/pin-written) `cvar` entries in its namespace into firmware memory and
+  test-written) `cvar` entries in its namespace into firmware memory and
   **sweeps** its whole leaf list back out around its firmware tick; a model reads
   a routed `vsig` input straight from the entry. The route is indifferent to which —
   no bespoke firmware code moves data. A route driving a `cvar` marks it dirty, so
@@ -214,10 +284,12 @@ Design rules:
   model) work through the identical path — a `record` into the entry — with no
   per-`sig_type` restriction and no new seam. The table is a flat, member-agnostic
   registry.
-- **Override pins a destination against its route.** Because a route drives its
-  destination via `record`, `set_override` on that entry makes the record a no-op —
-  the route cannot drive a pinned destination. Fault injection composes with
-  routing at **zero extra mechanism** (it is the same pin the historian uses).
+- **Fault injection = suspend the route, then write the destination.** A live
+  route re-drives its destination via `record` every tick, so a direct write would
+  be clobbered. `suspend` the route and the destination stops being recorded; a
+  `record` straight into that entry then persists (one-shot, last-writer-wins),
+  and `resume` hands the destination back to the route. Composes with routing at
+  **zero extra mechanism** — no pin, no override, just the ordinary write.
 - **Conversions are models, not routes.** A motor model emits *amps*; a
   firmware ADC static holds *counts*. The amps→counts conversion lives in a
   **sensor model** whose input and output are themselves State Table entries:
@@ -275,7 +347,7 @@ per tick:
   4. for each ENABLED member, in registration order:
        a. evaluate the enabled ZERO-latency routes in topological order with FRESH
           reads (a→b→c resolves fully, reading values produced earlier this tick)
-       b. member.advance(dt)   (a firmware member: flush fresh/pinned cvars →
+       b. member.advance(dt)   (a firmware member: flush fresh cvars →
                                 advance_tick → sweep the whole cvar mirror out; a
                                 model: read inputs, step, push outputs)
   5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
@@ -367,8 +439,9 @@ One namespace, one access path, zero firmware-side data code.
   project allowlist?~~ **Resolved:** the firmware member mirrors the **whole
   traceable namespace** by default (every scalar/enum leaf under every static),
   minus a built-in exclusion policy (array-size threshold drops stacks/heap/large
-  buffers; pointers/functions/multi-dim skipped). Per-member `exclude(prefix)` /
-  `include(path)` tune it; a general symbol/pattern trace filter is a later
+  buffers; pointers/functions/multi-dim skipped). Per-member
+  `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
+  tune it; a general symbol/pattern trace filter is a later
   cosmetic addition ([`signal-trace.md`](signal-trace.md) §9).
 - **Entry keying / path syntax** for nested members and array elements.
 - ~~**Model registration API** (Rust): how models declare their entries.~~

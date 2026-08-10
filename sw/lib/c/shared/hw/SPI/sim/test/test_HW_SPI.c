@@ -3,11 +3,140 @@
 #include "HW_SPI_timeout.h"
 #include "HW_GPIO.h"
 #include "HW_GPIO_sim.h"
+#include "SIL_ports.h"
 #include "unity.h"
+
+#include <stdio.h>
+#include <string.h>
 
 // Single-bit HAL-style pin masks for the two GPIO chip-selects used here.
 #define CS1_PIN    (0x04U)   // AS5048_1 -> port C
 #define CS2_PIN    (0x02U)   // AS5048_2 -> port B
+
+// Test-owned SIL_ports hooks double, installed for every test so both drivers
+// bind to the production seam: registerSignal hands out sequential handles and
+// remembers each port's local name, writeSignal records the level sequence the
+// sim GPIO publishes (how CS activity is observed), and duplexTransfer answers
+// a transfer with a canned frame once a peer is linked — unlinked, it declines
+// and the driver falls back to the floating-bus all-ones fill.
+#define MAX_PORTS   (8)
+#define MAX_WRITES  (4)
+static char     portName[MAX_PORTS][16];
+static double   portWrite[MAX_PORTS][MAX_WRITES];
+static uint32_t portWrites[MAX_PORTS];
+static int32_t  portCount;
+
+static uint8_t canned[8];
+static size_t  cannedLen;
+
+static int32_t hookRegister(void * ctx, const char * sigType, const char * localName,
+                            const char * unit, int32_t kind)
+{
+    (void)ctx; (void)sigType; (void)unit; (void)kind;
+    int32_t handle = portCount;
+    if (portCount < MAX_PORTS)
+    {
+        snprintf(portName[handle], sizeof(portName[handle]), "%s", localName);
+        portCount++;
+    }
+    return handle;
+}
+
+static void hookWrite(void * ctx, int32_t handle, double value)
+{
+    (void)ctx;
+    if ((handle >= 0) && (handle < MAX_PORTS))
+    {
+        if (portWrites[handle] < MAX_WRITES)
+        {
+            portWrite[handle][portWrites[handle]] = value;
+        }
+        portWrites[handle]++;
+    }
+}
+
+static bool hookDuplex(void * ctx, int32_t handle, const uint8_t * tx, size_t txLen,
+                       uint8_t * rx, size_t rxMax, size_t * rxLen)
+{
+    (void)ctx; (void)handle; (void)tx; (void)txLen;
+    bool ret = false;
+    if (cannedLen > 0U)
+    {
+        const size_t n = (cannedLen < rxMax) ? cannedLen : rxMax;
+        for (size_t i = 0U; i < n; i++)
+        {
+            rx[i] = canned[i];
+        }
+        *rxLen = n;
+        ret = true;
+    }
+    return ret;
+}
+
+static void installHooks(void)
+{
+    const SIL_ports_hooks_S hooks = {
+        .context        = NULL,
+        .registerSignal = hookRegister,
+        .readSignal     = NULL,
+        .writeSignal    = hookWrite,
+        .duplexTransfer = hookDuplex,
+    };
+    SIL_ports_setHooks(&hooks);
+}
+
+// Link a duplex peer that answers every transfer with `frame`.
+static void installDuplexPeer(const uint8_t * frame, size_t len)
+{
+    cannedLen = (len < sizeof(canned)) ? len : sizeof(canned);
+    for (size_t i = 0U; i < cannedLen; i++)
+    {
+        canned[i] = frame[i];
+    }
+}
+
+// Resolve a registered port's handle by its local name; -1 when absent.
+static int32_t portHandle(const char * name)
+{
+    int32_t handle = -1;
+    for (int32_t i = 0; (i < portCount) && (handle < 0); i++)
+    {
+        if (strcmp(portName[i], name) == 0)
+        {
+            handle = i;
+        }
+    }
+    return handle;
+}
+
+// Drop the GPIO boot-state publication so a test counts only transfer traffic.
+static void clearPortWrites(void)
+{
+    for (int32_t i = 0; i < MAX_PORTS; i++)
+    {
+        portWrites[i] = 0U;
+    }
+}
+
+// The two chip-select lines as configured output pins, so the sim GPIO driver
+// publishes each transfer's CS activity on their observation ports.
+static HW_GPIO_pinConfig_S csPinB[1];
+static HW_GPIO_pinConfig_S csPinC[1];
+static HW_GPIO_config_S    gpioConfig;
+
+static void buildGpioConfig(void)
+{
+    csPinB[0] = (HW_GPIO_pinConfig_S){
+        .pin = CS2_PIN, .mode = HW_GPIO_MODE_OUTPUT, .pinNameStr = "CS2" };
+    csPinC[0] = (HW_GPIO_pinConfig_S){
+        .pin = CS1_PIN, .mode = HW_GPIO_MODE_OUTPUT, .pinNameStr = "CS1" };
+
+    gpioConfig = (HW_GPIO_config_S){ 0 };
+    gpioConfig.ports[HW_GPIO_PORT_B].pins    = csPinB;
+    gpioConfig.ports[HW_GPIO_PORT_B].numPins = 1U;
+    gpioConfig.ports[HW_GPIO_PORT_C].pins    = csPinC;
+    gpioConfig.ports[HW_GPIO_PORT_C].numPins = 1U;
+}
 
 // File-scope config the tests build (good baseline) and tweak per case.
 // HW_SPI_init stores a pointer to it, so it must outlive each test — hence
@@ -57,14 +186,29 @@ static void buildGoodConfig(void)
 
 void setUp(void)
 {
+    for (int32_t i = 0; i < MAX_PORTS; i++)
+    {
+        portName[i][0] = '\0';
+        portWrites[i]  = 0U;
+    }
+    portCount = 0;
+    cannedLen = 0U; // unlinked bus by default; per-test peer opts in
+    installHooks();
+
     HW_GPIO_sim_reset();
+    buildGpioConfig();
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+
     cbCount   = 0U;
     cbChannel = HW_SPI_CHANNEL_COUNT;
     cbContext = NULL;
     buildGoodConfig();
 }
 
-void tearDown(void) {}
+void tearDown(void)
+{
+    SIL_ports_setHooks(NULL);
+}
 
 /* ---- fw~hal_spi_001: init + config validation ---- */
 // [test->fw~hal_spi_001~1]
@@ -137,73 +281,46 @@ static void test_cs_validity_hw_mode_ignores_gpio_fields(void)
 static void test_addressed_channel_asserts_only_its_own_cs(void)
 {
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    const int32_t cs1 = portHandle("CS1");
+    const int32_t cs2 = portHandle("CS2");
+    TEST_ASSERT_TRUE((cs1 >= 0) && (cs2 >= 0));
+    clearPortWrites();
 
     uint8_t tx[2] = { 0xAAU, 0x55U };
     uint8_t rx[2] = { 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmitReceive(HW_SPI_CHANNEL_AS5048_1, tx, rx, 2U));
 
-    // Only AS5048_1's chip-select moved; AS5048_2 (same bus) untouched.
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_2));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_B, CS2_PIN));
-    // Assert then deassert on the addressed line.
-    TEST_ASSERT_EQUAL_UINT32(2U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_C, CS1_PIN));
-    // Loopback delivered the data on the addressed channel.
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 2U);
-}
-
-// [test->fw~hal_spi_002~1]
-static void test_second_channel_on_shared_bus_independent(void)
-{
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    uint8_t tx[3] = { 1U, 2U, 3U };
-    uint8_t rx[3] = { 0U, 0U, 0U };
-    TEST_ASSERT_TRUE(HW_SPI_transmitReceive(HW_SPI_CHANNEL_AS5048_2, tx, rx, 3U));
-
-    TEST_ASSERT_EQUAL_UINT32(1U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_2));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 3U);
+    // Assert then deassert on the addressed line; AS5048_2 (same bus) untouched.
+    TEST_ASSERT_EQUAL_UINT32(2U, portWrites[cs1]);
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs2]);
+    // Unlinked bus: MISO reads all-ones on the addressed channel.
+    const uint8_t ones[2] = { 0xFFU, 0xFFU };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ones, rx, 2U);
 }
 
 /* ---- fw~hal_spi_003: blocking byte transfers + computed timeout ---- */
 // [test->fw~hal_spi_003~1]
-static void test_transmit_moves_exact_length(void)
+static void test_receive_returns_linked_peer_frame(void)
 {
+    uint8_t frame[3] = { 0xDEU, 0xADU, 0xBEU };
+    installDuplexPeer(frame, 3U); // link the peer before init so the channel registers its endpoint
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    uint8_t tx[4] = { 0x10U, 0x20U, 0x30U, 0x40U };
-    TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_AS5048_1, tx, 4U));
-    TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_AS5048_1));
-
-    uint8_t captured[4] = { 0U };
-    const size_t n = HW_SPI_sim_getLastTx(HW_SPI_CHANNEL_AS5048_1, captured, 4U);
-    TEST_ASSERT_EQUAL_UINT(4U, n);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, captured, 4U);
-}
-
-// [test->fw~hal_spi_003~1]
-static void test_receive_returns_injected_bytes(void)
-{
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    uint8_t injected[3] = { 0xDEU, 0xADU, 0xBEU };
-    HW_SPI_sim_setInjectedRx(HW_SPI_CHANNEL_AS5048_1, injected, 3U);
 
     uint8_t rx[3] = { 0U, 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_receive(HW_SPI_CHANNEL_AS5048_1, rx, 3U));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(injected, rx, 3U);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(frame, rx, 3U);
 }
 
 // [test->fw~hal_spi_003~1]
-static void test_transmitReceive_loopback(void)
+static void test_transmitReceive_unlinked_bus_reads_ones(void)
 {
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig)); // no peer linked
 
     uint8_t tx[5] = { 9U, 8U, 7U, 6U, 5U };
     uint8_t rx[5] = { 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmitReceive(HW_SPI_CHANNEL_AS5048_1, tx, rx, 5U));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(tx, rx, 5U);
+    const uint8_t ones[5] = { 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ones, rx, 5U);
 }
 
 // [test->fw~hal_spi_003~1]
@@ -232,26 +349,32 @@ static void test_timeout_formula(void)
 static void test_cs_active_low_polarity(void)
 {
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    const int32_t cs1 = portHandle("CS1");
+    TEST_ASSERT_TRUE(cs1 >= 0);
+    clearPortWrites();
 
     uint8_t tx[1] = { 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_AS5048_1, tx, 1U));
     // Active-low: driven low to select, high to release.
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW,  HW_SPI_sim_getCsAssertLevel(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_SPI_sim_getCsDeassertLevel(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_GPIO_sim_getLevel(HW_GPIO_PORT_C, CS1_PIN));
+    TEST_ASSERT_EQUAL_UINT32(2U, portWrites[cs1]);
+    TEST_ASSERT_TRUE(portWrite[cs1][0] == 0.0);
+    TEST_ASSERT_TRUE(portWrite[cs1][1] == 1.0);
 }
 
 // [test->fw~hal_spi_004~1]
 static void test_cs_active_high_polarity(void)
 {
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    const int32_t cs2 = portHandle("CS2");
+    TEST_ASSERT_TRUE(cs2 >= 0);
+    clearPortWrites();
 
     uint8_t tx[1] = { 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_AS5048_2, tx, 1U));
     // Active-high: the inverse of active-low.
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_SPI_sim_getCsAssertLevel(HW_SPI_CHANNEL_AS5048_2));
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW,  HW_SPI_sim_getCsDeassertLevel(HW_SPI_CHANNEL_AS5048_2));
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW,  HW_GPIO_sim_getLevel(HW_GPIO_PORT_B, CS2_PIN));
+    TEST_ASSERT_EQUAL_UINT32(2U, portWrites[cs2]);
+    TEST_ASSERT_TRUE(portWrite[cs2][0] == 1.0);
+    TEST_ASSERT_TRUE(portWrite[cs2][1] == 0.0);
 }
 
 // [test->fw~hal_spi_004~1]
@@ -259,22 +382,31 @@ static void test_cs_hw_mode_drives_no_gpio(void)
 {
     spiChannels[HW_SPI_CHANNEL_AS5048_1].csMode = HW_SPI_CS_MODE_HW;
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    const int32_t cs1 = portHandle("CS1");
+    TEST_ASSERT_TRUE(cs1 >= 0);
+    clearPortWrites();
 
     uint8_t tx[1] = { 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_AS5048_1, tx, 1U));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_AS5048_1));
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_GPIO_sim_getWriteCount(HW_GPIO_PORT_C, CS1_PIN));
+    // Hardware NSS: the peripheral owns the line, so no GPIO pin moves.
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs1]);
 }
 
 // [test->fw~hal_spi_004~1]
 static void test_cs_none_mode_drives_no_gpio(void)
 {
     TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    const int32_t cs1 = portHandle("CS1");
+    const int32_t cs2 = portHandle("CS2");
+    TEST_ASSERT_TRUE((cs1 >= 0) && (cs2 >= 0));
+    clearPortWrites();
 
     uint8_t tx[2] = { 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
     HW_SPI_sim_tick();
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_SPI_sim_getCsAssertCount(HW_SPI_CHANNEL_SK6805_STRING));
+    // The CS-less device drives no chip-select at all.
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs1]);
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs2]);
 }
 
 /* ---- fw~hal_spi_005: asynchronous transfer completion model ---- */
@@ -387,11 +519,9 @@ int main(void)
     RUN_TEST(test_cs_validity_hw_mode_ignores_gpio_fields);
 
     RUN_TEST(test_addressed_channel_asserts_only_its_own_cs);
-    RUN_TEST(test_second_channel_on_shared_bus_independent);
 
-    RUN_TEST(test_transmit_moves_exact_length);
-    RUN_TEST(test_receive_returns_injected_bytes);
-    RUN_TEST(test_transmitReceive_loopback);
+    RUN_TEST(test_receive_returns_linked_peer_frame);
+    RUN_TEST(test_transmitReceive_unlinked_bus_reads_ones);
     RUN_TEST(test_software_transfer_timeout_returns_false);
     RUN_TEST(test_timeout_formula);
 

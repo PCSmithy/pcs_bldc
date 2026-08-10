@@ -1,25 +1,45 @@
 # SIL bring-up — handover
 
-Last updated: 2026-07-09. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-08-10. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
-`roadmap.md` in this folder.
+`roadmap.md` in this folder. (`docs/handoff.md`, untracked, carries the
+current session-to-session state.)
 
 ## TL;DR
 
-We're building **`voyant`** — a generic, firmware-agnostic framework that runs
-the pcs_bldc firmware (cross-compiled to a host shared library) in a
-deterministic virtual world, with total white-box access to its state.
-**Phase 1 (firmware runs on the SIM target) and the Phase-2 core (Rust drives +
-introspects the firmware) are done and working.** The design is fully decided
-and captured (decisions D1–D12). What's left is the *engine* on top of the State
-Table: models, the Route Table, the sim clock/step loop, comms, run modes, and
-Python bindings.
+**The commutation sprint is complete and up for merge: PR #4 (sil -> main),
+CI green on all three platforms.** The firmware's six-step drive commutates a
+simulated motor end to end — button tap -> alignment physically swings the
+rotor -> offset captured from the plant -> dial demand -> closed-loop spin —
+driven and asserted purely through the State Table (`tests/north_star.rs`).
 
-All work is on branch **`sil`** (worktree `C:/code/pcs_bldc-sil`), pushed to
-`origin/sil`. The branch was **rebased onto current `main`** (`c9b4238`, the
-complete firmware foundation) on 2026-07-04, and the **firmware/SIL build was
-unified**: the SIM target now runs the SAME four FreeRTOS tasks and real
-io/dev/app modules as embedded (see "What's done").
+The plant is bench-parameterized (iPower GM6208-150T, measured with the board
+as the only instrument — see `tools/trace_analysis/*`): sinusoidal BEMF (it's
+a PMSM), R_LL 29.35 Ω, Ke 0.55 V·s/rad, J 3.2e-4, B 7.2e-4, T_c 4.4e-3
+(Coulomb/stiction with exact-zero park); `l_h` is the one class-typical
+estimate left. With these params the sim reproduces the bench alignment snap
+(~200 ms, parked, +2.2°e offset error).
+
+Models (owner-implemented physics, never edit without asking): `motor.rs`
+(hybrid ideal-diode legs + PMSM electrical + Coulomb mechanics), `as5048.rs`
+(measured noise σ 1.52/1.57 LSB, seeded), `current_sense.rs` (mirrors
+`IO_bridge_channels.c`). Port convention: models declare all ports in their
+own namespace; `wiring.rs` (`wire_bridge` 7 delayed routes,
+`wire_current_sense` 8 zero-latency routes) binds them; suspend-and-write on
+a bundle is the fault-injection seam. Harness: 47 SIL tests + 174 workspace,
+per-test MF4 drops (`PCS_SIL_TRACE_DIR=build/traces`).
+
+Hardware findings this sprint (details in `backlog.md`): low-side-shunt
+(1−duty) current visibility (six-step protection is safe; FOC needs the
+reserved injected-ADC sampling); phase sequence U->W->V vs encoder-positive;
+macOS keeps DWARF in dSYM bundles and clang -O3 SRA-decomposes small statics
+into DW_OP_piece locations (both handled: `sil.rs` temp-copy carries the
+bundle, `dwarf.rs` resolves pieces).
+
+Bench capture tooling: `tools/serial_capture.py` (unbounded Teleplot->CSV
+logger). The bench-only firmware duty-schedule/telemetry hooks were never
+meant to ship; recover them from git history (`PCS_BENCH_DUTY_SEQ`) if a
+future campaign (e.g. `l_h`) needs a starting point.
 
 ## Build & run
 
@@ -63,8 +83,9 @@ sw/sil/
   voyant/                 THE FRAMEWORK (generic, no pcs_bldc code)
     src/signal.rs           SignalId (sig_type:source:name[:modifier]) + Value
     src/state_table.rs      StateTable: registry + per-signal change-log history
-                            + current cache + overrides + per-signal epsilon
-                            + retention. Pure data, no FFI. (10 unit tests)
+                            + current cache + per-signal epsilon
+                            + retention. Pure data, no FFI. One-shot,
+                            last-writer-wins writes (no override/pin).
     src/backend.rs          Firmware (public handle): control ABI + cvar
                             sample-resolver (start/shutdown/advance_tick +
                             read_cvar/write_cvar; the only unsafe/DWARF part).
@@ -75,11 +96,11 @@ sw/sil/
                             instance wrapped as a Member — AUTO-mirrors the whole
                             traceable cvar namespace (enumerated from DWARF at
                             enable, array-size exclusion policy + exclude/include),
-                            flushing fresh/pinned cvars into fw memory + sweeping the
+                            flushing fresh cvars into fw memory + sweeping the
                             whole mirror back out around advance_tick; the ONLY thing
                             that touches fw memory (routes never do). dwarf.rs gained
                             leaf enumeration; state_table.rs a dirty set +
-                            record_mirror/take_dirty/pinned.
+                            record_mirror/take_dirty.
     src/member.rs           Member trait (the one seam the engine drives everything
                             through: name/advance(dt,st)/set_enabled) + vsig_id +
                             RampModel reference model member. Members register their
@@ -89,7 +110,8 @@ sw/sil/
                             snapshot-then-write pass/tick, add/remove/suspend/resume.
                             propagate is TABLE-ONLY (no backend): records src entry
                             -> dst entry; dst = any registered signal; both endpoints
-                            checked at propagate; override pins a dest against a route.
+                            checked at propagate; fault injection = suspend the route,
+                            then write the destination directly.
     src/log.rs              Unified log: LogLevel/LogEntry + drop-oldest LogRing the
                             StateTable stamps with sim time (st.log/take_logs).
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
@@ -128,8 +150,8 @@ docs/sil/*.md            the design (see "Design docs" below)
     elements**, and **enums by symbolic name**.
   - **State Table** implemented: `SignalId`, logical `Value`, per-signal
     change-logged history (dedup + per-signal epsilon, default 1e-3), current
-    cache (O(1)), `value_at` ZOH (O(log n)), injection **overrides**, time-based
-    retention (`None` = unbounded for fast mode).
+    cache (O(1)), `value_at` ZOH (O(log n)), time-based retention (`None` =
+    unbounded for fast mode).
 - **Rebased onto current `main` + firmware/SIL build unified (2026-07-04):**
   the SIM target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`,
   `task_usb`, `telemetryTask`) and the same io/dev/app init as embedded, via
@@ -157,8 +179,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   takes **no `Backend`**; it records source entries into destination entries and
   nothing else. A destination is **any registered signal of any `sig_type`** (the
   `cvar`-only restriction and `RouteError::UnsupportedDest` are gone), so `vsig`
-  destinations (model inputs) work with no new seam, and `set_override` on a
-  destination pins it against its route (free fault-injection compose). Added
+  destinations (model inputs) work with no new seam. Added
   `RouteTable::remove`; both endpoints are existence-checked at propagate
   (symmetric). The firmware member gained **`drive_cvar`** — the mirror of
   `sample_cvar`: per firmware tick it flushes driven cvars (table -> fw memory) ->
@@ -240,11 +261,11 @@ docs/sil/*.md            the design (see "Design docs" below)
   depth/leaf cap) and registers `cvar:<member>:<leaf>` for each, caching a resolved
   address/type handle per leaf. Out-sync **sweeps** them all memory→table
   (`record_mirror`) each tick; in-sync **flush is sparse** — a State Table **dirty
-  set** (`record`/`force_record`/pin mark dirty, `record_mirror` does not) drained
-  per-source (`take_dirty`) ∪ pinned ids, filtered to `cvar`. A pinned cvar
-  re-asserts every tick (fault-injection drive); a mirror record on a pinned entry
-  is ignored (never un-pins). `exclude(prefix)`/`include(path)` tune the policy
-  (the suite `include`s the one 256-byte-buffer SPI MISO byte it drives). Sweep
+  set** (`record`/`force_record` mark dirty, `record_mirror` does not) drained
+  per-source (`take_dirty`), filtered to `cvar`.
+  `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
+  tune the policy (the suite registers the one 256-byte-buffer SPI MISO byte it
+  drives; renamed from `exclude`/`include` 2026-07-16). Sweep
   cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
   workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
   mirror-accuracy check on `HW_ADC_data.tickCounter` — no declaration).
@@ -280,7 +301,26 @@ docs/sil/*.md            the design (see "Design docs" below)
   (materializing). voyant unit tests 76 → 83 (7 columnar tests). See
   `signal-trace.md` §1 + `performance.md` §6/§13.
 
+- **Override/pin mechanic removed (2026-07-12):** the State Table is dumb —
+  signals + history, one-shot **last-writer-wins** writes. A value persists
+  exactly when nothing else writes that signal (model disabled, route suspended,
+  or no author by construction); persistence is the **absence of writers**, not a
+  framework hold. If firmware overwrites a user's cvar write it *should* be
+  clobbered — users own their write targets. **Fault injection = suspend the
+  route, then write directly into the route's destination signal.** Deleted the
+  `overrides` set, `set_override`/`pinned`, the `record`/mirror pin branches, and
+  the pinned half of the `FirmwareMember` flush union (flush is now
+  command-dirtied only). voyant unit tests 89 → 85 (owner ruling — the mechanic
+  earned no keep).
+
 ## What's next (prioritized)
+
+> **Current sprint (2026-07-12): full-loop motor commutation** — see
+> `roadmap.md` § "Current sprint" for the staged plan (string-keyed table
+> write API → SPI comms seam → encoder model → PWM ports → motor/inverter →
+> harness → closed-loop scenario). D8 is deferred to the following
+> (interrupt-driven-control) sprint; `usb_cdc`/`teleplot` telemetry capture
+> is filed near the top of `backlog.md`.
 
 1. ~~**`Model` trait + `vsig` backing**~~ — **DONE (2026-07-04).** `voyant::model`
    adds the minimal `Model` trait (`name`/`signals`/`advance(dt_us)`/`read`), the
@@ -296,8 +336,8 @@ docs/sil/*.md            the design (see "Design docs" below)
    a chain `x→y→z` advances one hop per tick. Sources are any State Table entry
    (`vsig`/`cvar`); destinations are `cvar`s driven via `Backend::write_cvar` (the
    DWARF path is the id's `name` segment — no separate mapping). Per-route
-   `suspend`/`resume` gates driving for fault injection (pairs with the table's
-   `override`). A `vsig` destination (model input) needs a `Model::write` seam and
+   `suspend`/`resume` gates driving for fault injection. A `vsig`
+   destination (model input) needs a `Model::write` seam and
    is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
    snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
    model's `vsig` into a firmware `cvar` and proves suspend/resume gating.

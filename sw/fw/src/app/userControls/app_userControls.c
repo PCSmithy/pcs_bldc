@@ -75,6 +75,7 @@ static float32_t app_userControls_private_readAngleDeg(IO_AS5048_channel_E chann
 // app_rgbLedRing's walkAdvance: the raw-angle delta is wrapped across the
 // 0/360 seam so multi-turn winding accumulates, and the accumulator pegs at
 // the rails until wound back the other way.
+// [impl->fw~mc_008~1]
 static float32_t app_userControls_private_dialAccumulate(float32_t * const accum_deg,
                                                          float32_t * const prevRaw_deg,
                                                          const float32_t raw_deg)
@@ -199,6 +200,7 @@ void app_userControls_run1ms(void)
                 if (isToggle)
                 {
                     // entry to VELOCITY mode: command always starts at zero
+                    // [impl->fw~mc_008~1]
                     data->mode = APP_USERCONTROLS_MODE_VELOCITY;
 
                     // TODO - trigger rgb ring animation
@@ -230,7 +232,7 @@ void app_userControls_run1ms(void)
         }
 
         // set outputs
-        app_motorControl_setMode(data->config->motor, IS_FLOAT_NOT_EQUAL(data->velocityRequest_radPerSec, 0.0f) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP : APP_MOTORCONTROL_MODE_OFF);
+        app_motorControl_setMode(data->config->motor, (data->mode == APP_USERCONTROLS_MODE_VELOCITY) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP : APP_MOTORCONTROL_MODE_OFF);
         app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec);
     }
 }

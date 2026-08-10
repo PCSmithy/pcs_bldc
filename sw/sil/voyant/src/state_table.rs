@@ -1,15 +1,17 @@
 //! The State Table: signal registry + per-signal change-logged history +
-//! current-value cache + injection overrides + bounded retention.
+//! current-value cache + bounded retention.
 //!
 //! Pure data — no FFI, no DWARF. Fed by [`StateTable::record`], queried by
 //! [`StateTable::current_value`] (O(1)) / [`StateTable::value_at`] (O(log n),
 //! zero-order-hold). Each signal *is* its own historian (D12): a record is stored
 //! only when the value moves past the signal's epsilon (default 1e-3 for floats;
-//! exact otherwise). Overridden signals ignore `record` (the injection pin).
-//! Retention evicts old samples by time window (unbounded in fast mode).
+//! exact otherwise). Writes are one-shot, last-writer-wins — a value persists
+//! exactly when nothing else writes that signal. Retention evicts old samples by
+//! time window (unbounded in fast mode).
 
 use crate::log::{LogEntry, LogLevel, LogRing};
-use crate::signal::{SignalId, Value};
+use crate::signal::{ParseError, SignalId, Value};
+use crate::unit::{UnitError, UnitRegistry};
 use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -127,6 +129,21 @@ enum Zoh {
 }
 
 impl Column {
+    /// The column's established kind name (`"Empty"` before the first record) — for
+    /// the unit-ask non-float-column error.
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Column::Empty => "Empty",
+            Column::F32(_) => "F32",
+            Column::F64(_) => "F64",
+            Column::I32(_) => "I32",
+            Column::U32(_) => "U32",
+            Column::U64(_) => "U64",
+            Column::Bool(_) => "Bool",
+            Column::Boxed(dq) => boxed_kind_name(dq),
+        }
+    }
+
     /// Seed an empty column from the incoming value, choosing the column kind by
     /// its variant (scalars → a typed column; `Enum`/`Bytes` → boxed).
     fn seed(t: u64, value: Value) -> Column {
@@ -306,6 +323,24 @@ fn boxed_kind_name(dq: &VecDeque<(u64, Value)>) -> &'static str {
     }
 }
 
+/// Split a trailing **unit ask** off an id string. A trailing `[X]` where `X` is
+/// non-empty and NOT all ASCII digits is a per-call unit ask: returns `(id without
+/// the bracket, Some(X))`. An all-digit bracket (`counts[6]`) is a cvar array index
+/// — left on the id, `None`. Unit names never start with a digit, so the two never
+/// collide. No qualifying trailing bracket → `(id, None)`.
+fn split_unit_ask(id: &str) -> (&str, Option<&str>) {
+    if let Some(head) = id.strip_suffix(']') {
+        if let Some(open) = head.rfind('[') {
+            let inner = &head[open + 1..];
+            let is_ask = !inner.is_empty() && !inner.bytes().all(|b| b.is_ascii_digit());
+            if is_ask {
+                return (&id[..open], Some(inner));
+            }
+        }
+    }
+    (id, None)
+}
+
 /// The `Value` variant name, for the type-mismatch error.
 fn value_variant_name(v: &Value) -> &'static str {
     match v {
@@ -344,6 +379,37 @@ pub enum TableError {
     },
 }
 
+/// Error from the **string-keyed** table API ([`write`](StateTable::write) /
+/// [`read`](StateTable::read)): either the id string didn't parse, or the
+/// underlying table operation failed (unregistered signal, type mismatch). Never
+/// panics — the uniform scenario entry point returns every failure as an `Err`.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum AccessError {
+    #[error("bad signal id: {0}")]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Table(#[from] TableError),
+    /// A bracket unit ask named a unit absent from the unit registry (a typo'd ask
+    /// unit, or a signal whose canonical unit was never registered for conversion).
+    #[error("unknown unit {0:?} (not in the unit registry)")]
+    UnknownUnit(String),
+    /// The bracket ask unit and the signal's canonical unit are different dimensions
+    /// (`angle[V]`) — a wiring error, never a silent pass-through.
+    #[error("dimension mismatch: ask unit {ask:?} vs canonical unit {canonical:?}")]
+    DimensionMismatch { ask: String, canonical: String },
+    /// A unit ask on a signal registered with no canonical unit — nothing to convert
+    /// against.
+    #[error("unit ask on {0} which has no canonical unit (registered without one)")]
+    UnitlessSignal(SignalId),
+    /// A unit-ask `write` was handed a non-float `Value` — conversion needs a float.
+    #[error("unit ask on {signal}: value is a {offending}, not a float")]
+    NonFloatValue { signal: SignalId, offending: &'static str },
+    /// A unit ask hit a non-float column — the stored kind (read) or the seeded
+    /// column kind (write) is neither `F32` nor `F64`, so conversion is undefined.
+    #[error("unit ask on {signal}: column is {column_kind}, not F32/F64")]
+    NonFloatColumn { signal: SignalId, column_kind: &'static str },
+}
+
 pub struct StateTable {
     /// Registered signals in insertion order. The [`IndexSet`] gives each signal a
     /// **stable dense index** (append-only — never removed), the key for all hot
@@ -351,8 +417,13 @@ pub struct StateTable {
     /// once ([`resolve_index`](Self::resolve_index)) and delegates to the `*_at`
     /// internals, keeping per-record string hashing off hot paths.
     signals: IndexSet<SignalId>,
-    /// Optional per-signal unit string (metadata; cold — set only at register).
+    /// Optional per-signal **canonical** unit string (metadata; cold — set only at
+    /// register). Every stored sample of a signal is in this unit; a bracket unit
+    /// ask on [`write`](Self::write) / [`read`](Self::read) converts to/from it.
     units: HashMap<SignalId, String>,
+    /// The runtime unit-conversion table (built-ins + [`add_unit`](Self::add_unit)),
+    /// consulted only on the string API's bracket unit ask.
+    unit_registry: UnitRegistry,
     /// Per-signal **columnar historian**, by signal index (scalar → dense
     /// [`TypedCol`], `Enum`/`Bytes` → boxed deque). Ascending, front-evicted; kind
     /// is fixed at the FIRST record and immutable (a later mismatch is rejected with
@@ -363,10 +434,8 @@ pub struct StateTable {
     /// Resolved change-detection epsilon, by signal index (per-signal override else
     /// global — resolved at register so the hot `record` path never hashes config).
     epsilon: Vec<f64>,
-    /// Signals whose `record` is ignored (injection pin), by signal index.
-    overrides: HashSet<usize>,
     /// **Command-write dirty set**, by signal index: indices a framework command
-    /// wrote this cycle (`record` / `force_record` / pin) — *not* mirror sweeps
+    /// wrote this cycle (`record` / `force_record`) — *not* mirror sweeps
     /// (`record_mirror`). A firmware member drains its own namespace's dirt each
     /// tick to know which `cvar`s to flush back into firmware memory.
     dirty: HashSet<usize>,
@@ -395,9 +464,6 @@ impl Default for StateTable {
 macro_rules! typed_mirror_lane {
     ($name:ident, $t:ty, $variant:ident, $eq:expr) => {
         pub(crate) fn $name(&mut self, idx: usize, x: $t) -> Result<(), TableError> {
-            if self.overrides.contains(&idx) {
-                return Ok(()); // pinned: mirror records ignored
-            }
             match &self.columns[idx] {
                 Column::$variant(c) => {
                     if let Some(prev) = c.tail() {
@@ -439,10 +505,10 @@ impl StateTable {
         Self {
             signals: IndexSet::new(),
             units: HashMap::new(),
+            unit_registry: UnitRegistry::new(),
             columns: Vec::new(),
             current: Vec::new(),
             epsilon: Vec::new(),
-            overrides: HashSet::new(),
             dirty: HashSet::new(),
             evicted: HashSet::new(),
             current_time_us: 0,
@@ -454,6 +520,12 @@ impl StateTable {
     /// Set the current sim time (used to timestamp subsequent records).
     pub fn set_time(&mut self, time_us: u64) {
         self.current_time_us = time_us;
+    }
+
+    /// The current sim time (the last [`set_time`](Self::set_time)) — e.g. a
+    /// trace dump's run end time.
+    pub fn now_us(&self) -> u64 {
+        self.current_time_us
     }
 
     /// Register a signal (optionally with a unit).
@@ -493,6 +565,19 @@ impl StateTable {
         Ok(())
     }
 
+    /// Extend the unit-conversion registry at runtime (see [`UnitRegistry::add_unit`]).
+    /// Idempotent for an identical definition; a conflicting redefinition or a
+    /// digit-leading name is a [`UnitError`].
+    pub fn add_unit(
+        &mut self,
+        name: &str,
+        dimension: &str,
+        scale: f64,
+        offset: f64,
+    ) -> Result<(), UnitError> {
+        self.unit_registry.add_unit(name, dimension, scale, offset)
+    }
+
     /// Resolve a signal id to its stable dense index, or `None` if unregistered.
     /// Consumers resolve **once** (at registration / route validation) and then use
     /// the index-keyed hot paths, avoiding per-tick string hashing.
@@ -509,19 +594,127 @@ impl StateTable {
     }
 
     /// Record a **command-written** value (route, test, or model output) at the
-    /// current time. Marks the signal dirty. Skips the historian append if overridden
-    /// or unchanged, but the dirty mark stands whenever the command applied (an
-    /// unchanged re-command still means the framework is driving it, so it must be
-    /// re-asserted into firmware memory each tick). Errors if not registered.
+    /// current time. Marks the signal dirty. Skips the historian append if unchanged,
+    /// but the dirty mark stands whenever the command applied (an unchanged re-command
+    /// still means the framework is driving it, so it must be re-asserted into firmware
+    /// memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, true)
     }
 
+    // --- string-keyed scenario API ---------------------------------------
+    // Write/read a signal by id string (one uniform call shape, no typed handle): parse
+    // the id, delegate to the typed primitive above; a bad/unregistered/mistyped id
+    // returns an `Err`, never a panic. A trailing non-numeric bracket (`angle[deg]`)
+    // is a per-call **unit ask** converted at this boundary against the signal's
+    // canonical unit; an all-digit bracket (`counts[6]`) is a cvar array index and
+    // stays part of the id. The ask is never stored.
+
+    /// Record a value by **string id** — parse then [`record`](Self::record).
+    /// Literals coerce via [`Value`]'s `From` impls (`write(id, true)`). A bracket
+    /// unit ask converts ask→canonical, then records **coerced to the column's kind**
+    /// (`F32` column → `F32`, `F64`/empty → `F64`) so the one-type-per-signal rule
+    /// holds regardless of the ask unit.
+    pub fn write(&mut self, id: &str, value: impl Into<Value>) -> Result<(), AccessError> {
+        let (id_str, ask) = split_unit_ask(id);
+        let sid = SignalId::parse(id_str)?;
+        let value = value.into();
+        let Some(ask) = ask else {
+            self.record(&sid, value)?;
+            return Ok(());
+        };
+        let idx = self.ensure(&sid)?;
+        let canonical = self.canonical_unit(&sid)?.to_string();
+        self.validate_unit_ask(ask, &canonical)?;
+        let incoming = value.as_f64().ok_or_else(|| AccessError::NonFloatValue {
+            signal: sid.clone(),
+            offending: value_variant_name(&value),
+        })?;
+        let canon = self
+            .unit_registry
+            .convert(incoming, ask, &canonical)
+            .expect("units pre-validated by validate_unit_ask");
+        let coerced = match &self.columns[idx] {
+            Column::Empty | Column::F64(_) => Value::F64(canon),
+            Column::F32(_) => Value::F32(canon as f32),
+            other => {
+                return Err(AccessError::NonFloatColumn {
+                    signal: sid.clone(),
+                    column_kind: other.kind_name(),
+                })
+            }
+        };
+        self.record(&sid, coerced)?;
+        Ok(())
+    }
+
+    /// Read the current value by **string id** — parse then
+    /// [`current_value`](Self::current_value). `Ok(None)` = registered but never
+    /// recorded. A bracket unit ask converts the canonical current value canonical→ask
+    /// and returns `Some(Value::F64(..))`; `Ok(None)` still means never recorded.
+    pub fn read(&self, id: &str) -> Result<Option<Value>, AccessError> {
+        let (id_str, ask) = split_unit_ask(id);
+        let sid = SignalId::parse(id_str)?;
+        let Some(ask) = ask else {
+            return Ok(self.current_value(&sid)?);
+        };
+        self.ensure(&sid)?;
+        let canonical = self.canonical_unit(&sid)?.to_string();
+        self.validate_unit_ask(ask, &canonical)?;
+        match self.current_value(&sid)? {
+            None => Ok(None),
+            Some(v) => {
+                let stored = v.as_f64().ok_or_else(|| AccessError::NonFloatColumn {
+                    signal: sid.clone(),
+                    column_kind: value_variant_name(&v),
+                })?;
+                let out = self
+                    .unit_registry
+                    .convert(stored, &canonical, ask)
+                    .expect("units pre-validated by validate_unit_ask");
+                Ok(Some(Value::F64(out)))
+            }
+        }
+    }
+
+    /// The signal's canonical unit string, or [`AccessError::UnitlessSignal`] if it
+    /// registered without one. The caller must first [`ensure`](Self::ensure) the
+    /// signal is registered (an unregistered signal is an [`AccessError::Table`]
+    /// `UnknownSignal`, not unitless).
+    fn canonical_unit(&self, sid: &SignalId) -> Result<&str, AccessError> {
+        self.units
+            .get(sid)
+            .map(String::as_str)
+            .ok_or_else(|| AccessError::UnitlessSignal(sid.clone()))
+    }
+
+    /// Validate a unit ask against a signal's canonical unit: both must be registered
+    /// in the unit registry and share a dimension. Precise, distinct errors —
+    /// [`AccessError::UnknownUnit`] (names the offending unit) or
+    /// [`AccessError::DimensionMismatch`].
+    fn validate_unit_ask(&self, ask: &str, canonical: &str) -> Result<(), AccessError> {
+        let canon_dim = self
+            .unit_registry
+            .dimension_of(canonical)
+            .ok_or_else(|| AccessError::UnknownUnit(canonical.to_string()))?;
+        let ask_dim = self
+            .unit_registry
+            .dimension_of(ask)
+            .ok_or_else(|| AccessError::UnknownUnit(ask.to_string()))?;
+        if canon_dim != ask_dim {
+            return Err(AccessError::DimensionMismatch {
+                ask: ask.to_string(),
+                canonical: canonical.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Record a **mirror** value (a firmware member's end-of-tick sweep of memory
-    /// into the table). Same dedup/historian/override as [`record`](Self::record) — a
-    /// pin still ignores it, so a sweep can't un-pin the view — but does **not** mark
-    /// dirty (tracking what memory already holds, not commanding a write back).
+    /// into the table). Same dedup/historian as [`record`](Self::record) but does
+    /// **not** mark dirty (tracking what memory already holds, not commanding a write
+    /// back).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.record_inner(idx, value, false)
@@ -555,11 +748,6 @@ impl StateTable {
     }
 
     fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {
-        if self.overrides.contains(&idx) {
-            // Pinned: command and mirror records both ignored; the pin holds the view
-            // and is re-asserted via the pinned-flush union, not via record.
-            return Ok(());
-        }
         if command {
             self.dirty.insert(idx);
         }
@@ -571,8 +759,8 @@ impl StateTable {
         self.append(idx, value)
     }
 
-    /// Record unconditionally (bypasses change-detection and overrides). Counts as
-    /// a command write (marks the signal dirty).
+    /// Record unconditionally (bypasses change-detection). Counts as a command write
+    /// (marks the signal dirty).
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
         self.dirty.insert(idx);
@@ -617,20 +805,6 @@ impl StateTable {
         }
     }
 
-    /// Pin/unpin a signal (a pinned signal ignores `record`). Pinning marks dirty: a
-    /// pin is a continuous drive, re-asserted into firmware memory every tick (see
-    /// [`pinned`](Self::pinned)). Unpinning does not mark dirty.
-    pub fn set_override(&mut self, id: &SignalId, on: bool) -> Result<(), TableError> {
-        let idx = self.ensure(id)?;
-        if on {
-            self.overrides.insert(idx);
-            self.dirty.insert(idx);
-        } else {
-            self.overrides.remove(&idx);
-        }
-        Ok(())
-    }
-
     /// Remove and return the dirty ids whose `<source>` segment equals `source`
     /// (a member drains its **own** namespace; other members' dirt is left in
     /// place for their own drain). Deterministic order (sorted by id string).
@@ -654,19 +828,10 @@ impl StateTable {
         mine
     }
 
-    /// The currently-pinned (overridden) ids whose `<source>` segment equals
-    /// `source`, for the per-tick pinned-flush union (a pin re-asserts every tick,
-    /// even when not freshly dirty). Deterministic order.
-    pub fn pinned(&self, source: &str) -> Vec<SignalId> {
-        let mut ids: Vec<SignalId> = self
-            .overrides
-            .iter()
-            .filter_map(|&idx| self.signals.get_index(idx))
-            .filter(|id| id.source() == source)
-            .cloned()
-            .collect();
-        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        ids
+    /// A signal's registered canonical unit, if any (`None` = registered without
+    /// one). Cold metadata — for trace export ([`crate::trace`]) and inspection.
+    pub fn unit_of(&self, id: &SignalId) -> Option<&str> {
+        self.units.get(id).map(String::as_str)
     }
 
     /// The change-log for a signal (timestamped samples), for dump/inspection.
@@ -812,19 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn override_pins_value() {
-        let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        st.set_time(1_000);
-        st.record(&a, Value::U32(5)).unwrap();
-        st.set_override(&a, true).unwrap();
-        st.set_time(2_000);
-        st.record(&a, Value::U32(99)).unwrap(); // ignored
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
-    }
-
-    #[test]
     fn per_signal_epsilon() {
         let a = id("cvar:dut:a");
         let mut cfg = StateTableConfig::default();
@@ -914,29 +1066,6 @@ mod tests {
         st.record(&a, Value::U32(9)).unwrap(); // unchanged -> no historian append
         assert_eq!(st.changes(&a).unwrap().len(), 2);
         assert_eq!(st.take_dirty("dut"), vec![a]);
-    }
-
-    #[test]
-    fn pinned_ignores_mirror_and_flushes_every_tick() {
-        let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        st.set_time(1_000);
-        st.record_mirror(&a, Value::U32(5)).unwrap();
-
-        // Pin at 5; it enters the pinned set (and is dirty once).
-        st.set_override(&a, true).unwrap();
-        assert_eq!(st.pinned("dut"), vec![a.clone()]);
-
-        // A mirror record on a pinned entry is ignored — the sweep cannot un-pin
-        // the view.
-        st.set_time(2_000);
-        st.record_mirror(&a, Value::U32(99)).unwrap();
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
-
-        // The pin persists across take_dirty drains: it must flush EVERY tick.
-        st.take_dirty("dut");
-        assert_eq!(st.pinned("dut"), vec![a]);
     }
 
     #[test]
@@ -1200,18 +1329,219 @@ mod tests {
         assert_eq!(fast2.current_value(&b).unwrap(), Some(Value::U32(9)));
     }
 
+    // --- string-keyed scenario API ---------------------------------------
+
     #[test]
-    fn typed_fast_lane_respects_override_pin() {
-        // A pin makes the fast lane a no-op, exactly like the generic mirror path.
+    fn write_read_roundtrip_on_a_registered_vsig() {
         let mut st = StateTable::new();
-        let a = id("cvar:dut:a");
-        st.register(a.clone(), None).unwrap();
-        let idx = st.resolve_index(&a).unwrap();
+        let v = id("vsig:motor:angle_deg");
+        st.register(v.clone(), Some("deg")).unwrap();
         st.set_time(1_000);
-        st.record_mirror_u32_at(idx, 5).unwrap();
-        st.set_override(&a, true).unwrap();
+        st.write("vsig:motor:angle_deg", 90.0).unwrap(); // f64 literal via From
+        assert_eq!(st.read("vsig:motor:angle_deg").unwrap(), Some(Value::F64(90.0)));
+        // The write went through the historian, not a side channel.
+        assert_eq!(st.current_value(&v).unwrap(), Some(Value::F64(90.0)));
+    }
+
+    #[test]
+    fn write_to_unregistered_id_errors() {
+        let mut st = StateTable::new();
+        assert!(matches!(
+            st.write("cvar:dut:missing", 1u32),
+            Err(AccessError::Table(TableError::UnknownSignal(_)))
+        ));
+    }
+
+    #[test]
+    fn unparseable_or_unknown_sig_type_id_errors_not_panics() {
+        let mut st = StateTable::new();
+        // Too few segments and an unapproved sig_type both surface as a Parse error.
+        assert!(matches!(st.write("cvar:onlytwo", 1u32), Err(AccessError::Parse(_))));
+        assert!(matches!(st.write("bogus:src:name", 1u32), Err(AccessError::Parse(_))));
+        assert!(matches!(st.read("bogus:src:name"), Err(AccessError::Parse(_))));
+    }
+
+    #[test]
+    fn value_from_impls_cover_the_literal_shapes() {
+        assert_eq!(Value::from(true), Value::Bool(true));
+        assert_eq!(Value::from(9u32), Value::U32(9));
+        assert_eq!(Value::from(90.0f64), Value::F64(90.0));
+        // And a literal flows through write() to drive a signal.
+        let mut st = StateTable::new();
+        st.register(id("vsig:m:x"), Some("V")).unwrap();
+        st.write("vsig:m:x", 1.5f64).unwrap();
+        assert_eq!(st.read("vsig:m:x").unwrap(), Some(Value::F64(1.5)));
+    }
+
+    // --- unit-ask boundary (string API) ----------------------------------
+
+    const HALF_PI: f64 = std::f64::consts::FRAC_PI_2;
+
+    #[test]
+    fn split_unit_ask_disambiguates_bracket_forms() {
+        // Non-numeric bracket → unit ask, stripped off the id.
+        assert_eq!(split_unit_ask("vsig:m:angle[deg]"), ("vsig:m:angle", Some("deg")));
+        // All-digit bracket → cvar array index, left on the id.
+        assert_eq!(split_unit_ask("cvar:d:counts[6]"), ("cvar:d:counts[6]", None));
+        // No trailing bracket.
+        assert_eq!(split_unit_ask("vsig:m:angle"), ("vsig:m:angle", None));
+        // Empty bracket is not an ask.
+        assert_eq!(split_unit_ask("vsig:m:x[]"), ("vsig:m:x[]", None));
+    }
+
+    #[test]
+    fn write_with_deg_ask_stores_canonical_rad() {
+        let mut st = StateTable::new();
+        let a = id("vsig:motor:angle");
+        st.register(a.clone(), Some("rad")).unwrap();
+        st.set_time(1_000);
+        st.write("vsig:motor:angle[deg]", 90.0).unwrap();
+        // Stored canonical: 90 deg == π/2 rad, in an F64 column (empty seeds F64).
+        match st.current_value(&a).unwrap() {
+            Some(Value::F64(x)) => assert!((x - HALF_PI).abs() < 1e-9),
+            other => panic!("expected F64 canonical, got {other:?}"),
+        }
+        assert_eq!(st.changes(&a).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_with_deg_ask_converts_canonical_to_ask() {
+        let mut st = StateTable::new();
+        let a = id("vsig:motor:angle");
+        st.register(a.clone(), Some("rad")).unwrap();
+        st.set_time(1_000);
+        st.record(&a, Value::F64(HALF_PI)).unwrap();
+        match st.read("vsig:motor:angle[deg]").unwrap() {
+            Some(Value::F64(x)) => assert!((x - 90.0).abs() < 1e-9),
+            other => panic!("expected converted F64, got {other:?}"),
+        }
+        // Never-recorded signal: an ask read still returns None.
+        let b = id("vsig:motor:beta");
+        st.register(b, Some("rad")).unwrap();
+        assert_eq!(st.read("vsig:motor:beta[deg]").unwrap(), None);
+    }
+
+    #[test]
+    fn bare_id_is_the_canonical_unit_untouched() {
+        let mut st = StateTable::new();
+        let a = id("vsig:motor:angle");
+        st.register(a.clone(), Some("rad")).unwrap();
+        st.set_time(1_000);
+        // A bare write records verbatim (no conversion), a bare read returns it.
+        st.write("vsig:motor:angle", 1.5f64).unwrap();
+        assert_eq!(st.read("vsig:motor:angle").unwrap(), Some(Value::F64(1.5)));
+    }
+
+    #[test]
+    fn all_digit_bracket_is_a_plain_cvar_index_not_a_unit_ask() {
+        let mut st = StateTable::new();
+        let c = id("cvar:dut:counts[6]");
+        st.register(c.clone(), None).unwrap();
+        st.set_time(1_000);
+        // The `[6]` is part of the id: write/read resolve the plain signal, no unit
+        // parsing (a None-unit signal would otherwise reject any ask).
+        st.write("cvar:dut:counts[6]", 5u32).unwrap();
+        assert_eq!(st.read("cvar:dut:counts[6]").unwrap(), Some(Value::U32(5)));
+        assert_eq!(st.current_value(&c).unwrap(), Some(Value::U32(5)));
+    }
+
+    #[test]
+    fn unknown_ask_unit_errors() {
+        let mut st = StateTable::new();
+        st.register(id("vsig:m:a"), Some("rad")).unwrap();
+        assert!(matches!(
+            st.write("vsig:m:a[furlong]", 1.0f64),
+            Err(AccessError::UnknownUnit(u)) if u == "furlong"
+        ));
+    }
+
+    #[test]
+    fn typoed_unit_bracket_is_unknown_unit_not_unknown_signal() {
+        // `[dg]` is a non-numeric bracket → a unit ask on a *registered* signal, so
+        // the failure is UnknownUnit (the unit), never UnknownSignal (the id).
+        let mut st = StateTable::new();
+        st.register(id("vsig:m:a"), Some("rad")).unwrap();
+        assert!(matches!(
+            st.read("vsig:m:a[dg]"),
+            Err(AccessError::UnknownUnit(u)) if u == "dg"
+        ));
+    }
+
+    #[test]
+    fn dimension_mismatch_errors() {
+        let mut st = StateTable::new();
+        st.add_unit("V", "voltage", 1.0, 0.0).unwrap();
+        st.register(id("vsig:m:a"), Some("rad")).unwrap();
+        assert!(matches!(
+            st.write("vsig:m:a[V]", 1.0f64),
+            Err(AccessError::DimensionMismatch { ask, canonical }) if ask == "V" && canonical == "rad"
+        ));
+    }
+
+    #[test]
+    fn unit_ask_on_a_unitless_signal_errors() {
+        let mut st = StateTable::new();
+        st.register(id("vsig:m:b"), None).unwrap();
+        assert!(matches!(
+            st.write("vsig:m:b[deg]", 1.0f64),
+            Err(AccessError::UnitlessSignal(_))
+        ));
+    }
+
+    #[test]
+    fn unit_ask_write_coerces_to_an_f32_column() {
+        let mut st = StateTable::new();
+        let c = id("vsig:m:c");
+        st.register(c.clone(), Some("rad")).unwrap();
+        st.set_time(1_000);
+        // Seed an F32 column (a model records canonical F32); an F64-arriving ask
+        // write must coerce to F32 so the one-type rule holds.
+        st.record(&c, Value::F32(0.0)).unwrap();
         st.set_time(2_000);
-        st.record_mirror_u32_at(idx, 99).unwrap(); // ignored: pinned
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
+        st.write("vsig:m:c[deg]", 90.0).unwrap();
+        match st.current_value(&c).unwrap() {
+            Some(Value::F32(x)) => assert!((f64::from(x) - HALF_PI).abs() < 1e-6),
+            other => panic!("expected F32 canonical, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unit_ask_rejects_non_float_value_and_non_float_column() {
+        let mut st = StateTable::new();
+        let a = id("vsig:m:a");
+        st.register(a.clone(), Some("rad")).unwrap();
+        // A non-float ask value: nothing to convert.
+        assert!(matches!(
+            st.write("vsig:m:a[deg]", true),
+            Err(AccessError::NonFloatValue { offending: "Bool", .. })
+        ));
+        // Seed a non-float (U32) column, then an ask write / read both reject it.
+        let u = id("vsig:m:u");
+        st.register(u.clone(), Some("rad")).unwrap();
+        st.set_time(1_000);
+        st.record(&u, Value::U32(1)).unwrap();
+        assert!(matches!(
+            st.write("vsig:m:u[deg]", 90.0),
+            Err(AccessError::NonFloatColumn { column_kind: "U32", .. })
+        ));
+        assert!(matches!(
+            st.read("vsig:m:u[deg]"),
+            Err(AccessError::NonFloatColumn { column_kind: "U32", .. })
+        ));
+    }
+
+    #[test]
+    fn add_unit_rejects_digit_leading_and_conflicting_redefinition() {
+        let mut st = StateTable::new();
+        assert!(matches!(
+            st.add_unit("2pi", "angle", 1.0, 0.0),
+            Err(UnitError::DigitLeadingName(_))
+        ));
+        st.add_unit("mV", "voltage", 1e-3, 0.0).unwrap();
+        st.add_unit("mV", "voltage", 1e-3, 0.0).unwrap(); // idempotent
+        assert!(matches!(
+            st.add_unit("mV", "voltage", 1.0, 0.0),
+            Err(UnitError::Conflict(_))
+        ));
     }
 }

@@ -57,6 +57,8 @@ Acceptance:
 - The first enable applies the alignment pattern for the dwell time, then
   captures the offset, then begins commutation.
 - Subsequent enables commutate immediately with the stored offset.
+- A zero speed target during commutation does not re-trigger alignment; the
+  stored offset is retained.
 
 Covers:
 - sys~mc_005~1

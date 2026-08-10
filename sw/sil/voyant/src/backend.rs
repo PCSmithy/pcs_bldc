@@ -12,17 +12,20 @@
 //! firmware-coupled (unsafe / DWARF) part of the framework; the State Table is pure
 //! data fed by this resolver.
 
+use crate::duplex::{tx_rx_ids, DuplexHandle, DuplexRouter};
 use crate::dwarf::{DwarfMap, Leaf, Scalar};
 use crate::log::LogLevel;
-use crate::member::Member;
+use crate::member::{Member, MemberCtx};
 use crate::signal::{SignalId, Value};
 use crate::state_table::StateTable;
 use libloading::{Library, Symbol};
 use object::Object;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// The **internal execution seam** [`FirmwareMember`] drives one firmware instance
 /// through around each tick: `advance_tick`, white-box `cvar` read/write by path, and
@@ -37,6 +40,13 @@ use std::path::Path;
 pub(crate) trait Backend {
     /// Advance one sim tick (run the firmware to its next quiescence).
     fn advance_tick(&self);
+
+    /// Tear down the firmware scheduler — the reload teardown seam
+    /// ([`FirmwareMember`] reboots a disabled-then-re-enabled member by shutting the
+    /// old image down here before dropping it). Default no-op for a lifecycle-less
+    /// backend (a test mock). Construction/`start` stay off the trait — the reload
+    /// path drives them on the concrete [`Firmware`] handle it loads.
+    fn shutdown(&self) {}
 
     /// Sample a firmware `static` by path into a logical [`Value`] — the read
     /// side of the State Table's `cvar` backing.
@@ -129,6 +139,14 @@ pub(crate) trait Backend {
     fn drain_port_writes(&self) -> Vec<(i32, f64)> {
         Vec::new()
     }
+
+    /// Install the shared [`DuplexRouter`] and a C-handle → [`DuplexHandle`] mapping
+    /// into the rendezvous, so the `duplex_transfer` trampoline forwards a firmware
+    /// SPI upcall into the engine's router. Called once per endpoint at the firmware
+    /// member's first in-sync (the router itself is installed once, idempotently).
+    fn install_duplex(&self, c_handle: i32, handle: DuplexHandle, router: DuplexRouter) {
+        let _ = (c_handle, handle, router);
+    }
 }
 
 /// An opaque, backend-private token for a **pre-resolved** `cvar` leaf: whatever
@@ -179,12 +197,33 @@ pub(crate) struct CvarEnumeration {
 pub(crate) struct PortDef {
     /// The handle handed back to C (the index into the backend's port state).
     pub handle: i32,
-    /// The signal's backing regime (e.g. `vsig`), as the driver declared it.
+    /// The signal's backing regime (e.g. `vsig`, `spi`), as the driver declared it.
     pub sig_type: String,
     /// The driver-local signal name (e.g. an ADC input's config name string).
     pub local: String,
     /// Optional unit metadata (e.g. `V`).
     pub unit: Option<String>,
+    /// A scalar level port or a duplex transaction endpoint, declared at registration.
+    pub kind: PortKind,
+}
+
+/// A port's flavor, declared at registration (matches `SIL_ports_kind_E`): a
+/// `double` scalar **level** or a synchronous duplex **transaction** endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PortKind {
+    Scalar,
+    Duplex,
+}
+
+impl PortKind {
+    /// Decode the C-side `int32_t kind`; any unknown value is treated as scalar
+    /// (the conservative default — a scalar port never reaches the duplex path).
+    fn from_c(kind: i32) -> Self {
+        match kind {
+            1 => PortKind::Duplex,
+            _ => PortKind::Scalar,
+        }
+    }
 }
 
 /// The port rendezvous the installed hook vtable targets: the `context`
@@ -205,21 +244,30 @@ struct PortState {
 struct PortsInner {
     /// Every registered port, append-only; a def's `handle` is its index.
     defs: Vec<PortDef>,
-    /// Input cache, indexed by handle: what C `readSignal` returns. `None`
+    /// Scalar input cache, indexed by handle: what C `readSignal` returns. `None`
     /// (never driven) reads as false so the driver can fall back.
     inputs: Vec<Option<f64>>,
     /// Output buffer: `(handle, value)` pairs C `writeSignal` produced since
     /// the last drain, in write order.
     writes: Vec<(i32, f64)>,
+    /// The shared engine [`DuplexRouter`] the firmware member installs (once), so a
+    /// duplex upcall forwards into it. `None` until the first duplex endpoint is wired.
+    router: Option<DuplexRouter>,
+    /// C-handle → engine [`DuplexHandle`], so the trampoline resolves the router
+    /// endpoint for a firmware SPI transfer.
+    duplex_handles: HashMap<i32, DuplexHandle>,
 }
 
 impl PortsInner {
     /// Register (idempotently) and hand back the handle. An exact re-register
-    /// of an existing `{sig_type, local, unit}` returns the existing handle,
-    /// so a driver re-running its init cannot leak duplicate ports.
-    fn register(&mut self, sig_type: &str, local: &str, unit: Option<&str>) -> i32 {
+    /// of an existing `{sig_type, local, unit, kind}` returns the existing
+    /// handle, so a driver re-running its init cannot leak duplicate ports.
+    fn register(&mut self, sig_type: &str, local: &str, unit: Option<&str>, kind: PortKind) -> i32 {
         if let Some(d) = self.defs.iter().find(|d| {
-            (d.sig_type == sig_type) && (d.local == local) && (d.unit.as_deref() == unit)
+            (d.sig_type == sig_type)
+                && (d.local == local)
+                && (d.unit.as_deref() == unit)
+                && (d.kind == kind)
         }) {
             return d.handle;
         }
@@ -229,6 +277,7 @@ impl PortsInner {
             sig_type: sig_type.to_string(),
             local: local.to_string(),
             unit: unit.map(str::to_string),
+            kind,
         });
         self.inputs.push(None);
         handle
@@ -243,6 +292,22 @@ impl PortsInner {
     fn write(&mut self, handle: i32, value: f64) {
         self.writes.push((handle, value));
     }
+
+    /// Install the driving member's router and map this C handle to its engine
+    /// endpoint handle. The router is the current member's — a fresh member (a shared
+    /// `Firmware` reused across engines) installs its own, and its endpoint handles are
+    /// dense indices into it.
+    fn install_duplex(&mut self, c_handle: i32, handle: DuplexHandle, router: DuplexRouter) {
+        self.router = Some(router);
+        self.duplex_handles.insert(c_handle, handle);
+    }
+
+    /// Resolve a C handle to `(router clone, endpoint handle)` for the trampoline;
+    /// `None` if this handle was never wired to the router (a floating bus).
+    fn duplex_route(&self, c_handle: i32) -> Option<(DuplexRouter, DuplexHandle)> {
+        let handle = *self.duplex_handles.get(&c_handle)?;
+        Some((self.router.clone()?, handle))
+    }
 }
 
 /// The C-side hook vtable (must match `SIL_ports_hooks_S` in
@@ -252,9 +317,11 @@ impl PortsInner {
 struct SilFwHooks {
     context: *mut c_void,
     register_signal:
-        unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char) -> i32,
+        unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char, i32) -> i32,
     read_signal: unsafe extern "C" fn(*mut c_void, i32, *mut f64) -> bool,
     write_signal: unsafe extern "C" fn(*mut c_void, i32, f64),
+    duplex_transfer:
+        unsafe extern "C" fn(*mut c_void, i32, *const u8, usize, *mut u8, usize, *mut usize) -> bool,
 }
 
 /// C signature of the firmware's hook-installation export.
@@ -269,6 +336,7 @@ unsafe extern "C" fn port_register_signal(
     sig_type: *const c_char,
     local: *const c_char,
     unit: *const c_char,
+    kind: i32,
 ) -> i32 {
     let cstr = |p: *const c_char| {
         if p.is_null() {
@@ -278,7 +346,12 @@ unsafe extern "C" fn port_register_signal(
         }
     };
     match (&*(ctx as *const PortState), cstr(sig_type), cstr(local)) {
-        (state, Some(t), Some(l)) => state.inner.borrow_mut().register(t, l, cstr(unit)),
+        (state, Some(t), Some(l)) => {
+            state
+                .inner
+                .borrow_mut()
+                .register(t, l, cstr(unit), PortKind::from_c(kind))
+        }
         _ => -1, // NULL / non-UTF-8 names cannot be registered
     }
 }
@@ -299,6 +372,48 @@ unsafe extern "C" fn port_read_signal(ctx: *mut c_void, handle: i32, out: *mut f
 unsafe extern "C" fn port_write_signal(ctx: *mut c_void, handle: i32, value: f64) {
     let state = &*(ctx as *const PortState);
     state.inner.borrow_mut().write(handle, value);
+}
+
+/// See the SAFETY note on [`port_register_signal`]. Forwards a firmware SPI transfer
+/// into the engine's [`DuplexRouter`]: resolve the router endpoint for this C handle
+/// (dropping the rendezvous borrow before the upcall, so a nested transfer may
+/// re-enter), copy `tx` in, run the synchronous exchange, and bounded-copy the peer's
+/// response into `rx` (truncated to `rx_max`, count in `out_len`). Returns false
+/// (buffers untouched) on a null pointer, an unwired handle, or an unlinked endpoint —
+/// the driver then fills a floating-bus default. The router buffers the exchange; the
+/// engine records it.
+unsafe extern "C" fn port_duplex_transfer(
+    ctx: *mut c_void,
+    handle: i32,
+    tx_ptr: *const u8,
+    tx_len: usize,
+    rx_ptr: *mut u8,
+    rx_max: usize,
+    out_len: *mut usize,
+) -> bool {
+    if rx_ptr.is_null() || out_len.is_null() {
+        return false;
+    }
+    let state = &*(ctx as *const PortState);
+    // Resolve the router + endpoint handle, dropping the ports borrow before the
+    // upcall so a nested transfer can re-enter the rendezvous.
+    let (router, endpoint) = match state.inner.borrow().duplex_route(handle) {
+        Some(r) => r,
+        None => return false,
+    };
+    let tx = if tx_ptr.is_null() || tx_len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(tx_ptr, tx_len).to_vec()
+    };
+    let rx = match router.transfer(endpoint, &tx) {
+        Some(rx) => rx,
+        None => return false, // unlinked endpoint -> floating bus
+    };
+    let n = rx.len().min(rx_max);
+    std::ptr::copy_nonoverlapping(rx.as_ptr(), rx_ptr, n);
+    *out_len = n;
+    true
 }
 
 /// A loaded firmware instance (one per process — see ffi-boundary.md §1).
@@ -387,6 +502,7 @@ impl Firmware {
                     register_signal: port_register_signal,
                     read_signal: port_read_signal,
                     write_signal: port_write_signal,
+                    duplex_transfer: port_duplex_transfer,
                 };
                 set_hooks(&hooks);
             }
@@ -573,6 +689,10 @@ impl Backend for Firmware {
         Firmware::advance_tick(self);
     }
 
+    fn shutdown(&self) {
+        Firmware::shutdown(self);
+    }
+
     fn read_cvar(&self, path: &str) -> Value {
         Firmware::read_cvar(self, path)
     }
@@ -645,6 +765,10 @@ impl Backend for Firmware {
 
     fn drain_port_writes(&self) -> Vec<(i32, f64)> {
         std::mem::take(&mut self.ports.inner.borrow_mut().writes)
+    }
+
+    fn install_duplex(&self, c_handle: i32, handle: DuplexHandle, router: DuplexRouter) {
+        self.ports.inner.borrow_mut().install_duplex(c_handle, handle, router);
     }
 }
 
@@ -719,11 +843,26 @@ fn select_anchor<'a>(
     None
 }
 
-/// A firmware instance as a [`Member`]. Borrows a concrete [`Firmware`] and drives
+/// A do-nothing [`Backend`] that briefly occupies a [`FirmwareMember`]'s backend slot
+/// during a reload, so the old firmware `Rc` can be dropped (unloading its library)
+/// *before* the same image path is loaded again — `LoadLibrary` on a still-live path
+/// aliases the module's statics, so the old must be gone first. Never advanced.
+struct DeadBackend;
+
+impl Backend for DeadBackend {
+    fn advance_tick(&self) {}
+    fn read_cvar(&self, _path: &str) -> Value {
+        Value::U32(0)
+    }
+    fn write_cvar(&self, _path: &str, _v: &Value) {}
+}
+
+/// A firmware instance as a [`Member`]. Owns a shared [`Rc<Firmware>`] and drives
 /// it through the internal `Backend` seam on the sim clock; it is the **only** thing
 /// that touches firmware memory (routes are table-mediated). The instance `name` is
 /// explicit, **not** derived from the DLL, so two boards can run one image as
-/// distinct members.
+/// distinct members. Shared ownership lets one struct own both firmware and engine
+/// (the last handle's drop unloads the library, so a fresh load boots from reset).
 ///
 /// Each [`advance`](Member::advance) accumulates sim time and, per full firmware-tick
 /// period, runs **three fixed phases** over its signal [`Binding`]s (ports are
@@ -735,9 +874,9 @@ fn select_anchor<'a>(
 ///    - *Ports* — apply pending registrations, then fill every port's input cache
 ///      from its entry (never driven → `None` → `readSignal` false → driver falls back).
 ///    - *Cvars (flush)* — write the **fresh** cvars (command-dirtied
-///      [`take_dirty`](StateTable::take_dirty) ∪ pinned [`pinned`](StateTable::pinned))
-///      into memory. Single-threaded ⇒ an entry differs from memory iff command-written,
-///      so "flush fresh" ≡ "flush all", done sparsely.
+///      [`take_dirty`](StateTable::take_dirty)) into memory. Single-threaded ⇒ an entry
+///      differs from memory iff command-written, so "flush fresh" ≡ "flush all", done
+///      sparsely.
 /// 2. **Tick** — `advance_tick` runs the firmware to quiescence (C reads input caches,
 ///    buffers `writeSignal` output).
 /// 3. **Out-sync (firmware → table)**, each binding's outbound half:
@@ -754,13 +893,29 @@ fn select_anchor<'a>(
 /// The cvar leaf list is enumerated + registered at enable (whole namespace minus the
 /// exclusion policy — [`exclude`](Self::exclude) / [`include`](Self::include));
 /// **pending ports are applied there too**, so ports registered during `sil_fw_start`
-/// become entries as soon as the member is added. Lifecycle stays on the [`Firmware`]
-/// handle (FUTURE: re-enable would reload the DLL — not implemented).
+/// become entries as soon as the member is added.
+///
+/// ## Reset lifecycle (disable holds reset; re-enable reboots)
+///
+/// A disabled member is **held in reset**: the engine skips its advance, so no tick
+/// runs, its memory is frozen, and sim time flows on without it. Re-enable depends on
+/// the **reload recipe** ([`set_reload_path`](Self::set_reload_path)): with a path set,
+/// re-enable is a full **boot from reset** — shut the old image down, drop its `Rc`
+/// (asserting sole ownership), [`Firmware::load`] the same path (statics reboot as the
+/// library refcount hits zero), `start()` it, and rebuild every image-bound cache
+/// (DWARF leaves, cvar bindings, shadow ranges, port + duplex registrations). The
+/// State-Table entries are re-registered idempotently, so **signal history is preserved
+/// across the reload** — one continuous timeline spanning both lives. Without a recipe,
+/// re-enable just resumes advancing (re-registers the cached leaves, re-baselines).
 ///
 /// [`RouteTable`]: crate::route::RouteTable
-pub struct FirmwareMember<'b> {
+pub struct FirmwareMember {
     name: String,
-    backend: &'b dyn Backend,
+    backend: Rc<dyn Backend>,
+    /// The image path a genuine re-enable reboots from (the reload recipe). `None` →
+    /// re-enable resumes advancing, no reboot (a mock backend, or an intentionally
+    /// non-reloading member).
+    reload_path: Option<PathBuf>,
     tick_period_us: u64,
     /// Sim time accumulated toward the next firmware tick.
     accum_us: u64,
@@ -805,6 +960,9 @@ pub struct FirmwareMember<'b> {
     /// Ports this member has applied to the table, in registration order
     /// (deterministic iteration).
     ports: Vec<PortBinding>,
+    /// Duplex endpoints this member's C drivers registered, in registration order —
+    /// declared to the shared router at the first in-sync.
+    duplex: Vec<DuplexBinding>,
     /// How many of the backend's port defs this member has consumed.
     port_cursor: usize,
 }
@@ -830,7 +988,7 @@ struct ShadowRange {
     /// Runtime address of the first byte the shadow mirrors.
     base: u64,
     /// The last-seen bytes of `[base, base+shadow.len())` — mirrors MEMORY, not the
-    /// table (updated even where the table dedups or a pin ignores the record).
+    /// table (updated even where the table dedups the record).
     shadow: Vec<u8>,
     /// Per chunk, the `resolved`-indices of leaves overlapping that chunk (a leaf
     /// straddling a chunk edge appears in every chunk it touches).
@@ -849,6 +1007,15 @@ struct PortBinding {
     handle: i32,
     /// Dense State Table index (resolved once — no per-tick hash on the cache fill).
     table_idx: usize,
+}
+
+/// One duplex endpoint a firmware member's C driver registered: the C-side handle,
+/// its `spi:<member>:<local>` endpoint id, and — once the first in-sync declares it —
+/// the engine [`DuplexHandle`] wired into the rendezvous.
+struct DuplexBinding {
+    c_handle: i32,
+    endpoint_id: String,
+    router_handle: Option<DuplexHandle>,
 }
 
 /// How a swept cvar leaf is read each tick: a pre-resolved backend fast-read
@@ -877,12 +1044,12 @@ const SHADOW_MERGE_GAP: u64 = 64;
 /// [`FirmwareMember::set_array_threshold`].
 pub const DEFAULT_ARRAY_THRESHOLD: usize = 32;
 
-impl<'b> FirmwareMember<'b> {
-    /// Wrap a concrete [`Firmware`] as a member named `name`, advancing one
-    /// firmware tick per `tick_period_us` of sim time. The driver keeps its own
-    /// `&fw` alongside for ad-hoc white-box access; the member borrows it for the
-    /// engine.
-    pub fn new(name: &str, fw: &'b Firmware, tick_period_us: u64) -> Self {
+impl FirmwareMember {
+    /// Wrap a shared [`Rc<Firmware>`] as a member named `name`, advancing one
+    /// firmware tick per `tick_period_us` of sim time. The driver holds its own
+    /// clone of the `Rc` alongside for ad-hoc white-box access; the member owns
+    /// another clone for the engine.
+    pub fn new(name: &str, fw: Rc<Firmware>, tick_period_us: u64) -> Self {
         Self::with_backend(name, fw, tick_period_us)
     }
 
@@ -890,10 +1057,11 @@ impl<'b> FirmwareMember<'b> {
     /// public constructor is [`new`](Self::new), which takes the concrete
     /// [`Firmware`]; this exists so unit tests can drive a `FirmwareMember` over
     /// a pure-Rust mock without a firmware DLL.
-    pub(crate) fn with_backend(name: &str, backend: &'b dyn Backend, tick_period_us: u64) -> Self {
+    pub(crate) fn with_backend(name: &str, backend: Rc<dyn Backend>, tick_period_us: u64) -> Self {
         Self {
             name: name.to_string(),
             backend,
+            reload_path: None,
             tick_period_us,
             accum_us: 0,
             cvar_leaves: Vec::new(),
@@ -909,24 +1077,21 @@ impl<'b> FirmwareMember<'b> {
             excludes: Vec::new(),
             includes: Vec::new(),
             ports: Vec::new(),
+            duplex: Vec::new(),
             port_cursor: 0,
         }
     }
 
-    /// **Exclude** every enumerated cvar leaf whose path starts with `prefix` from
-    /// the mirror (prefix match only — no globs). Configure before adding the
-    /// member (the leaf list is enumerated at enable). Use to drop a noisy or
-    /// irrelevant subtree; the array-size threshold already drops stacks/heap.
-    pub fn exclude(&mut self, prefix: &str) {
+    /// Skip State-Table registration of every cvar leaf whose path starts with
+    /// `prefix` (prefix match only — no globs). Configure before adding the member.
+    pub fn skip_cvar_registration_by_prefix(&mut self, prefix: &str) {
         self.excludes.push(prefix.to_string());
     }
 
-    /// **Force-include** a cvar path (or prefix) that the array-size threshold
-    /// would otherwise exclude — e.g. one element of an oversized buffer the test
-    /// drives (`HW_SPI_data.channels[0].injectedRx[0]`). A concrete leaf path pulls
-    /// in just that element; a prefix naming a whole over-threshold array pulls in
-    /// all of it. Prefix match only. Configure before adding the member.
-    pub fn include(&mut self, path: &str) {
+    /// Register a cvar the array-size threshold would otherwise drop — an exact
+    /// leaf (`HW_USB_sim_data.rx[0]`), or a prefix naming a whole over-threshold
+    /// array. Configure before adding the member.
+    pub fn register_cvar_in_state_table(&mut self, path: &str) {
         self.includes.push(path.to_string());
     }
 
@@ -934,6 +1099,14 @@ impl<'b> FirmwareMember<'b> {
     /// [`DEFAULT_ARRAY_THRESHOLD`]). Configure before adding the member.
     pub fn set_array_threshold(&mut self, n: usize) {
         self.array_threshold = n;
+    }
+
+    /// Set the **reload recipe**: the image path a genuine re-enable reboots from
+    /// (see the type docs' reset lifecycle). Once set, disabling then re-enabling the
+    /// member reloads a fresh image from `path` — statics from reset — on the same sim
+    /// timeline. Without it, re-enable resumes advancing. Configure before adding.
+    pub fn set_reload_path(&mut self, path: &Path) {
+        self.reload_path = Some(path.to_path_buf());
     }
 
     /// How many cvar leaves this member mirrors (0 until enabled). The per-tick
@@ -951,31 +1124,68 @@ impl<'b> FirmwareMember<'b> {
     fn apply_pending_ports(&mut self, st: &mut StateTable) {
         let defs = self.backend.port_defs_since(self.port_cursor);
         self.port_cursor += defs.len();
+        let name = self.name.clone();
         for def in defs {
-            match SignalId::new(&def.sig_type, &self.name, &def.local, None) {
-                Ok(id) => match st.register(id.clone(), def.unit.as_deref()) {
-                    Ok(()) => {
-                        // Resolve the dense table index once, so the per-tick input
-                        // cache fill never hashes the id.
-                        let table_idx = st.resolve_index(&id).expect("just registered");
-                        self.ports.push(PortBinding {
-                            handle: def.handle,
-                            table_idx,
-                        });
-                    }
-                    Err(e) => st.log(
-                        LogLevel::Warning,
-                        &self.name,
-                        format!("port {id} register failed: {e}"),
-                    ),
-                },
-                Err(e) => st.log(
-                    LogLevel::Warning,
-                    &self.name,
-                    format!("port {:?} yields an invalid signal id: {e}", def.local),
-                ),
+            match def.kind {
+                PortKind::Scalar => self.apply_scalar_port(st, &name, &def),
+                PortKind::Duplex => self.apply_duplex_endpoint(st, &name, &def),
             }
         }
+    }
+
+    /// Apply one scalar port: register `{sig_type}:{member}:{local}` and bind its
+    /// handle to the resolved table index (used by the per-tick input cache fill).
+    fn apply_scalar_port(&mut self, st: &mut StateTable, name: &str, def: &PortDef) {
+        match SignalId::new(&def.sig_type, name, &def.local, None) {
+            Ok(id) => match st.register(id.clone(), def.unit.as_deref()) {
+                Ok(()) => {
+                    let table_idx = st.resolve_index(&id).expect("just registered");
+                    self.ports.push(PortBinding {
+                        handle: def.handle,
+                        table_idx,
+                    });
+                }
+                Err(e) => st.log(
+                    LogLevel::Warning,
+                    name,
+                    format!("port {id} register failed: {e}"),
+                ),
+            },
+            Err(e) => st.log(
+                LogLevel::Warning,
+                name,
+                format!("port {:?} yields an invalid signal id: {e}", def.local),
+            ),
+        }
+    }
+
+    /// Apply one duplex endpoint: register its `:tx` and `:rx` event-record entries
+    /// (so routes/asserts can see them from `add_member` on) and record a
+    /// [`DuplexBinding`]. The router declaration + C-handle wiring happen at the first
+    /// in-sync ([`in_sync_duplex`](Self::in_sync_duplex)), where the [`MemberCtx`]
+    /// carries the shared router.
+    fn apply_duplex_endpoint(&mut self, st: &mut StateTable, name: &str, def: &PortDef) {
+        let endpoint_id = format!("{}:{}:{}", def.sig_type, name, def.local);
+        let (tx_id, rx_id) = match tx_rx_ids(&def.sig_type, name, &def.local) {
+            Ok(pair) => pair,
+            Err(e) => {
+                st.log(
+                    LogLevel::Warning,
+                    name,
+                    format!("duplex endpoint {:?} yields an invalid signal id: {e}", def.local),
+                );
+                return;
+            }
+        };
+        if let Err(e) = st.register(tx_id, None).and(st.register(rx_id, None)) {
+            st.log(LogLevel::Warning, name, format!("duplex endpoint register failed: {e}"));
+            return;
+        }
+        self.duplex.push(DuplexBinding {
+            c_handle: def.handle,
+            endpoint_id,
+            router_handle: None,
+        });
     }
 
     // --- binding halves: the per-mechanism in-sync / out-sync operations the
@@ -997,25 +1207,19 @@ impl<'b> FirmwareMember<'b> {
     }
 
     /// Cvar in-sync (flush): write the **fresh** `cvar`s in this member's namespace
-    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty))
-    /// ∪ pinned ([`pinned`](StateTable::pinned), re-asserted each tick as a continuous
-    /// drive). The production path a route takes to reach memory. Single-threaded ⇒
-    /// flushing fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
+    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty)).
+    /// The production path a route takes to reach memory. Single-threaded ⇒ flushing
+    /// fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
     fn in_sync_cvars(&mut self, st: &mut StateTable) {
-        // Fresh (command-dirtied) cvars in my namespace, plus my pinned cvars.
-        let mut flush: Vec<SignalId> = st
+        // Fresh (command-dirtied) cvars in my namespace.
+        let flush: Vec<SignalId> = st
             .take_dirty(&self.name)
             .into_iter()
             .filter(|id| id.sig_type() == "cvar")
             .collect();
-        for id in st.pinned(&self.name) {
-            if (id.sig_type() == "cvar") && !flush.contains(&id) {
-                flush.push(id);
-            }
-        }
         for id in flush {
-            // The flush set is sparse (command-dirtied + pinned), so resolving each
-            // id's index here is cheap; `current_value_at` then avoids re-hashing.
+            // The flush set is sparse (command-dirtied), so resolving each id's index
+            // here is cheap; `current_value_at` then avoids re-hashing.
             match st.resolve_index(&id) {
                 Some(idx) => {
                     if let Some(v) = st.current_value_at(idx) {
@@ -1054,6 +1258,23 @@ impl<'b> FirmwareMember<'b> {
         }
     }
 
+    /// Duplex in-sync: declare each not-yet-wired endpoint to this member's router and
+    /// install the router clone + C-handle → [`DuplexHandle`] mapping into the
+    /// rendezvous, so the `duplex_transfer` trampoline forwards this tick's firmware
+    /// SPI upcalls into that router. Runs once per endpoint (declaring is idempotent,
+    /// merging with a link that already declared it). The engine force-records the
+    /// resulting transactions after all members advance.
+    fn in_sync_duplex(&mut self, ctx: &mut MemberCtx) {
+        let backend = Rc::clone(&self.backend);
+        for b in &mut self.duplex {
+            if b.router_handle.is_none() {
+                let handle = ctx.duplex.declare(&b.endpoint_id);
+                b.router_handle = Some(handle);
+                backend.install_duplex(b.c_handle, handle, ctx.duplex.clone());
+            }
+        }
+    }
+
     /// Cvar out-sync (sweep): mirror firmware memory into the table — the automatic
     /// whole-namespace mirror, made **O(changed bytes)** by the Tier-1 shadow.
     ///
@@ -1061,8 +1282,8 @@ impl<'b> FirmwareMember<'b> {
     /// the shadow; an unchanged range is skipped. On a mismatch, each changed
     /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly its overlapping leaves and records
     /// them by dense index ([`record_mirror_at`](StateTable::record_mirror_at) — no
-    /// hash, no dirty mark, ignored on a pin). The shadow mirrors MEMORY (not the
-    /// table), so it advances even where the table dedups or a pin ignores the record.
+    /// hash, no dirty mark). The shadow mirrors MEMORY (not the table), so it advances
+    /// even where the table dedups the record.
     /// The first sweep after (re)enable is **cold** (every chunk changed) for a full
     /// baseline. String-path leaves (a handle-less backend, e.g. a mock) fall back to
     /// the per-leaf read/record loop.
@@ -1081,7 +1302,7 @@ impl<'b> FirmwareMember<'b> {
         self.sweep_gen = self.sweep_gen.wrapping_add(1);
         let gen = self.sweep_gen;
         let cold = self.shadow_cold;
-        let backend = self.backend;
+        let backend = Rc::clone(&self.backend);
         // Move the reusable buffers out so the range loop can hold a `&mut` to
         // `self.ranges` while still touching scratch/visit_stamp/resolved.
         let mut scratch = std::mem::take(&mut self.scratch);
@@ -1153,42 +1374,49 @@ impl<'b> FirmwareMember<'b> {
 /// state; the point is the phase structure, not one binding per signal.
 #[derive(Clone, Copy)]
 enum Binding {
-    /// Cvars (in + out): flush fresh/pinned cvars into memory; sweep the mirror out.
+    /// Cvars (in + out): flush fresh cvars into memory; sweep the mirror out.
     Cvars,
     /// Ports (in + out): apply registrations + fill input caches; drain writes.
     Ports,
+    /// Duplex (in only): declare each C endpoint to the shared router and wire the
+    /// C-handle mapping into the rendezvous. Its `:tx`/`:rx` table entries are
+    /// registered by the `Ports` in-sync half; the transfers run mid-`advance_tick`
+    /// via the C upcall, and the engine records the resulting transactions.
+    Duplex,
 }
 
 impl Binding {
     /// Every binding, in deterministic in-sync/out-sync order. `Ports` precedes
-    /// `Cvars` so port registrations + cache fill happen first (matching the
-    /// historical sequence; the two are independent — different backend state).
-    /// Out-sync runs the same order (`Ports` drain before the `Cvars` sweep).
-    const ALL: [Binding; 2] = [Binding::Ports, Binding::Cvars];
+    /// `Cvars` so port registrations + cache fill happen first (the two are
+    /// independent — different backend state). `Duplex` sits between them: its
+    /// endpoints must be wired to the router before `advance_tick` issues any upcall.
+    const ALL: [Binding; 3] = [Binding::Ports, Binding::Duplex, Binding::Cvars];
 
     /// Run this binding's in-sync half (table → firmware), if any.
-    fn in_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
+    fn in_sync(self, fm: &mut FirmwareMember, ctx: &mut MemberCtx) {
         match self {
-            Binding::Ports => fm.in_sync_ports(st),
-            Binding::Cvars => fm.in_sync_cvars(st),
+            Binding::Ports => fm.in_sync_ports(ctx.st),
+            Binding::Cvars => fm.in_sync_cvars(ctx.st),
+            Binding::Duplex => fm.in_sync_duplex(ctx),
         }
     }
 
     /// Run this binding's out-sync half (firmware → table), if any.
-    fn out_sync(self, fm: &mut FirmwareMember, st: &mut StateTable) {
+    fn out_sync(self, fm: &mut FirmwareMember, ctx: &mut MemberCtx) {
         match self {
-            Binding::Ports => fm.out_sync_ports(st),
-            Binding::Cvars => fm.out_sync_cvars(st),
+            Binding::Ports => fm.out_sync_ports(ctx.st),
+            Binding::Cvars => fm.out_sync_cvars(ctx.st),
+            Binding::Duplex => {} // the engine records duplex transactions
         }
     }
 }
 
-impl Member for FirmwareMember<'_> {
+impl Member for FirmwareMember {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn advance(&mut self, dt_us: u64, st: &mut StateTable) {
+    fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
         // One firmware tick per full period elapsed (usually exactly one). Each runs
         // three fixed phases over every binding (see [`Binding`]); C never touches the table.
         self.accum_us += dt_us;
@@ -1196,40 +1424,48 @@ impl Member for FirmwareMember<'_> {
             self.accum_us -= self.tick_period_us;
             // Phase 1 — in-sync: every binding's table → firmware half.
             for binding in Binding::ALL {
-                binding.in_sync(self, st);
+                binding.in_sync(self, ctx);
             }
             // Phase 2 — tick: run the firmware to quiescence.
             self.backend.advance_tick();
             // Phase 3 — out-sync: every binding's firmware → table half.
             for binding in Binding::ALL {
-                binding.out_sync(self, st);
+                binding.out_sync(self, ctx);
             }
         }
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
-        if on {
-            if !self.leaves_cached {
-                self.enumerate_and_register(st);
-            } else {
-                // Re-enable re-registers the cached leaves idempotently (no
-                // re-enumerate) and forces a cold sweep to re-baseline the table.
+        // Disable holds the member in reset: the engine skips its advance (memory
+        // frozen while sim time flows), so there is nothing to do on the way down.
+        if !on {
+            return;
+        }
+        // First enable (at add_member): enumerate the already-started image and apply
+        // any ports registered during `sil_fw_start`, so routes into them (and duplex
+        // `:tx`/`:rx` entries) are valid from the first step.
+        if !self.leaves_cached {
+            self.enumerate_and_register(st);
+            self.apply_pending_ports(st);
+            return;
+        }
+        // A genuine re-enable. With a reload recipe, reboot a fresh image from reset
+        // (history preserved); without one, resume advancing — re-register the cached
+        // leaves idempotently and force a cold sweep to re-baseline the table.
+        match self.reload_path.clone() {
+            Some(path) => self.reload(&path, st),
+            None => {
                 for (id, _) in &self.cvar_leaves {
                     let _ = st.register(id.clone(), None);
                 }
                 self.shadow_cold = true;
+                self.apply_pending_ports(st);
             }
-            // Ports registered before this member existed (during `sil_fw_start`)
-            // become table entries here — immediately at add_member — so routes into
-            // them are valid from the first step. Later ones apply at next advance.
-            self.apply_pending_ports(st);
         }
-        // FUTURE: reload the DLL (boot-from-reset) on re-enable; today enable only
-        // gates advance (the engine skips a disabled member's tick).
     }
 }
 
-impl FirmwareMember<'_> {
+impl FirmwareMember {
     /// Enumerate the firmware's traceable cvar leaves once (exclusion policy +
     /// includes applied), register each under this member's namespace, and cache
     /// the resolved leaf list for the sweep. Reports the registered-leaf count (and
@@ -1283,6 +1519,61 @@ impl FirmwareMember<'_> {
         );
     }
 
+    /// Reboot the firmware image from reset — the reset-lifecycle re-enable path. Shut
+    /// the old image down (on the driver fiber; the port un-converts the thread here),
+    /// require **sole ownership** of its `Rc`, drop it so the library unloads and its
+    /// statics reset, load the SAME path afresh, `start()` it, swap it in, and rebuild
+    /// every image-bound cache against the fresh statics + ASLR slide. The State-Table
+    /// entries are re-registered idempotently by the rebuild, so **signal history is
+    /// preserved** — the boot lands on the same continuous sim timeline.
+    fn reload(&mut self, path: &Path, st: &mut StateTable) {
+        self.backend.shutdown();
+        let strong = Rc::strong_count(&self.backend);
+        assert_eq!(
+            strong, 1,
+            "firmware member {:?} cannot reload: firmware Rc has {strong} strong owners (expected sole ownership); something outside the member still holds the handle",
+            self.name
+        );
+        // Swap in a placeholder so the old `Rc` drops (FreeLibrary) BEFORE the same
+        // path loads again — a still-live path would alias the module's statics.
+        let old = std::mem::replace(&mut self.backend, Rc::new(DeadBackend));
+        drop(old);
+        let fw = Firmware::load(path).unwrap_or_else(|e| {
+            panic!("firmware member {:?} reload failed to load {}: {e}", self.name, path.display())
+        });
+        assert!(
+            fw.start(),
+            "firmware member {:?} reload: sil_fw_start() returned false",
+            self.name
+        );
+        self.backend = Rc::new(fw);
+        // Rebuild image-bound state, then re-enumerate/re-register + re-apply ports
+        // (C re-registers them at start; applying is idempotent on the table).
+        self.reset_image_caches();
+        self.enumerate_and_register(st);
+        self.apply_pending_ports(st);
+    }
+
+    /// Clear all image-bound state before a reload: the DWARF leaf list, the
+    /// shadow-sweep structures, port/duplex bindings, cursors, and the firmware-tick
+    /// accumulator (the rebooted clock restarts at 0). The State-Table entries stay —
+    /// re-registration is idempotent, preserving their history across the reboot.
+    fn reset_image_caches(&mut self) {
+        self.cvar_leaves.clear();
+        self.resolved.clear();
+        self.ranges.clear();
+        self.scratch.clear();
+        self.visit_stamp.clear();
+        self.path_leaves.clear();
+        self.ports.clear();
+        self.duplex.clear();
+        self.port_cursor = 0;
+        self.accum_us = 0;
+        self.sweep_gen = 0;
+        self.shadow_cold = true;
+        self.leaves_cached = false;
+    }
+
     /// Build the Tier-1 shadow-sweep structures from the enumerated cvar leaves:
     /// resolve each leaf's dense table index; split fast-read (resolved) leaves from
     /// string-path leaves; sort the resolved by address; group them into contiguous
@@ -1290,7 +1581,7 @@ impl FirmwareMember<'_> {
     /// and scratch buffers. Marks the shadow cold so the first sweep baselines the
     /// table.
     fn build_shadow(&mut self, st: &StateTable) {
-        let backend = self.backend;
+        let backend = Rc::clone(&self.backend);
         let mut resolved: Vec<SweptLeaf> = Vec::new();
         let mut path: Vec<PathLeaf> = Vec::new();
         for (id, read) in &self.cvar_leaves {
@@ -1360,10 +1651,9 @@ fn build_ranges(leaves: &[SweptLeaf]) -> Vec<ShadowRange> {
     ranges
 }
 
-/// Coerce a table [`Value`] into the port seam's `f64` currency (`double`
-/// scalars only for now; typed variants are the documented extension path).
-/// Numeric variants coerce; `Enum`/`Bytes` cannot drive a port and read as
-/// "not driven".
+/// Coerce a table [`Value`] into the scalar port seam's `f64` currency. Numeric
+/// variants coerce; `Enum`/`Bytes` cannot drive a scalar port and read as "not
+/// driven".
 fn value_to_f64(v: &Value) -> Option<f64> {
     match v {
         Value::F64(x) => Some(*x),
@@ -1478,13 +1768,16 @@ unsafe fn value_to_scalar(p: *mut u8, kind: Scalar, v: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::duplex::DuplexPeer;
+    use crate::member::advance_unwired;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     /// A pure-Rust [`Backend`] with no DLL: a configurable cvar "memory" plus an
     /// enumerable leaf list, used to prove the member/mirror semantics without a
     /// real firmware image. Logs every `write_cvar` path so a test can assert the
-    /// flush is **sparse** (only fresh/pinned cvars, not the whole namespace).
+    /// flush is **sparse** (only fresh cvars, not the whole namespace).
     #[derive(Default)]
     struct MockBackend {
         ticks: RefCell<u64>,
@@ -1599,11 +1892,11 @@ mod tests {
     fn firmware_member_auto_mirrors_the_cvar_namespace() {
         // No per-signal declaration: the member enumerates + registers the whole
         // (mock) namespace at enable and sweeps it into the historian each tick.
-        let be = MockBackend::with_leaves(&["counter"]);
+        let be = Rc::new(MockBackend::with_leaves(&["counter"]));
         be.write_cvar("counter", &Value::U32(7));
 
         let cid = id("cvar:dut:counter");
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // enumerates + registers cvar:dut:counter
@@ -1612,15 +1905,15 @@ mod tests {
 
         // One full period -> one firmware tick + one mirror sweep.
         st.set_time(1_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
         assert_eq!(st.current_value(&cid).unwrap(), Some(Value::U32(7)));
 
         // A sub-period advance accumulates but does not tick the firmware.
-        fm.advance(500, &mut st);
+        advance_unwired(&mut fm, 500, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
         // The next 500us completes the period -> a second tick.
-        fm.advance(500, &mut st);
+        advance_unwired(&mut fm, 500, &mut st);
         assert_eq!(*be.ticks.borrow(), 2);
     }
 
@@ -1629,9 +1922,9 @@ mod tests {
         // The flush side: a command-written (dirty) cvar entry is pushed into
         // firmware memory before advance_tick. A route/test records the entry; the
         // member flushes the fresh id — no per-signal `drive` declaration.
-        let be = MockBackend::with_leaves(&["sensor_in"]);
+        let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
         let sid = id("cvar:dut:sensor_in");
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // auto-registers cvar:dut:sensor_in
@@ -1640,14 +1933,14 @@ mod tests {
         // Command a value into the table entry (as a route would), then advance.
         st.set_time(1_000);
         st.record(&sid, Value::U32(42)).unwrap();
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
         assert_eq!(be.read_cvar("sensor_in"), Value::U32(42));
 
         // Re-command; the next tick flushes the new value.
         st.set_time(2_000);
         st.record(&sid, Value::U32(7)).unwrap();
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(be.read_cvar("sensor_in"), Value::U32(7));
     }
 
@@ -1656,8 +1949,8 @@ mod tests {
         // The single-threaded flush≡all invariant, proven sparse: with three
         // mirrored leaves, only the ONE command-written entry is flushed; the
         // untouched two are never written back, yet all three still mirror.
-        let be = MockBackend::with_leaves(&["a", "b", "c"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let be = Rc::new(MockBackend::with_leaves(&["a", "b", "c"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -1665,7 +1958,7 @@ mod tests {
         st.set_time(1_000);
         st.record(&a, Value::U32(1)).unwrap(); // command only `a`
         be.writes.borrow_mut().clear();
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(&*be.writes.borrow(), &["a".to_string()]); // sparse: just `a`
         // The untouched entries still mirror (swept out of memory).
         assert_eq!(st.current_value(&id("cvar:dut:b")).unwrap(), Some(Value::U32(0)));
@@ -1673,40 +1966,14 @@ mod tests {
         // A tick with no fresh command writes nothing at all.
         be.writes.borrow_mut().clear();
         st.set_time(2_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert!(be.writes.borrow().is_empty(), "untouched entries are not flushed");
     }
 
     #[test]
-    fn pinned_cvar_flushes_every_tick() {
-        // An override on a cvar is a continuous drive: the pin re-asserts the
-        // pinned value into firmware memory EVERY tick, even without a fresh
-        // command (the firmware may overwrite it mid-tick).
-        let be = MockBackend::with_leaves(&["p"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        let mut st = StateTable::new();
-        fm.set_enabled(true, &mut st);
-
-        let p = id("cvar:dut:p");
-        st.set_time(1_000);
-        st.record(&p, Value::U32(50)).unwrap();
-        st.set_override(&p, true).unwrap(); // pin at 50
-
-        be.writes.borrow_mut().clear();
-        fm.advance(1_000, &mut st);
-        assert_eq!(be.read_cvar("p"), Value::U32(50));
-
-        // Next tick, no fresh command: the pin still flushes.
-        be.writes.borrow_mut().clear();
-        st.set_time(2_000);
-        fm.advance(1_000, &mut st);
-        assert_eq!(&*be.writes.borrow(), &["p".to_string()]);
-    }
-
-    #[test]
     fn auto_registration_is_idempotent_across_re_enable() {
-        let be = MockBackend::with_leaves(&["x", "y"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let be = Rc::new(MockBackend::with_leaves(&["x", "y"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!((st.len(), fm.cvar_leaf_count()), (2, 2));
@@ -1718,10 +1985,10 @@ mod tests {
     }
 
     #[test]
-    fn exclude_prefix_drops_a_subtree() {
-        let be = MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
-        fm.exclude("drop");
+    fn skip_by_prefix_drops_a_subtree() {
+        let be = Rc::new(MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        fm.skip_cvar_registration_by_prefix("drop");
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(fm.cvar_leaf_count(), 1); // only keep.a survives
@@ -1792,8 +2059,8 @@ mod tests {
         let mock = PortMock::default();
         {
             let mut inner = mock.ports.inner.borrow_mut();
-            assert_eq!(inner.register("vsig", "in_v", Some("V")), 0);
-            assert_eq!(inner.register("vsig", "out_v", Some("V")), 1);
+            assert_eq!(inner.register("vsig", "in_v", Some("V"), PortKind::Scalar), 0);
+            assert_eq!(inner.register("vsig", "out_v", Some("V"), PortKind::Scalar), 1);
         }
         mock
     }
@@ -1801,22 +2068,25 @@ mod tests {
     #[test]
     fn ports_inner_register_is_idempotent_with_sequential_handles() {
         let mut inner = PortsInner::default();
-        assert_eq!(inner.register("vsig", "a", Some("V")), 0);
-        assert_eq!(inner.register("vsig", "b", None), 1);
+        assert_eq!(inner.register("vsig", "a", Some("V"), PortKind::Scalar), 0);
+        assert_eq!(inner.register("vsig", "b", None, PortKind::Scalar), 1);
         // Exact re-register returns the existing handle; no duplicate def.
-        assert_eq!(inner.register("vsig", "a", Some("V")), 0);
+        assert_eq!(inner.register("vsig", "a", Some("V"), PortKind::Scalar), 0);
         assert_eq!(inner.defs.len(), 2);
         // A different unit is a different port (the table will flag the
         // conflict when the member applies it).
-        assert_eq!(inner.register("vsig", "a", Some("mV")), 2);
+        assert_eq!(inner.register("vsig", "a", Some("mV"), PortKind::Scalar), 2);
+        // A different kind is likewise a distinct port.
+        assert_eq!(inner.register("spi", "a", None, PortKind::Duplex), 3);
+        assert_eq!(inner.register("spi", "a", None, PortKind::Duplex), 3);
     }
 
     #[test]
     fn firmware_member_applies_ports_and_mediates_io() {
         // The full mirror-synced port loop: table -> input cache -> C read,
         // then C write -> output buffer -> table. Native format end to end.
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
 
         // set_enabled applies the pending registrations immediately.
@@ -1830,22 +2100,22 @@ mod tests {
         // the mock firmware saw exactly 1.5 and its write landed in the table.
         st.set_time(1_000);
         st.record(&in_id, Value::F64(1.5)).unwrap();
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*mock.seen.borrow(), Some(1.5));
         assert_eq!(st.current_value(&out_id).unwrap(), Some(Value::F64(3.0)));
     }
 
     #[test]
     fn undriven_port_reads_as_not_driven() {
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
         // Never-driven input: the firmware's read comes back "not driven"
         // (None), and no port write is produced.
         st.set_time(1_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*mock.seen.borrow(), None);
         let out_id = SignalId::parse("vsig:dut:out_v").unwrap();
         assert_eq!(st.current_value(&out_id).unwrap(), None);
@@ -1854,26 +2124,72 @@ mod tests {
         let in_id = SignalId::parse("vsig:dut:in_v").unwrap();
         st.set_time(2_000);
         st.record(&in_id, Value::Enum("ON".into())).unwrap();
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*mock.seen.borrow(), None);
     }
 
     #[test]
     fn port_registered_mid_run_applies_at_next_advance() {
-        let mock = port_mock_with_in_out();
-        let mut fm = FirmwareMember::with_backend("dut", &mock, 1_000);
+        let mock = Rc::new(port_mock_with_in_out());
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(st.len(), 2);
 
         // A driver registers a third port later (open registration, any time);
         // it becomes a table entry at the member's next advance.
-        mock.ports.inner.borrow_mut().register("vsig", "late_v", None);
+        mock.ports.inner.borrow_mut().register("vsig", "late_v", None, PortKind::Scalar);
         st.set_time(1_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(st.len(), 3);
         let late = SignalId::parse("vsig:dut:late_v").unwrap();
         assert_eq!(st.current_value(&late).unwrap(), None);
+    }
+
+    /// A pure-output mock: its "firmware" unconditionally writes a fixed value to
+    /// its one output port each tick, isolating the C-write → drain → table-record
+    /// path (the D6 route source a motor model consumes) with no input driving it.
+    #[derive(Default)]
+    struct OutPortMock {
+        ports: PortState,
+        value: f64,
+    }
+
+    impl Backend for OutPortMock {
+        fn advance_tick(&self) {
+            self.ports.inner.borrow_mut().write(0, self.value);
+        }
+        fn read_cvar(&self, _path: &str) -> Value {
+            Value::U32(0)
+        }
+        fn write_cvar(&self, _path: &str, _v: &Value) {}
+        fn port_defs_since(&self, from: usize) -> Vec<PortDef> {
+            let inner = self.ports.inner.borrow();
+            inner.defs.get(from..).map(<[PortDef]>::to_vec).unwrap_or_default()
+        }
+        fn drain_port_writes(&self) -> Vec<(i32, f64)> {
+            std::mem::take(&mut self.ports.inner.borrow_mut().writes)
+        }
+    }
+
+    #[test]
+    fn output_port_write_lands_in_table_after_advance() {
+        // A registered output port the firmware writes each tick: the value reaches
+        // its table entry after the member's out-sync drain — the D6 source path a
+        // motor model consumes. No input, no route: just C write -> drain -> record.
+        let mock = Rc::new(OutPortMock { value: 0.75, ..Default::default() });
+        mock.ports.inner.borrow_mut().register("vsig", "duty", None, PortKind::Scalar);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+
+        let duty = SignalId::parse("vsig:dut:duty").unwrap();
+        // Registered but not yet recorded before the first tick.
+        assert_eq!(st.current_value(&duty).unwrap(), None);
+
+        st.set_time(1_000);
+        advance_unwired(&mut fm, 1_000, &mut st);
+        assert_eq!(st.current_value(&duty).unwrap(), Some(Value::F64(0.75)));
     }
 
     #[test]
@@ -1886,7 +2202,13 @@ mod tests {
         let unit = CString::new("V").unwrap();
 
         let h = unsafe {
-            port_register_signal(ctx, sig_type.as_ptr(), local.as_ptr(), unit.as_ptr())
+            port_register_signal(
+                ctx,
+                sig_type.as_ptr(),
+                local.as_ptr(),
+                unit.as_ptr(),
+                0, // SIL_PORTS_KIND_SCALAR
+            )
         };
         assert_eq!(h, 0);
         assert_eq!(
@@ -1896,16 +2218,18 @@ mod tests {
                 sig_type: "vsig".into(),
                 local: "adc_in".into(),
                 unit: Some("V".into()),
+                kind: PortKind::Scalar,
             }
         );
         // NULL unit -> None; NULL name -> registration refused.
         let h2 = unsafe {
-            port_register_signal(ctx, sig_type.as_ptr(), local.as_ptr(), std::ptr::null())
+            port_register_signal(ctx, sig_type.as_ptr(), local.as_ptr(), std::ptr::null(), 0)
         };
         assert_eq!(h2, 1);
         assert_eq!(state.inner.borrow().defs[1].unit, None);
-        let bad =
-            unsafe { port_register_signal(ctx, std::ptr::null(), local.as_ptr(), std::ptr::null()) };
+        let bad = unsafe {
+            port_register_signal(ctx, std::ptr::null(), local.as_ptr(), std::ptr::null(), 0)
+        };
         assert_eq!(bad, -1);
 
         // Read: false while undriven, true (with the value) once cached.
@@ -1922,6 +2246,79 @@ mod tests {
         unsafe { port_write_signal(ctx, h, 7.25) };
         unsafe { port_write_signal(ctx, h2, -1.0) };
         assert_eq!(state.inner.borrow().writes, vec![(0, 7.25), (1, -1.0)]);
+    }
+
+    // --- duplex -----------------------------------------------------------
+    //
+    // The router itself (link / transfer / pending / dangling) is unit-tested in
+    // `duplex.rs`; model-to-model coupling + event recording in `engine.rs`. Here we
+    // prove the firmware C upcall forwards into an installed router.
+
+    /// A duplex peer that answers every transfer with the same frame.
+    struct FixedPeer(Vec<u8>);
+
+    impl DuplexPeer for FixedPeer {
+        fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn duplex_trampoline_forwards_to_the_router() {
+        // A firmware SPI upcall (`port_duplex_transfer`) resolves the router endpoint
+        // for its C handle and runs the exchange there. The router buffers the FULL
+        // peer frame; the firmware truncates only its own C buffer (rxMax).
+        let state = PortState::default();
+        let ctx = std::ptr::from_ref(&state).cast_mut().cast::<c_void>();
+        let router = DuplexRouter::new();
+        let ep = "spi:dut:AS5048_1";
+        let handle = router.declare(ep);
+        state.inner.borrow_mut().install_duplex(0, handle, router.clone());
+
+        let tx = [0xFFu8, 0xFF];
+        let mut out = [0u8; 4];
+        let mut out_len = 99usize;
+
+        // Declared but unlinked endpoint -> false (floating bus).
+        assert!(!unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
+        });
+        // A C handle never wired to the router -> false.
+        assert!(!unsafe {
+            port_duplex_transfer(ctx, 99, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
+        });
+
+        // Link a peer returning three bytes; a full-width transfer copies all three.
+        router.link(ep, Rc::new(RefCell::new(FixedPeer(vec![0x12, 0x34, 0x56]))));
+        assert!(unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
+        });
+        assert_eq!(out_len, 3);
+        assert_eq!(&out[..3], &[0x12, 0x34, 0x56]);
+
+        // rxMax shorter than the response -> bounded C copy, count = rxMax.
+        let mut small = [0u8; 2];
+        let mut small_len = 0usize;
+        assert!(unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), small.as_mut_ptr(), small.len(), &mut small_len)
+        });
+        assert_eq!(small_len, 2);
+        assert_eq!(&small, &[0x12, 0x34]);
+
+        // The router buffered both exchanges under the endpoint id, each with the
+        // full peer frame (truncation is the firmware's own buffer concern).
+        let drained = router.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0], (ep.to_string(), vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
+        assert_eq!(drained[1], (ep.to_string(), vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
+
+        // Guards: null rx, null out_len -> false.
+        assert!(!unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), std::ptr::null_mut(), out.len(), &mut out_len)
+        });
+        assert!(!unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), std::ptr::null_mut())
+        });
     }
 
     // --- Tier-1 shadow sweep -------------------------------------------------
@@ -2009,17 +2406,17 @@ mod tests {
     fn shadow_sweep_cold_records_all_then_localizes_a_changed_chunk() {
         // One range [0,76): a@0 (chunk0), b@62 (spans chunk0/chunk1 — 62..66),
         // c@72 (chunk1). Merge gap keeps them in one range; chunk size is 64.
-        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        let be = Rc::new(ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]));
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
         // Cold sweep: every leaf decoded once and baselined into the table.
         st.set_time(1_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (1, 1, 1));
         for (p, v) in [("a", 10u32), ("b", 20), ("c", 30)] {
             assert_eq!(
@@ -2032,7 +2429,7 @@ mod tests {
         // a + b (b straddles the chunk edge); c (chunk1 only) is NOT touched.
         be.set_u32(0, 11);
         st.set_time(2_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (2, 2, 1));
         // a changed -> re-recorded; b decoded but unchanged -> historian did not grow.
         assert_eq!(st.current_value(&id("cvar:dut:a")).unwrap(), Some(Value::U32(11)));
@@ -2045,19 +2442,19 @@ mod tests {
         // of b: chunk0 stays equal, chunk1 changes -> b (via chunk1) and c decode,
         // a (chunk0 only) does not. Proves a boundary leaf is caught from either
         // chunk it overlaps.
-        let be = ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]);
+        let be = Rc::new(ShadowMock::new(80, &[("a", 0), ("b", 62), ("c", 72)]));
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
-        fm.advance(1_000, &mut st); // cold: (1,1,1)
+        advance_unwired(&mut fm, 1_000, &mut st); // cold: (1,1,1)
 
         be.set_byte(65, 0xAA); // chunk1 byte of b only
         st.set_time(2_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!((be.decodes(0), be.decodes(1), be.decodes(2)), (1, 2, 2));
         // b's value changed -> re-recorded (two change-log entries now).
         assert_eq!(st.changes(&id("cvar:dut:b")).unwrap().len(), 2);
@@ -2067,48 +2464,47 @@ mod tests {
     fn shadow_sweep_splits_ranges_across_large_gaps() {
         // a@0 and b@200 are farther apart than the merge gap -> two independent
         // ranges. A change in a's range must not re-decode b.
-        let be = ShadowMock::new(256, &[("a", 0), ("b", 200)]);
+        let be = Rc::new(ShadowMock::new(256, &[("a", 0), ("b", 200)]));
         be.set_u32(0, 1);
         be.set_u32(200, 2);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
-        fm.advance(1_000, &mut st); // cold: both decoded once
+        advance_unwired(&mut fm, 1_000, &mut st); // cold: both decoded once
 
         be.set_u32(0, 5); // touch only a's range
         st.set_time(2_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(be.decodes(0), 2);
         assert_eq!(be.decodes(1), 1); // b's range untouched -> not decoded
     }
 
     #[test]
-    fn shadow_mirrors_memory_not_the_table_under_a_pin() {
-        // The shadow tracks MEMORY even where the table pin ignores the record:
-        // after memory changes under a pin, the leaf decodes exactly once (the tick
-        // it changed) and not again on a subsequent unchanged tick — the shadow
-        // absorbed the change despite the table holding the pinned value.
-        let be = ShadowMock::new(16, &[("a", 0)]);
+    fn shadow_decodes_once_per_memory_change() {
+        // The shadow tracks MEMORY: a leaf decodes exactly once per memory change (the
+        // tick it changed) and not again on a subsequent unchanged tick — the shadow
+        // absorbed the change.
+        let be = Rc::new(ShadowMock::new(16, &[("a", 0)]));
         be.set_u32(0, 10);
-        let mut fm = FirmwareMember::with_backend("dut", &be, 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         let a = id("cvar:dut:a");
         st.set_time(1_000);
-        fm.advance(1_000, &mut st); // cold: a=10, decode=1
+        advance_unwired(&mut fm, 1_000, &mut st); // cold: a=10, decode=1
         assert_eq!(be.decodes(0), 1);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(10)));
 
-        st.set_override(&a, true).unwrap(); // pin at 10
-        be.set_u32(0, 77); // memory changes under the pin
+        be.set_u32(0, 77); // memory changes
         st.set_time(2_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(be.decodes(0), 2); // chunk changed -> decoded
-        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(10))); // pin holds
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(77))); // mirror follows
 
         // Memory now stable: the shadow was updated to 77, so no re-decode.
         st.set_time(3_000);
-        fm.advance(1_000, &mut st);
+        advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(be.decodes(0), 2);
     }
 }

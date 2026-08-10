@@ -10,8 +10,6 @@
 #include "app_motorControl.h"
 #include "app_rgbLedRing.h"
 
-/* Defines */
-
 /* Typedefs */
 
 typedef enum

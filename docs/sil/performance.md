@@ -81,7 +81,7 @@ member now mirrors every traceable cvar leaf memory→table each tick (naive sca
 [`signal-trace.md`](signal-trace.md) §4) — this is what the dirty-page lever will
 optimize. Two mitigations already hold: the sweep reads through **pre-resolved
 address/type handles** (cached at enable — no per-tick DWARF re-resolution), and
-the in-sync **flush is sparse** (only the command-dirtied + pinned cvars, via the
+the in-sync **flush is sparse** (only the command-dirtied cvars, via the
 State Table dirty set, never the whole namespace). Measured on the pcs_bldc DLL:
 **~430 cvar leaves** swept per tick (the built-in array-size exclusion drops the
 task stacks / heap / 512-byte buffers that would otherwise dominate).
@@ -104,7 +104,7 @@ replaced by two composed optimizations, taking the full step **49 → ~9 µs
   against live memory* (no copy); only a **changed** range is pulled in and
   localized chunk-by-chunk, re-decoding just the leaves in changed chunks (a leaf
   straddling a chunk edge is listed under every chunk it overlaps). The shadow
-  mirrors **memory** — updated even where the table dedups or a pin ignores the
+  mirrors **memory** — updated even where the table dedups the
   record — and the first sweep after (re)enable is cold (full baseline). This is
   the gate this section called for: work is now **O(changed bytes)**, not
   O(leaves). (The address ranges derive strictly from resolved leaf `addr+size`,
@@ -112,7 +112,7 @@ replaced by two composed optimizations, taking the full step **49 → ~9 µs
   SAFETY note.)
 - **Tier 2 — dense-index State Table fast lane** (`state_table.rs`). The
   `IndexSet<SignalId>` already yields a stable dense index per signal; the hot
-  per-signal storage (`current`, `changes`, resolved `epsilon`, override/dirty/
+  per-signal storage (`current`, `changes`, resolved `epsilon`, dirty/
   evicted membership) migrated to index-keyed `Vec`/`HashSet<usize>` storage, and
   the changed-leaf decode path, route endpoints, and port-cache fill resolve their
   index **once** (at registration / first propagation) and call the crate-internal
