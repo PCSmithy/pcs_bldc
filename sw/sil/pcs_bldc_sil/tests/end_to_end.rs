@@ -22,6 +22,11 @@ fn read_tx_capture(fw: &Firmware) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+// [test->fw~est_encoder_003~1]
+// [test->fw~est_encoder_004~1]
+// [test->fw~hal_spi_003~1]
+// [test->fw~conn_serial_003~1]
+// [test->fw~hal_usb_003~1]
 #[test]
 fn end_to_end() {
     const CH: usize = 0; // HW_SPI_CHANNEL_AS5048_1

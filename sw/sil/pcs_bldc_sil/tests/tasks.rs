@@ -4,6 +4,7 @@
 use pcs_bldc_sil::{cid, cvar, Sil, SOURCE, TICK_US};
 use voyant::SignalId;
 
+// [test->fw~hal_tim_003~1]
 #[test]
 fn tasks_advance() {
     const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];

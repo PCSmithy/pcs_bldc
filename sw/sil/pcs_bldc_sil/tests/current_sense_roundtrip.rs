@@ -46,6 +46,9 @@ fn inject(sim: &mut Sil, phase_a: [f64; 3], bus_a: f64) {
     sim.run_for_ms(SETTLE_TICKS);
 }
 
+// [test->fw~hal_adc_004~1]
+// [test->fw~hal_adc_005~1]
+// [test->fw~safety_001~1]
 #[test]
 fn firmware_decodes_injected_currents() {
     // The acceptance case: amps injected at the shunt come back out of the firmware's
@@ -91,6 +94,7 @@ fn firmware_decodes_injected_currents() {
     );
 }
 
+// [test->fw~hal_adc_005~1]
 #[test]
 fn firmware_sees_full_scale_on_saturation() {
     // Past full scale the amplifier rails, so the firmware reads the rail current rather

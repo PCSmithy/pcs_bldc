@@ -45,6 +45,7 @@ impl Member for VoltsModel {
     }
 }
 
+// [test->fw~hal_adc_004~1]
 #[test]
 fn adc_ports() {
     const VOLTS: f64 = 1.234;
@@ -124,6 +125,7 @@ fn adc_ports() {
     );
 }
 
+// [test->fw~io_bridge_003~1]
 #[test]
 fn pwm_ports() {
     let mut sim = Sil::new();

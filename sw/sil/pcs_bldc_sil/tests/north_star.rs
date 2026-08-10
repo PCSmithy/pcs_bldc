@@ -122,6 +122,13 @@ fn alignment_equilibrium_rad(start_rad: f64) -> f64 {
     (ALIGN_FIELD_RAD_E + (k * TAU)) / POLE_PAIRS
 }
 
+// [test->fw~mc_012~1]
+// [test->fw~io_bridge_002~1]
+// [test->fw~io_bridge_004~1]
+// [test->fw~hal_tim_004~1]
+// [test->fw~hal_tim_008~1]
+// [test->fw~ui_switch_002~1]
+// [test->fw~hal_gpio_004~1]
 #[test]
 fn alignment_pulls_rotor_and_captures_offset() {
     // Alignment is a torsional spring: 0.1 duty across U-V drives 0.1*Vbus/2R through the
@@ -274,6 +281,12 @@ fn alignment_pulls_rotor_and_captures_offset() {
     );
 }
 
+// [test->fw~mc_006~1]
+// [test->fw~mc_011~1]
+// [test->fw~mc_012~1]
+// [test->fw~io_bridge_004~1]
+// [test->fw~hal_spi_002~1]
+// [test->fw~est_encoder_002~1]
 #[test]
 fn dial_demand_spins_rotor_closed_loop() {
     // Full-scale dial: duty clamps at APP_MOTORCONTROL_MAX_DUTY_01 = 0.9, so the winding
