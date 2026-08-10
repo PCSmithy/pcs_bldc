@@ -7,148 +7,31 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
-## Current sprint — full-loop motor commutation (started 2026-07-12)
+## Commutation sprint — full-loop motor commutation ☑ (2026-07-12 → 2026-08-10)
 
-**North star:** the firmware's six-step drive commutates a simulated motor
-end-to-end — PWM out → motor model spins → encoder/current models feed back —
-driven and asserted purely through the State Table.
+**North star achieved:** the firmware's six-step drive commutates a simulated
+motor end to end — button tap → alignment physically swings the rotor →
+offset captured from the plant → dial demand → closed-loop spin — driven and
+asserted purely through the State Table (`tests/north_star.rs`). Up for
+merge as PR #4.
 
-**Owner-set API direction** (from review of the sanity suite, 2026-07-12):
+Stages, all ☑ (current-state detail lives in the design docs + tests):
 
-- Tests interact with voyant (the State Table), never a `Firmware` handle.
-  Direct cvar writes are the rare case, and even those go through the table:
-  `st.write("cvar:pcs_bldc:HW_USB_sim_data.connected", true)`.
-- The same call shape writes model inputs —
-  `st.write("vsig:as5048:angle_deg", 90.0)` — one uniform API for cvars,
-  model inputs, and (later) bus signals.
-- Target end-state (Python, Phase 4) the Rust API must shape toward:
+1. String-keyed table write/read — tests interact with voyant, never a
+   `Firmware` handle.
+2. DuplexTransfer — synchronous member↔member serial transactions
+   ([`state-route-tables.md`](state-route-tables.md)).
+3. AS5048 encoder model (owner physics, `src/as5048.rs`).
+4. PWM/bridge observation ports; plus MF4 trace export
+   ([`signal-trace.md`](signal-trace.md)), the pytest-shaped `Sil` harness,
+   and the firmware reset lifecycle ([`architecture.md`](architecture.md)).
+5. Inverter + motor model (owner physics, `src/motor.rs`;
+   `tests/motor_dynamics.rs` pins the analytics against the params).
+6. Current-sense model + zero-latency sense wiring (`src/current_sense.rs`,
+   `src/wiring.rs`); alignment harness.
+7. North-star closed-loop scenario (`tests/north_star.rs`).
 
-  ```python
-  def test_encoder_spi_comms():
-      sim["vsig:pcs_bldc:usb:connected"] = True
-      sim.run_for(10)
-      sim["vsig:as5048:angle_deg"] = 90.0
-      sim.run_for(1)
-      assert sim["usb:pcs_bldc:motor_angle"] == 90.0
-  ```
-
-**Stages** (each lands as its own reviewed commit):
-
-- ☑ **1. String-keyed table write/read** — `write`/`read` over
-  `SignalId::parse` → `record`/`current_value`; migrate the
-  sanity suite off direct `fw.read_cvar`/`write_cvar` (only boot/shutdown
-  stay below the engine).
-- ☑ **2. DuplexTransfer** — synchronous member↔member serial transactions
-  (`spi` first), an **engine-scoped** primitive. An engine-owned `DuplexRouter`
-  couples any initiating member to a linked `DuplexPeer`: a model initiates via
-  `MemberCtx::duplex_transfer`, a firmware member through its C SPI upcall — both
-  forward into the same router (tx in, the peer's rx back synchronously, one
-  full-duplex step, no D8). The engine force-records each exchange as
-  `spi:<ep>:tx` / `:rx` event entries (`Value::Bytes`) for the historian. The
-  sim `HW_SPI` `injectedRx` inject + MOSI loopback are removed; an unhandled
-  transfer reads `0xFF` (a floating/disconnected bus).
-- ☑ **3. AS5048 encoder model** (`pcs_bldc_sil/src/as5048.rs`,
-  owner-implemented) — one `vsig:<name>:angle` input (canonical rad; unit
-  asks convert at the boundary) + `raw_encoder_ticks` out; u16-native
-  command parse (even parity, read/addr), one-frame response pipeline,
-  parity on every outgoing frame. Two instances linked in check 4: the
-  motor encoder answers the firmware's real READ-ANGLE polls
-  (`write angle[deg]=90` → telemetry `90.00`), the dial idles at 0 —
-  its demand path (`st.write("vsig:dial:angle[deg]", …)`) is exercised
-  in stage 6/7.
-- ☑ **4. PWM/bridge observation ports** — sim `HW_TIM` publishes the commanded
-  bridge state as output ports (the D6 route source): normalized per-phase duty
-  (compare/period ∈ [0,1]), per-phase enable, and one master output enable
-  (`vsig:pcs_bldc:PWM_{U,V,W}_{duty,enabled}` + `TIM1_MOE`, all f64 0/1 for
-  flags). Publication is event-driven from the setters; raw CCR/ARR never crosses
-  the boundary. `HW_TIM_sim.h` + the carrier/waveform sim machinery are deleted;
-  the Unity suite exercises the production seam via a test-owned hooks double.
-  Suite check 12 pins registration + the dark-bridge boot state.
-- ☑ **4.5. Trace visibility (MF4 export)** — every SIL run can drop ASAM MDF4
-  (`.mf4`) trace files of the State Table historian, openable in asammdf's GUI.
-  voyant serializes the change-log as a versioned little-endian binary stream
-  (pure Rust, no Python knowledge — `Engine::dump_trace`); the suite spawns the
-  venv's `tools/mf4_build.py` (asammdf) over stdin to write `.mf4` — enum signals
-  carry value-to-text conversions, `Bytes` signals are skipped, units come from
-  the canonical registration, and a missing venv degrades to a raw `.bin` next to
-  the target (never loses data). `PCS_SIL_TRACE_DIR` gates per-test drops (each `Sil`
-  world dumps `<test-fn>.mf4` on drop); `tools/validate_mf4.py` round-trips
-  `end_to_end.mf4` + `adc_ports.mf4`. This is the model-validation instrument for
-  stage 5 — plot the plant against the firmware.
-- ☑ **4.6. pytest-shaped test harness** — every SIL scenario is an independent
-  `#[test]` in `pcs_bldc_sil/tests/*.rs` over a `Sil`: **the simulation itself**, which
-  derefs to its `Engine` (so `sim.add_member` / `sim.link_duplex` / `sim.step` are
-  direct). `Sil::new()` is a zero-firmware world — model-only scenarios (`duplex`,
-  `encoder`) are first-class; `sim.load_firmware(name)` boots one firmware instance per
-  call, its image copied to a unique temp path so N instances (and repeated loads of one
-  path) each get their own module statics. `Drop` dumps a per-test `<test-fn>.mf4`
-  trace, shuts every firmware down in reverse load order, unloads the libraries (the
-  last `Rc<Firmware>` drops → `FreeLibrary`), and deletes the temp copies. voyant's
-  `FirmwareMember` owns its firmware via `Rc`, so `Engine` carries no lifetime. A
-  process-global mutex, taken at the first firmware load, serializes vanilla (threaded)
-  `cargo test` — the sequential single-process baseline — and is uncontended under
-  cargo-nextest's process-per-test model. `tests/lifecycle.rs` is the reload gate: the
-  fiber port re-inits cleanly on a fresh thread **and** back-to-back on one thread (it
-  un-converts the thread at `shutdown`), so `reload_cycles_same_thread` boots N images
-  in a row on a single thread. `tests/multi_firmware.rs` (`two_firmwares`) runs two
-  images sharing one thread (the second borrows the first's fiber conversion). The
-  sanity-check bin shrinks to the perf report; `tools/run_sil.sh` runs the checks, then
-  the perf bin. Firmware clocks assert start-from-reset + 1000 us/tick, never sim-axis
-  alignment. nextest integrated (process-per-test parallel; run_sil.sh prefers it, cargo
-  test remains the fallback). **Reset lifecycle available** (`tests/reset.rs`): disabling
-  a firmware member holds it in reset (memory frozen, sim time flows); re-enabling with a
-  reload recipe (`FirmwareMember::set_reload_path`, wired by `Sil::load_firmware`) reboots
-  a fresh image from the same path — statics from reset, DWARF/bindings/ports/duplex
-  rebuilt, signal history preserved — on one continuous timeline. `firmware_reset_lifecycle`
-  proves the sawtooth (100 ms up, 100 ms dark, 100 ms up).
-- ☑ **5. Inverter + motor model** (owner-implemented physics) — averaged-duty
-  inverter into a trapezoidal-BEMF BLDC model, f64 throughout: per-leg hybrid
-  ideal-diode modes (Driven / Clamped(rail) / Open — demag freewheel to exact
-  zero, voltage re-engagement with anti-chatter margin), R/L phases about a
-  floating neutral, J/B mechanics, semi-implicit Euler at 1 µs sub-steps.
-  Ports follow the declare-your-own-namespace convention: inputs
-  `vsig:<motor>:{duty,enable}_{u,v,w}/moe/vbus` fed by `wire_bridge`'s seven
-  delayed routes (`src/wiring.rs`; suspend-and-write = bridge fault
-  injection, proven in `tests/motor.rs`); outputs add
-  `terminal_voltage_*`/`bemf_*`/`neutral_voltage` for vsense matching.
-  `tests/motor_dynamics.rs` (8 physics tests, model-only worlds, per-test
-  MF4 drops) pins locked-rotor analytics, demag both rails, KCL through
-  commutation, coast at τ_mech = J/B, SVPWM common-mode rejection, and
-  collapsed-bus diode rectification — expectations derived from the params.
-  Known approximation (backlogged): per-terminal diode window below the
-  line-to-line conduction threshold colors undriven terminal voltages.
-- ☑ **6. Feedback + harness models** — alignment harness (`tests/north_star.rs`
-  drives the button-to-alignment path: I2C STATUS seeded via
-  `HW_I2C_data.buses[1].devices[0].regMem[128]`, button tap via the
-  `HW_GPIO_data.inputLevel[port][bit]` static, dial demand turned) and the
-  current-sense model (owner-implemented, `src/current_sense.rs`): per channel
-  `v = clamp(bias + gain·i, 0, vref)` mirroring `IO_bridge_channels.c` (phase
-  0.1 V/A @ 1.65 V, bus 0.6 V/A @ 0 V, 3.3 V rails), fed by the motor's
-  `phase_current_*`/`bus_current` outputs over `wire_current_sense`'s eight
-  zero-latency routes into the ADC ports — same-tick sensing, no artificial
-  delay. `tests/current_sense{,_roundtrip}.rs` pin the affine transfer,
-  saturation, regen blindness (unipolar bus amp), the full round trip against
-  the firmware's own decode constants read from its memory (±quantization),
-  the executed-decode cross-check via the overcurrent latch (2.0 A phase /
-  1.5 A bus trips), and stuck-sensor fault injection by route suspension.
-  Note: the firmware keeps no decoded-amps static (`IO_bridge_getPhaseCurrent`
-  fills a stack local) — a small firmware change caching it would let the
-  round trip read the executed value directly (backlogged).
-- ☑ **7. North-star scenario** — `tests/north_star.rs`: button tap → the
-  alignment vector physically swings the rotor (real ~36 mA through the sense
-  chain), offset captured from the plant → dial turn → closed-loop six-step
-  spins the shaft +7.46 mech rev over 3 s, all six sectors, currents bounded,
-  no latch — asserted purely through the State Table. The sign/lead
-  convention chain is correct end-to-end (no first-spin bug). Latch
-  fault-injection lives in `current_sense_roundtrip.rs` (overcurrent trip,
-  stuck sensor) and the encoder-starvation latch is exercised by any world
-  without an encoder model. **Finding** (backlogged): the 500 ms dwell
-  captures a mid-swing offset on the underdamped placeholder plant (77° elec
-  error → mean effective lead 167° vs the designed 60..120° → ~37% of
-  available torque); revisit with ballparked real params.
-
-**Bring-up traps** (from the 04b2cf8 firmware survey — each costs a day if
-forgotten):
+**Bring-up traps** (each costs a day if forgotten):
 
 - Undriven ADC ports ramp to ~3.3 V ≈ 16 A computed phase current → the
   overcurrent latch trips almost immediately: current-sense ports must be
@@ -159,15 +42,10 @@ forgotten):
 - Drive stays blocked until `dev_gateDriver_isOperational()`: the sim I2C
   STATUS register must be seeded AND `task_200ms` must have completed a
   configure+status pass (first pass lands within ~200–400 ticks).
-- ~~The sim TIM2 counter is frozen~~ — fixed 2026-07-28: `countsPerUs`-
-  configured sim TIM counters advance with sim time
-  (`HW_TIM_advanceTime`, called per tick from `sil_fw_advance_tick`);
-  check 2 asserts `lib_timer` time flows.
 
-**Deferred** (owner, 2026-07-12): **D8 interrupt controller** — the current
-control path is entirely cooperative in `task_1ms`, so D8 isn't needed until
-the interrupt-driven control sprint that follows this one.
-**`usb_cdc`/`teleplot` sig_type** — filed near the top of `backlog.md`.
+**Deferred out of the sprint:** D8 interrupt controller (the
+interrupt-driven-control sprint that follows); `usb_cdc`/`teleplot`
+sig_type (filed near the top of `backlog.md`).
 
 ---
 
@@ -301,12 +179,13 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
 **Exit:** firmware commands PWM → motor model spins → encoder/ADC feed back →
 a basic control action is observable end-to-end.
 
-Staged in detail in **Current sprint** above (stages 3–7 map here).
+Landed via the commutation sprint (above).
 
-- ☐ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
-- ☐ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
-- ☐ Encoder (AS5048) model → routed into fw SPI-rx state
-- ☐ Current / voltage / temp sensor models → routed into fw ADC counts
+- ☑ Averaged-duty inverter model (norm leg duty + Vbus → phase voltages, D6)
+- ☑ Motor model (electrical + mechanical; model-owned sub-stepped integrator)
+- ☑ Encoder (AS5048) model → duplex-linked to the fw SPI driver
+- ☑ Current sensor model → routed into fw ADC ports (voltage/temp sensors
+  remain with the vsense-matching work)
 
 ## Phase 4 — Fast mode + Python/pytest
 **Goal:** scripted, deterministic, parallel regression.

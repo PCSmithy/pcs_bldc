@@ -151,7 +151,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   - **State Table** implemented: `SignalId`, logical `Value`, per-signal
     change-logged history (dedup + per-signal epsilon, default 1e-3), current
     cache (O(1)), `value_at` ZOH (O(log n)), time-based retention (`None` =
-    unbounded for fast mode). (Injection overrides removed 2026-07-12.)
+    unbounded for fast mode).
 - **Rebased onto current `main` + firmware/SIL build unified (2026-07-04):**
   the SIM target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`,
   `task_usb`, `telemetryTask`) and the same io/dev/app init as embedded, via
@@ -179,9 +179,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   takes **no `Backend`**; it records source entries into destination entries and
   nothing else. A destination is **any registered signal of any `sig_type`** (the
   `cvar`-only restriction and `RouteError::UnsupportedDest` are gone), so `vsig`
-  destinations (model inputs) work with no new seam. (The `set_override`
-  fault-injection compose mentioned here was removed 2026-07-12 — fault injection
-  is now suspend-route-then-write-destination.) Added
+  destinations (model inputs) work with no new seam. Added
   `RouteTable::remove`; both endpoints are existence-checked at propagate
   (symmetric). The firmware member gained **`drive_cvar`** — the mirror of
   `sample_cvar`: per firmware tick it flushes driven cvars (table -> fw memory) ->
@@ -264,8 +262,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   address/type handle per leaf. Out-sync **sweeps** them all memory→table
   (`record_mirror`) each tick; in-sync **flush is sparse** — a State Table **dirty
   set** (`record`/`force_record` mark dirty, `record_mirror` does not) drained
-  per-source (`take_dirty`), filtered to `cvar`. (The pinned-flush union described
-  here was removed 2026-07-12 — flush is command-dirtied only.)
+  per-source (`take_dirty`), filtered to `cvar`.
   `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
   tune the policy (the suite registers the one 256-byte-buffer SPI MISO byte it
   drives; renamed from `exclude`/`include` 2026-07-16). Sweep
@@ -339,9 +336,8 @@ docs/sil/*.md            the design (see "Design docs" below)
    a chain `x→y→z` advances one hop per tick. Sources are any State Table entry
    (`vsig`/`cvar`); destinations are `cvar`s driven via `Backend::write_cvar` (the
    DWARF path is the id's `name` segment — no separate mapping). Per-route
-   `suspend`/`resume` gates driving for fault injection (the table `override` it
-   once paired with was removed 2026-07-12; injection is now suspend + direct
-   write). A `vsig` destination (model input) needs a `Model::write` seam and
+   `suspend`/`resume` gates driving for fault injection. A `vsig`
+   destination (model input) needs a `Model::write` seam and
    is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
    snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
    model's `vsig` into a firmware `cvar` and proves suspend/resume gating.

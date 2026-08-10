@@ -4,5 +4,4 @@ numpy
 asammdf
 matplotlib
 ipykernel
-nbconvert
 pyserial

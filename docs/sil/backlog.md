@@ -41,14 +41,6 @@ or a two-step align (coarse + settle). The zero-demand shorted-pair braking
 (`app_motorControl.c` else-branch) adds negligible damping (~6e-6 vs
 B=1e-4 Nm·s/rad) and does not rescue the dwell.
 
-## ☑ fw: cache decoded bridge currents in a static — DONE (2026-08-09)
-
-**Landed.** `app_motorControl_channelData_S` gains `current[phase]` +
-`busCurrent`, written on each successful `IO_bridge_get*Current` read where
-the overcurrent latch consumes them (a failed read holds the last good
-value). `tests/current_sense_roundtrip.rs` asserts on these executed-decode
-statics directly via the mirror.
-
 ## voyant: declarative transform routes (stateless conversions on the wire)
 
 **When:** once 2-3 stateless conversions accumulate (candidates: vsense divider
@@ -130,39 +122,11 @@ at the SPI boundary; prng tests run standalone from the crate dir, not via
 - Deferred, deliberate: a firmware-side deadband on the dial accumulator if
   zero-adjacent `velocityRequest` jitter ever matters downstream.
 
-**☑ DONE (2026-08-10):** the watched macOS CI run failed exactly as predicted
-("no DWARF ... and no .dSYM alongside it") on the commutation-sprint PR:
-macOS keeps DWARF in the sibling `.dSYM` bundle. `unique_temp_copy` carries
-`<src>.dSYM` along under the same unique prefix (the reload recipe points at
-the copy, so resets inherit it) and `Sil::drop` removes the bundle with the
-image.
+## Fiber port: macOS un-convert teardown
 
-## ☑ Fiber port: support repeated firmware boots on one thread — DONE (2026-07-29)
-
-**Landed.** `xPortStartScheduler` owns the fiber conversion only when the thread
-is not already a fiber (a second image borrows the existing conversion), and
-`vPortEndScheduler` deletes the task fibers and calls `ConvertFiberToThread` when
-it owns the conversion — so repeated boots on one thread (`reload_cycles_same_thread`)
-and two images sharing one thread (`two_firmwares`) both work. The paired
-member-level reset also landed (see below): re-enable a firmware member = full DLL
-reload ≈ boot from reset, proven by `firmware_reset_lifecycle`.
-
-**Remaining (macOS only):** the macOS ucontext/asm port needs the equivalent
-un-convert teardown when it lands; the Windows fiber port is complete.
-
-## ☑ Firmware member reset lifecycle — DONE (2026-07-29)
-
-**Landed.** A disabled firmware member is held in reset (memory frozen, sim time
-flows — the engine skips disabled members). Re-enable with a reload recipe
-(`FirmwareMember::set_reload_path`, wired automatically by `Sil::load_firmware` to
-the temp copy) reboots a fresh image from the same path: shut the old image down,
-drop its `Rc` (sole ownership — `Sil` keeps only a `Weak`), `Firmware::load` the
-same path (statics reboot as the library refcount hits zero), `start()`, and rebuild
-every image-bound cache (DWARF leaves, cvar bindings, shadow ranges, port + duplex
-registrations) — State-Table entries re-registered idempotently, so signal history
-is preserved across the reload. Without a recipe, re-enable resumes advancing.
-`tests/reset.rs::firmware_reset_lifecycle` proves the sawtooth on one continuous sim
-timeline.
+**When:** with the macOS ucontext/asm port, if one lands. The Windows fiber
+port fully supports repeated boots and shared threads; the macOS equivalent
+needs the same `vPortEndScheduler` un-convert teardown when it exists.
 
 ## Enum cvars mirror as DWARF placeholders (`<0>`, `<1>`), not enumerator names
 
