@@ -5,3 +5,4 @@ asammdf
 matplotlib
 ipykernel
 nbconvert
+pyserial
