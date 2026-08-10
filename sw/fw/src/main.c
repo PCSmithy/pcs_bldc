@@ -367,11 +367,6 @@ static void telemetryTask(void * params)
         slowWindowCount = (slowWindowCount + 1U) % TELEMETRY_SLOW_DIVIDER;
         const bool medTick = (medWindowCount == 0U);
         medWindowCount = (medWindowCount + 1U) % TELEMETRY_MED_DIVIDER;
-#if PCS_BENCH_DUTY_SEQ
-        // The bench signal set emits every window; the tier flags idle.
-        (void)slowTick;
-        (void)medTick;
-#endif
 
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
 
@@ -385,111 +380,6 @@ static void telemetryTask(void * params)
         int off = 0;
         int n = 0;
 
-#if (PCS_BENCH_DUTY_SEQ == 1)
-        // ==== Bench duty-sequence capture: the stall-R signal set only ======
-        // Every window (2 ms): commanded duty, rotor angle (stall quality),
-        // phase terminal voltages, phase currents, bus voltage. Nothing else,
-        // so the serial stream carries exactly what the fit consumes.
-        float32_t motorAngle_deg = 0.0f;
-        (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &motorAngle_deg, NULL);
-        uint32_t angWhole = 0U;
-        uint32_t angFrac  = 0U;
-        floatToFixed(motorAngle_deg, 100U, &angWhole, &angFrac);
-
-        uint32_t dutyWhole = 0U;
-        uint32_t dutyFrac  = 0U;
-        floatToFixed(app_userControls_benchDuty01(), 1000U, &dutyWhole, &dutyFrac);
-
-        float32_t phaseUsense_v = 0.0f;
-        float32_t phaseVsense_v = 0.0f;
-        float32_t phaseWsense_v = 0.0f;
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 13U, &phaseUsense_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 16U, &phaseVsense_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 18U, &phaseWsense_v);
-        const float32_t phaseU_v_out = phaseUsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-        const float32_t phaseV_v_out = phaseVsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-        const float32_t phaseW_v_out = phaseWsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-
-        float32_t phaseUadc_v = 0.0f;
-        float32_t phaseVadc_v = 0.0f;
-        float32_t phaseWadc_v = 0.0f;
-        float32_t vbusV_v     = 0.0f;
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 6U, &phaseUadc_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 7U, &phaseVadc_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 8U, &phaseWadc_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 12U, &vbusV_v);
-        const float32_t phaseU_i = (phaseUadc_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t phaseV_i = (phaseVadc_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t phaseW_i = (phaseWadc_v - ADC_PHASE_I_OFFSET_V) / ADC_PHASE_I_V_PER_A;
-        const float32_t vbus_v   = vbusV_v / ADC_VBUS_V_RATIO;
-
-        uint32_t uvW = 0U, uvF = 0U, vvW = 0U, vvF = 0U, wvW = 0U, wvF = 0U;
-        const char * const uvS = telemetrySignedFixed(phaseU_v_out, 1000U, &uvW, &uvF);
-        const char * const vvS = telemetrySignedFixed(phaseV_v_out, 1000U, &vvW, &vvF);
-        const char * const wvS = telemetrySignedFixed(phaseW_v_out, 1000U, &wvW, &wvF);
-        uint32_t uiW = 0U, uiF = 0U, viW = 0U, viF = 0U, wiW = 0U, wiF = 0U;
-        const char * const uiS = telemetrySignedFixed(phaseU_i, 1000U, &uiW, &uiF);
-        const char * const viS = telemetrySignedFixed(phaseV_i, 1000U, &viW, &viF);
-        const char * const wiS = telemetrySignedFixed(phaseW_i, 1000U, &wiW, &wiF);
-        uint32_t vbW = 0U, vbF = 0U;
-        floatToFixed(vbus_v, 1000U, &vbW, &vbF);
-
-        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "bench_duty:%lu:%lu.%03lu;"
-                     "motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-                     "vbus_v:%lu:%lu.%03lu" TP_UNIT "V\n"
-                     "phase_u_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "phase_v_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "phase_w_v:%lu:%s%lu.%03lu" TP_UNIT "V\n"
-                     "phase_u_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
-                     "phase_v_i:%lu:%s%lu.%03lu" TP_UNIT "A;"
-                     "phase_w_i:%lu:%s%lu.%03lu" TP_UNIT "A\n",
-                     (unsigned long)nowMs, (unsigned long)dutyWhole, (unsigned long)dutyFrac,
-                     (unsigned long)nowMs, (unsigned long)angWhole, (unsigned long)angFrac,
-                     (unsigned long)nowMs, (unsigned long)vbW, (unsigned long)vbF,
-                     (unsigned long)nowMs, uvS, (unsigned long)uvW, (unsigned long)uvF,
-                     (unsigned long)nowMs, vvS, (unsigned long)vvW, (unsigned long)vvF,
-                     (unsigned long)nowMs, wvS, (unsigned long)wvW, (unsigned long)wvF,
-                     (unsigned long)nowMs, uiS, (unsigned long)uiW, (unsigned long)uiF,
-                     (unsigned long)nowMs, viS, (unsigned long)viW, (unsigned long)viF,
-                     (unsigned long)nowMs, wiS, (unsigned long)wiW, (unsigned long)wiF);
-        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
-#elif (PCS_BENCH_DUTY_SEQ == 2)
-        // ==== Bench spin capture: the BEMF signal set only ==================
-        // Every window (2 ms): rotor angle + the three phase terminal
-        // voltages. The bridge stays disarmed; hand-spin the rotor and log.
-        float32_t motorAngle_deg = 0.0f;
-        (void)IO_AS5048_readAngle(IO_AS5048_CHANNEL_MOTOR, NULL, &motorAngle_deg, NULL);
-        uint32_t angWhole = 0U;
-        uint32_t angFrac  = 0U;
-        floatToFixed(motorAngle_deg, 100U, &angWhole, &angFrac);
-
-        float32_t phaseUsense_v = 0.0f;
-        float32_t phaseVsense_v = 0.0f;
-        float32_t phaseWsense_v = 0.0f;
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_1, 13U, &phaseUsense_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 16U, &phaseVsense_v);
-        (void)HW_ADC_getVolts(HW_ADC_CHANNEL_2, 18U, &phaseWsense_v);
-        const float32_t phaseU_v_out = phaseUsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-        const float32_t phaseV_v_out = phaseVsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-        const float32_t phaseW_v_out = phaseWsense_v / ADC_PHASE_V_OPAMP_GAIN / ADC_PHASE_V_DIV_RATIO;
-
-        uint32_t uvW = 0U, uvF = 0U, vvW = 0U, vvF = 0U, wvW = 0U, wvF = 0U;
-        const char * const uvS = telemetrySignedFixed(phaseU_v_out, 1000U, &uvW, &uvF);
-        const char * const vvS = telemetrySignedFixed(phaseV_v_out, 1000U, &vvW, &vvF);
-        const char * const wvS = telemetrySignedFixed(phaseW_v_out, 1000U, &wvW, &wvF);
-
-        n = snprintf(&txBuf[off], sizeof(txBuf) - (size_t)off,
-                     "motor_angle:%lu:%lu.%02lu" TP_UNIT "deg;"
-                     "phase_u_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "phase_v_v:%lu:%s%lu.%03lu" TP_UNIT "V;"
-                     "phase_w_v:%lu:%s%lu.%03lu" TP_UNIT "V\n",
-                     (unsigned long)nowMs, (unsigned long)angWhole, (unsigned long)angFrac,
-                     (unsigned long)nowMs, uvS, (unsigned long)uvW, (unsigned long)uvF,
-                     (unsigned long)nowMs, vvS, (unsigned long)vvW, (unsigned long)vvF,
-                     (unsigned long)nowMs, wvS, (unsigned long)wvW, (unsigned long)wvF);
-        if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
-#else
         // ==== Fast tier (every 2 ms window) =================================
         // Only the signals that genuinely refresh at the window rate. Encoder
         // angles (deg) go out here; the raw counts, read in the same call, ride
@@ -806,7 +696,6 @@ static void telemetryTask(void * params)
                          (unsigned long)nowMs, (unsigned long)telemMaxUs);
             if ((n > 0) && ((size_t)n < (sizeof(txBuf) - (size_t)off))) { off += n; }
         }
-#endif
 
         // One write per window: IO_serial_write batches the whole buffer into the
         // CDC FIFO in one call and flushes once.

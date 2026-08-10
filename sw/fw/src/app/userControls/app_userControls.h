@@ -10,18 +10,6 @@
 #include "app_motorControl.h"
 #include "app_rgbLedRing.h"
 
-/* Defines */
-
-// BENCH-ONLY test hook (never merge with this set nonzero):
-//   0 — stock behavior.
-//   1 — stall-R capture: the run toggle walks a fixed duty-cycle schedule and
-//       telemetry (main.c) trims to that test's signal set.
-//   2 — spin/BEMF capture: controls stay stock (leave the bridge disarmed);
-//       telemetry trims to rotor angle + the three phase terminal voltages.
-#ifndef PCS_BENCH_DUTY_SEQ
-#define PCS_BENCH_DUTY_SEQ (0)
-#endif
-
 /* Typedefs */
 
 typedef enum
@@ -44,8 +32,3 @@ typedef struct
 
 bool app_userControls_init(const app_userControls_config_S * const config);
 void app_userControls_run1ms(void);
-
-#if (PCS_BENCH_DUTY_SEQ == 1)
-// The bench schedule's currently commanded duty, for telemetry.
-float32_t app_userControls_benchDuty01(void);
-#endif

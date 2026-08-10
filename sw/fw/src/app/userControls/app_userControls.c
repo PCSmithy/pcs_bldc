@@ -62,41 +62,6 @@ static float32_t app_userControls_private_dialAccumulate(float32_t * const accum
 static app_userControls_data_S app_userControls_data;
 static app_userControls_data_S * const data = &app_userControls_data;
 
-#if (PCS_BENCH_DUTY_SEQ == 1)
-// Bench schedule for the stall-R capture: hold each duty level, step up then
-// back down (the down-leg exposes copper heating as V-I hysteresis). Peak
-// current on this 32 Ω-class motor is ~0.37 A — far under the 2 A phase trip.
-typedef struct
-{
-    float32_t duty01;
-    uint32_t hold_ms;
-} app_userControls_benchStep_S;
-
-static const app_userControls_benchStep_S app_userControls_benchSeq[] =
-{
-    { 0.00f, 3000U },
-    { 0.10f, 3000U },
-    { 0.20f, 3000U },
-    { 0.30f, 3000U },
-    { 0.45f, 3000U },
-    { 0.60f, 3000U },
-    { 0.45f, 3000U },
-    { 0.30f, 3000U },
-    { 0.20f, 3000U },
-    { 0.10f, 3000U },
-    { 0.00f, 3000U },
-};
-
-static size_t   app_userControls_benchIndex;
-static uint32_t app_userControls_benchElapsed_ms;
-static float32_t app_userControls_benchDuty;
-
-float32_t app_userControls_benchDuty01(void)
-{
-    return app_userControls_benchDuty;
-}
-#endif
-
 /* Private Function Definitions */
 static float32_t app_userControls_private_readAngleDeg(IO_AS5048_channel_E channel)
 {
@@ -241,10 +206,6 @@ void app_userControls_run1ms(void)
                     data->dialPrevRaw_deg = data->dialAngleRaw_deg;
                     data->dialAccum_deg   = 0.0f;
                     data->dialCommand     = 0.0f;
-#if (PCS_BENCH_DUTY_SEQ == 1)
-                    app_userControls_benchIndex      = 0U;
-                    app_userControls_benchElapsed_ms = 0U;
-#endif
                 }
                 data->velocityRequest_radPerSec = 0.0f;
                 break;
@@ -257,25 +218,6 @@ void app_userControls_run1ms(void)
                     // TODO - trigger rgb ring animation
                 }
 
-#if (PCS_BENCH_DUTY_SEQ == 1)
-                // Bench schedule replaces the dial: walk the table once (1 ms
-                // per call), then hold zero until toggled off.
-                if (app_userControls_benchIndex < COUNTOF(app_userControls_benchSeq))
-                {
-                    app_userControls_benchDuty = app_userControls_benchSeq[app_userControls_benchIndex].duty01;
-                    app_userControls_benchElapsed_ms++;
-                    if (app_userControls_benchElapsed_ms >= app_userControls_benchSeq[app_userControls_benchIndex].hold_ms)
-                    {
-                        app_userControls_benchElapsed_ms = 0U;
-                        app_userControls_benchIndex++;
-                    }
-                }
-                else
-                {
-                    app_userControls_benchDuty = 0.0f;
-                }
-                data->velocityRequest_radPerSec = app_userControls_benchDuty * APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC;
-#else
                 // compute velocity command from dial encoder angle: sticky
                 // signed accumulator, normalized to [-1, +1]
                 data->dialCommand = app_userControls_private_dialAccumulate(&data->dialAccum_deg,
@@ -284,7 +226,6 @@ void app_userControls_run1ms(void)
 
                 // scale the [-1, 1] dial command to the range of motor speed
                 data->velocityRequest_radPerSec = data->dialCommand * APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC;
-#endif
                 break;
         }
 

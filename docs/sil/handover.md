@@ -36,9 +36,10 @@ macOS keeps DWARF in dSYM bundles and clang -O3 SRA-decomposes small statics
 into DW_OP_piece locations (both handled: `sil.rs` temp-copy carries the
 bundle, `dwarf.rs` resolves pieces).
 
-Bench-only firmware hooks: `PCS_BENCH_DUTY_SEQ` in `app_userControls.h`
-(0 = stock, shipped; 1 = stall-R duty schedule; 2 = spin/BEMF telemetry) +
-`tools/serial_capture.py` (unbounded Teleplot->CSV logger).
+Bench capture tooling: `tools/serial_capture.py` (unbounded Teleplot->CSV
+logger). The bench-only firmware duty-schedule/telemetry hooks were never
+meant to ship; recover them from git history (`PCS_BENCH_DUTY_SEQ`) if a
+future campaign (e.g. `l_h`) needs a starting point.
 
 ## Build & run
 
