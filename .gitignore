@@ -33,6 +33,9 @@ fp-info-cache
 *.xml
 *.csv
 
+# Bench captures backing the trace-analysis notebooks stay tracked
+!tools/trace_analysis/**/*.csv
+
 # Archived Backups (KiCad 6.0)
 **/*-backups/*.zip
 
