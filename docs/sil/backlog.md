@@ -3,6 +3,70 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## Current sense: model the low-side-shunt duty visibility (bench-confirmed)
+
+**When:** before matching sim phase-current traces against bench captures at
+speed, or when the firmware moves to PWM-synchronized (injected) ADC sampling
+— whichever forces it first.
+
+**What (bench finding, 2026-08-09, stall-R capture):** the board's shunts are
+low-side, so a leg's shunt sees winding current only while its low-side path
+conducts. Under the current asynchronous 1 ms ADC sampling the PWM'd leg's
+*mean* reading is ≈ `(1−duty)·I` while a tied-low leg reads true `I` —
+confirmed at every duty level (`tools/trace_analysis/stall_current_measure_r`).
+Consequences: (a) the SIL `CurrentSenseModel` feeds true currents, so sim and
+bench current telemetry diverge on PWM'd legs by design — matching needs a
+duty-visibility term (inputs exist: the model can observe the bridge command
+like the motor does); (b) the firmware's overcurrent protection under-reads
+PWM'd legs by the same factor (a 0.9-duty leg reads ~10% of its current —
+six-step is covered because the tied-low partner reads true, but FOC/SVPWM
+PWMs all legs); the real fix is PWM-valley injected sampling — exactly the
+reserved `fw~hal_adc_003`/`fw~hal_adc_008` motor-sprint work.
+
+## fw: alignment dwell captures a mid-swing offset (owner design call)
+
+**When:** after the plant params are ballparked from the real motor — the
+severity depends on the true J/B/spring; decide then between firmware fixes.
+
+**What (found by `tests/north_star.rs`, 2026-08-09):** the alignment spring on
+the placeholder plant is a ζ≈0.05, ωn≈10 rad/s oscillator (swing period
+~0.63 s, envelope τ = 2J/B = 2 s), so the fixed 500 ms dwell ends mid-swing:
+offset captured 76.7° electrical off the true equilibrium while the rotor
+still moves at +0.63 rad/s. Effective commutation lead lands at 136..197°
+(mean 167°) against the designed 60..120° — the drive spins but delivers
+~37% of available torque (terminal 25 rad/s vs the ideal 67.5). Candidate
+fixes, owner's choice: settle detection (capture when |velocity| under a
+floor, dwell as timeout), a longer dwell, a stronger/ramped alignment duty,
+or a two-step align (coarse + settle). The zero-demand shorted-pair braking
+(`app_motorControl.c` else-branch) adds negligible damping (~6e-6 vs
+B=1e-4 Nm·s/rad) and does not rescue the dwell.
+
+## ☑ fw: cache decoded bridge currents in a static — DONE (2026-08-09)
+
+**Landed.** `app_motorControl_channelData_S` gains `current[phase]` +
+`busCurrent`, written on each successful `IO_bridge_get*Current` read where
+the overcurrent latch consumes them (a failed read holds the last good
+value). `tests/current_sense_roundtrip.rs` asserts on these executed-decode
+statics directly via the mirror.
+
+## voyant: declarative transform routes (stateless conversions on the wire)
+
+**When:** once 2-3 stateless conversions accumulate (candidates: vsense divider
+ratio, encoder mounting offset, gear ratios), or when Phase-4 Python-defined
+wiring lands — whichever comes first. Not needed for the current-sense model
+(that chain grows state — noise, saturation — so it is a Member; ruling
+2026-08-07).
+
+**What:** let a route carry a *declarative* value transform applied during
+propagate — data, not code: e.g. `Affine { gain, offset }` and `Clamp { lo,
+hi }`, composable, NOT `Box<dyn Fn>`. Constraints: stateless and pure (D7);
+applied identically on the delayed and zero-latency paths; the destination
+records the transformed value (the historian shows what the consumer saw);
+the transform is part of route registration metadata so traces and the
+(future) Python bindings can express and inspect it as plain data. Anything
+needing state (RNG, filters) stays a Member — the transform seam must refuse
+that scope creep.
+
 ## Motor model: undriven terminal voltages are approximate below the diode window
 
 **When:** the vsense hardware-matching work (comparing sim terminal voltages

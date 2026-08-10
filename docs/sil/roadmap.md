@@ -117,22 +117,35 @@ driven and asserted purely through the State Table.
   collapsed-bus diode rectification — expectations derived from the params.
   Known approximation (backlogged): per-terminal diode window below the
   line-to-line conduction threshold colors undriven terminal voltages.
-- ◐ **6. Feedback + harness models** — current-sense model driving the
-  existing ADC ports (U=ADC1_IN6, V=ADC2_IN7, W=ADC1_IN8, bus=ADC2_IN11)
-  every tick; STSPIN32G4 I2C STATUS seeding (LOCK set, faults clear); button
-  gestures via sim GPIO. Alignment harness landed — `tests/alignment.rs`
-  drives the button-to-alignment path end to end: I2C STATUS seeded
-  (`HW_I2C_data.buses[1].devices[0].regMem[128]`), the four ADC ports held at
-  zero current, a button tap injected via the `HW_GPIO_data.inputLevel[port]
-  [bit]` static (the `cachedInput` mirror is recomputed from `inputLevel` at
-  the top of every tick — before `dev_switch` reads it — so it can't hold an
-  injected value; the resolver now addresses flat multi-dim DWARF leaves),
-  dial demand turned. The current-sense **model** itself is the remaining
-  piece (the ports are held constant here, not plant-driven).
-- ☐ **7. North-star scenario** — seed gate driver → alignment dwell (500 ms)
-  → dial + button tap → assert the sector sequence advances, the rotor spins,
-  currents stay under trip, telemetry reports motion; fault-injection
-  variants (suspend + write overcurrent, starved encoder) prove the latches.
+- ☑ **6. Feedback + harness models** — alignment harness (`tests/alignment.rs`
+  drives the button-to-alignment path: I2C STATUS seeded via
+  `HW_I2C_data.buses[1].devices[0].regMem[128]`, button tap via the
+  `HW_GPIO_data.inputLevel[port][bit]` static, dial demand turned) and the
+  current-sense model (owner-implemented, `src/current_sense.rs`): per channel
+  `v = clamp(bias + gain·i, 0, vref)` mirroring `IO_bridge_channels.c` (phase
+  0.1 V/A @ 1.65 V, bus 0.6 V/A @ 0 V, 3.3 V rails), fed by the motor's
+  `phase_current_*`/`bus_current` outputs over `wire_current_sense`'s eight
+  zero-latency routes into the ADC ports — same-tick sensing, no artificial
+  delay. `tests/current_sense{,_roundtrip}.rs` pin the affine transfer,
+  saturation, regen blindness (unipolar bus amp), the full round trip against
+  the firmware's own decode constants read from its memory (±quantization),
+  the executed-decode cross-check via the overcurrent latch (2.0 A phase /
+  1.5 A bus trips), and stuck-sensor fault injection by route suspension.
+  Note: the firmware keeps no decoded-amps static (`IO_bridge_getPhaseCurrent`
+  fills a stack local) — a small firmware change caching it would let the
+  round trip read the executed value directly (backlogged).
+- ☑ **7. North-star scenario** — `tests/north_star.rs`: button tap → the
+  alignment vector physically swings the rotor (real ~36 mA through the sense
+  chain), offset captured from the plant → dial turn → closed-loop six-step
+  spins the shaft +7.46 mech rev over 3 s, all six sectors, currents bounded,
+  no latch — asserted purely through the State Table. The sign/lead
+  convention chain is correct end-to-end (no first-spin bug). Latch
+  fault-injection lives in `current_sense_roundtrip.rs` (overcurrent trip,
+  stuck sensor) and the encoder-starvation latch is exercised by any world
+  without an encoder model. **Finding** (backlogged): the 500 ms dwell
+  captures a mid-swing offset on the underdamped placeholder plant (77° elec
+  error → mean effective lead 167° vs the designed 60..120° → ~37% of
+  available torque); revisit with ballparked real params.
 
 **Bring-up traps** (from the 04b2cf8 firmware survey — each costs a day if
 forgotten):
