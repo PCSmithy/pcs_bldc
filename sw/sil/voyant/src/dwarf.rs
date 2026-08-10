@@ -2,11 +2,12 @@
 //! and **scalar leaf type**, by parsing the DLL's `.debug_*` sections.
 //!
 //! Reaches *any* `static`, not just exported symbols (ffi-boundary.md §4), via
-//! `object` (PE) + `gimli` (DWARF); native firmware is `-g -O0` so statics keep
-//! real addresses and aggregate layout. Supports top-level statics, struct/union
-//! members, array indexing (`a[i].b[j]`), typedef/const/volatile pass-through, and
-//! base/enum scalars. Not yet: pointer-chasing. Name collisions (function-local
-//! statics) are last-wins.
+//! `object` (PE) + `gimli` (DWARF); native firmware is built `-g`, and at `-O3`
+//! an SRA-decomposed aggregate static gets a composite piece-list location
+//! (some pieces storage-less), which the reader maps per-member. Supports
+//! top-level statics, struct/union members, array indexing (`a[i].b[j]`),
+//! typedef/const/volatile pass-through, and base/enum scalars. Not yet:
+//! pointer-chasing. Name collisions (function-local statics) are last-wins.
 
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -115,10 +116,29 @@ struct EnumInfo {
     values: HashMap<i64, String>,
 }
 
+/// One piece of a composite variable location: `size` bytes, stored at `addr`,
+/// or storage-less (`None` — optimized out, or struct padding) when the piece
+/// carries no location.
+#[derive(Clone, Debug)]
+struct VarPiece {
+    size: u64,
+    addr: Option<u64>,
+}
+
+/// A static's link-time location: one whole-object address, or the composite
+/// piece list an optimizer emits for an SRA-decomposed aggregate (observed on
+/// macOS clang `-O3`, e.g. `lib_timer_data`: pointer member folded away, the
+/// live members at discontiguous piece addresses).
+#[derive(Clone, Debug)]
+enum VarLoc {
+    Addr(u64),
+    Pieces(Vec<VarPiece>),
+}
+
 #[derive(Default)]
 struct Maps {
-    /// variable name -> (link address, type's global .debug_info offset)
-    vars: HashMap<String, (u64, usize)>,
+    /// variable name -> (link location, type's global .debug_info offset)
+    vars: HashMap<String, (VarLoc, usize)>,
     /// function name -> link-time entry address (`DW_AT_low_pc`). Only defining
     /// subprograms (with a `low_pc`) are recorded; declarations / abstract
     /// (inlined) instances are skipped. Backs the function-DIE ASLR anchor
@@ -185,9 +205,14 @@ impl DwarfMap {
         Ok(DwarfMap(maps))
     }
 
-    /// Link-time address of a top-level variable.
+    /// Link-time address of a top-level variable. A piece-composed (SRA'd)
+    /// variable has no single whole-object address, so it yields `None` — it
+    /// cannot serve as an ASLR anchor.
     pub(crate) fn var_addr(&self, name: &str) -> Option<u64> {
-        self.0.vars.get(name).map(|&(addr, _)| addr)
+        match self.0.vars.get(name) {
+            Some((VarLoc::Addr(addr), _)) => Some(*addr),
+            _ => None,
+        }
     }
 
     /// Link-time entry address (`DW_AT_low_pc`) of a function. Basis matches
@@ -209,27 +234,35 @@ impl DwarfMap {
 
     /// Resolve a `var[.member|[index]]...` path to (link address, scalar leaf
     /// kind). Returns None if any segment, member, index type, or leaf kind is
-    /// unknown.
+    /// unknown. The walk accumulates a byte offset within the variable, then
+    /// maps it through the variable's location — a plain base+offset for a
+    /// whole-object address, or the covering piece for a piece-composed static
+    /// (None if the leaf lands in a storage-less piece or spans pieces).
     pub(crate) fn resolve(&self, path: &str) -> Option<(u64, Leaf)> {
         let mut segs = path.split('.');
 
         let (name, indices) = split_indices(segs.next()?)?;
-        let (mut addr, ty) = *self.0.vars.get(name)?;
-        let mut ty = self.peel(ty);
-        ty = self.index(&mut addr, ty, &indices)?;
+        let (loc, ty) = self.0.vars.get(name)?;
+        let mut off = 0u64;
+        let mut ty = self.peel(*ty);
+        ty = self.index(&mut off, ty, &indices)?;
 
         for seg in segs {
             let (name, indices) = split_indices(seg)?;
-            let &(off, mty) = self.0.members.get(&ty)?.get(name)?;
-            addr += off;
+            let &(moff, mty) = self.0.members.get(&ty)?.get(name)?;
+            off += moff;
             ty = self.peel(mty);
-            ty = self.index(&mut addr, ty, &indices)?;
+            ty = self.index(&mut off, ty, &indices)?;
         }
 
         let leaf = if self.0.enums.contains_key(&ty) {
             Leaf::Enum(ty)
         } else {
             Leaf::Scalar(self.scalar_kind(ty)?)
+        };
+        let addr = match loc {
+            VarLoc::Addr(base) => base + off,
+            VarLoc::Pieces(pieces) => piece_addr(pieces, off, *self.0.sizes.get(&ty)?)?,
         };
         Some((addr, leaf))
     }
@@ -257,7 +290,7 @@ impl DwarfMap {
         let mut names: Vec<&String> = self.0.vars.keys().collect();
         names.sort();
         for name in names {
-            let (_addr, ty) = self.0.vars[name];
+            let ty = self.0.vars[name].1;
             self.walk_leaves(name.clone(), ty, 0, &mut ctx);
         }
         LeafEnumeration {
@@ -362,8 +395,8 @@ impl DwarfMap {
         e.values.iter().find(|(_, n)| *n == name).map(|(&v, _)| v)
     }
 
-    /// Apply `[i][j]...` to an array type, advancing `addr` and returning the
-    /// (peeled) element type. A flat multi-dimensional array (GCC emits one
+    /// Apply `[i][j]...` to an array type, advancing the byte offset and returning
+    /// the (peeled) element type. A flat multi-dimensional array (GCC emits one
     /// `array_type` with N `subrange` children) consumes N indices row-major against
     /// its extents; a 1-D array (or one with no recorded dims) consumes one.
     fn index(&self, addr: &mut u64, mut ty: usize, indices: &[usize]) -> Option<usize> {
@@ -479,10 +512,10 @@ fn collect_unit(
 
         match tag {
             gimli::DW_TAG_variable => {
-                if let (Some(name), Some(addr), Some(ty)) =
-                    (die_name(dwarf, unit, entry), die_addr(dwarf, unit, entry), type_goff(unit, entry))
+                if let (Some(name), Some(loc), Some(ty)) =
+                    (die_name(dwarf, unit, entry), die_loc(dwarf, unit, entry), type_goff(unit, entry))
                 {
-                    maps.vars.insert(name, (addr, ty));
+                    maps.vars.insert(name, (loc, ty));
                 }
             }
             gimli::DW_TAG_subprogram => {
@@ -588,12 +621,12 @@ fn die_name(
     Some(s.to_string_lossy().into_owned())
 }
 
-/// Link-time address of a static from its `DW_AT_location` expression.
+/// Link-time location of a static from its `DW_AT_location` expression.
 ///
-/// The location must be a single-address `DW_AT_location` exprloc; anything else
-/// (a frame-relative/register local, a loclist, a composite `DW_OP_piece`) yields
-/// `None`, so only real statics enter the map. The expression is **fully
-/// evaluated** rather than pattern-matched on its first op:
+/// The location must be a `DW_AT_location` exprloc resolving to memory storage;
+/// anything else (a frame-relative/register local, a loclist) yields `None`, so
+/// only real statics enter the map. The expression is **fully evaluated** rather
+/// than pattern-matched on its first op:
 ///
 /// * ELF/PE (GCC) emit one `DW_OP_addr <final-addr>` per static.
 /// * A macOS `.dSYM` (dsymutil) relocates debug-map statics as
@@ -601,33 +634,37 @@ fn die_name(
 ///   one relocation anchor, distinguished only by the trailing offset. Reading
 ///   just the leading `DW_OP_addr` collapsed every such static onto the anchor's
 ///   address (the Mach-O same-TU collapse this reader now fixes).
+/// * At `-O3`, SRA decomposes an aggregate static into a `DW_OP_piece` composite
+///   (some pieces storage-less where a member was folded away) — kept as
+///   [`VarLoc::Pieces`] so members still resolve individually.
 ///
-/// Evaluating the whole expression covers both: a lone `DW_OP_addr` still yields
-/// that address (ELF/PE unchanged), while `+ DW_OP_plus_uconst` is honored
+/// Evaluating the whole expression covers all three: a lone `DW_OP_addr` still
+/// yields that address (ELF/PE unchanged), `+ DW_OP_plus_uconst` is honored
 /// (Mach-O correct). `DW_OP_addrx` (DWARF 5 indexed) is resolved via `.debug_addr`.
-fn die_addr(
+fn die_loc(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
     entry: &gimli::DebuggingInformationEntry<Slice>,
-) -> Option<u64> {
+) -> Option<VarLoc> {
     match entry.attr_value(gimli::DW_AT_location).ok().flatten()? {
-        gimli::AttributeValue::Exprloc(expr) => eval_static_addr(dwarf, unit, expr),
+        gimli::AttributeValue::Exprloc(expr) => eval_static_loc(dwarf, unit, expr),
         _ => None,
     }
 }
 
-/// Evaluate a DWARF location expression to a single absolute address, or `None`
-/// if it is not a plain static address (needs a frame base, a register, memory,
-/// TLS, or resolves to a composite of pieces). Handles `DW_OP_addr`
+/// Evaluate a DWARF location expression to a static's memory location — one
+/// whole-object address, or a byte-granular piece list — or `None` if it is not
+/// plain static storage (needs a frame base, a register, memory, TLS, or uses
+/// sub-byte `DW_OP_bit_piece` granularity). Handles `DW_OP_addr`
 /// (`RequiresRelocatedAddress` — resumed unchanged, since our DWARF addresses are
 /// already final) and `DW_OP_addrx` (`RequiresIndexedAddress` — resolved through
 /// `.debug_addr`); arithmetic ops such as `DW_OP_plus_uconst` are applied by the
 /// evaluator itself.
-fn eval_static_addr(
+fn eval_static_loc(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
     expr: gimli::Expression<Slice>,
-) -> Option<u64> {
+) -> Option<VarLoc> {
     let mut eval = expr.evaluation(unit.encoding());
     let mut result = eval.evaluate().ok()?;
     loop {
@@ -647,14 +684,50 @@ fn eval_static_addr(
             _ => return None,
         }
     }
-    // A static resolves to exactly one whole-object piece at an address.
     match eval.result().as_slice() {
-        [piece] => match piece.location {
-            gimli::Location::Address { address } => Some(address),
+        // A whole-object (unsized) single piece at an address: the common case.
+        [piece] if piece.size_in_bits.is_none() => match piece.location {
+            gimli::Location::Address { address } => Some(VarLoc::Addr(address)),
             _ => None,
         },
-        _ => None,
+        [] => None,
+        // A DW_OP_piece composite: keep each piece's byte size + storage address
+        // (storage-less pieces keep their extent so later pieces stay aligned).
+        pieces => {
+            let mut out = Vec::with_capacity(pieces.len());
+            for piece in pieces {
+                let bits = piece.size_in_bits?;
+                if ((bits % 8) != 0) || piece.bit_offset.is_some() {
+                    return None;
+                }
+                let addr = match piece.location {
+                    gimli::Location::Address { address } => Some(address),
+                    gimli::Location::Empty => None,
+                    _ => return None,
+                };
+                out.push(VarPiece { size: bits / 8, addr });
+            }
+            Some(VarLoc::Pieces(out))
+        }
     }
+}
+
+/// Map a byte range `[off, off+size)` within a piece-composed variable to its
+/// storage address. The leaf must lie wholly inside one addressed piece; a
+/// storage-less piece (member folded away by the optimizer) or a piece-spanning
+/// range yields `None`.
+fn piece_addr(pieces: &[VarPiece], off: u64, size: u64) -> Option<u64> {
+    let mut start = 0u64;
+    let mut found = None;
+    for piece in pieces {
+        let end = start + piece.size;
+        if (off >= start) && ((off + size) <= end) {
+            found = piece.addr.map(|a| a + (off - start));
+            break;
+        }
+        start = end;
+    }
+    found
 }
 
 /// A subprogram's link-time entry address from `DW_AT_low_pc`. Handles both the
@@ -751,7 +824,7 @@ impl DwarfMap {
     pub(crate) fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
         let mut m = Maps::default();
         for (n, a) in vars {
-            m.vars.insert((*n).to_string(), (*a, 0));
+            m.vars.insert((*n).to_string(), (VarLoc::Addr(*a), 0));
         }
         for (n, a) in funcs {
             m.functions.insert((*n).to_string(), *a);
@@ -802,6 +875,60 @@ mod tests {
         assert_eq!(addrs.len(), expected.len(), "static addresses must be distinct");
     }
 
+    /// Regression: at `-O3`, SRA decomposes an aggregate static into a
+    /// `DW_OP_piece` composite location (observed for `lib_timer_data` in the
+    /// macOS release dylib: `DW_OP_piece 0x8, DW_OP_addr X, DW_OP_piece 0x4,
+    /// DW_OP_piece 0x4, DW_OP_addr X, DW_OP_plus_uconst 0x8, DW_OP_piece 0x8`).
+    /// The fixture is the real arm64 dSYM DWARF; before piece support the whole
+    /// variable was absent from the map and every `lib_timer_data.*` path failed.
+    #[test]
+    fn macho_dsym_sra_pieced_static_resolves_members() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/macho_sra_piece_location.dSYM.dwarf");
+        let bytes = std::fs::read(&path).expect("read dSYM DWARF fixture");
+        let map = DwarfMap::parse(&bytes).expect("parse dSYM DWARF");
+
+        // Live members land on their piece addresses (base 0x36488, u64 at +8).
+        let addr = |p: &str| map.resolve(p).map(|(a, _)| a);
+        assert_eq!(addr("lib_timer_data.lastTime_u32"), Some(0x36488));
+        assert_eq!(addr("lib_timer_data.currentTime_us"), Some(0x36490));
+        // The folded-away `config` pointer piece is storage-less: no address.
+        assert_eq!(addr("lib_timer_data.config"), None);
+        // No single whole-object address, so the var can't anchor ASLR.
+        assert_eq!(map.var_addr("lib_timer_data"), None);
+    }
+
+    #[test]
+    fn pieced_var_members_resolve_through_their_pieces() {
+        // The lib_timer_data shape: { ptr@0 folded, u32@8, pad@12, u64@16 } as
+        // [8 storage-less][4 @0x100][4 storage-less][8 @0x108].
+        let mut m = Maps::default();
+        m.base.insert(10, (gimli::DW_ATE_unsigned.0, 4));
+        m.sizes.insert(10, 4);
+        m.base.insert(11, (gimli::DW_ATE_unsigned.0, 8));
+        m.sizes.insert(11, 8);
+        m.sizes.insert(12, 8); // pointer type: sized but not a scalar leaf
+        let mut members = HashMap::new();
+        members.insert("config".to_string(), (0u64, 12usize));
+        members.insert("lastTime_u32".to_string(), (8, 10));
+        members.insert("currentTime_us".to_string(), (16, 11));
+        m.members.insert(100, members);
+        let pieces = vec![
+            VarPiece { size: 8, addr: None },
+            VarPiece { size: 4, addr: Some(0x100) },
+            VarPiece { size: 4, addr: None },
+            VarPiece { size: 8, addr: Some(0x108) },
+        ];
+        m.vars.insert("t".to_string(), (VarLoc::Pieces(pieces), 100));
+        let dw = DwarfMap(m);
+
+        let addr = |p: &str| dw.resolve(p).map(|(a, _)| a);
+        assert_eq!(addr("t.lastTime_u32"), Some(0x100));
+        assert_eq!(addr("t.currentTime_us"), Some(0x108));
+        assert_eq!(addr("t.config"), None); // storage-less piece
+        assert_eq!(dw.var_addr("t"), None); // pieced var is not an anchor
+    }
+
     #[test]
     fn func_addr_looks_up_subprogram_low_pc() {
         let dw = DwarfMap::for_anchor_test(&[("g", 0x10)], &[("sil_fw_start", 0xBEEF)]);
@@ -834,9 +961,9 @@ mod tests {
         members.insert("big".to_string(), (8, 30));
         m.members.insert(100, members);
         // vars
-        m.vars.insert("n".to_string(), (0x1000, 10));
-        m.vars.insert("s".to_string(), (0x2000, 100));
-        m.vars.insert("grid".to_string(), (0x3000, 40));
+        m.vars.insert("n".to_string(), (VarLoc::Addr(0x1000), 10));
+        m.vars.insert("s".to_string(), (VarLoc::Addr(0x2000), 100));
+        m.vars.insert("grid".to_string(), (VarLoc::Addr(0x3000), 40));
         DwarfMap(m)
     }
 
