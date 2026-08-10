@@ -1,25 +1,44 @@
 # SIL bring-up — handover
 
-Last updated: 2026-07-12. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-08-10. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
-`roadmap.md` in this folder.
+`roadmap.md` in this folder. (`docs/handoff.md`, untracked, carries the
+current session-to-session state.)
 
 ## TL;DR
 
-We're building **`voyant`** — a generic, firmware-agnostic framework that runs
-the pcs_bldc firmware (cross-compiled to a host shared library) in a
-deterministic virtual world, with total white-box access to its state.
-**Phase 1 (firmware runs on the SIM target) and the Phase-2 core (Rust drives +
-introspects the firmware) are done and working.** The design is fully decided
-and captured (decisions D1–D12). What's left is the *engine* on top of the State
-Table: models, the Route Table, the sim clock/step loop, comms, run modes, and
-Python bindings.
+**The commutation sprint is complete and up for merge: PR #4 (sil -> main),
+CI green on all three platforms.** The firmware's six-step drive commutates a
+simulated motor end to end — button tap -> alignment physically swings the
+rotor -> offset captured from the plant -> dial demand -> closed-loop spin —
+driven and asserted purely through the State Table (`tests/north_star.rs`).
 
-All work is on branch **`sil`** (worktree `C:/code/pcs_bldc-sil`), pushed to
-`origin/sil`. The branch was **rebased onto current `main`** (`c9b4238`, the
-complete firmware foundation) on 2026-07-04, and the **firmware/SIL build was
-unified**: the SIM target now runs the SAME four FreeRTOS tasks and real
-io/dev/app modules as embedded (see "What's done").
+The plant is bench-parameterized (iPower GM6208-150T, measured with the board
+as the only instrument — see `tools/trace_analysis/*`): sinusoidal BEMF (it's
+a PMSM), R_LL 29.35 Ω, Ke 0.55 V·s/rad, J 3.2e-4, B 7.2e-4, T_c 4.4e-3
+(Coulomb/stiction with exact-zero park); `l_h` is the one class-typical
+estimate left. With these params the sim reproduces the bench alignment snap
+(~200 ms, parked, +2.2°e offset error).
+
+Models (owner-implemented physics, never edit without asking): `motor.rs`
+(hybrid ideal-diode legs + PMSM electrical + Coulomb mechanics), `as5048.rs`
+(measured noise σ 1.52/1.57 LSB, seeded), `current_sense.rs` (mirrors
+`IO_bridge_channels.c`). Port convention: models declare all ports in their
+own namespace; `wiring.rs` (`wire_bridge` 7 delayed routes,
+`wire_current_sense` 8 zero-latency routes) binds them; suspend-and-write on
+a bundle is the fault-injection seam. Harness: 47 SIL tests + 174 workspace,
+per-test MF4 drops (`PCS_SIL_TRACE_DIR=build/traces`).
+
+Hardware findings this sprint (details in `backlog.md`): low-side-shunt
+(1−duty) current visibility (six-step protection is safe; FOC needs the
+reserved injected-ADC sampling); phase sequence U->W->V vs encoder-positive;
+macOS keeps DWARF in dSYM bundles and clang -O3 SRA-decomposes small statics
+into DW_OP_piece locations (both handled: `sil.rs` temp-copy carries the
+bundle, `dwarf.rs` resolves pieces).
+
+Bench-only firmware hooks: `PCS_BENCH_DUTY_SEQ` in `app_userControls.h`
+(0 = stock, shipped; 1 = stall-R duty schedule; 2 = spin/BEMF telemetry) +
+`tools/serial_capture.py` (unbounded Teleplot->CSV logger).
 
 ## Build & run
 
