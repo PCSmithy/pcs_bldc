@@ -26,6 +26,8 @@ fn read_tx_capture(fw: &Firmware) -> String {
 // [test->fw~est_encoder_004~1]
 // [test->fw~hal_spi_003~1]
 // [test->fw~conn_serial_003~1]
+// [test->fw~conn_serial_005~1]
+// [test->fw~hal_usb_002~1]
 // [test->fw~hal_usb_003~1]
 #[test]
 fn end_to_end() {
@@ -79,14 +81,33 @@ fn end_to_end() {
     let exp_deg_str = format!("{exp_deg:.2}");
 
     // Command the shaft angle in degrees — the boundary converts to canonical rad.
-    // Open the USB port (telemetryTask skips its body otherwise) and drain the stale
-    // TX capture; the cvar flush lands during step 1's in-sync.
+    // Drain the stale TX capture; the cvar flush lands during step 1's in-sync.
     sim.write("vsig:as5048_motor:angle[deg]", CMD_DEG)
         .expect("write angle[deg]");
-    sim.write(&cid("HW_USB_sim_data.connected"), true)
-        .expect("write connected");
+    sim.write(&cid("HW_USB_sim_data.connected"), false)
+        .expect("write disconnected");
     sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
         .expect("drain txLen");
+
+    // No host port open: telemetryTask skips its body, so five telemetry windows go by
+    // with nothing transmitted.
+    for _ in 0..10 {
+        sim.step().expect("engine step");
+    }
+    assert!(
+        !sim.read_bool(&cid("HW_USB_sim_data.connected")),
+        "sim USB starts with no host port open"
+    );
+    let quiet = read_tx_capture(&sim.fw());
+    assert!(
+        quiet.is_empty(),
+        "nothing is transmitted while no host port is open: captured {} bytes ({quiet:?})",
+        quiet.len()
+    );
+
+    // Open the port and run the same windows again.
+    sim.write(&cid("HW_USB_sim_data.connected"), true)
+        .expect("write connected");
 
     // task_1ms samples the encoder each tick; telemetry fires every 2 ms.
     for _ in 0..10 {
@@ -108,7 +129,7 @@ fn end_to_end() {
         (n_tx > 10) && (n_rx > 10)
             && (last_tx == Some(Value::Bytes(vec![0xFF, 0xFF])))
             && (last_rx == Some(Value::Bytes(vec![0x90, 0x00]))),
-        "SPI recorded as :tx/:rx events: {n_tx} tx + {n_rx} rx over 10 ticks; last tx={last_tx:?}, rx={last_rx:?}"
+        "SPI recorded as :tx/:rx events: {n_tx} tx + {n_rx} rx over 20 ticks; last tx={last_tx:?}, rx={last_rx:?}"
     );
 
     // The connected flag reached firmware (the mirror reads it back true).

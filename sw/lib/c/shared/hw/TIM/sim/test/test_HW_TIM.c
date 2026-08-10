@@ -326,9 +326,14 @@ static void test_clearBreakFlags(void)
     TEST_ASSERT_FALSE(HW_TIM_clearBreakFlags(HW_TIM_PERIPHERAL_COUNT));
 }
 
+/* ---- fw~hal_tim_002: counter direction and period ---- */
+// The sim models up- and down-counting; the spec's center-aligned mode has no
+// sim counterpart, so these cover the up/down halves only.
+
 // advanceTime drives only countsPerUs-configured counters: the timebase
 // peripheral tracks elapsed sim time (wrapping modulo period+1); a
 // countsPerUs=0 peripheral (the PWM carrier) stays put.
+// [test->fw~hal_tim_002~1]
 static void test_advanceTime_tracks_sim_time(void)
 {
     timPeripherals[BASE_PERIPH].countsPerUs = 1U;
@@ -346,6 +351,7 @@ static void test_advanceTime_tracks_sim_time(void)
 }
 
 // Wrap: a small-period counter advances modulo (period + 1).
+// [test->fw~hal_tim_002~1]
 static void test_advanceTime_wraps_at_period(void)
 {
     timPeripherals[BASE_PERIPH].countsPerUs = 1U;
@@ -358,6 +364,30 @@ static void test_advanceTime_wraps_at_period(void)
     uint32_t base = 0U;
     TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
     TEST_ASSERT_EQUAL_UINT32(50U, base); // 250 mod 100
+}
+
+// Down-count: the counter seeds at the period and walks toward zero, wrapping
+// back through the period on underflow.
+// [test->fw~hal_tim_002~1]
+static void test_advanceTime_counts_down(void)
+{
+    timPeripherals[BASE_PERIPH].countsPerUs = 1U;
+    timPeripherals[BASE_PERIPH].period = 99U;
+    timPeripherals[BASE_PERIPH].counterWidthBits = 16U;
+    timPeripherals[BASE_PERIPH].countDir = HW_TIM_COUNT_DOWN;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    uint32_t base = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(99U, base); // seeded at the period
+
+    HW_TIM_advanceTime(30U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(69U, base); // 99 - 30
+
+    HW_TIM_advanceTime(90U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(79U, base); // 69 - 90 wraps through the period
 }
 
 /* ---- PWM/bridge observation ports ---- */
@@ -493,6 +523,7 @@ int main(void)
 
     RUN_TEST(test_advanceTime_tracks_sim_time);
     RUN_TEST(test_advanceTime_wraps_at_period);
+    RUN_TEST(test_advanceTime_counts_down);
 
     RUN_TEST(test_ports_registered);
     RUN_TEST(test_unnamed_channel_registers_no_ports);

@@ -25,6 +25,9 @@ const POLE_PAIRS: f64 = 14.0;
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
 const DIAL_FULL_SCALE_DEG: f64 = 180.0;
 
+/// `APP_MOTORCONTROL_MAX_DUTY_01`: the commutation duty ceiling.
+const MAX_DUTY_01: f64 = 0.9;
+
 /// Electrical angle at which the (U high, V low) alignment vector holds the rotor for this
 /// trapezoidal shape: where the U and V BEMF shapes meet with U on its falling edge.
 const ALIGN_FIELD_RAD_E: f64 = 5.0 * PI / 6.0;
@@ -95,16 +98,34 @@ fn peak_decoded_a(sim: &Sil) -> f64 {
     (0..3).fold(0.0_f64, |m, k| m.max(decoded_phase_a(sim, k).abs()))
 }
 
-/// Boot past the gate-driver bring-up, then tap the button and let the double-tap window
-/// elapse, so the lone tap toggles run — the arm that starts the alignment dwell.
-fn boot_and_arm(sim: &mut Sil) {
-    sim.run_for_ms(GATE_BRINGUP_MS);
-    assert!(gate_operational(sim), "gate driver operational after boot");
-    assert!(!fault_latched(sim), "no fault before drive");
-    assert_eq!(max_phase_duty(sim), 0.0, "bridge dark before the arm");
+fn peak_plant_current_a(sim: &Sil) -> f64 {
+    ["u", "v", "w"].iter().fold(0.0_f64, |m, c| {
+        m.max(plant(sim, &format!("phase_current_{c}")).abs())
+    })
+}
 
-    // Press (LOW) then release (HIGH), each held past the 20 ms debounce so dev_switch
-    // latches ACTIVE then INACTIVE — a tap.
+/// The speed target read straight out of firmware memory, past the State Table's 1e-3
+/// change deadband — so a hard zero reads back as a hard zero.
+fn setpoint_rad_s(sim: &Sil) -> f64 {
+    sim.fw()
+        .read_cvar("app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec")
+        .as_f64()
+        .expect("velocity setpoint reads as a number")
+}
+
+/// The channel's configured speed ceiling, taken from the firmware's own config rather
+/// than re-derived here.
+fn config_max_velocity_rad_s(sim: &Sil) -> f64 {
+    sim.fw()
+        .read_cvar("app_motorControl_channelConfig[0].maxVelocity_radPerSec")
+        .as_f64()
+        .expect("configured max velocity reads as a number")
+}
+
+/// One run/stop tap. Press (LOW) then release (HIGH), each held past the 20 ms debounce so
+/// dev_switch latches ACTIVE then INACTIVE, then let the double-tap window elapse so the
+/// lone tap toggles.
+fn tap_button(sim: &mut Sil) {
     sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_LOW)
         .expect("button press");
     sim.run_for_ms(30);
@@ -112,6 +133,17 @@ fn boot_and_arm(sim: &mut Sil) {
         .expect("button release");
     sim.run_for_ms(30);
     sim.run_for_ms(320); // APP_USERCONTROLS_DOUBLE_TAP_WINDOW_MS plus slack
+}
+
+/// Boot past the gate-driver bring-up, then tap the button — the arm that starts the
+/// alignment dwell.
+fn boot_and_arm(sim: &mut Sil) {
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    assert!(gate_operational(sim), "gate driver operational after boot");
+    assert!(!fault_latched(sim), "no fault before drive");
+    assert_eq!(max_phase_duty(sim), 0.0, "bridge dark before the arm");
+
+    tap_button(sim);
 }
 
 /// Mechanical angle the alignment vector pulls to: the electrical equilibrium lifted to the
@@ -282,10 +314,13 @@ fn alignment_pulls_rotor_and_captures_offset() {
 }
 
 // [test->fw~mc_006~1]
+// [test->fw~mc_008~1]
 // [test->fw~mc_011~1]
 // [test->fw~mc_012~1]
+// [test->fw~io_bridge_003~1]
 // [test->fw~io_bridge_004~1]
 // [test->fw~hal_spi_002~1]
+// [test->fw~hal_tim_008~1]
 // [test->fw~est_encoder_002~1]
 #[test]
 fn dial_demand_spins_rotor_closed_loop() {
@@ -296,9 +331,14 @@ fn dial_demand_spins_rotor_closed_loop() {
     const RAMP_DWELL_MS: u64 = 20;
     const RUN_MS: u64 = 3000;
     const IDLE_MS: u64 = 50;
+    /// Dial travel past full scale, to wind the accumulator hard into its clamp.
+    const DIAL_OVERRANGE_DEG: f64 = 540.0;
+    /// Zero-demand band: the dial encoder's quantization jitter is all that separates the
+    /// re-baselined accumulator from a hard zero.
+    const ZERO_DEMAND_BAND_RAD_S: f64 = 0.02;
     /// Friction-limited terminal speed if commutation delivered the full flat-top torque
     /// (ke * 2 * i / B); the floors below are fractions of it.
-    const IDEAL_TERMINAL_RAD_S: f64 = 0.9 * VBUS_V / (2.0 * 32.0) * 2.0 * 0.01 / 1.0e-4;
+    const IDEAL_TERMINAL_RAD_S: f64 = MAX_DUTY_01 * VBUS_V / (2.0 * 32.0) * 2.0 * 0.01 / 1.0e-4;
     const VELOCITY_FLOOR_RAD_S: f64 = 0.2 * IDEAL_TERMINAL_RAD_S;
     const REVOLUTION_FLOOR: f64 = 3.0;
 
@@ -311,6 +351,7 @@ fn dial_demand_spins_rotor_closed_loop() {
     )) - alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
 
     // --- Aligned and armed at zero demand: the phases idle, the bridge does not flap ----
+    let mut idle_setpoint = 0.0_f64;
     for _ in 0..IDLE_MS {
         sim.run_for_ms(1);
         assert_eq!(
@@ -322,10 +363,18 @@ fn dial_demand_spins_rotor_closed_loop() {
             max_phase_duty(&sim) < 0.02,
             "phases stay idle across the zero-demand window"
         );
+        idle_setpoint = idle_setpoint.max(setpoint_rad_s(&sim).abs());
     }
     assert!(
         is_aligned(&sim),
         "alignment is retained across the zero-demand window"
+    );
+    // The accumulator re-baselines on the arm, so the speed target sits at zero — bar the
+    // dial's own quantization jitter, a couple of 14-bit LSB of apparent travel.
+    assert!(
+        idle_setpoint < ZERO_DEMAND_BAND_RAD_S,
+        "the speed target is zero at bridge enable: peak |setpoint| {idle_setpoint:.6} rad/s \
+         across the zero-demand window"
     );
 
     // --- The first dial turn commutates at once on the stored offset --------------------
@@ -356,6 +405,15 @@ fn dial_demand_spins_rotor_closed_loop() {
         sim.run_for_ms(RAMP_DWELL_MS);
     }
     let command = DIAL_TARGET_DEG / DIAL_FULL_SCALE_DEG;
+
+    // The dial command scales the configured speed ceiling.
+    let max_velocity = config_max_velocity_rad_s(&sim);
+    let ramped_setpoint = setpoint_rad_s(&sim);
+    assert!(
+        (ramped_setpoint - (command * max_velocity)).abs() < (0.03 * max_velocity),
+        "the dial command scales the configured maximum: setpoint {ramped_setpoint:.4} rad/s \
+         vs command {command:.3} x {max_velocity:.4} rad/s"
+    );
 
     let mut travel = 0.0_f64;
     let mut prev_angle = plant(&sim, "angle");
@@ -459,5 +517,49 @@ fn dial_demand_spins_rotor_closed_loop() {
     assert!(
         sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount")) < 5,
         "encoder fault count stays under the trip limit"
+    );
+
+    // --- Wind past full scale: the accumulator clamps, so the target and duty hold ------
+    let mut dial_deg = DIAL_TARGET_DEG;
+    while dial_deg < DIAL_OVERRANGE_DEG {
+        dial_deg = (dial_deg + RAMP_STEP_DEG).min(DIAL_OVERRANGE_DEG);
+        sim.write(&vid(DIAL, "angle[deg]"), dial_deg)
+            .expect("turn the dial");
+        sim.run_for_ms(RAMP_DWELL_MS);
+
+        let setpoint = setpoint_rad_s(&sim);
+        assert!(
+            (setpoint - max_velocity).abs() < (0.01 * max_velocity),
+            "the speed target holds at the configured maximum {max_velocity:.4} rad/s past \
+             full-scale dial travel ({dial_deg} deg): {setpoint:.4} rad/s"
+        );
+        let duty = max_phase_duty(&sim);
+        assert!(
+            (duty - MAX_DUTY_01).abs() < 0.01,
+            "duty holds at the {MAX_DUTY_01} clamp past full-scale dial travel \
+             ({dial_deg} deg): {duty:.4}"
+        );
+    }
+
+    // --- A second tap disables the bridge mid-drive: MOE drops and the phases go dark ---
+    tap_button(&mut sim);
+    assert_eq!(
+        port(&sim, MOE),
+        0.0,
+        "the disable tap drops the master output enable"
+    );
+    for (k, duty) in duties(&sim).iter().enumerate() {
+        assert_eq!(
+            *duty, 0.0,
+            "phase {k} duty is zero once the bridge is disabled"
+        );
+    }
+    // The windings are inductive, so the currents freewheel down rather than step to zero.
+    sim.run_for_ms(5);
+    let residual = peak_plant_current_a(&sim);
+    println!("disable: peak |plant phase current| {residual:.6} A with the bridge dark");
+    assert!(
+        residual < 0.01,
+        "the phase currents decay away with the bridge dark: peak |i| {residual:.6} A"
     );
 }
