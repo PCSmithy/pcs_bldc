@@ -130,15 +130,12 @@ at the SPI boundary; prng tests run standalone from the crate dir, not via
 - Deferred, deliberate: a firmware-side deadband on the dial accumulator if
   zero-adjacent `velocityRequest` jitter ever matters downstream.
 
-**When:** watch the first macOS CI run after the Sil temp-copy harness; act
-only if it fails DWARF resolution.
-
-**What:** `Sil::load_firmware` copies the firmware image to a unique temp
-path per instance. voyant reads DWARF from the loaded image file itself
-(the byte copy carries whatever the direct load carried, and macOS CI was
-green reading the dylib directly), but if the macOS pipeline ever depends
-on a sibling `.dSYM` bundle, the copy must bring it along
-(`<image>.dSYM` next to the temp copy).
+**☑ DONE (2026-08-10):** the watched macOS CI run failed exactly as predicted
+("no DWARF ... and no .dSYM alongside it") on the commutation-sprint PR:
+macOS keeps DWARF in the sibling `.dSYM` bundle. `unique_temp_copy` carries
+`<src>.dSYM` along under the same unique prefix (the reload recipe points at
+the copy, so resets inherit it) and `Sil::drop` removes the bundle with the
+image.
 
 ## ☑ Fiber port: support repeated firmware boots on one thread — DONE (2026-07-29)
 

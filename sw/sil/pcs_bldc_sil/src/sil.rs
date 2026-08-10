@@ -159,7 +159,8 @@ pub fn lock_world() -> MutexGuard<'static, ()> {
 
 /// Copy `src` to a per-process-unique file in the system temp dir, preserving the
 /// original file name (and extension, which `LoadLibrary` needs) behind a unique
-/// prefix. Returns the copy's path.
+/// prefix. A sibling `<src>.dSYM` bundle rides along — on macOS the DWARF lives
+/// there, not in the dylib. Returns the copy's path.
 fn unique_temp_copy(src: &Path) -> std::io::Result<PathBuf> {
     let stem = src
         .file_name()
@@ -168,7 +169,40 @@ fn unique_temp_copy(src: &Path) -> std::io::Result<PathBuf> {
     let n = COPY_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dst = std::env::temp_dir().join(format!("pcs_sil_{}_{}_{}", std::process::id(), n, stem));
     std::fs::copy(src, &dst)?;
+    copy_dsym_sibling(src, &dst)?;
     Ok(dst)
+}
+
+/// The `.dSYM` bundle path sitting next to `image` (`<image>.dSYM`).
+fn dsym_bundle(image: &Path) -> PathBuf {
+    let mut b = image.as_os_str().to_owned();
+    b.push(".dSYM");
+    PathBuf::from(b)
+}
+
+/// Give the temp copy its own `.dSYM`: the DWARF reader opens
+/// `<image>.dSYM/Contents/Resources/DWARF/<image filename>`, so the inner file
+/// must carry the copy's name, not the original's. A no-op when `src` has no
+/// bundle (Windows/Linux, or an image with DWARF in-file).
+fn copy_dsym_sibling(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let (Some(src_name), Some(dst_name)) = (src.file_name(), dst.file_name()) else {
+        return Ok(());
+    };
+    let src_dwarf = dsym_bundle(src)
+        .join("Contents")
+        .join("Resources")
+        .join("DWARF")
+        .join(src_name);
+    if !src_dwarf.is_file() {
+        return Ok(());
+    }
+    let dst_dir = dsym_bundle(dst)
+        .join("Contents")
+        .join("Resources")
+        .join("DWARF");
+    std::fs::create_dir_all(&dst_dir)?;
+    std::fs::copy(&src_dwarf, dst_dir.join(dst_name))?;
+    Ok(())
 }
 
 impl Drop for Sil {
@@ -192,8 +226,9 @@ impl Drop for Sil {
         // drop runs FreeLibrary.
         self.engine = None;
         self.firmwares.clear();
-        // Delete the temp copies, now that the libraries are unloaded (Windows refuses
-        // while a handle is open). Best-effort: a failure warns, never panics.
+        // Delete the temp copies (and any .dSYM sibling), now that the libraries are
+        // unloaded (Windows refuses while a handle is open). Best-effort: a failure
+        // warns, never panics.
         for p in self.temp_paths.drain(..) {
             if let Err(e) = std::fs::remove_file(&p) {
                 if p.exists() {
@@ -203,8 +238,47 @@ impl Drop for Sil {
                     );
                 }
             }
+            let dsym = dsym_bundle(&p);
+            if dsym.is_dir() {
+                let _ = std::fs::remove_dir_all(&dsym);
+            }
         }
         // Release the process lock last.
         self.guard = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_copy_renames_the_dsym_inner_dwarf() {
+        let dir = std::env::temp_dir().join(format!("pcs_dsym_test_{}", std::process::id()));
+        let lib = dir.join("libfake_fw.dylib");
+        let inner = dsym_bundle(&lib)
+            .join("Contents")
+            .join("Resources")
+            .join("DWARF");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(&lib, b"image").unwrap();
+        std::fs::write(inner.join("libfake_fw.dylib"), b"dwarf").unwrap();
+
+        let copy = unique_temp_copy(&lib).unwrap();
+        let copied_dwarf = dsym_bundle(&copy)
+            .join("Contents")
+            .join("Resources")
+            .join("DWARF")
+            .join(copy.file_name().unwrap());
+        assert!(
+            copied_dwarf.is_file(),
+            "the copy's bundle holds the DWARF under the copy's filename: {}",
+            copied_dwarf.display()
+        );
+        assert_eq!(std::fs::read(&copied_dwarf).unwrap(), b"dwarf");
+
+        let _ = std::fs::remove_file(&copy);
+        let _ = std::fs::remove_dir_all(dsym_bundle(&copy));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
