@@ -7,13 +7,81 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
+## Current sprint — interrupt-driven sampling (started 2026-08-13)
+
+**North star:** phase currents sampled at the PWM-period center, hardware-
+triggered from TIM1's trigger output, landed in firmware statics by the
+injected-EOC interrupt — on **both targets**. Bench: telemetry shows
+mid-window samples while six-step drives the motor. SIL: the D8 controller
+dispatches the ISR on the sim grid and a scenario asserts sample cadence and
+values against the plant. **No control law consumes the samples this sprint**
+— the FOC current loop is its own later sprint.
+
+**Why now:** the low-side shunts only see phase current during the 1−duty
+window (campaign finding), so FOC needs center-of-period injected sampling;
+D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
+`fw~hal_adc_003`, `fw~hal_adc_008` (OFT baseline 22 → 19).
+
+**Stages** (each lands as its own reviewed commit):
+
+- ☐ **1. D8 interrupt controller** (voyant + fiber port) — the framework
+  interrupt table per [`sim-interrupts.md`](sim-interrupts.md): periodic +
+  one-shot entries, config-time (by name via DWARF) and runtime (by pointer
+  via a C→Rust upcall vtable, `SIL_ports`-style) registration,
+  priority-then-registration-index ordering, per-entry enable,
+  masked-holds-pending. Dispatch runs in the firmware fiber inside the
+  port's ISR entry/exit bracket so `...FromISR` wakeups + `portYIELD_FROM_ISR`
+  behave as on hardware. Exit: unit tests cover ordering, one-shot
+  quantization, masking, cancel/disable, and a FromISR task wakeup.
+- ☐ **2. Sub-ms engine grid + perf gating** — the engine step supports the
+  interrupt grid (PWM period 50 µs at 20 kHz center-aligned; base `dt` per
+  D8 §5 / D6). Systick keeps firing on integer multiples (D9). The mirror
+  sweep + route propagation get a **gated cadence** (performance.md
+  "gated discrete work" lever) so per-grid cost stays bounded; re-baseline
+  the performance report and record the target there. Exit: existing 44
+  SIL tests pass on the refined grid with suite runtime within budget.
+- ☐ **3. Sim TRGO seam** (`fw~hal_tim_006`) — sim `HW_TIM` emits its
+  configured trigger event (update / OC match): `HW_TIM_advanceTime`
+  detects the crossing and calls registered sinks. Unity tests + tag close
+  the spec.
+- ☐ **4. Embedded injected ADC** (`fw~hal_adc_003/008`, stm32g4 target) —
+  injected group on the phase-current inputs, TIM1-TRGO-triggered,
+  interrupt transfer with JEOS completion callback + pollable status.
+  NVIC/MSP/IT wiring (mind the unhandled-IRQ wedge; provide the handler,
+  whole-archive). Revisit the AUTDLY interaction with the polled regular
+  path (flagged when AUTDLY landed). Bench check: injected samples visible
+  in telemetry while six-step runs.
+- ☐ **5. Sim injected ADC mirror** — sim `HW_ADC` injected group: the TRGO
+  sink starts the injected conversion from the driven port volts; completion
+  lands via a D8 one-shot through the same callback/status surface as
+  embedded (`fw~hal_adc_008` semantics on both targets). Unity tests + tags.
+- ☐ **6. Firmware consumer + SIL north-star scenario** — a minimal firmware
+  path (through the IO_bridge current seam, keeping app→IO layering)
+  configures injected sampling and stores the latest center-sample phase
+  currents from the completion callback. SIL scenario on the board world:
+  six-step spinning, assert the ISR cadence (one sample set per PWM period),
+  the sample instant (period center on the grid), and values matching the
+  plant's phase currents at those instants.
+- ☐ **7. Docs + re-baseline** — sim-interrupts.md implementation notes,
+  performance.md new baseline, handover/backlog refresh.
+
+**Dependencies:** 1 ∥ 3 ∥ 4 (independent starts); 2 needs 1; 5 needs 1 + 3;
+6 needs 2 + 4 + 5.
+
+**Explicitly out of scope** (deferred): the FOC current loop (own sprint);
+`usb_cdc`/`teleplot` capture (owner call 2026-08-13); dead-time /
+injectable-break seams; encoder frame-fault injection + `fw~safety_002`
+scenario; event-driven timeline + ISR nesting (D8 §10).
+
+---
+
 ## Commutation sprint — full-loop motor commutation ☑ (2026-07-12 → 2026-08-10)
 
 **North star achieved:** the firmware's six-step drive commutates a simulated
 motor end to end — button tap → alignment physically swings the rotor →
 offset captured from the plant → dial demand → closed-loop spin — driven and
-asserted purely through the State Table (`tests/north_star.rs`). Up for
-merge as PR #4.
+asserted purely through the State Table (`tests/north_star.rs`). Merged as
+PR #4 (2026-08-13).
 
 Stages, all ☑ (current-state detail lives in the design docs + tests):
 
