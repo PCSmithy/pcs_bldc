@@ -23,8 +23,12 @@ typedef enum
 {
     HW_TIM_TRGO_NONE,
     HW_TIM_TRGO_UPDATE,     // counter rollover (period boundary)
-    HW_TIM_TRGO_OC_MATCH,   // counter reaches output-compare unit 0's value
+    HW_TIM_TRGO_OC_MATCH,   // counter reaches trgoOcUnit's compare value
 } HW_TIM_trgoSource_E;
+
+// Invoked once per trigger event a peripheral emits. `context` is the pointer
+// supplied to HW_TIM_registerTrgoCallback.
+typedef void (*HW_TIM_trgoCallback_F)(HW_TIM_peripheral_E peripheral, void * context);
 
 // One timer peripheral. Lacks HAL handles; carries explicit scalar fields
 // the stm32g4 target derives from htim.Init.
@@ -45,6 +49,7 @@ typedef struct
 
     bool                configureTrgo;
     HW_TIM_trgoSource_E trgoSource;
+    uint8_t             trgoOcUnit;   // OC unit behind an OC-match source
 } HW_TIM_peripheralConfig_S;
 
 // One logical channel: an output-compare unit on a named peripheral.
@@ -65,4 +70,20 @@ typedef struct
 // by elapsed_us * countsPerUs, wrapping modulo (period + 1) in its count
 // direction. The platform tick calls this once per sim tick — it is the clock
 // behind the timebase peripherals (lib_timer's 1 us source rides TIM2).
+//
+// A peripheral with a trigger output configured emits one trigger per landing
+// on its source event's counter value, so an advance spanning several periods
+// emits several. Sinks run after the counter has taken its end-of-advance
+// value.
 void HW_TIM_advanceTime(uint32_t elapsed_us);
+
+// Register the sink for a peripheral's trigger output. Only sim-target
+// hw-layer code registers — the consumer is the sim ADC's hardware-triggered
+// conversion. One sink per peripheral: the modelled hardware routes a trigger
+// to a single consumer, so a later registration replaces the earlier one and a
+// NULL callback clears it. Independent of HW_TIM_init — the two run in either
+// order and a re-init keeps the registration, so a firmware restart re-wires
+// rather than orphans. Returns false if the peripheral is out of range.
+bool HW_TIM_registerTrgoCallback(HW_TIM_peripheral_E peripheral,
+                                 HW_TIM_trgoCallback_F callback,
+                                 void * context);
