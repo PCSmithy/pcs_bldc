@@ -222,6 +222,10 @@ wrong while writing.)
 
 - The `` `<id>~1` `` line sits **directly under** its `###` heading, no
   blank line between.
+- Never let a backticked spec ID **start a body line** — OFT parses any
+  line-leading `` `<id>~1` `` as a new spec-definition line, creating a
+  phantom duplicate and truncating the enclosing spec. Wrap prose so ID
+  references sit mid-line.
 - Language-hint every code fence (` ```c `, ` ```text `); a bare fence
   breaks OFT's parser for the rest of the file.
 - No `---` thematic breaks in spec body text — they read as frontmatter

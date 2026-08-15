@@ -24,7 +24,7 @@ provides observability, configuration, diagnostics, and scripted operation.
 ```text
   ┌─────────────────────┐
   │   Desktop app       │      USB CDC (virtual COM)
-  │   (Rust, optional)  │──────framed protocol (TBD)──────┐
+  │   (Rust, optional)  │─────schema-defined protocol─────┐
   │                     │                                 │
   │   - Live plotting   │                                 │
   │   - Configuration   │                                 │
@@ -90,10 +90,9 @@ disconnected.
 - Direction: **bidirectional**. Commands flow down (mode changes, setpoints,
   parameter writes); telemetry flows up (control loop internals, references,
   estimator state, raw sensor data).
-- Framing protocol: **TBD** — choice between a custom binary frame format
-  and a richer schema-driven option (e.g. gRPC + protobuf over a stream
-  transport). Decision is deferred and will be captured in a dedicated
-  `sys~` and `fw~`/`app~` spec when made.
+- Protocol: schema-defined protocol-buffer messages in CRC-validated
+  frames — `sys~conn_001~1` (schema), `sys~conn_002~1` (framing),
+  `sys~conn_003~1` (request acknowledgement), under `specs/system/conn/`.
 - Disconnection: the firmware must continue executing whatever mode it was
   last commanded to when the host disconnects mid-session; the app must
   handle disconnect gracefully and reconnect when the device returns.
@@ -186,8 +185,6 @@ For navigation only — milestones do not have spec IDs.
   experiments; sensor-degradation studies; stretch coordinated multi-device
   control.
 
----
-
 ## Anchor specifications
 
 These are the small set of cross-cutting `sys~` requirements that anchor the
@@ -225,17 +222,18 @@ Needs: fw, test
 ### Desktop app as auxiliary capability
 `sys~arch_002~1`
 
-The desktop application shall provide observability, configuration,
-diagnostics, and scripted-operation capabilities that augment but do not
-replace the device's standalone functionality. The app is optional; its
+The desktop application shall provide observability, control,
+configuration, diagnostics, and scripted-operation capabilities that
+augment but do not replace the device's standalone functionality. The app is optional; its
 absence shall not impair any standalone device behavior.
 
 Acceptance:
 
-- The app exposes UIs for: live telemetry plotting, motor-parameter and
-  user-preference configuration, diagnostic queries (firmware version,
-  fault history, current mode), and scripted operation (preset
-  trajectories).
+- The app exposes UIs for: live telemetry plotting, device control (mode
+  selection, setpoint adjustment, and fault clearing per `sys~ops_001~1`),
+  motor-parameter and user-preference configuration, diagnostic queries
+  (firmware version, fault history, current mode), and scripted operation
+  (preset trajectories).
 - Disconnecting the app at any time during device operation does not
   affect the firmware's ongoing mode or control behavior.
 - Each detailed app capability is covered by its own `app~` spec under
@@ -252,18 +250,13 @@ Needs: app, test
 `sys~arch_003~1`
 
 The firmware and desktop app shall communicate over a USB CDC (virtual
-serial port) interface with bidirectional, framed messages. The framing
-protocol is defined in a dependent spec (TBD: custom binary or
-schema-driven such as protobuf-over-stream).
+serial port) interface carrying the protocol defined in `sys~conn_001~1`.
 
 Acceptance:
 
-- The device enumerates as a USB CDC class device on Windows and macOS
-  without requiring driver installation.
-- The desktop app discovers the device and opens the COM port using the
-  OS-native serial API.
-- Round-trip command/telemetry exchange succeeds at the working baud rate
-  and frame size.
+- The device enumerates on Windows and macOS using the OS in-box CDC
+  class driver.
+- A round-trip request/response exchange succeeds over the open port.
 
 Covers:
 
