@@ -33,13 +33,24 @@ D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
   port's ISR entry/exit bracket so `...FromISR` wakeups + `portYIELD_FROM_ISR`
   behave as on hardware. Exit: unit tests cover ordering, one-shot
   quantization, masking, cancel/disable, and a FromISR task wakeup.
-- ☐ **2. Sub-ms engine grid + perf gating** — the engine step supports the
-  interrupt grid (PWM period 50 µs at 20 kHz center-aligned; base `dt` per
-  D8 §5 / D6). Systick keeps firing on integer multiples (D9). The mirror
-  sweep + route propagation get a **gated cadence** (performance.md
-  "gated discrete work" lever) so per-grid cost stays bounded; re-baseline
-  the performance report and record the target there. Exit: existing 44
-  SIL tests pass on the refined grid with suite runtime within budget.
+- ☐ **2. Systick onto the interrupt table, then sub-ms grid + perf gating**
+  (owner-directed restructure, 2026-08-13) — the kernel tick becomes a
+  plain table entry, as on hardware: the fiber port registers its own
+  systick handler via `SIL_irq_registerPeriodic` at scheduler start
+  (runtime path; low priority — a control ISR outranks it), the timebase
+  advance splits out of the tick ABI as `sil_fw_advance_time(us)` called
+  every engine step (prerequisite for TRGO crossing detection at grid
+  resolution), and `FirmwareMember::advance` drops its tick accumulator:
+  a step is advance-timebase → if anything due: in-sync → dispatch →
+  out-sync. `sil_fw_advance_tick` / the `firmware_step(tick)` flag
+  disappear; a masked systick holds pending (real PRIMASK behavior);
+  ripple: mock backends' call-order tests, the perf bin's tick phase, the
+  reset/reload re-registration path. THEN the grid refines (PWM period
+  50 µs at 20 kHz center-aligned; base `dt` per D8 §5 / D6) with the
+  mirror sweep + route propagation on a **gated cadence** (performance.md
+  "gated discrete work" lever); re-baseline the performance report and
+  record the target there. Exit: existing SIL tests pass on the refined
+  grid with suite runtime within budget.
 - ☐ **3. Sim TRGO seam** (`fw~hal_tim_006`) — sim `HW_TIM` emits its
   configured trigger event (update / OC match): `HW_TIM_advanceTime`
   detects the crossing and calls registered sinks. Unity tests + tag close
