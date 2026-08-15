@@ -7,7 +7,7 @@
 
 use crate::{
     cid, vid, wire_bridge, wire_current_sense, wiring::BridgeRoutes, wiring::CurrentSenseRoutes,
-    As5048Model, CurrentSenseModel, MotorModel, Sil, SOURCE,
+    As5048Model, CurrentSenseModel, MotorModel, Sil, SilOptions, SOURCE,
 };
 use voyant::vsig_id;
 
@@ -58,12 +58,17 @@ pub struct Board {
     pub sense: CurrentSenseRoutes,
 }
 
-/// Build the board world with the shaft starting at `initial_angle_rad`: the bus
-/// energized, the gate driver seeded operational, the button idle, and both wiring
-/// bundles live. The encoders carry their measured noise (the quantized
-/// `raw_encoder_ticks` output is noise-free; only the wire frames are perturbed).
+/// Build the board world on the default grid — [`board_with`] with default options.
 pub fn board(initial_angle_rad: f64) -> Board {
-    let mut sim = Sil::new();
+    board_with(SilOptions::default(), initial_angle_rad)
+}
+
+/// Build the board world on `options` with the shaft starting at `initial_angle_rad`:
+/// the bus energized, the gate driver seeded operational, the button idle, and both
+/// wiring bundles live. The encoders carry their measured noise (the quantized
+/// `raw_encoder_ticks` output is noise-free; only the wire frames are perturbed).
+pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
+    let mut sim = options.build();
 
     // Producer → sensor → firmware, so the zero-latency routes land the same tick.
     sim.add_member(MotorModel::new(MOTOR, initial_angle_rad));

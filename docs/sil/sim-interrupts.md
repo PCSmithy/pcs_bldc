@@ -100,6 +100,13 @@ functions. We don't model memory protection, so this is a non-issue.
 - **Event-driven timeline** (a next-fire-time queue, exact aperiodic latency,
   variable model step) is the future upgrade if grid quantization of aperiodic
   interrupts ever distorts timing that matters. Fixed-grid is the start.
+- **The grid is chosen per world**, not globally: a scenario that needs
+  sub-millisecond resolution builds on it explicitly (`Sil::options().grid_us(50)`),
+  everything else stays on the default. Due times are absolute sim-µs, so refining
+  the grid only tightens quantization — a 1 ms kernel tick keeps its millisecond and
+  the steps in between are where a faster interrupt lands. The cost a fine grid adds
+  is the whole-namespace cvar mirror, which runs on its own sim-time cadence
+  ([`performance.md`](performance.md) §15).
 
 ## 6. Masking, enable, priority, nesting
 

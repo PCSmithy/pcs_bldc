@@ -42,7 +42,7 @@ pub mod state_table;
 pub mod trace;
 pub mod unit;
 
-pub use backend::{Firmware, FirmwareMember};
+pub use backend::{Firmware, FirmwareMember, DEFAULT_SWEEP_PERIOD_US};
 pub use duplex::{DuplexHandle, DuplexPeer};
 pub use engine::{Engine, EngineError};
 pub use irq::{IrqHandle, IrqKind};

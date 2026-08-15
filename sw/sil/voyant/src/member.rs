@@ -77,6 +77,13 @@ pub(crate) fn advance_unwired(m: &mut dyn Member, dt_us: u64, st: &mut StateTabl
     m.advance(dt_us, &mut MemberCtx::new(st, &router));
 }
 
+/// [`Member::mirror`] with the same throwaway router — the forced-sweep seam under test.
+#[cfg(test)]
+pub(crate) fn mirror_unwired(m: &mut dyn Member, st: &mut StateTable) {
+    let router = DuplexRouter::new();
+    m.mirror(&mut MemberCtx::new(st, &router));
+}
+
 /// An executable participant in the sim. The engine drives every member through
 /// this trait and nothing else (see the module docs for the member model and the
 /// discipline convention).
@@ -94,6 +101,13 @@ pub trait Member {
     /// [`ctx.duplex_transfer`](MemberCtx::duplex_transfer). Must be deterministic:
     /// no wall-clock, no un-seeded RNG.
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx);
+
+    /// Mirror this member's outbound state into the table **now**, at the current sim
+    /// time and without advancing anything — the on-demand path for a scenario
+    /// asserting between a member's own cadenced updates. Default: nothing to mirror.
+    fn mirror(&mut self, ctx: &mut MemberCtx) {
+        let _ = ctx;
+    }
 
     /// Enable or disable the member. The engine calls `set_enabled(true, st)` at add
     /// (members start enabled) and on any re-enable. Registering signals here is the

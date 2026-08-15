@@ -1,6 +1,7 @@
 //! The [`Sil`] harness: **the simulation itself**. It owns a fresh [`Engine`] and
 //! derefs to it, so the whole engine API (`add_member`, `link_duplex`, `step`, …) is
-//! called directly on a `Sil`. [`Sil::new`] is a zero-firmware world; firmware is
+//! called directly on a `Sil`. [`Sil::new`] is a zero-firmware world on the default
+//! grid; [`Sil::options`] builds one on a caller-chosen grid. Firmware is
 //! loaded per instance with [`load_firmware`](Sil::load_firmware), each call booting
 //! one image copied to its own temp path. Drop dumps a trace, shuts firmwares down,
 //! unloads them, and deletes the copies.
@@ -11,7 +12,10 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use voyant::{Engine, Firmware, FirmwareMember, StateTable, StateTableConfig, Value};
+use voyant::{
+    Engine, Firmware, FirmwareMember, StateTable, StateTableConfig, Value,
+    DEFAULT_SWEEP_PERIOD_US,
+};
 
 /// Process-global lock, taken at a world's first [`load_firmware`](Sil::load_firmware)
 /// and held until drop, so vanilla (threaded) `cargo test` serializes access to the
@@ -23,6 +27,68 @@ static WORLD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Distinguishes the temp copies within a process (see [`unique_temp_copy`]).
 static COPY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// How a world is built. [`Sil::new`] is `SilOptions::default()`; a scenario needing
+/// a finer grid, an exact-value table, or a different mirror cadence starts from
+/// [`Sil::options`] and sets only what it cares about:
+///
+/// ```ignore
+/// let mut sim = Sil::options().grid_us(50).build();
+/// ```
+#[derive(Clone)]
+pub struct SilOptions {
+    grid_us: u64,
+    state: StateTableConfig,
+    sweep_period_us: u64,
+}
+
+impl Default for SilOptions {
+    fn default() -> Self {
+        Self {
+            grid_us: TICK_US,
+            state: StateTableConfig::default(),
+            sweep_period_us: DEFAULT_SWEEP_PERIOD_US,
+        }
+    }
+}
+
+impl SilOptions {
+    /// The engine grid: µs of sim time per step. Every interrupt dispatches on the
+    /// step its due time falls in, so a finer grid tightens that quantization.
+    pub fn grid_us(mut self, us: u64) -> Self {
+        self.grid_us = us;
+        self
+    }
+
+    /// The State Table config — `epsilon: 0.0` for checks asserting exact values the
+    /// default change deadband would blur.
+    pub fn state_config(mut self, config: StateTableConfig) -> Self {
+        self.state = config;
+        self
+    }
+
+    /// The cvar mirror cadence every firmware this world loads runs on: the
+    /// whole-namespace sweep happens at most once per `us` of sim time (0 = every
+    /// dispatching step). Bounds historian latency; drops nothing.
+    pub fn sweep_period_us(mut self, us: u64) -> Self {
+        self.sweep_period_us = us;
+        self
+    }
+
+    /// Build the world.
+    pub fn build(self) -> Sil {
+        Sil {
+            engine: Some(Engine::with_state(
+                self.grid_us,
+                StateTable::with_config(self.state),
+            )),
+            firmwares: Vec::new(),
+            temp_paths: Vec::new(),
+            guard: None,
+            sweep_period_us: self.sweep_period_us,
+        }
+    }
+}
 
 /// The simulation: a fresh [`Engine`] plus the firmware images loaded into it. Build
 /// one per `#[test]`, [`load_firmware`](Self::load_firmware) any instances it needs,
@@ -44,30 +110,28 @@ pub struct Sil {
     /// Held from the first firmware load until drop (see [`WORLD_LOCK`]); `None` in a
     /// model-only world.
     guard: Option<MutexGuard<'static, ()>>,
+    /// The mirror cadence applied to every firmware this world loads.
+    sweep_period_us: u64,
 }
 
 impl Sil {
-    /// A fresh, zero-firmware world: a new [`Engine`] and nothing else. Takes no lock
-    /// and loads no DLL — model-only scenarios are first-class. Add firmware with
-    /// [`load_firmware`](Self::load_firmware).
+    /// A fresh, zero-firmware world on the default grid: a new [`Engine`] and nothing
+    /// else. Takes no lock and loads no DLL — model-only scenarios are first-class.
+    /// Add firmware with [`load_firmware`](Self::load_firmware).
     pub fn new() -> Self {
-        Sil {
-            engine: Some(Engine::new(TICK_US)),
-            firmwares: Vec::new(),
-            temp_paths: Vec::new(),
-            guard: None,
-        }
+        Self::options().build()
     }
 
     /// A zero-firmware world whose State Table runs `config` — `epsilon: 0.0` for checks
     /// asserting exact values the default 1e-3 change deadband would blur.
     pub fn with_config(config: StateTableConfig) -> Self {
-        Sil {
-            engine: Some(Engine::with_state(TICK_US, StateTable::with_config(config))),
-            firmwares: Vec::new(),
-            temp_paths: Vec::new(),
-            guard: None,
-        }
+        Self::options().state_config(config).build()
+    }
+
+    /// The build options, for a world that wants a non-default grid / table / mirror
+    /// cadence: `Sil::options().grid_us(50).build()`.
+    pub fn options() -> SilOptions {
+        SilOptions::default()
     }
 
     /// One signal as an `f64`, or `NaN` when it is unregistered or unset.
@@ -137,6 +201,7 @@ impl Sil {
         let mut member = FirmwareMember::new(source_name, fw);
         // Reboot-from-reset recipe: re-enabling this member reloads the same temp copy.
         member.set_reload_path(&copy);
+        member.set_sweep_period_us(self.sweep_period_us);
         member
     }
 
@@ -151,10 +216,10 @@ impl Sil {
             .expect("firmware handle is stale (member reloaded or unloaded its image)")
     }
 
-    /// Step the engine for `ms` milliseconds of sim time (`ms * 1000 / TICK_US` ticks),
+    /// Step the engine for `ms` milliseconds of sim time (at this world's grid),
     /// panicking on a step error.
     pub fn run_for_ms(&mut self, ms: u64) {
-        let ticks = (ms * 1_000) / TICK_US;
+        let ticks = (ms * 1_000) / self.tick_period_us();
         for _ in 0..ticks {
             self.step().expect("engine step");
         }
