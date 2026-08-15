@@ -13,6 +13,7 @@ bool HW_USB_init(void);
 void HW_USB_run(void);
 bool HW_USB_connected(void);
 uint32_t HW_USB_write(const uint8_t * data, uint32_t len);
+uint32_t HW_USB_writeAvailable(void);
 void HW_USB_writeFlush(void);
 void HW_USB_serviceYield(void);
 uint32_t HW_USB_available(void);

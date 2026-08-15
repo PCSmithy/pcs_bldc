@@ -53,6 +53,12 @@ uint32_t HW_USB_write(const uint8_t * data, uint32_t len)
     return (uint32_t) tud_cdc_write(data, len);
 }
 
+// [impl->fw~hal_usb_005~1]
+uint32_t HW_USB_writeAvailable(void)
+{
+    return (uint32_t) tud_cdc_write_available();
+}
+
 void HW_USB_writeFlush(void)
 {
     (void) tud_cdc_write_flush();

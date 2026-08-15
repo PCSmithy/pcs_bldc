@@ -68,6 +68,12 @@ uint32_t HW_USB_write(const uint8_t * data_in, uint32_t len)
     return n;
 }
 
+// [impl->fw~hal_usb_005~1]
+uint32_t HW_USB_writeAvailable(void)
+{
+    return (data->txAccepting) ? (HW_USB_SIM_BUF - data->txLen) : 0U;
+}
+
 void HW_USB_writeFlush(void)
 {
 }

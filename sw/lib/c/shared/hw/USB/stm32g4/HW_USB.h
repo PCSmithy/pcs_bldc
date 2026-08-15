@@ -25,6 +25,9 @@ bool HW_USB_connected(void);
 // accepted (only what fits, zero when the transmit buffer is full).
 uint32_t HW_USB_write(const uint8_t * data, uint32_t len);
 
+// Free transmit-buffer space: the number of bytes a write accepts in full.
+uint32_t HW_USB_writeAvailable(void);
+
 // Hand accepted bytes to the device stack for delivery.
 void HW_USB_writeFlush(void);
 

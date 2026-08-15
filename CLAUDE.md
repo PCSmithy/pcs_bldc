@@ -273,6 +273,17 @@ For `tools/build_arm.sh`, post-build hooks emit `pcs_bldc_fw.bin`,
 `pcs_bldc_fw.hex`, and a `--print-memory-usage` size report alongside
 `pcs_bldc_fw.elf`.
 
+Firmware builds **require the project venv** (`./setup.sh`): the protocol
+bindings `sw/fw/src/lib/protobuf/generated/pcs_bldc.pb.{h,c}` are generated
+from `sw/proto/` at build time by the venv's nanopb generator and are
+gitignored, never committed. CMake fails the configure with a pointer to
+`setup.sh` if `.venv` is missing. `tools/generate_proto.sh` is the
+standalone manual regeneration path. Encode/decode goes through the generic
+`lib_protobuf` module (`sw/lib/c/shared/lib/protobuf/`), which takes any
+message's `pb_msgdesc_t` descriptor; the project side
+(`lib_protobuf_config.h` + the `lib_protobuf_config` target) carries the
+generated bindings.
+
 ### Code organization
 
 Two layered trees that mirror each other in folder names:

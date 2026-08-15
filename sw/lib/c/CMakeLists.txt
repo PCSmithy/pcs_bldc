@@ -32,6 +32,7 @@ endif()
 
 # Vendored third-party libraries that aren't tied to a specific layer.
 add_subdirectory(CMSIS)
+add_subdirectory(nanopb)
 if(PCS_TARGET STREQUAL "embedded" AND PCS_BUILDING_FW)
   # The STM32G4 HAL driver is family-specific (ARM intrinsics, doesn't
   # compile natively) AND needs a consumer-provided pcs_stm32g4_hal_conf

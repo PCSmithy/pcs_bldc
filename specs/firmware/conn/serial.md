@@ -101,3 +101,20 @@ Covers:
 - sys~arch_003~1
 
 Needs: impl, test
+
+### Free transmit capacity
+`fw~conn_serial_006~1`
+
+On a channel, the driver shall report the free transmit capacity of the
+backing transport: the number of bytes a transmit call accepts without
+yielding.
+
+Acceptance:
+- With the transport's transmit buffer empty, the reported capacity is
+  the buffer's full size.
+- With N undrained bytes written, the reported capacity is N lower.
+
+Covers:
+- sys~arch_003~1
+
+Needs: impl, test

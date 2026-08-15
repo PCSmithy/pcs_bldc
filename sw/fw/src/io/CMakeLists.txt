@@ -3,5 +3,6 @@
 add_subdirectory(AS5048)
 add_subdirectory(SK6805)
 add_subdirectory(serial)
+add_subdirectory(COBSFrame)
 add_subdirectory(i2c)
 add_subdirectory(bridge)

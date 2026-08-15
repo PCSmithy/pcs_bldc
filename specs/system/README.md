@@ -42,7 +42,8 @@ specs in them yet.
 - `obs/` — observability: periodic status telemetry (`sys~obs_001`),
   signal selection from firmware debug information (`sys~obs_002`),
   firmware build identity + gate (`sys~obs_003`/`_004`), signal trace
-  (`sys~obs_005`), signal write (`sys~obs_006`)
+  (`sys~obs_005`), signal write (`sys~obs_006`), text log stream
+  (`sys~obs_007`)
 - `ops/` — system mode state machine (idle / calibrate / run / fault),
   command authority, mode transitions (anchor `sys~ops_001` lives in
   [[overview]])

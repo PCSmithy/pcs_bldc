@@ -141,6 +141,27 @@ uint32_t IO_serial_read(IO_serial_channel_E channel, uint8_t * buffer, uint32_t 
     return count;
 }
 
+// [impl->fw~conn_serial_006~1]
+uint32_t IO_serial_txFree(IO_serial_channel_E channel)
+{
+    uint32_t count = 0U;
+    if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT))
+    {
+        switch (data->config->channels[channel].transport)
+        {
+            case IO_SERIAL_TRANSPORT_USB_CDC:
+                count = HW_USB_writeAvailable();
+                break;
+
+            // case IO_SERIAL_TRANSPORT_UART: free space in the HW_UART TX path.
+
+            default:
+                break;
+        }
+    }
+    return count;
+}
+
 // [impl->fw~conn_serial_005~1]
 bool IO_serial_connected(IO_serial_channel_E channel)
 {

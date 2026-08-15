@@ -42,3 +42,6 @@ uint32_t IO_serial_read(IO_serial_channel_E channel, uint8_t * buffer, uint32_t 
 // True iff a channel's backing transport is connected.
 bool IO_serial_connected(IO_serial_channel_E channel);
 
+// Free transmit capacity on a channel: bytes a write accepts without yielding.
+uint32_t IO_serial_txFree(IO_serial_channel_E channel);
+

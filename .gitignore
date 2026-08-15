@@ -69,6 +69,11 @@ fp-info-cache
 __pycache__/
 *.pyc
 
+# nanopb-generated protocol bindings (regenerated from sw/proto/ at build
+# time; the build requires the project venv — see sw/fw/src/lib/protobuf/)
+*.pb.h
+*.pb.c
+
 # Claude Code runtime artifacts (committed config like skills/ stays tracked)
 .claude/scheduled_tasks.lock
 

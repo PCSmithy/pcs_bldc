@@ -1,0 +1,3 @@
+add_executable(test_lib_protobuf test_protobuf.c)
+target_link_libraries(test_lib_protobuf PRIVATE lib_protobuf unity)
+add_test(NAME lib_protobuf COMMAND test_lib_protobuf)
