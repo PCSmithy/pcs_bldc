@@ -66,6 +66,12 @@ target_compile_options(freertos PRIVATE -w)
 # Embedded additionally needs `cmsis` (Cortex-M core headers + device header).
 target_link_libraries(freertos PUBLIC ${FREERTOS_PORT_DEPS} pcs_freertos_config)
 
+# The native ports register their systick with the framework's interrupt table
+# through the SIL_irq seam (docs/sil/sim-interrupts.md).
+if(PCS_TARGET STREQUAL "native")
+  target_link_libraries(freertos PUBLIC hw_SIL_irq)
+endif()
+
 # Host-test hook stubs: strong vApplication* definitions for native unit tests
 # that pull the kernel transitively but never link main.c or start the scheduler
 # (see host_test_hooks.c). An OBJECT library so its objects are injected directly

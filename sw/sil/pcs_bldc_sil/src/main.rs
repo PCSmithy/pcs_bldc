@@ -50,6 +50,11 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The FreeRTOS port's kernel-tick handler, which it registers with the interrupt
+/// table at scheduler start. Driving a raw firmware step outside the engine means
+/// advancing the timebase and dispatching this entry by hand.
+const SYSTICK_ISR: &str = "vSilSysTickHandler";
+
 /// White-box per-tick scheduling table, gated by `PCS_SIL_DIAG=1` (no-op otherwise):
 /// advance the firmware one raw tick at a time and DWARF-read the FreeRTOS kernel's own
 /// view alongside the per-task heartbeats. The resolved-address list surfaces DWARF
@@ -59,6 +64,9 @@ fn diag_per_tick_table(fw: &Firmware) {
         return;
     }
     const TICKS: u32 = 15;
+    let systick = fw
+        .resolve_func(SYSTICK_ISR)
+        .expect("the fiber port's kernel-tick handler resolves by name");
 
     // Silence the default panic hook for the duration: a missing DWARF symbol makes
     // `read_cvar` panic, which we catch below and render as "n/a".
@@ -114,7 +122,8 @@ fn diag_per_tick_table(fw: &Firmware) {
             rd("taskUsbRuns")
         );
         if i < TICKS {
-            fw.advance_tick();
+            fw.advance_time(TICK_US);
+            fw.dispatch_isr(systick);
         }
     }
 
@@ -123,7 +132,7 @@ fn diag_per_tick_table(fw: &Firmware) {
 
 /// Phase-isolated performance report (informational): time each phase over `N` ticks
 /// after a warm-up and print µs/tick + ×realtime, plus the derived splits. The four
-/// phases isolate a raw firmware tick, a full engine step, a firmware-member-only step
+/// phases isolate a raw firmware step, a full engine step, a firmware-member-only step
 /// (sweep+flush) and an empty engine step (the floor).
 fn report_performance(fw: &Rc<Firmware>) {
     const WARMUP: u64 = 100;
@@ -132,13 +141,21 @@ fn report_performance(fw: &Rc<Firmware>) {
     // Registered-leaf count: enable a throwaway member on a scratch table.
     let leaves = {
         let mut st = StateTable::new();
-        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
+        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw));
         fwm.set_enabled(true, &mut st);
         fwm.cvar_leaf_count()
     };
 
-    // (1) Firmware tick alone — raw advance_tick loop, no engine machinery.
-    let fw_us = time_avg_us(WARMUP, N, || fw.advance_tick());
+    // (1) Firmware step alone — the timebase advance plus the one interrupt a booted
+    //     image has due each grid step (its kernel tick), straight over the control
+    //     ABI with no engine machinery around it.
+    let systick = fw
+        .resolve_func(SYSTICK_ISR)
+        .expect("the fiber port's kernel-tick handler resolves by name");
+    let fw_us = time_avg_us(WARMUP, N, || {
+        fw.advance_time(TICK_US);
+        fw.dispatch_isr(systick);
+    });
 
     // (2) Full engine step — a model drives a firmware input cvar through a route
     //     while the FirmwareMember mirrors the whole namespace each tick.
@@ -149,7 +166,7 @@ fn report_performance(fw: &Rc<Firmware>) {
             SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None).expect("valid cvar id");
         let mut eng = Engine::new(TICK_US);
         eng.add_member(CountsRampModel::new("sensor", STEP));
-        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US);
+        let mut fwm = FirmwareMember::new(SOURCE, Rc::clone(fw));
         fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
         eng.add_member(fwm);
         eng.add_route(src, dst).expect("add route");
@@ -162,7 +179,7 @@ fn report_performance(fw: &Rc<Firmware>) {
     //     namespace (no model, no route): isolates the Tier-1 shadow sweep + flush.
     let sweep_us = {
         let mut eng = Engine::new(TICK_US);
-        eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw), TICK_US));
+        eng.add_member(FirmwareMember::new(SOURCE, Rc::clone(fw)));
         time_avg_us(WARMUP, N, || {
             eng.step().expect("engine step");
         })
@@ -196,7 +213,7 @@ fn report_performance(fw: &Rc<Firmware>) {
     println!("         {leaves} cvar leaves mirrored/tick    (sim tick = {TICK_US} µs, avg over {N} ticks)");
     println!("         phase                              µs/tick   ×realtime");
     println!(
-        "         firmware advance_tick alone        {fw_us:>7.2}   {:>6.1}×",
+        "         firmware step (time+systick)       {fw_us:>7.2}   {:>6.1}×",
         xrt(fw_us)
     );
     println!(

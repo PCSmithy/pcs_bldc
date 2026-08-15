@@ -27,8 +27,8 @@
 //! writes destination entries — no backend. Members then sync their own mirrors on
 //! their own clock: a [`FirmwareMember`](crate::backend::FirmwareMember) flushes the
 //! fresh cvar entries in its namespace into firmware memory and sweeps its mirror
-//! back out around `advance_tick` (a route driving a cvar marks it dirty, so the
-//! member flushes it that tick); a model reads a routed `vsig` via
+//! back out around its interrupt dispatch (a route driving a cvar marks it dirty, so
+//! the member flushes it that step); a model reads a routed `vsig` via
 //! [`StateTable::current_value`].
 //!
 //! **Fault injection composes with routing at zero extra mechanism**: suspend the

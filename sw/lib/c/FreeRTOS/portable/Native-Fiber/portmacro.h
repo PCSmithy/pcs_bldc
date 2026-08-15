@@ -2,7 +2,7 @@
  * Native cooperative FIBER port for FreeRTOS V10.3.1 (SIL host build).
  *
  * Single OS thread; each task is a host fiber. Cooperative: context switches
- * happen only at portYIELD / tick-dispatch points. Validated by the spike at
+ * happen only at portYIELD / ISR-dispatch points. Validated by the spike at
  * sw/sil/spike/d1-tick — deterministic + many x realtime. See
  * docs/sil/freertos-tick.md, docs/sil/performance.md.
  *
@@ -77,9 +77,12 @@ void vPortClearInterruptMaskFromISR( UBaseType_t uxSaved );
 #define portCLEAR_INTERRUPT_MASK_FROM_ISR( x )  vPortClearInterruptMaskFromISR( x )
 
 /* Simulated-interrupt dispatch: the framework runs one handler in the
- * firmware context through the ISR bracket. pdFALSE = masked, held pending. */
+ * firmware context through the ISR bracket. pdFALSE = masked, held pending.
+ * The kernel tick is one such handler — the port registers it with the
+ * framework at scheduler start (docs/sil/sim-interrupts.md). */
 BaseType_t xSilDispatchIsr( void ( * pxHandler )( void ) );
 BaseType_t xSilInterruptsMasked( void );
+void vSilSysTickHandler( void );
 
 /* Task function macros. */
 #define portTASK_FUNCTION_PROTO( vFunction, pvParameters ) \

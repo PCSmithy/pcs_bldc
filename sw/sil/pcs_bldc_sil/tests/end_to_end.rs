@@ -36,8 +36,7 @@ fn end_to_end() {
     sim.link_duplex("spi:pcs_bldc:AS5048_2", dial)
         .expect("link dial encoder");
 
-    // Both encoder channels register their SPI endpoints as :tx/:rx event entries —
-    // the dial (AS5048_2) too, which stage 3 drives as the velocity demand.
+    // Both encoder channels register their SPI endpoints as :tx/:rx event entries.
     let ep = |ch: &str, m: &str| format!("spi:{SOURCE}:{ch}:{m}");
     let endpoints_present = ["AS5048_1", "AS5048_2"].iter().all(|ch| {
         ["tx", "rx"]

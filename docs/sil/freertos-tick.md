@@ -33,11 +33,12 @@ So we **write a fiber-based port** (our code) instead of vendoring a host port.
 - **Port primitives:** `portYIELD` = swap to the next fiber; start-scheduler =
   swap to the first task; critical section / interrupt-mask = a cooperative flag
   that defers sim-interrupt dispatch (no real preemption needed — §4).
-- **Advance** (the `sil_fw_advance_tick` control ABI, [`ffi-boundary.md`](ffi-boundary.md)):
-  the framework swaps into the firmware (scheduler) context; the firmware
-  dispatches due interrupts and runs ready tasks until the **idle fiber** runs
-  (quiescence), which swaps back to the framework; the advance call returns. All
-  fiber swaps — no threads, no signaling.
+- **Advance** (the `sil_fw_advance_time` + `sil_fw_dispatch_isr` control ABI,
+  [`ffi-boundary.md`](ffi-boundary.md)): the framework moves the hardware
+  timebase, then hands over each handler due on the grid — the port's own systick
+  among them. Dispatch swaps into the firmware (scheduler) context and runs ready
+  tasks until the **idle fiber** runs (quiescence), which swaps back to the
+  framework; the dispatch call returns. All fiber swaps — no threads, no signaling.
 
 ## 3. Pluggable tick source (realtime vs framework-driven)
 
@@ -52,12 +53,11 @@ Only the pacing differs; the firmware path is identical, so a scenario debugged
 in fast mode behaves the same in realtime.
 
 **Pacing lives in the driver, not the port.** Because control is inverted — the
-driver *calls* `sil_fw_advance_tick` ([`ffi-boundary.md`](ffi-boundary.md)) — the
-realtime/fast distinction is simply whether the caller sleeps between advances.
-The firmware exposes one per-tick primitive; there is no port-level
+driver drives each step ([`ffi-boundary.md`](ffi-boundary.md)) — the
+realtime/fast distinction is simply whether the caller sleeps between steps.
+The firmware exposes only per-step primitives; there is no port-level
 `portGetNextTick()` to swap. This is simpler than the original framing and is
-what the working integration does (a stand-in C driver today, the Rust framework
-in Phase 2).
+what the working integration does.
 
 ## 4. Determinism — by construction, and why cooperative is enough
 

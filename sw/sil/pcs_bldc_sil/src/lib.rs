@@ -27,7 +27,8 @@ pub use wiring::{wire_bridge, wire_current_sense, BRIDGE_PORTS};
 use std::path::{Path, PathBuf};
 use voyant::SignalId;
 
-/// The firmware's 1 ms task cadence — one engine tick per this many µs of sim time.
+/// The engine grid: this many µs of sim time per step. Interrupts (the kernel
+/// tick included) dispatch on whichever step their due time falls.
 pub const TICK_US: u64 = 1_000;
 
 /// The `<source>` segment of this board's firmware signals (`cvar:pcs_bldc:…`).
