@@ -27,6 +27,7 @@ fn read_tx_capture(fw: &Firmware) -> String {
 // [test->fw~hal_spi_003~1]
 // [test->fw~conn_serial_003~1]
 // [test->fw~conn_serial_005~1]
+// [test->fw~hal_usb_001~1]
 // [test->fw~hal_usb_002~1]
 // [test->fw~hal_usb_003~1]
 #[test]

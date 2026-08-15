@@ -4,8 +4,8 @@
 #include "lib_types.h"
 
 // Mirror of the stm32g4 HW_USB API. The sim is a loopback: init is a no-op
-// success, connection/transmit/receive are driven by the SIL hooks in
-// HW_USB_sim.h so consumers (IO_serial) can be exercised on the native target.
+// success; connection and traffic state live in HW_USB_sim_data, driven by the
+// framework (DWARF white-box + the simulated device interrupt).
 
 /* Public Function Declarations */
 

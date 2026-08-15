@@ -210,12 +210,14 @@ sufficient to make the tooling aware of a new topic.
 - 105 spec defs across 31 files; `tools/validate-specs.py` clean. Trace with
   `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not scanned
   without the source dirs). The intentional (ahead-of-impl) defect baseline
-  is 22: the 15 `sys~` anchors, `fw~hal_adc_003`/`fw~hal_adc_008`
+  is 23: the 15 `sys~` anchors, `fw~hal_adc_003`/`fw~hal_adc_008`
   (timer-triggered injected + async completion) + `fw~hal_tim_006` (TRGO)
   — reserved for the interrupt-driven-control sprint, `fw~mc_007` (gesture
-  map) + `fw~mc_010` (V/f) — future app methods, and `fw~hal_tim_005`/`_007`
-  (dead-time, break input — sim modeling pending). Both `[test->]` and
-  `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
+  map) + `fw~mc_010` (V/f) — future app methods, `fw~hal_tim_005`/`_007`
+  (dead-time, break input — sim modeling pending), and `fw~hal_usb_004`
+  (CDC reception — no firmware RX consumer until the desktop-app protocol).
+  Both `[test->]` and `[impl->]` tags live in `.rs` files too (the SIL
+  tests carry spec tags).
 - `specs/desktop-app/` — empty until the app work begins.
 
 ### Decisions explicitly deferred (will become specs when made)

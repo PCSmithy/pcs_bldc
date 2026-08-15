@@ -1,6 +1,5 @@
 /* Includes */
 #include "HW_USB.h"
-#include "HW_USB_sim.h"
 #include "SIL_irq.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -14,6 +13,11 @@
 #define HW_USB_SIM_IRQ_PERIOD_US  1000U
 // Ordering only, no preemption. USB sits below a control-loop ISR.
 #define HW_USB_SIM_IRQ_PRIORITY   8U
+
+/* Private Function Declarations */
+
+// Non-static: SIL scenarios resolve the handler by name from DWARF.
+void HW_USB_sim_irqHandler(void);
 
 /* Private Data Definitions */
 
@@ -123,51 +127,4 @@ uint32_t HW_USB_read(uint8_t * buffer, uint32_t len)
         n++;
     }
     return n;
-}
-
-/* SIL inspection / control */
-
-void HW_USB_sim_reset(void)
-{
-    // Loopback state only: the service-task latch is seam wiring, not device
-    // state, and outlives a reset.
-    const TaskHandle_t serviceTask = data->serviceTask;
-    *data = (HW_USB_sim_data_S){ 0 };
-    data->txAccepting = true;
-    data->serviceTask = serviceTask;
-}
-
-void HW_USB_sim_setConnected(bool connected)
-{
-    data->connected = connected;
-}
-
-void HW_USB_sim_setTxAccepting(bool accepting)
-{
-    data->txAccepting = accepting;
-}
-
-uint32_t HW_USB_sim_readTx(uint8_t * buffer, uint32_t len)
-{
-    uint32_t n = 0U;
-    while ((n < len) && (n < data->txLen))
-    {
-        buffer[n] = data->tx[n];
-        n++;
-    }
-    return n;
-}
-
-uint32_t HW_USB_sim_txLen(void)
-{
-    return data->txLen;
-}
-
-void HW_USB_sim_injectRx(const uint8_t * src, uint32_t len)
-{
-    for (uint32_t i = 0U; (i < len) && (data->rxTail < HW_USB_SIM_BUF); i++)
-    {
-        data->rx[data->rxTail] = src[i];
-        data->rxTail++;
-    }
 }
