@@ -91,8 +91,8 @@ pub trait Member {
     /// member reads its routed inputs from `ctx.st` ([`StateTable::current_value`]),
     /// integrates, and pushes its outputs back ([`StateTable::record`]); it may
     /// also register new signals here, and initiate a serial bus via
-    /// [`ctx.duplex_transfer`](MemberCtx::duplex_transfer). Must be deterministic
-    /// (D7): no wall-clock, no un-seeded RNG.
+    /// [`ctx.duplex_transfer`](MemberCtx::duplex_transfer). Must be deterministic:
+    /// no wall-clock, no un-seeded RNG.
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx);
 
     /// Enable or disable the member. The engine calls `set_enabled(true, st)` at add

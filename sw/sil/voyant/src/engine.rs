@@ -9,7 +9,7 @@
 //! one tick of separation — a **delayed (latency-1) route** is that explicit ZOH cut,
 //! while forward (zero-latency) dataflow has no added latency. Each [`step`](Engine::step):
 //!
-//! 1. **Advance sim time** — `now += tick_period` (monotonic, wall-clock-free, D7/D9);
+//! 1. **Advance sim time** — `now += tick_period` (monotonic, wall-clock-free);
 //!    [`StateTable::set_time`] stamps every record this tick.
 //! 2. **Validate the wiring if dirty** (below); a cached invalid verdict re-raises
 //!    each step until fixed.
@@ -130,7 +130,7 @@ impl Engine {
     /// coerces to `Rc<RefCell<dyn DuplexPeer>>` for [`link_duplex`](Self::link_duplex)).
     /// Members **start enabled**: the engine calls
     /// [`Member::set_enabled(true)`](Member::set_enabled) now (where it registers its
-    /// signals) and caches the name. Advance order is registration order (D7) — a design
+    /// signals) and caches the name. Advance order is registration order — a design
     /// surface for forward flow. Marks the wiring dirty.
     ///
     /// The engine steps each member through `borrow_mut`; holding a `borrow_mut` on the
@@ -245,7 +245,7 @@ impl Engine {
     /// [`EngineError::Route`] if the wiring is invalid (raised at this step, and
     /// re-raised each step until fixed).
     pub fn step(&mut self) -> Result<(), EngineError> {
-        // 1. Sim time advances (monotonic, deterministic — no wall-clock, D7/D9).
+        // 1. Sim time advances (monotonic, deterministic — no wall-clock).
         self.now_us += self.tick_period_us;
         self.state.set_time(self.now_us);
 
@@ -297,7 +297,7 @@ impl Engine {
         // 5. Drain the duplex router: force-record every exchange this tick as
         //    `<endpoint>:tx` / `:rx` event entries — identical for firmware- and
         //    model-initiated transfers. (Same-tick transactions share a timestamp;
-        //    finer event stamps arrive with the D8 interrupt work.)
+        //    finer event stamps arrive with the sub-tick grid work.)
         self.record_duplex_transactions();
         Ok(())
     }
