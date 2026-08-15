@@ -341,14 +341,10 @@ in as a second range group built alongside the existing one in `build_shadow` an
 *ahead of* the gate in `out_sync_cvars`; the gate is one `if` in front of a whole-set
 sweep, so it neither shares nor constrains that group.
 
-**Blocker for a fine-grid *board* world — `MotorModel` is pinned to a 1 ms advance.**
-`motor.rs` takes a fixed `MOTOR_MODEL_STEP_PERIOD_US / MOTOR_INTEGRATOR_STEP_PERIOD_US`
-= 1000 integrator sub-steps per `advance` **regardless of `dt_us`**, and
-`debug_assert_eq!(dt_us, MOTOR_MODEL_STEP_PERIOD_US)` fires on any other grid. So the
-plant costs a constant ~220 µs per *step* rather than per millisecond of sim time (the
-whole board world measures ~224 µs/step at the 1 ms grid and ~242 µs/step at 50 µs),
-and in a debug build a fine-grid board world panics. Deriving the sub-step count from
-`dt_us` is a one-line, default-grid-identical change, but it is owner physics — flagged
-here rather than made. Until then the fine-grid numbers above are firmware + routes +
-grid-agnostic models; `board_with(SilOptions, angle)` already threads the grid choice
-through `board.rs`, so the board world joins the moment the plant follows `dt_us`.
+**The plant scales with sim time, not step count.** `motor.rs` derives its
+integrator sub-step count from `dt_us` (1 µs sub-steps; a divisibility
+`debug_assert` guards a future coarser integrator step), so the board world runs
+on any grid and its physics cost is ~220 µs per millisecond of sim time
+regardless of step size. A full fine-grid board world therefore lands near
+~11 µs/step at 50 µs (≈4.5× realtime) — the plant is the floor, not the
+framework; the fine-grid numbers above isolate the framework's own cost.
