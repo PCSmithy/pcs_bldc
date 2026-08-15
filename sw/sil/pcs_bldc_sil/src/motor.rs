@@ -1,4 +1,4 @@
-//! BLDC motor + averaged-duty inverter (D6) — the plant that closes the commutation loop.
+//! BLDC motor + averaged-duty inverter — the plant that closes the commutation loop.
 //!
 //! All ports live in the model's own namespace; the sim wiring routes the board's
 //! bridge signals into them. Inputs: `vsig:<name>:{duty,enable}_{u,v,w}`, `moe`,

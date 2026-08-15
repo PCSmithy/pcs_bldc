@@ -1,5 +1,6 @@
 //! Trace serializer: the State Table historian → a versioned little-endian binary
-//! stream (D12 §7). Pure Rust — no Python, no subprocess. The instantiation spawns a
+//! stream (format spec: `docs/sil/signal-trace.md` §7). Pure Rust — no Python, no
+//! subprocess. The instantiation spawns a
 //! builder (`tools/mf4_build.py`, asammdf) that turns this stream into ASAM MDF4.
 //!
 //! ## Wire format (all integers little-endian)
