@@ -3,21 +3,30 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
-## Native-Coro port: interrupt-controller catch-up (BLOCKS non-Windows SIL)
+## Motor model: raise the ~4.5x-realtime ceiling (integrator levers)
 
-**When:** ASAP — before the next sil -> main PR. The branch does not link on
-macOS/Linux since the interrupt-controller stage: `main.c`'s SIM region
-references `xSilDispatchIsr`/`xSilInterruptsMasked`, which only the
-Native-Fiber port implements. CI only runs on PRs, so nothing has caught it.
+**When:** when a long single scenario or the Phase-4 fast-mode/pytest sweeps
+actually need it; owner-led (owner physics). Not this sprint.
 
-**What:** mirror the Fiber port's interrupt work onto Native-Coro: the ISR
-entry/exit bracket (`xSilDispatchIsr`, deferred `vPortYieldFromIsr`, real
-FromISR mask macros in its portmacro.h), per-context critical nesting AND
-per-context interrupt mask carried in its ThreadState/switch path, systick
-self-registration via `SIL_irq_registerPeriodic` at scheduler start + cancel
-at teardown, and delete its stale `vSilAdvanceTick`. Windows cannot build or
-run the Coro port, so proof is the next PR's macOS/ubuntu CI (or a draft PR
-opened early to trigger it).
+**Why (measured 2026-08-15):** the plant costs ~220 us wall per 1 ms of sim
+time — 1000 x 1 us semi-implicit-Euler sub-steps at ~0.22 us (~700 cycles)
+each — capping any board world at ~4.5x realtime on every grid. The
+framework's own fine-grid cost is ~2.3 us/step (22x+); the plant is the
+floor. Largely hidden today by nextest's process-per-test parallelism.
+
+**Levers, in leverage order:**
+- **Dynamic/adaptive sub-step:** the 1 us step guards the stiff diode-mode
+  transitions (engagement/anti-chatter), not the RL dynamics (tau_e = L/R is
+  hundreds of us). Fine steps only around diode-mode changes, coarse
+  elsewhere — or a measured flat coarsening to 5-10 us — plausibly 5-10x.
+  Step selection must be state-dependent only (determinism). The analytic
+  `motor_dynamics.rs` asserts + MF4 diffs against 1 us runs are the accuracy
+  instruments.
+- **Per-sub-step cost:** ~700 cycles for 3-phase electrical + mechanics +
+  diode logic; maybe 2-3x from optimization (branch shape, layout, math).
+- **Integrator configuration:** a stiffly-stable scheme (exponential /
+  implicit) for the linear RL part tolerates much larger steps; biggest
+  rewrite, same accuracy questions, composes with the adaptive lever.
 
 ## One API header per module — io layer (owner scoping TBD)
 
