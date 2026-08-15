@@ -2,23 +2,13 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "stm32g4xx_hal.h"
 
 #include "HW_DMA_channels.h"   // project-provided HW_DMA_channel_E
 
-/* Typedefs */
+/* Target Config */
+#include "HW_DMA_target.h"     // HW_DMA_channelConfig_S
 
-// Per-channel configuration. The HAL handle carries the target-specific
-// transfer setup (Instance, DMAMUX Request, direction, data widths, increment
-// modes, mode, priority); periphAddress is the peripheral data register the
-// channel moves data to/from; irqn is the NVIC line for the channel's DMA
-// interrupt.
-typedef struct
-{
-    DMA_HandleTypeDef hdma;
-    uint32_t          periphAddress;
-    IRQn_Type         irqn;
-} HW_DMA_channelConfig_S;
+/* Typedefs */
 
 typedef struct
 {
@@ -52,10 +42,3 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
 
 HW_DMA_status_E HW_DMA_getStatus(HW_DMA_channel_E channel);
 bool HW_DMA_registerCallback(HW_DMA_channel_E channel, HW_DMA_completeCallback_F callback, void * context);
-
-// Service a channel's DMA interrupt: forwards to the HAL, which drives the
-// registered completion/error callbacks. Call from the board's DMA IRQ handler
-// for the channel. NVIC enable + the board DMA IRQ handlers are wired with the
-// SPI-DMA integration (M4), where the path is bench-verified.
-void HW_DMA_irqHandler(HW_DMA_channel_E channel);
-

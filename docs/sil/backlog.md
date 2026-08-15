@@ -19,21 +19,13 @@ at teardown, and delete its stale `vSilAdvanceTick`. Windows cannot build or
 run the Coro port, so proof is the next PR's macOS/ubuntu CI (or a draft PR
 opened early to trigger it).
 
-## One API header per HW module (kill the per-target header split)
+## One API header per module — io layer (owner scoping TBD)
 
-**When:** next natural lull between sprint stages (owner request 2026-08-15).
-
-**What:** each split-target HW module carries two hand-mirrored headers
-(`hw/<Module>/sim/HW_<Module>.h` + `.../stm32g4/HW_<Module>.h`). The shared
-types (enums, input configs, function signatures) are duplicated by manual
-mirroring — silent-drift risk (the ADC trigger/xfer enums are
-register-encoded). Replace with ONE `hw/<Module>/HW_<Module>.h` carrying the
-API + shared types, including a small per-target header for the
-target-specific `channelConfig_S` shape; `hw_<Module>` CMake targets expose
-the module root include dir (consumer includes unchanged). `HW_USB` first
-(its two headers are already signature-identical), then the channelized
-modules; update the channelization section of `c-coding-conventions.md`.
-Scope: `hw/` only (owner scoping TBD for io-layer).
+**When:** owner call. The `hw/` layer is done (2026-08-15): each dual-target
+module now has one `hw/<Module>/HW_<Module>.h` carrying the API + shared
+types, with `<target>/HW_<Module>_target.h` holding only the config shape
+(see the channelization section of `c-coding-conventions.md`). Whether the
+io-layer modules want the same treatment is unscoped.
 
 ## Current sense: model the low-side-shunt duty visibility (bench-confirmed)
 
@@ -221,8 +213,7 @@ drivers grew `HW_<Module>_sim.h` headers exposing `HW_<Module>_sim_*`
 inject/inspect functions (set pin state, inject SPI RX, read USB TX, stall
 ADC, ...). Files, as of 2026-07-04:
 
-- `sw/lib/c/shared/hw/ADC/sim/HW_ADC_sim.h` (plus `_sim_` decls that leaked
-  into `sw/lib/c/shared/hw/ADC/sim/HW_ADC.h`)
+- `sw/lib/c/shared/hw/ADC/sim/HW_ADC_sim.h`
 - `sw/lib/c/shared/hw/DMA/sim/HW_DMA_sim.h`
 - `sw/lib/c/shared/hw/GPIO/sim/HW_GPIO_sim.h`
 - `sw/lib/c/shared/hw/OPAMP/sim/HW_OPAMP_sim.h`

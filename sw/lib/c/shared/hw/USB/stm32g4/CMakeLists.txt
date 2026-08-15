@@ -3,7 +3,7 @@
 # we call tud_*; that cycle is resolved by the --start-group at the executable
 # link (see sw/fw/src/CMakeLists.txt).
 add_library(hw_USB STATIC HW_USB.c HW_USB_descriptors.c)
-target_include_directories(hw_USB PUBLIC .)
+target_include_directories(hw_USB PUBLIC . ..)
 target_link_libraries(hw_USB
   PUBLIC
     lib_types

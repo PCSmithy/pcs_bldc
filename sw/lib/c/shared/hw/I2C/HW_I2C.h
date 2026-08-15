@@ -2,11 +2,8 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "stm32g4xx_hal.h"
 
 #include "HW_I2C_channels.h"
-
-/* Defines */
 
 /* Typedefs */
 
@@ -26,22 +23,14 @@ typedef enum
     HW_I2C_MEMADDR_SIZE_16BIT_LSBFIRST,
 } HW_I2C_memAddrSize_E;
 
-typedef struct
-{
-    bool enabled;
-    I2C_HandleTypeDef hi2c;
-
-    HW_I2C_transferMode_E transferMode;
-    uint32_t sclBitRateHz;   // configured SCL bit rate; TIMINGR is opaque
-} HW_I2C_busConfig_S;
+/* Target Config */
+#include "HW_I2C_target.h"   // HW_I2C_busConfig_S
 
 typedef struct
 {
     const HW_I2C_busConfig_S * buses;
     size_t numBuses;
 } HW_I2C_config_S;
-
-/* Static Inline Functions */
 
 /* Public Function Declarations */
 
@@ -54,8 +43,3 @@ bool HW_I2C_memRead(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                     HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
 bool HW_I2C_memWrite(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                      HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
-
-// NVIC event / error ISR dispatch. The IRQ vectors (stm32g4xx_it.c) forward
-// to these; each drives the HAL's I2C interrupt state machine for the bus.
-void HW_I2C_irqHandlerEv(HW_I2C_bus_E bus);
-void HW_I2C_irqHandlerEr(HW_I2C_bus_E bus);

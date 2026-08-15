@@ -1,5 +1,5 @@
 add_library(hw_DMA STATIC HW_DMA.c)
-target_include_directories(hw_DMA PUBLIC .)
+target_include_directories(hw_DMA PUBLIC . ..)
 target_link_libraries(hw_DMA
   PUBLIC
     lib_types

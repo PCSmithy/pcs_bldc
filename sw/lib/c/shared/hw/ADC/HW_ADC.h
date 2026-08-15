@@ -2,7 +2,6 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "stm32g4xx_hal.h"
 #include "HW_ADC_channels.h"
 
 /* Defines */
@@ -51,78 +50,8 @@ typedef enum
     HW_ADC_CONVERSION_STATUS_FAULT,
 } HW_ADC_conversionStatus_E;
 
-// One input pin on the regular conversion sequence. inputs[] in the
-// channel config is indexed by physical IN# (0..HW_ADC_INPUTS_PER_CHANNEL-1)
-// — set .enabled=true and fill .sConfig for each input that should
-// participate. .sConfig.Channel must match the slot index (e.g.
-// inputs[6] must have .sConfig.Channel == ADC_CHANNEL_6); not enforced.
-typedef struct
-{
-    bool enabled;
-    ADC_ChannelConfTypeDef sConfig;
-} HW_ADC_inputConfig_S;
-
-// One input on the injected conversion sequence. injectedInputs[] is
-// dense, indexed by sequence position (0..3) — slot 0 becomes injected
-// rank 1, slot 1 becomes rank 2, etc. The library sets .sConfig.InjectedRank
-// and .sConfig.InjectedNbrOfConversion based on array position and
-// enabled count; user just fills .enabled and the rest of .sConfig.
-typedef struct
-{
-    bool enabled;
-    ADC_InjectionConfTypeDef sConfig;
-} HW_ADC_injectedInputConfig_S;
-
-// One ADC peripheral.
-//
-// Library-managed regular-path hadc.Init fields (whatever you put here
-// is silently overwritten by HW_ADC_init based on enabled-input count
-// and trigger/xfer modes):
-//   - NbrOfConversion       <- count of enabled regular inputs
-//   - ScanConvMode          <- ENABLE iff >1 enabled regular input
-//   - EOCSelection          <- ADC_EOC_SINGLE_CONV (polled needs per-conversion EOC)
-//   - ContinuousConvMode    <- DISABLE (single-shot per _run1ms)
-//   - LowPowerAutoWait      <- ENABLE for polled xfer (AUTDLY halts the
-//                              sequencer per conversion until DR is read, so
-//                              the per-rank poll+read can't overrun); left as-is otherwise
-//   - ExternalTrigConv      <- ADC_SOFTWARE_START iff triggerMode == HW_ADC_TRIGGER_SOFTWARE
-//
-// Library-managed injected-path injectedInputs[].sConfig fields
-// (similarly overwritten):
-//   - InjectedRank             <- derived from array position
-//   - InjectedNbrOfConversion  <- count of enabled injected inputs
-//   - ExternalTrigInjecConv    <- ADC_INJECTED_SOFTWARE_START iff
-//                                 injectedTriggerMode == HW_ADC_TRIGGER_SOFTWARE
-//
-// All other Init / sConfig fields (Resolution, DataAlign, ClockPrescaler,
-// SamplingTime, etc.) are taken as-is from this config.
-//
-// configureMultimode applies only to the master ADC of each pair
-// (e.g. ADC1 of the ADC1+2 pair); the slave's flag should be false.
-typedef struct
-{
-    ADC_HandleTypeDef hadc;
-
-    bool configureMultimode;
-    ADC_MultiModeTypeDef multimode;
-
-    HW_ADC_triggerMode_E triggerMode;
-    HW_ADC_xferMode_E    xferMode;
-
-    HW_ADC_triggerMode_E injectedTriggerMode;
-    HW_ADC_xferMode_E    injectedXferMode;
-
-    // Reference voltage at the analog supply rail (full-scale of the
-    // ADC). Used by HW_ADC_getVolts / getInjectedVolts for counts ->
-    // volts conversion. Typically 3.3f on the pcs_bldc board.
-    float32_t vref;
-
-    // Regular sequence inputs, indexed by physical IN# (sparse).
-    HW_ADC_inputConfig_S inputs[HW_ADC_INPUTS_PER_CHANNEL];
-
-    // Injected sequence inputs, indexed by sequence position (dense).
-    HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
-} HW_ADC_channelConfig_S;
+/* Target Config */
+#include "HW_ADC_target.h"   // HW_ADC_inputConfig_S / _injectedInputConfig_S / _channelConfig_S
 
 typedef struct
 {
@@ -134,12 +63,9 @@ typedef struct
 
 // Initialize all ADC peripherals listed in `config`. Validates the
 // config (NULL ptrs, bad numChannels, unsupported trigger/xfer modes,
-// out-of-range Rank values), copies the user's hadc handles into
-// internal mutable storage, applies library-managed Init / sConfig
-// overrides, runs HAL_ADC_Init + HAL_ADCEx_Calibration_Start (single-
-// ended) per channel, configures multimode where requested, and
-// configures each enabled regular and injected input. Returns false on
-// any failure.
+// out-of-range Rank values), applies the library-managed per-target
+// setup, and configures each enabled regular and injected input.
+// Returns false on any failure.
 bool HW_ADC_init(const HW_ADC_config_S * const config);
 
 // Sample all enabled inputs on every channel using SOFTWARE+POLLED.
@@ -175,4 +101,3 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
 // Read the conversion status of a channel's most recent _run1ms pass.
 // Returns false if not initialized, channel out of range, or out is NULL.
 bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
-

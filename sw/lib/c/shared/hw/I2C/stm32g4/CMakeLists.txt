@@ -1,5 +1,5 @@
 add_library(hw_I2C STATIC HW_I2C.c)
-target_include_directories(hw_I2C PUBLIC .)
+target_include_directories(hw_I2C PUBLIC . ..)
 target_link_libraries(hw_I2C
   PUBLIC
     lib_types

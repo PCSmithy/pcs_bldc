@@ -2,9 +2,6 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "stm32g4xx_hal.h"
-
-/* Defines */
 
 /* Typedefs */
 typedef enum
@@ -28,11 +25,8 @@ typedef enum
 
 typedef void (*HW_GPIO_extiCallback_F)(HW_GPIO_port_E port, uint32_t pin, void * context);
 
-typedef struct
-{
-    const GPIO_InitTypeDef * pins;
-    size_t numPins;
-} HW_GPIO_portConfig_S;
+/* Target Config */
+#include "HW_GPIO_target.h"   // HW_GPIO_portConfig_S
 
 // One entry per HW_GPIO_port_E. Dense — index by HW_GPIO_PORT_x.
 typedef struct
@@ -40,19 +34,16 @@ typedef struct
     HW_GPIO_portConfig_S ports[HW_GPIO_PORT_COUNT];
 } HW_GPIO_config_S;
 
-/* Static Inline Functions */
-
 /* Public Function Declarations */
 
-// Configure all ports listed in `config`. For each port with at least
-// one pin, enables the port's RCC clock, sets the initial output level
-// for any output-mode pins (so they don't glitch when switched from
-// reset state to output mode), and calls HAL_GPIO_Init. Returns false
-// on NULL config or any HAL_GPIO_Init failure.
+// Configure all ports listed in `config`. For each port with at least one pin,
+// brings the port online and applies the initial output level of its
+// output-mode pins (so they don't glitch out of reset state). Returns false on
+// a NULL config or any per-port configuration failure.
 bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 
-// Drive a single configured output pin to `level`. `pin` is a HAL pin
-// mask (GPIO_PIN_x). No-op if `port` is out of range.
+// Drive the configured output pins the mask touches to `level`. `pin` is a
+// single-bit (or multi-bit) GPIO_PIN_x mask. No-op if `port` is out of range.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
 // Sample and cache every configured input pin's level. Call periodically
@@ -69,4 +60,3 @@ HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
 // interrupt-input `pin` (single-bit GPIO_PIN_x mask). `context` is passed
 // back to the callback. Returns false on an out-of-range port.
 bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context);
-

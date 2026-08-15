@@ -1,10 +1,10 @@
-#ifndef HW_OPAMP_H
-#define HW_OPAMP_H
+#pragma once
+
+// Target-specific half of HW_OPAMP; reached via HW_OPAMP.h.
 
 /* Includes */
 #include "lib_types.h"
 #include "stm32g4xx_hal.h"
-#include "HW_OPAMP_channels.h"
 
 /* Typedefs */
 
@@ -25,22 +25,3 @@ typedef struct
 {
     OPAMP_HandleTypeDef hopamp;
 } HW_OPAMP_channelConfig_S;
-
-typedef struct
-{
-    const HW_OPAMP_channelConfig_S * channels;
-    uint8_t numChannels;
-} HW_OPAMP_config_S;
-
-/* Public Function Declarations */
-
-// Initialize every amplifier listed in `config`. Validates the config
-// (NULL config/channels, numChannels beyond the available amplifiers),
-// copies each user hopamp handle into internal mutable storage, then per
-// channel: self-calibrates the input offset (internal output temporarily
-// disabled) and starts the amplifier with its configured input/gain and
-// its output routed to the internal ADC input. Returns false on any
-// validation, calibration, or start failure.
-bool HW_OPAMP_init(const HW_OPAMP_config_S * const config);
-
-#endif // HW_OPAMP_H

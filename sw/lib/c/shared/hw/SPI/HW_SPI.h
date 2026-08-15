@@ -2,13 +2,9 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "stm32g4xx_hal.h"
 
 #include "HW_GPIO.h"
-#include "HW_DMA.h"              // HW_DMA_channel_E (DMA-backed transfer mode)
 #include "HW_SPI_channels.h"
-
-/* Defines */
 
 /* Typedefs */
 
@@ -18,15 +14,6 @@ typedef enum
     HW_SPI_TRANSFERMODE_INTERRUPT,
     HW_SPI_TRANSFERMODE_DMA,
 } HW_SPI_transferMode_E;
-
-typedef struct
-{
-    bool enabled;
-    SPI_HandleTypeDef hspi;
-
-    HW_SPI_transferMode_E transferMode;
-    HW_DMA_channel_E txDmaChannel;   // TX DMA stream; used when transferMode == DMA
-} HW_SPI_busConfig_S;
 
 typedef enum
 {
@@ -42,12 +29,8 @@ typedef struct
     HW_GPIO_level_E activeLevel; // level driven to assert (select) the device
 } HW_SPI_csGpioConfig_S;
 
-typedef struct
-{
-    HW_SPI_bus_E bus;
-    HW_SPI_chipSelectMode_E csMode;
-    HW_SPI_csGpioConfig_S csGpioConfig; // ignored if csMode != GPIO
-} HW_SPI_channelConfig_S;
+/* Target Config */
+#include "HW_SPI_target.h"   // HW_SPI_busConfig_S / HW_SPI_channelConfig_S
 
 typedef struct
 {
@@ -73,8 +56,6 @@ typedef enum
 // the pointer supplied to HW_SPI_registerCallback.
 typedef void (*HW_SPI_completeCallback_F)(HW_SPI_channel_E channel, void * context);
 
-/* Static Inline Functions */
-
 /* Public Function Declarations */
 
 bool HW_SPI_init(const HW_SPI_config_S * const config);
@@ -85,4 +66,3 @@ bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t 
 
 bool HW_SPI_registerCallback(HW_SPI_channel_E channel, HW_SPI_completeCallback_F callback, void * context);
 HW_SPI_status_E HW_SPI_getStatus(HW_SPI_channel_E channel);
-
