@@ -3,7 +3,7 @@
 //!
 //! Pure data — no FFI, no DWARF. Fed by [`StateTable::record`], queried by
 //! [`StateTable::current_value`] (O(1)) / [`StateTable::value_at`] (O(log n),
-//! zero-order-hold). Each signal *is* its own historian (D12): a record is stored
+//! zero-order-hold). Each signal *is* its own historian: a record is stored
 //! only when the value moves past the signal's epsilon (default 1e-3 for floats;
 //! exact otherwise). Writes are one-shot, last-writer-wins — a value persists
 //! exactly when nothing else writes that signal. Retention evicts old samples by
@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 use thiserror::Error;
 
-/// Default float change-detection epsilon ("moved, not noise" — D12).
+/// Default float change-detection epsilon ("moved, not noise").
 const DEFAULT_EPSILON: f64 = 1e-3;
 /// Default realtime retention window; fast mode overrides to `None` (unbounded).
 const DEFAULT_RETENTION: Duration = Duration::from_secs(30);
@@ -768,7 +768,7 @@ impl StateTable {
     }
 
     /// Current (last-recorded) value, O(1). `None` if never recorded. Returned **by
-    /// value** — columnar storage can't hand out a `&Value` (D12 semantics intact).
+    /// value** — columnar storage can't hand out a `&Value`.
     pub fn current_value(&self, id: &SignalId) -> Result<Option<Value>, TableError> {
         let idx = self.ensure(id)?;
         Ok(self.current[idx].clone())
@@ -844,7 +844,7 @@ impl StateTable {
 
     /// Emit a log entry stamped with the table's **current sim time** — the caller
     /// supplies only severity, a `source` tag, and a message, never the timestamp, so
-    /// members can't fake sim time or perturb behaviour (determinism, D7). The ring
+    /// members can't fake sim time or perturb behaviour. The ring
     /// drops the oldest entry when full.
     pub fn log(&mut self, level: LogLevel, source: &str, message: impl Into<String>) {
         self.logs.push(LogEntry {
