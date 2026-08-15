@@ -1,5 +1,5 @@
 add_library(hw_TIM STATIC HW_TIM.c)
-target_include_directories(hw_TIM PUBLIC .)
+target_include_directories(hw_TIM PUBLIC . ..)
 target_link_libraries(hw_TIM
   PUBLIC
     lib_types

@@ -361,16 +361,20 @@ calls `Error_Handler` directly. See
 
 Every HW-layer (and most IO-layer) module is split into two halves:
 
-**Library side — `sw/lib/c/shared/hw/<Module>/<target>/`** (one subdir
-per target: `stm32g4/`, `sim/`, ...):
-- `HW_<Module>.h` defines `HW_<Module>_channelConfig_S` (or `_config_S`)
-  with target-specific fields, plus `bool HW_<Module>_init(...)`.
-- `HW_<Module>.c` implements `HW_<Module>_init` against the target.
-- The header `#include "HW_<Module>_<channels|config>.h"` — the
-  consumer-extension seam.
+**Library side — `sw/lib/c/shared/hw/<Module>/`**, with one subdir per
+target (`stm32g4/`, `sim/`, ...):
+- `HW_<Module>.h` at the module root is the one header consumers
+  include: shared types, `HW_<Module>_config_S`, and every API
+  declaration. It `#include`s `HW_<Module>_<channels|config>.h` (the
+  consumer-extension seam) and `HW_<Module>_target.h`.
+- `<target>/HW_<Module>_target.h` holds only what genuinely differs per
+  target: `HW_<Module>_channelConfig_S` (or `_config_S`) and any
+  target-only declaration. Never included directly.
+- `<target>/HW_<Module>.c` implements the API against the target.
 - All target subdirs define a library named `hw_<Module>` (lowercase
-  `hw_`, original module-case name); `<Module>/CMakeLists.txt` does the
-  conditional `add_subdirectory(stm32g4|sim)`.
+  `hw_`, original module-case name) exposing both `.` and `..` as
+  include dirs; `<Module>/CMakeLists.txt` does the conditional
+  `add_subdirectory(stm32g4|sim)`.
 
 **Project side — `sw/fw/src/hw/<Module>/`**:
 - `HW_<Module>_channels.h` (multi-instance, e.g. ADC) or

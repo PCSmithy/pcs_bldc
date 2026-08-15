@@ -3,12 +3,16 @@
 /* Includes */
 #include "lib_types.h"
 
+// USB device peripheral + CDC virtual-serial byte interface. Single-instance —
+// no channel config, so no per-target header. The embedded target drives the
+// TinyUSB device stack; the sim is a loopback.
+
 /* Public Function Declarations */
 
 // Bring up the USB device's CDC virtual-serial interface: route the USB clock,
-// initialise the TinyUSB device stack, and enable the USB interrupt. Returns
-// false if the device stack fails to initialise. Call once from main() before
-// the scheduler starts, then service the stack from a dedicated task whose body
+// initialise the device stack, and enable the USB interrupt. Returns false if
+// the device stack fails to initialise. Call once from main() before the
+// scheduler starts, then service the stack from a dedicated task whose body
 // calls HW_USB_run().
 bool HW_USB_init(void);
 
@@ -40,4 +44,3 @@ uint32_t HW_USB_available(void);
 
 // Read up to len received bytes into buffer; returns the count read.
 uint32_t HW_USB_read(uint8_t * buffer, uint32_t len);
-

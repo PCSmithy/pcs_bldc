@@ -1,5 +1,5 @@
 add_library(hw_SPI STATIC HW_SPI.c)
-target_include_directories(hw_SPI PUBLIC .)
+target_include_directories(hw_SPI PUBLIC . ..)
 target_link_libraries(hw_SPI
   PUBLIC
     lib_types
