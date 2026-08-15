@@ -29,4 +29,8 @@ void coro_init( coro_t * c, void * stackMem, size_t stackBytes,
  * implicit (as with Win32 SwitchToFiber). */
 void coro_switch( coro_t * to );
 
+/* The running coroutine (as Win32 GetCurrentFiber), or NULL before bootstrap.
+ * Lets a caller assert which context it is on before touching another's stack. */
+coro_t * coro_current( void );
+
 #endif /* PCS_CORO_H */
