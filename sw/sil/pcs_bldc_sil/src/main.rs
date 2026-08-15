@@ -14,12 +14,15 @@
 //!   (FreeRTOS `xTickCount`, `xNextTaskUnblockTime`, and the per-task heartbeat
 //!   counters, all read by DWARF straight from firmware memory).
 
-use pcs_bldc_sil::{dll_path, CountsRampModel, SOURCE, TICK_US};
+use pcs_bldc_sil::{dll_path, CountsRampModel, Sil, SOURCE, TICK_US};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Instant;
-use voyant::{vsig_id, Engine, Firmware, FirmwareMember, Member, SignalId, StateTable};
+use voyant::{
+    vsig_id, Engine, Firmware, FirmwareMember, Member, SignalId, StateTable,
+    DEFAULT_SWEEP_PERIOD_US,
+};
 
 fn main() -> ExitCode {
     let path = std::env::args()
@@ -45,6 +48,7 @@ fn main() -> ExitCode {
     diag_per_tick_table(&fw);
 
     report_performance(&fw);
+    report_fine_grid();
 
     fw.shutdown();
     ExitCode::SUCCESS
@@ -228,6 +232,75 @@ fn report_performance(fw: &Rc<Firmware>) {
     println!("         derived: full - firmware           {derived_us:>7.2}   (sweep+flush+ports+routes+table)");
     println!("           of which shadow sweep+flush      {sweep_over_fw_us:>7.2}   (member step - firmware)");
     println!("           of which model+route+propagate   {model_route_us:>7.2}   (full step - member step)");
+}
+
+/// The fine grid a center-aligned control interrupt needs: the 20 kHz PWM period.
+const FINE_GRID_US: u64 = 50;
+/// The sim USB device handler, stood in as a control-rate interrupt: it notifies a
+/// real FreeRTOS task, so a dispatch costs what a handler waking a task costs.
+const FINE_ISR: &str = "HW_USB_sim_irqHandler";
+
+/// Fine-grid report: the same members and route as the coarse full-step row, on a
+/// 50 µs grid. Three worlds isolate the mirror gate — the firmware's own kernel-rate
+/// interrupts, then a control-rate interrupt due on every step with the mirror gated
+/// and ungated. Each world loads its own firmware copy, so one world's interrupt
+/// registrations never reach the next.
+fn report_fine_grid() {
+    const WARMUP: u64 = 500;
+    const N: u64 = 20_000;
+
+    let plain = time_fine_world(None, DEFAULT_SWEEP_PERIOD_US, WARMUP, N);
+    let gated = time_fine_world(Some(FINE_GRID_US), DEFAULT_SWEEP_PERIOD_US, WARMUP, N);
+    let ungated = time_fine_world(Some(FINE_GRID_US), 0, WARMUP, N);
+    let xrt = |us: f64| (FINE_GRID_US as f64) / us;
+
+    println!("\n-- fine-grid report (informational) --");
+    println!("         sim grid = {FINE_GRID_US} µs, mirror cadence = {DEFAULT_SWEEP_PERIOD_US} µs, avg over {N} steps");
+    println!("         phase                              µs/step   ×realtime");
+    println!(
+        "         full step, 1 ms interrupts         {plain:>7.2}   {:>6.1}×",
+        xrt(plain)
+    );
+    println!(
+        "         + a {FINE_GRID_US} µs interrupt (gated mirror) {gated:>7.2}   {:>6.1}×",
+        xrt(gated)
+    );
+    println!(
+        "         + a {FINE_GRID_US} µs interrupt (no gate)      {ungated:>7.2}   {:>6.1}×",
+        xrt(ungated)
+    );
+    println!(
+        "         gate saves                         {:>7.2}   (no gate - gated)",
+        ungated - gated
+    );
+}
+
+/// Build a fine-grid world of the same shape as the coarse full-step row (a model
+/// driving a firmware input cvar through a route), optionally with a periodic interrupt
+/// of `isr_period_us` on [`FINE_ISR`] and with `sweep_period_us` as its mirror cadence,
+/// then time `n` steps after a warm-up.
+fn time_fine_world(isr_period_us: Option<u64>, sweep_period_us: u64, warmup: u64, n: u64) -> f64 {
+    const STEP: u32 = 25; // stays within the u8 destination byte
+    let mut sim = Sil::options()
+        .grid_us(FINE_GRID_US)
+        .sweep_period_us(sweep_period_us)
+        .build();
+    sim.add_member(CountsRampModel::new("sensor", STEP));
+    let mut fwm = sim.load_firmware(SOURCE);
+    fwm.register_cvar_in_state_table("HW_USB_sim_data.rx[0]");
+    if let Some(period_us) = isr_period_us {
+        fwm.register_periodic_isr(FINE_ISR, period_us, 0)
+            .expect("the handler name resolves to a function in the image");
+    }
+    sim.add_member(fwm);
+    sim.add_route(
+        vsig_id("sensor", "counts").expect("valid vsig id"),
+        SignalId::new("cvar", SOURCE, "HW_USB_sim_data.rx[0]", None).expect("valid cvar id"),
+    )
+    .expect("add route");
+    time_avg_us(warmup, n, || {
+        sim.step().expect("engine step");
+    })
 }
 
 /// Warm up `body` for `warmup` iterations, then time `n` more and return the mean

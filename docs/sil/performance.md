@@ -276,10 +276,79 @@ realtime)**. The voyant-side rows (sweep+flush, model+route) are unchanged work 
 move only with run-to-run variance; the derived Rust cost is untouched by the DLL
 flags. Debug flavor stays `-O0 -g` (430 leaves), all sanity checks PASS.
 
-**LTO is Windows-only (2026-07-10).** The `-flto` half of this flavor applies on
+**LTO is Windows-only (2026-07-10).** *(the fine-grid re-baseline is §15)* The `-flto` half of this flavor applies on
 **Windows (MinGW/GNU) only** — the `native.cmake` `PCS_LTO` flags are gated behind
 `CMAKE_HOST_WIN32`. On Linux the GNU `-flto` ELF `.so` links but emits an **empty
 DWARF map** (gimli reads 0 DIEs → the SIL reader finds no anchor), and macOS `gcc`
 is Apple clang (no `-ffat-lto-objects`/plugin), so both keep `-O3` without LTO.
 The Linux LTO+DWARF investigation is deferred (`backlog.md`); these perf numbers
 are the Windows release flavor.
+
+## 15. Opt-in fine grid + gated mirror (2026-08-15)
+
+The engine grid became a **per-world choice** (`Sil::options().grid_us(50)`), with the
+1 ms default untouched, and the whole-namespace mirror sweep moved onto a **sim-time
+cadence** instead of running on every dispatching step. This is the §3 "gate discrete
+work" / §5 "gate the historian scan" lever, finally exercised by a grid fine enough to
+need it: at 50 µs (the 20 kHz PWM period) a control interrupt is due on *every* step,
+so without a gate every step would pay the whole-namespace sweep.
+
+**The gate.** `FirmwareMember` sweeps when `now - last_sweep >= sweep_period_us`
+(default 1000 µs, `set_sweep_period_us`, world-level via `SilOptions::sweep_period_us`)
+or when its shadow is cold. Everything else stays per-step / per-dispatch: route
+propagation, port I/O, duplex, models, and the **in-sync cvar flush** — an inbound
+value still reaches firmware memory before the firmware runs, so the gate never delays
+the plant→firmware direction. Because the shadow mirrors *memory*, a withheld sweep
+**delays** a record and never drops one: whatever differs from the shadow is picked up
+whenever the sweep next runs. `Engine::mirror_now()` forces a sweep for an assert.
+
+Two properties follow from measuring the cadence in sim time rather than in steps:
+on any grid at least as coarse as the cadence, *every* dispatching step still sweeps —
+so the whole default-grid suite behaves exactly as before — and the historian's cvar
+latency bound is stated in sim time, independent of the grid a scenario chose.
+
+**Coarse grid — re-baseline** (same suite / method as §14; 1 ms grid, 564 cvar leaves,
+release Rust + `-O3 -flto` DLL; three back-to-back runs of each build on one laptop).
+
+| phase                              |          before | after (gate) |
+|------------------------------------|----------------:|-------------:|
+| firmware `advance_time` + systick  | 0.90–0.93 µs    | 0.87–0.89 µs |
+| **full engine step (measured)**    | **7.83–7.93 µs** | **7.68–7.84 µs** |
+| firmware-member step (sweep+flush) | 6.35–6.59 µs    | 6.26–6.63 µs |
+
+Unchanged within run-to-run noise, as the gate design requires: at a 1 ms grid the
+1 ms cadence elapses between any two dispatching steps, so the sweep still runs on each.
+
+**Fine grid — new baseline** (50 µs grid, same members and route as the coarse
+full-step row: a model driving a firmware input cvar while the member mirrors 564
+leaves; each world loads its own firmware copy; avg over 20 000 steps).
+
+| phase                                       |     µs/step | ×realtime |
+|---------------------------------------------|------------:|----------:|
+| full step, firmware's own 1 ms interrupts    | 1.07–1.36 µs | 37–47×   |
+| + a 50 µs interrupt (every step dispatches)  | 2.12–2.32 µs | 22–24×   |
+| + a 50 µs interrupt, cadence off (`0`)       | 3.01–3.03 µs |   ~17×   |
+
+**Result: the target is met** — a 50 µs world runs at ~22–47× realtime, comfortably
+past the ≥10× (≤5 µs/step) bar. The gate is worth ~0.9 µs on every step that dispatches
+without needing a mirror: what it removes is the whole-shadow `memcmp` traffic on the
+steps that fall between mirrors (the decode+record of *changed* leaves is proportional
+to changes, not to steps, so it is paid once per cadence either way).
+
+**Fast set (not built).** A later stage needs a handful of ISR-written sample statics
+mirrored at grid resolution while the rest of the namespace stays cadenced. That slots
+in as a second range group built alongside the existing one in `build_shadow` and swept
+*ahead of* the gate in `out_sync_cvars`; the gate is one `if` in front of a whole-set
+sweep, so it neither shares nor constrains that group.
+
+**Blocker for a fine-grid *board* world — `MotorModel` is pinned to a 1 ms advance.**
+`motor.rs` takes a fixed `MOTOR_MODEL_STEP_PERIOD_US / MOTOR_INTEGRATOR_STEP_PERIOD_US`
+= 1000 integrator sub-steps per `advance` **regardless of `dt_us`**, and
+`debug_assert_eq!(dt_us, MOTOR_MODEL_STEP_PERIOD_US)` fires on any other grid. So the
+plant costs a constant ~220 µs per *step* rather than per millisecond of sim time (the
+whole board world measures ~224 µs/step at the 1 ms grid and ~242 µs/step at 50 µs),
+and in a debug build a fine-grid board world panics. Deriving the sub-step count from
+`dt_us` is a one-line, default-grid-identical change, but it is owner physics — flagged
+here rather than made. Until then the fine-grid numbers above are firmware + routes +
+grid-agnostic models; `board_with(SilOptions, angle)` already threads the grid choice
+through `board.rs`, so the board world joins the moment the plant follows `dt_us`.

@@ -331,6 +331,18 @@ impl Engine {
         }
     }
 
+    /// Mirror every enabled member's outbound state into the table at the current sim
+    /// time ([`Member::mirror`]), advancing nothing. A scenario calls this before
+    /// asserting on a signal whose member mirrors on a cadence of its own.
+    pub fn mirror_now(&mut self) {
+        for entry in &self.members {
+            if entry.enabled {
+                let mut ctx = MemberCtx::new(&mut self.state, &self.duplex);
+                entry.member.borrow_mut().mirror(&mut ctx);
+            }
+        }
+    }
+
     /// Current sim time (microseconds), monotonic across [`step`](Self::step)s.
     pub fn now_us(&self) -> u64 {
         self.now_us

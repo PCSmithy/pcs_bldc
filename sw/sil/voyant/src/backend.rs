@@ -1082,7 +1082,10 @@ impl Backend for DeadBackend {
 ///    - *Ports* — drain the output buffer into each port's entry.
 ///    - *Cvars (sweep)* — read **every** registered leaf out of memory and
 ///      [`record_mirror`](StateTable::record_mirror) it, so the cvar namespace is an
-///      automatic mirror (through pre-resolved handles — no per-tick DWARF).
+///      automatic mirror (through pre-resolved handles — no per-tick DWARF). This half
+///      runs on a **cadence** ([`set_sweep_period_us`](Self::set_sweep_period_us)),
+///      which bounds how long a firmware write waits for the historian without ever
+///      dropping one; [`Member::mirror`] forces a sweep for an assert.
 ///
 /// **Direction is a property of the binding mechanism, not of a Signal** — the table
 /// is the rendezvous, no direction metadata on a signal. A future transport `sig_type`
@@ -1172,6 +1175,11 @@ pub struct FirmwareMember {
     /// Coalescing has been reported once (an interrupt finer than the grid warns
     /// once, not every step).
     irq_coalesce_warned: bool,
+    /// Minimum sim time between whole-namespace mirror sweeps (0 = every dispatch).
+    /// See [`set_sweep_period_us`](Self::set_sweep_period_us).
+    sweep_period_us: u64,
+    /// Sim time of the last sweep — the cadence is measured from here.
+    last_sweep_us: u64,
 }
 
 /// One resolved cvar leaf carried by the Tier-1 shadow sweep: where it lives in
@@ -1251,6 +1259,11 @@ const SHADOW_MERGE_GAP: u64 = 64;
 /// [`FirmwareMember::set_array_threshold`].
 pub const DEFAULT_ARRAY_THRESHOLD: usize = 32;
 
+/// Default cvar mirror cadence (µs of sim time): the whole-namespace sweep runs at
+/// most this often, which is also the bound on how long a firmware write waits to
+/// reach the historian. Override with [`FirmwareMember::set_sweep_period_us`].
+pub const DEFAULT_SWEEP_PERIOD_US: u64 = 1_000;
+
 impl FirmwareMember {
     /// Wrap a shared [`Rc<Firmware>`] as a member named `name`. The driver holds its
     /// own clone of the `Rc` alongside for ad-hoc white-box access; the member owns
@@ -1289,6 +1302,8 @@ impl FirmwareMember {
             irq_cursor: 0,
             irq_dispatches: 0,
             irq_coalesce_warned: false,
+            sweep_period_us: DEFAULT_SWEEP_PERIOD_US,
+            last_sweep_us: 0,
         }
     }
 
@@ -1381,6 +1396,18 @@ impl FirmwareMember {
     /// [`DEFAULT_ARRAY_THRESHOLD`]). Configure before adding the member.
     pub fn set_array_threshold(&mut self, n: usize) {
         self.array_threshold = n;
+    }
+
+    /// Set the mirror cadence: the whole-namespace cvar sweep runs at most once per
+    /// `us` of sim time (0 = every dispatching step). A firmware write is delayed by
+    /// at most `us`, never lost; [`Member::mirror`] forces a sweep on demand.
+    pub fn set_sweep_period_us(&mut self, us: u64) {
+        self.sweep_period_us = us;
+    }
+
+    /// The mirror cadence in µs (default [`DEFAULT_SWEEP_PERIOD_US`]).
+    pub fn sweep_period_us(&self) -> u64 {
+        self.sweep_period_us
     }
 
     /// Set the **reload recipe**: the image path a genuine re-enable reboots from
@@ -1557,19 +1584,39 @@ impl FirmwareMember {
         }
     }
 
-    /// Cvar out-sync (sweep): mirror firmware memory into the table — the automatic
-    /// whole-namespace mirror, made **O(changed bytes)** by the Tier-1 shadow.
+    /// Cvar out-sync: sweep on the configured cadence
+    /// ([`set_sweep_period_us`](Self::set_sweep_period_us)), so a grid far finer than
+    /// the rate a scenario observes cvars at does not pay for the whole-namespace
+    /// mirror every step.
+    fn out_sync_cvars(&mut self, st: &mut StateTable) {
+        if self.sweep_due(st.now_us()) {
+            self.sweep_cvars(st);
+        }
+    }
+
+    /// Whether the mirror sweep runs at `now_us`: the cadence has elapsed, or the
+    /// shadow is cold and owes the table its baseline.
+    fn sweep_due(&self, now_us: u64) -> bool {
+        self.shadow_cold || (now_us.saturating_sub(self.last_sweep_us) >= self.sweep_period_us)
+    }
+
+    /// Mirror firmware memory into the table — the automatic whole-namespace mirror,
+    /// made **O(changed bytes)** by the Tier-1 shadow.
     ///
     /// Per contiguous range: `read_range` copies live memory and `memcmp`s it against
     /// the shadow; an unchanged range is skipped. On a mismatch, each changed
     /// [`SHADOW_CHUNK`]-byte chunk re-decodes exactly its overlapping leaves and records
     /// them by dense index ([`record_mirror_at`](StateTable::record_mirror_at) — no
     /// hash, no dirty mark). The shadow mirrors MEMORY (not the table), so it advances
-    /// even where the table dedups the record.
+    /// even where the table dedups the record — which is also why a delayed sweep only
+    /// delays a record and never loses one: whatever differs from the shadow is caught
+    /// whenever the sweep next runs.
     /// The first sweep after (re)enable is **cold** (every chunk changed) for a full
     /// baseline. String-path leaves (a handle-less backend, e.g. a mock) fall back to
     /// the per-leaf read/record loop.
-    fn out_sync_cvars(&mut self, st: &mut StateTable) {
+    fn sweep_cvars(&mut self, st: &mut StateTable) {
+        self.last_sweep_us = st.now_us();
+
         // Fallback: leaves with no resolved layout (string-path backends).
         for pl in &self.path_leaves {
             let v = self.backend.read_cvar(&pl.path);
@@ -1719,6 +1766,10 @@ impl Member for FirmwareMember {
         for binding in Binding::ALL {
             binding.out_sync(self, ctx);
         }
+    }
+
+    fn mirror(&mut self, ctx: &mut MemberCtx) {
+        self.sweep_cvars(ctx.st);
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -1910,6 +1961,7 @@ impl FirmwareMember {
         self.irq_coalesce_warned = false;
         self.sweep_gen = 0;
         self.shadow_cold = true;
+        self.last_sweep_us = 0;
         self.leaves_cached = false;
     }
 
@@ -2097,7 +2149,7 @@ unsafe fn value_to_scalar(p: *mut u8, kind: Scalar, v: &Value) {
 mod tests {
     use super::*;
     use crate::duplex::DuplexPeer;
-    use crate::member::advance_unwired;
+    use crate::member::{advance_unwired, mirror_unwired};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -2745,6 +2797,14 @@ mod tests {
                 irq: systick_rendezvous(1_000),
             }
         }
+        /// The same mock with its port's systick on `period_us` — for driving a member
+        /// on a grid finer than the mirror cadence.
+        fn with_tick_period(size: usize, leaves: &[(&str, usize)], period_us: u64) -> Self {
+            Self {
+                irq: systick_rendezvous(period_us),
+                ..Self::new(size, leaves)
+            }
+        }
         fn set_u32(&self, off: usize, v: u32) {
             self.mem.borrow_mut()[off..off + 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -2900,6 +2960,110 @@ mod tests {
         st.set_time(3_000);
         advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(be.decodes(0), 2);
+    }
+
+    // --- mirror cadence ------------------------------------------------------
+    //
+    // The sweep runs on a sim-time cadence rather than on every dispatching step, so a
+    // grid finer than the rate cvars are observed at does not pay for the whole
+    // namespace every step. What must hold: a change is delayed, never dropped; a
+    // cadence at or below the dispatch spacing sweeps every dispatch; and a forced
+    // mirror lands one on demand.
+
+    #[test]
+    fn the_mirror_sweeps_on_its_cadence_not_on_every_dispatch() {
+        // A 200 us dispatch spacing against a 1000 us cadence: five dispatches per
+        // sweep, and the leaf decodes only when the sweep runs.
+        let be = Rc::new(ShadowMock::with_tick_period(16, &[("a", 0)], 200));
+        be.set_u32(0, 1);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
+        fm.set_sweep_period_us(1_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        let a = id("cvar:dut:a");
+
+        // The first sweep after enable is the cold baseline.
+        st.set_time(200);
+        advance_unwired(&mut fm, 200, &mut st);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(1)));
+
+        // Memory moves every step; the mirror holds its last sweep until the cadence.
+        for (t, v) in [(400u64, 2u32), (600, 3), (800, 4), (1_000, 5)] {
+            be.set_u32(0, v);
+            st.set_time(t);
+            advance_unwired(&mut fm, 200, &mut st);
+        }
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(1)));
+        assert_eq!(be.decodes(0), 1, "no decode between sweeps");
+
+        // The cadence elapses: the sweep catches memory up in one go.
+        be.set_u32(0, 6);
+        st.set_time(1_200);
+        advance_unwired(&mut fm, 200, &mut st);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(6)));
+        assert_eq!(be.decodes(0), 2);
+    }
+
+    #[test]
+    fn a_cadence_at_the_dispatch_spacing_sweeps_every_dispatch() {
+        // The default cadence against a dispatch every millisecond: every dispatching
+        // step sweeps, so the mirror is current at each one.
+        let be = Rc::new(ShadowMock::new(16, &[("a", 0)]));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
+        assert_eq!(fm.sweep_period_us(), DEFAULT_SWEEP_PERIOD_US);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        let a = id("cvar:dut:a");
+
+        for (t, v) in [(1_000u64, 1u32), (2_000, 2), (3_000, 3)] {
+            be.set_u32(0, v);
+            st.set_time(t);
+            advance_unwired(&mut fm, 1_000, &mut st);
+            assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(v)));
+        }
+        assert_eq!(be.decodes(0), 3);
+    }
+
+    #[test]
+    fn a_zero_cadence_sweeps_every_dispatch_however_fine_the_grid() {
+        let be = Rc::new(ShadowMock::with_tick_period(16, &[("a", 0)], 200));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
+        fm.set_sweep_period_us(0);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        let a = id("cvar:dut:a");
+
+        for (t, v) in [(200u64, 1u32), (400, 2), (600, 3)] {
+            be.set_u32(0, v);
+            st.set_time(t);
+            advance_unwired(&mut fm, 200, &mut st);
+            assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(v)));
+        }
+        assert_eq!(be.decodes(0), 3);
+    }
+
+    #[test]
+    fn a_forced_mirror_sweeps_between_cadenced_ones() {
+        // The assert path: a scenario asks for the current value rather than waiting
+        // out the cadence, and the record lands at the sim time it asked.
+        let be = Rc::new(ShadowMock::with_tick_period(16, &[("a", 0)], 200));
+        be.set_u32(0, 1);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
+        fm.set_sweep_period_us(10_000);
+        let mut st = StateTable::new();
+        fm.set_enabled(true, &mut st);
+        let a = id("cvar:dut:a");
+
+        st.set_time(200);
+        advance_unwired(&mut fm, 200, &mut st); // cold baseline
+        be.set_u32(0, 9);
+        st.set_time(400);
+        advance_unwired(&mut fm, 200, &mut st);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(1)), "cadence holds");
+
+        mirror_unwired(&mut fm, &mut st);
+        assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(9)));
+        assert_eq!(st.changes(&a).unwrap().last().unwrap().0, 400);
     }
 
     // --- simulated interrupts ---------------------------------------------

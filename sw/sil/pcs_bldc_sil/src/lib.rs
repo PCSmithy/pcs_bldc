@@ -17,18 +17,19 @@ pub mod wire;
 pub mod wiring;
 
 pub use as5048::{decode_frame, As5048Model};
-pub use board::{board, Board};
+pub use board::{board, board_with, Board};
 pub use current_sense::{CurrentSenseModel, CurrentSenseParams};
 pub use models::CountsRampModel;
 pub use motor::{MotorModel, MotorParams};
-pub use sil::{lock_world, Sil};
+pub use sil::{lock_world, Sil, SilOptions};
 pub use wiring::{wire_bridge, wire_current_sense, BRIDGE_PORTS};
 
 use std::path::{Path, PathBuf};
 use voyant::SignalId;
 
-/// The engine grid: this many µs of sim time per step. Interrupts (the kernel
-/// tick included) dispatch on whichever step their due time falls.
+/// The default engine grid: this many µs of sim time per step. Interrupts (the
+/// kernel tick included) dispatch on whichever step their due time falls. A world
+/// that needs finer resolution opts in with [`SilOptions::grid_us`].
 pub const TICK_US: u64 = 1_000;
 
 /// The `<source>` segment of this board's firmware signals (`cvar:pcs_bldc:…`).
