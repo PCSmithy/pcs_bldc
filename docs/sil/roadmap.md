@@ -19,8 +19,9 @@ values against the plant. **No control law consumes the samples this sprint**
 
 **Why now:** the low-side shunts only see phase current during the 1−duty
 window (campaign finding), so FOC needs center-of-period injected sampling;
-D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
-`fw~hal_adc_003`, `fw~hal_adc_008` (OFT baseline 22 → 19).
+D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006` (☑),
+`fw~hal_adc_003`, `fw~hal_adc_008` (OFT baseline 23 → 20; the count gained
+`fw~hal_usb_004` mid-sprint).
 
 **Stages** (each lands as its own reviewed commit):
 
