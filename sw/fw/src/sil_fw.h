@@ -10,8 +10,8 @@
  *
  * This is "control, not data": you cannot advance the scheduler by poking a
  * variable, so these stay functions. Pacing (realtime vs fast) is the *driver's*
- * choice — whoever calls sil_fw_advance_tick() decides whether to pace to
- * wall-clock or run flat out; the firmware exposes only the per-tick primitive.
+ * choice — whoever steps the firmware decides whether to pace to wall-clock or
+ * run flat out; the firmware exposes only the per-step primitives.
  */
 
 #include "lib_types.h"
@@ -39,9 +39,11 @@ void sil_fw_setIrqHooks(const SIL_irq_hooks_S * const hooks);
  * firmware never calls Error_Handler in SIL. */
 bool sil_fw_start(void);
 
-/* Advance one sim tick: run the firmware to the next quiescence and
- * return. The framework calls this once per base dt. */
-void sil_fw_advance_tick(void);
+/* Advance the hardware timebase by elapsed_us. The framework calls this once per
+ * base dt, BEFORE dispatching anything due that step, so a handler reads the
+ * timebase of the step it runs in. Runs no firmware code of its own — the kernel
+ * tick is an interrupt like any other (docs/sil/sim-interrupts.md). */
+void sil_fw_advance_time(uint32_t elapsed_us);
 
 /* Run one simulated interrupt handler in the firmware fiber, bracketed by the
  * port's ISR entry/exit so ...FromISR wakeups and portYIELD_FROM_ISR behave as

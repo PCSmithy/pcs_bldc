@@ -398,6 +398,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::backend::{Backend, CvarEnumeration, FirmwareMember};
+    use crate::irq::{IrqKind, IrqOp, IrqRendezvous};
     use crate::member::{vsig_id, RampModel};
     use crate::signal::Value;
     use crate::state_table::TableError;
@@ -405,31 +406,57 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    /// Stand-in handler address for the kernel tick a firmware's port registers.
+    const MOCK_SYSTICK: usize = 0x5157;
+
     /// A pure-Rust [`Backend`] that records the order of its calls, so a test can
-    /// prove *when* in a step a route write vs `advance_tick` happens. Reads return
-    /// a stored value if written, else a `U32` of the tick count (a firmware-less
-    /// ramp for the sampling tests).
-    #[derive(Default)]
+    /// prove *when* in a step a route write vs the firmware's own execution happens.
+    /// Its "port" registers a periodic systick the way the real fiber port does, so a
+    /// member has something due each step; the tick is all the firmware it runs. Reads
+    /// return a stored value if written, else a `U32` of the tick count (a
+    /// firmware-less ramp for the sampling tests).
     struct MockBackend {
         log: RefCell<Vec<String>>,
         ticks: Cell<u32>,
         cvars: RefCell<HashMap<String, Value>>,
         leaves: Vec<String>,
+        irq: IrqRendezvous,
     }
 
     impl MockBackend {
-        fn with_leaves(leaves: &[&str]) -> Self {
+        /// A backend whose systick comes due every `period_us`, with no cvar leaves.
+        fn new(period_us: u64) -> Self {
+            let irq = IrqRendezvous::default();
+            irq.register(MOCK_SYSTICK, IrqKind::Periodic, period_us, 15);
+            Self {
+                log: RefCell::new(Vec::new()),
+                ticks: Cell::new(0),
+                cvars: RefCell::new(HashMap::new()),
+                leaves: Vec::new(),
+                irq,
+            }
+        }
+
+        fn with_leaves(period_us: u64, leaves: &[&str]) -> Self {
             Self {
                 leaves: leaves.iter().map(|s| (*s).to_string()).collect(),
-                ..Default::default()
+                ..Self::new(period_us)
             }
         }
     }
 
     impl Backend for MockBackend {
-        fn advance_tick(&self) {
+        fn advance_time(&self, _elapsed_us: u64) {}
+        fn dispatch_isr(&self, _handler: usize) -> bool {
             self.ticks.set(self.ticks.get() + 1);
-            self.log.borrow_mut().push("advance_tick".into());
+            self.log.borrow_mut().push("tick".into());
+            true
+        }
+        fn irq_register(&self, handler: usize, kind: IrqKind, rate: u64, priority: u8) -> i32 {
+            self.irq.register(handler, kind, rate, priority)
+        }
+        fn irq_ops_since(&self, from: usize) -> Vec<IrqOp> {
+            self.irq.ops_since(from)
         }
         fn read_cvar(&self, path: &str) -> Value {
             self.log.borrow_mut().push(format!("read:{path}"));
@@ -517,16 +544,16 @@ mod tests {
     }
 
     #[test]
-    fn step_flushes_driven_dest_before_advance_tick() {
+    fn step_flushes_driven_dest_before_the_firmware_runs() {
         // A model member's output routed to a firmware member's DRIVEN cvar must
-        // reach firmware memory BEFORE its advance_tick in the same step. Member
-        // order [model, firmware] makes it hold — the model records its vsig, the
-        // firmware member's pre-advance zero-latency pass records it into the cvar
-        // entry, and the firmware member flushes it.
-        let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
+        // reach firmware memory BEFORE any of that firmware's code runs in the same
+        // step. Member order [model, firmware] makes it hold — the model records its
+        // vsig, the firmware member's pre-advance zero-latency pass records it into
+        // the cvar entry, and the firmware member flushes it at in-sync.
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["sensor_in"]));
         let mut eng = Engine::new(1_000);
         eng.add_member(RampModel::new("ramp", 1000.0, None));
-        let fw = FirmwareMember::with_backend("fw", be.clone(), 1_000);
+        let fw = FirmwareMember::with_backend("fw", be.clone());
         eng.add_member(fw);
         // The auto-mirrored cvar is registered under the member's own name ("fw").
         let sensor_in = SignalId::new("cvar", "fw", "sensor_in", None).unwrap();
@@ -537,17 +564,17 @@ mod tests {
 
         let log = be.log.borrow();
         let w = log.iter().position(|e| e == "write:sensor_in").unwrap();
-        let t = log.iter().position(|e| e == "advance_tick").unwrap();
-        assert!(w < t, "driven flush must precede advance_tick, got {log:?}");
+        let t = log.iter().position(|e| e == "tick").unwrap();
+        assert!(w < t, "driven flush must precede the kernel tick, got {log:?}");
         assert_eq!(be.cvars.borrow().get("sensor_in"), Some(&Value::F64(1.0)));
     }
 
     #[test]
     fn time_advances_by_tick_period() {
-        let be = Rc::new(MockBackend::with_leaves(&["counter"]));
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -582,10 +609,10 @@ mod tests {
 
     #[test]
     fn samples_registered_cvars_into_historian() {
-        let be = Rc::new(MockBackend::with_leaves(&["ramp_counter"]));
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["ramp_counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "ramp_counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         for _ in 0..3 {
             eng.step().unwrap();
@@ -611,24 +638,24 @@ mod tests {
 
     #[test]
     fn empty_step_advances_firmware_and_time() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(2_000));
         let mut eng = Engine::new(2_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 2_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
         assert_eq!(be.ticks.get(), 2);
-        assert_eq!(*be.log.borrow(), vec!["advance_tick", "advance_tick"]);
+        assert_eq!(*be.log.borrow(), vec!["tick", "tick"]);
     }
 
     #[test]
     fn disabled_member_is_skipped_then_resumes() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(1_000));
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         assert!(eng.set_member_enabled("fw", false));
-        eng.step().unwrap(); // skipped: no advance_tick
+        eng.step().unwrap(); // skipped: the member never advances
         assert_eq!(be.ticks.get(), 0);
         assert_eq!(eng.now_us(), 1_000); // but sim time still flows
 
@@ -641,9 +668,9 @@ mod tests {
 
     #[test]
     fn route_source_unregistered_errors() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(1_000));
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),

@@ -7,15 +7,22 @@
 //! (last `Rc` gone), and the next load boots C statics from scratch, both across
 //! fresh threads and back-to-back on one thread.
 
-use pcs_bldc_sil::{dll_path, lock_world};
+use pcs_bldc_sil::{dll_path, lock_world, TICK_US};
 use voyant::Firmware;
 
-/// Drive one raw load → start → tick → read → shutdown cycle, asserting the
-/// firmware booted from reset (counters at 0, clock at 0) and its clock advances
-/// exactly one tick (1000 µs) per `advance_tick`.
+/// The kernel-tick handler the fiber port registers with the interrupt table at
+/// scheduler start; a raw step drives the pair by hand, as the framework does.
+const SYSTICK_ISR: &str = "vSilSysTickHandler";
+
+/// Drive one raw load → start → step → read → shutdown cycle, asserting the
+/// firmware booted from reset (counters at 0, clock at 0) and that each step —
+/// timebase advance plus a kernel-tick dispatch — moves its clock exactly 1000 µs.
 fn reset_cycle(cycle: usize) {
     let fw = Firmware::load(&dll_path()).expect("load firmware");
     assert!(fw.start(), "cycle {cycle}: sil_fw_start");
+    let systick = fw
+        .resolve_func(SYSTICK_ISR)
+        .unwrap_or_else(|| panic!("cycle {cycle}: the port's kernel-tick handler resolves by name"));
 
     let runs_before = fw.read_cvar("task1msRuns").as_u64().unwrap();
     let time_before = fw
@@ -33,7 +40,11 @@ fn reset_cycle(cycle: usize) {
 
     const K: u64 = 5;
     for _ in 0..K {
-        fw.advance_tick();
+        fw.advance_time(TICK_US);
+        assert!(
+            fw.dispatch_isr(systick),
+            "cycle {cycle}: a quiescent firmware never masks its tick"
+        );
     }
     let time_after = fw
         .read_cvar("lib_timer_data.currentTime_us")
@@ -42,8 +53,8 @@ fn reset_cycle(cycle: usize) {
     let runs_after = fw.read_cvar("task1msRuns").as_u64().unwrap();
     assert_eq!(
         time_after,
-        K * 1000,
-        "cycle {cycle}: +1000 us/tick while alive"
+        K * TICK_US,
+        "cycle {cycle}: +{TICK_US} us/step while alive"
     );
     assert_eq!(runs_after, K, "cycle {cycle}: task_1ms fires once per tick");
 

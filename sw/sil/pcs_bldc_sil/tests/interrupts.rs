@@ -12,6 +12,9 @@ use pcs_bldc_sil::{cid, Sil, SOURCE};
 
 /// The handler the sim USB driver registers by pointer at `HW_USB_init`.
 const USB_ISR: &str = "HW_USB_sim_irqHandler";
+/// The kernel tick, which the fiber port registers at scheduler start. Every step
+/// of a booted image dispatches it, after the USB entry — priority 15 against 8.
+const SYSTICK_ISR: &str = "vSilSysTickHandler";
 
 #[test]
 fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
@@ -28,8 +31,9 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
         .find_isr(USB_ISR)
         .expect("HW_USB_init registered its interrupt through the SIL_irq upcall");
 
-    // One dispatch per 1 ms step, and the task it wakes runs INSIDE that step: the
+    // One USB dispatch per 1 ms step, and the task it wakes runs INSIDE that step: the
     // counter read back from the historian has already advanced when step() returns.
+    // Each step also dispatches the kernel tick, hence two per step in the count.
     for n in 1..=10u64 {
         sim.step().expect("engine step");
         assert_eq!(
@@ -38,9 +42,10 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
             "step {n}: the woken task must run before the step returns to quiescence"
         );
     }
-    assert_eq!(member.borrow().isr_dispatch_count(), 10);
+    assert_eq!(member.borrow().isr_dispatch_count(), 20);
 
-    // Per-IRQ enable: masking the entry stops the wakeups dead.
+    // Per-IRQ enable: masking the entry stops the wakeups dead — and only those; the
+    // kernel tick beside it keeps dispatching.
     member.borrow_mut().set_isr_enabled(usb_irq, false);
     for _ in 0..5 {
         sim.step().expect("engine step");
@@ -50,7 +55,7 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
         boot + 10,
         "a disabled interrupt dispatches nothing, so the task never wakes"
     );
-    assert_eq!(member.borrow().isr_dispatch_count(), 10);
+    assert_eq!(member.borrow().isr_dispatch_count(), 25);
 
     // Re-enabling resumes the cadence — nothing was lost but the masked window.
     member.borrow_mut().set_isr_enabled(usb_irq, true);
@@ -97,5 +102,42 @@ fn a_config_time_one_shot_resolves_by_name_and_fires_on_its_grid_step() {
             step * 1_000
         );
     }
-    assert_eq!(member.borrow().isr_dispatch_count(), 1);
+    assert_eq!(
+        member.borrow().isr_dispatch_count(),
+        7,
+        "6 kernel ticks + the one-shot"
+    );
+}
+
+#[test]
+fn the_kernel_tick_is_a_table_entry_like_any_other() {
+    // Stage-2 shape against the real image: the fiber port registers its systick
+    // through the same SIL_irq upcall a sim driver uses, so the framework can reach
+    // it by handler name and mask it. With the tick masked the FreeRTOS clock stops
+    // dead while the USB interrupt beside it keeps waking its task — the kernel has
+    // no standing in the controller.
+    let mut sim = Sil::new();
+    let fwm = sim.load_firmware(SOURCE);
+    let member = sim.add_member(fwm);
+    let systick = member
+        .borrow()
+        .find_isr(SYSTICK_ISR)
+        .expect("the port registered its kernel tick at scheduler start");
+
+    for n in 1..=5u64 {
+        sim.step().expect("engine step");
+        assert_eq!(sim.read_u64(&cid("xTickCount")), n, "one kernel tick per step");
+    }
+    let usb_runs = sim.read_u64(&cid("taskUsbRuns"));
+
+    member.borrow_mut().set_isr_enabled(systick, false);
+    for _ in 0..5 {
+        sim.step().expect("engine step");
+    }
+    assert_eq!(sim.read_u64(&cid("xTickCount")), 5, "a masked tick freezes the kernel");
+    assert_eq!(
+        sim.read_u64(&cid("taskUsbRuns")),
+        usb_runs + 5,
+        "the USB interrupt is unaffected"
+    );
 }

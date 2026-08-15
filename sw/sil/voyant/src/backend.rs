@@ -1,6 +1,6 @@
 //! The firmware member and its execution seam. [`Firmware`] is the public handle:
 //! it loads the shared library, drives it over the control ABI
-//! (`start`/`advance_tick`/`shutdown`), and is the **cvar sample-resolver** —
+//! (`start`/`advance_time`/`dispatch_isr`/`shutdown`), and is the **cvar sample-resolver** —
 //! reading/writing a firmware `static` (any width) as a logical [`Value`].
 //! [`FirmwareMember`] wraps it as a [`Member`], the public seam the engine drives.
 //!
@@ -29,9 +29,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// The **internal execution seam** [`FirmwareMember`] drives one firmware instance
-/// through around each tick: `advance_tick`, white-box `cvar` read/write by path, and
-/// the port registration seam. Crate plumbing, **not** a public seam ([`Member`] is);
-/// it exists so in-crate tests can stand up **mock backends** without a real DLL.
+/// through around each step: `advance_time`, interrupt dispatch, white-box `cvar`
+/// read/write by path, and the port registration seam. Crate plumbing, **not** a
+/// public seam ([`Member`] is); it exists so in-crate tests can stand up **mock
+/// backends** without a real DLL.
 ///
 /// Lifecycle (`start`/`shutdown`) and construction ([`Firmware::load`]) stay **off**
 /// the trait — called explicitly on the concrete [`Firmware`] handle the driver holds.
@@ -39,8 +40,9 @@ use std::rc::Rc;
 /// All methods take `&self`: a backend mutates *external* state (firmware memory /
 /// execution), not the Rust handle.
 pub(crate) trait Backend {
-    /// Advance one sim tick (run the firmware to its next quiescence).
-    fn advance_tick(&self);
+    /// Advance the firmware's hardware timebase by `elapsed_us`. Runs no firmware
+    /// code — the kernel tick is an interrupt-table entry like any other.
+    fn advance_time(&self, elapsed_us: u64);
 
     /// Tear down the firmware scheduler — the reload teardown seam
     /// ([`FirmwareMember`] reboots a disabled-then-re-enabled member by shutting the
@@ -280,8 +282,8 @@ impl PortKind {
 ///
 /// **Trampoline safety:** the whole sim is single-threaded, and the C
 /// side only calls the hooks while firmware code is executing — inside
-/// `start`/`advance_tick`, during which no Rust code holds a borrow of this
-/// `RefCell` (the [`FirmwareMember`] syncs caches strictly *around* the tick,
+/// `start`/`dispatch_isr`, during which no Rust code holds a borrow of this
+/// `RefCell` (the [`FirmwareMember`] syncs caches strictly *around* the dispatch,
 /// never across it). The `RefCell` still catches any future violation loudly.
 #[derive(Default)]
 struct PortState {
@@ -693,15 +695,17 @@ impl Firmware {
         }
     }
 
-    /// Control ABI: advance one sim tick (run firmware to next quiescence).
-    pub fn advance_tick(&self) {
-        // SAFETY: signature matches `void sil_fw_advance_tick(void)`.
+    /// Control ABI: advance the firmware's hardware timebase by `elapsed_us`. No
+    /// firmware code runs here; the kernel tick arrives through
+    /// [`dispatch_isr`](Self::dispatch_isr) like every other interrupt.
+    pub fn advance_time(&self, elapsed_us: u64) {
+        // SAFETY: signature matches `void sil_fw_advance_time(uint32_t)`.
         unsafe {
-            let f: Symbol<unsafe extern "C" fn()> = self
+            let f: Symbol<unsafe extern "C" fn(u32)> = self
                 .lib
-                .get(b"sil_fw_advance_tick\0")
-                .expect("sil_fw_advance_tick");
-            f()
+                .get(b"sil_fw_advance_time\0")
+                .expect("sil_fw_advance_time");
+            f(u32::try_from(elapsed_us).expect("a step is under 2^32 us"))
         }
     }
 
@@ -855,8 +859,8 @@ impl Drop for Firmware {
 /// The internal [`Backend`] impl forwards lifecycle + `cvar` access to the
 /// inherent [`Firmware`] methods (the public handle) and adds the port seam.
 impl Backend for Firmware {
-    fn advance_tick(&self) {
-        Firmware::advance_tick(self);
+    fn advance_time(&self, elapsed_us: u64) {
+        Firmware::advance_time(self, elapsed_us);
     }
 
     fn shutdown(&self) {
@@ -1044,7 +1048,7 @@ fn select_anchor<'a>(
 struct DeadBackend;
 
 impl Backend for DeadBackend {
-    fn advance_tick(&self) {}
+    fn advance_time(&self, _elapsed_us: u64) {}
     fn read_cvar(&self, _path: &str) -> Value {
         Value::U32(0)
     }
@@ -1058,11 +1062,11 @@ impl Backend for DeadBackend {
 /// distinct members. Shared ownership lets one struct own both firmware and engine
 /// (the last handle's drop unloads the library, so a fresh load boots from reset).
 ///
-/// Each [`advance`](Member::advance) accumulates sim time and, per full firmware-tick
-/// period, runs **three fixed phases** over its signal [`Binding`]s (ports are
-/// Signals, cvars are Signals, a future transport will be too). Each binding
-/// contributes an optional in-sync and/or out-sync half; the sequence never
-/// restructures as new `sig_type`s arrive:
+/// Each [`advance`](Member::advance) moves the firmware's timebase, and — on a step
+/// where an interrupt is due — runs **three fixed phases** over its signal
+/// [`Binding`]s (ports are Signals, cvars are Signals, a future transport will be
+/// too). Each binding contributes an optional in-sync and/or out-sync half; the
+/// sequence never restructures as new `sig_type`s arrive:
 ///
 /// 1. **In-sync (table → firmware)**, each binding's inbound half:
 ///    - *Ports* — apply pending registrations, then fill every port's input cache
@@ -1071,8 +1075,9 @@ impl Backend for DeadBackend {
 ///      [`take_dirty`](StateTable::take_dirty)) into memory. Single-threaded ⇒ an entry
 ///      differs from memory iff command-written, so "flush fresh" ≡ "flush all", done
 ///      sparsely.
-/// 2. **Tick** — `advance_tick` runs the firmware to quiescence (C reads input caches,
-///    buffers `writeSignal` output).
+/// 2. **Dispatch** — every interrupt due at this sim time runs in the firmware fiber,
+///    each to quiescence (C reads input caches, buffers `writeSignal` output). The
+///    kernel tick is one of those entries, registered by the port at scheduler start.
 /// 3. **Out-sync (firmware → table)**, each binding's outbound half:
 ///    - *Ports* — drain the output buffer into each port's entry.
 ///    - *Cvars (sweep)* — read **every** registered leaf out of memory and
@@ -1110,9 +1115,6 @@ pub struct FirmwareMember {
     /// re-enable resumes advancing, no reboot (a mock backend, or an intentionally
     /// non-reloading member).
     reload_path: Option<PathBuf>,
-    tick_period_us: u64,
-    /// Sim time accumulated toward the next firmware tick.
-    accum_us: u64,
     /// The canonical cvar leaf list `(id, read token)`, enumerated + cached at enable
     /// (whole namespace minus excludes). The id's `name` segment is the DWARF path;
     /// the Tier-1 sweep structures below are derived from this.
@@ -1250,25 +1252,24 @@ const SHADOW_MERGE_GAP: u64 = 64;
 pub const DEFAULT_ARRAY_THRESHOLD: usize = 32;
 
 impl FirmwareMember {
-    /// Wrap a shared [`Rc<Firmware>`] as a member named `name`, advancing one
-    /// firmware tick per `tick_period_us` of sim time. The driver holds its own
-    /// clone of the `Rc` alongside for ad-hoc white-box access; the member owns
-    /// another clone for the engine.
-    pub fn new(name: &str, fw: Rc<Firmware>, tick_period_us: u64) -> Self {
-        Self::with_backend(name, fw, tick_period_us)
+    /// Wrap a shared [`Rc<Firmware>`] as a member named `name`. The driver holds its
+    /// own clone of the `Rc` alongside for ad-hoc white-box access; the member owns
+    /// another clone for the engine. The member has no cadence of its own: the
+    /// firmware's interrupts — its kernel tick included — are scheduled against the
+    /// engine grid by this member's interrupt table.
+    pub fn new(name: &str, fw: Rc<Firmware>) -> Self {
+        Self::with_backend(name, fw)
     }
 
     /// Wrap any [`Backend`] (in-crate mock-backend test seam) as a member. The
     /// public constructor is [`new`](Self::new), which takes the concrete
     /// [`Firmware`]; this exists so unit tests can drive a `FirmwareMember` over
     /// a pure-Rust mock without a firmware DLL.
-    pub(crate) fn with_backend(name: &str, backend: Rc<dyn Backend>, tick_period_us: u64) -> Self {
+    pub(crate) fn with_backend(name: &str, backend: Rc<dyn Backend>) -> Self {
         Self {
             name: name.to_string(),
             backend,
             reload_path: None,
-            tick_period_us,
-            accum_us: 0,
             cvar_leaves: Vec::new(),
             resolved: Vec::new(),
             ranges: Vec::new(),
@@ -1644,11 +1645,11 @@ impl FirmwareMember {
 }
 
 /// One **firmware-side signal binding** — a mechanism that mirror-syncs a class of
-/// signals between the State Table and firmware memory around a tick. Each contributes
-/// an optional **in-sync** half (table → firmware, before `advance_tick`) and/or an
+/// signals between the State Table and firmware memory around a dispatch. Each contributes
+/// an optional **in-sync** half (table → firmware, before dispatch) and/or an
 /// **out-sync** half (firmware → table, after). The [`advance`](FirmwareMember::advance)
-/// loop is fixed at three phases — **in-sync → tick → out-sync** — and a new `sig_type`
-/// is a new variant here, never a new phase.
+/// loop is fixed at three phases — **in-sync → dispatch → out-sync** — and a new
+/// `sig_type` is a new variant here, never a new phase.
 ///
 /// **Direction is a property of the mechanism, not of a Signal.** Both `Cvars` and
 /// `Ports` are behaviorally in + out — one collective binding each over the backend's
@@ -1661,7 +1662,7 @@ enum Binding {
     Ports,
     /// Duplex (in only): declare each C endpoint to the shared router and wire the
     /// C-handle mapping into the rendezvous. Its `:tx`/`:rx` table entries are
-    /// registered by the `Ports` in-sync half; the transfers run mid-`advance_tick`
+    /// registered by the `Ports` in-sync half; the transfers run mid-dispatch
     /// via the C upcall, and the engine records the resulting transactions.
     Duplex,
 }
@@ -1670,7 +1671,7 @@ impl Binding {
     /// Every binding, in deterministic in-sync/out-sync order. `Ports` precedes
     /// `Cvars` so port registrations + cache fill happen first (the two are
     /// independent — different backend state). `Duplex` sits between them: its
-    /// endpoints must be wired to the router before `advance_tick` issues any upcall.
+    /// endpoints must be wired to the router before a dispatch issues any upcall.
     const ALL: [Binding; 3] = [Binding::Ports, Binding::Duplex, Binding::Cvars];
 
     /// Run this binding's in-sync half (table → firmware), if any.
@@ -1698,20 +1699,25 @@ impl Member for FirmwareMember {
     }
 
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
-        // One firmware tick per full period elapsed (usually exactly one).
-        self.accum_us += dt_us;
-        let mut ticked = false;
-        while self.accum_us >= self.tick_period_us {
-            self.accum_us -= self.tick_period_us;
-            self.firmware_step(ctx, true);
-            ticked = true;
+        // The timebase moves every step, and BEFORE anything is dispatched: a handler
+        // must read the hardware time of the step it runs in (the crossing detection a
+        // trigger output needs lives at this resolution too).
+        self.backend.advance_time(dt_us);
+
+        // Everything the firmware executes is an interrupt — the kernel tick included
+        // (docs/sil/sim-interrupts.md). A step with nothing due runs no firmware and
+        // no sync at all.
+        let now = ctx.st.now_us();
+        self.apply_pending_irq_ops(ctx.st, now);
+        if !self.irq.any_due(now) {
+            return;
         }
-        // Interrupts live on the ENGINE grid, not the firmware tick: on a grid finer
-        // than the tick period a step with no kernel tick still dispatches whatever is
-        // due. Skipped whole when nothing is due, so a member with no interrupts —
-        // and every member on today's grid — behaves exactly as before.
-        if (!ticked) && self.irq.any_due(ctx.st.now_us()) {
-            self.firmware_step(ctx, false);
+        for binding in Binding::ALL {
+            binding.in_sync(self, ctx);
+        }
+        self.dispatch_due_irqs(ctx.st);
+        for binding in Binding::ALL {
+            binding.out_sync(self, ctx);
         }
     }
 
@@ -1749,35 +1755,15 @@ impl Member for FirmwareMember {
 }
 
 impl FirmwareMember {
-    /// One firmware step: **in-sync → kernel tick → dispatch due interrupts →
-    /// out-sync** over every [`Binding`]. The interrupts sit inside the step by
-    /// design (`docs/sil/sim-interrupts.md` §7): after the tick, so a handler reads the hardware timebase this
-    /// step advanced and the fresh inputs the in-sync flushed; before out-sync, so
-    /// whatever the handler (and any task it woke) wrote reaches the table now.
-    fn firmware_step(&mut self, ctx: &mut MemberCtx, tick: bool) {
-        for binding in Binding::ALL {
-            binding.in_sync(self, ctx);
-        }
-        if tick {
-            self.backend.advance_tick();
-        }
-        self.dispatch_due_irqs(ctx.st);
-        for binding in Binding::ALL {
-            binding.out_sync(self, ctx);
-        }
-    }
-
-    /// Apply the interrupt ops the registration paths queued, then dispatch every
-    /// entry due at this sim time through the firmware's ISR bracket (priority, then
-    /// registration index). A handler that registers a one-shot mid-dispatch
-    /// (a driver arming its transfer-complete interrupt) is drained straight after,
-    /// so it schedules relative to THIS step's time.
+    /// Dispatch every entry due at this sim time through the firmware's ISR bracket
+    /// (priority, then registration index). Sits between in-sync and out-sync by
+    /// design (`docs/sil/sim-interrupts.md` §7): after in-sync, so a handler reads the
+    /// fresh inputs it flushed; before out-sync, so whatever the handler (and any task
+    /// it woke) wrote reaches the table now. A handler that registers a one-shot
+    /// mid-dispatch (a driver arming its transfer-complete interrupt) is drained
+    /// straight after, so it schedules relative to THIS step's time.
     fn dispatch_due_irqs(&mut self, st: &mut StateTable) {
         let now = st.now_us();
-        self.apply_pending_irq_ops(st, now);
-        if !self.irq.any_due(now) {
-            return;
-        }
         let backend = Rc::clone(&self.backend);
         self.irq_dispatches += self
             .irq
@@ -1904,9 +1890,9 @@ impl FirmwareMember {
     }
 
     /// Clear all image-bound state before a reload: the DWARF leaf list, the
-    /// shadow-sweep structures, port/duplex bindings, cursors, and the firmware-tick
-    /// accumulator (the rebooted clock restarts at 0). The State-Table entries stay —
-    /// re-registration is idempotent, preserving their history across the reboot.
+    /// shadow-sweep structures, port/duplex bindings, and cursors. The State-Table
+    /// entries stay — re-registration is idempotent, preserving their history across
+    /// the reboot.
     fn reset_image_caches(&mut self) {
         self.cvar_leaves.clear();
         self.resolved.clear();
@@ -1922,7 +1908,6 @@ impl FirmwareMember {
         self.irq.clear();
         self.irq_cursor = 0;
         self.irq_coalesce_warned = false;
-        self.accum_us = 0;
         self.sweep_gen = 0;
         self.shadow_cold = true;
         self.leaves_cached = false;
@@ -2128,6 +2113,39 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    /// Stand-in handler address for the kernel tick a firmware's fiber port registers
+    /// at scheduler start — what gives a mock backend something due on a step.
+    const MOCK_SYSTICK: usize = 0x5157;
+    /// The port's systick priority: dispatched after everything else due that step.
+    const MOCK_SYSTICK_PRIORITY: u8 = 15;
+
+    /// An op log pre-seeded with a periodic systick at `period_us`, as a booted
+    /// firmware's port leaves it.
+    fn systick_rendezvous(period_us: u64) -> IrqRendezvous {
+        let rv = IrqRendezvous::default();
+        rv.register(MOCK_SYSTICK, IrqKind::Periodic, period_us, MOCK_SYSTICK_PRIORITY);
+        rv
+    }
+
+    /// The interrupt-seam half of a mock backend whose op-log field is named `irq`.
+    /// `dispatch_isr` stays per-mock — that is where a mock does its firmware work.
+    macro_rules! mock_irq_seam {
+        () => {
+            fn irq_register(&self, handler: usize, kind: IrqKind, rate: u64, priority: u8) -> i32 {
+                self.irq.register(handler, kind, rate, priority)
+            }
+            fn irq_cancel(&self, handle: i32) {
+                self.irq.cancel(handle);
+            }
+            fn irq_set_enabled(&self, handle: i32, enabled: bool) {
+                self.irq.set_enabled(handle, enabled);
+            }
+            fn irq_ops_since(&self, from: usize) -> Vec<IrqOp> {
+                self.irq.ops_since(from)
+            }
+        };
+    }
+
     /// A pure-Rust [`Backend`] with no DLL: a configurable cvar "memory" plus an
     /// enumerable leaf list, used to prove the member/mirror semantics without a
     /// real firmware image. Logs every `write_cvar` path so a test can assert the
@@ -2138,22 +2156,30 @@ mod tests {
         cvars: RefCell<HashMap<String, Value>>,
         leaves: Vec<String>,
         writes: RefCell<Vec<String>>,
+        irq: IrqRendezvous,
     }
 
     impl MockBackend {
         /// A backend whose enumeration yields exactly `leaves` (each read via the
-        /// string-path fallback — the mock hands out no fast-read handles).
+        /// string-path fallback — the mock hands out no fast-read handles) and whose
+        /// port registered a 1 ms systick.
         fn with_leaves(leaves: &[&str]) -> Self {
             Self {
                 leaves: leaves.iter().map(|s| (*s).to_string()).collect(),
+                irq: systick_rendezvous(1_000),
                 ..Default::default()
             }
         }
     }
 
     impl Backend for MockBackend {
-        fn advance_tick(&self) {
+        mock_irq_seam!();
+
+        fn advance_time(&self, _elapsed_us: u64) {}
+        /// The mock's whole firmware: its kernel tick.
+        fn dispatch_isr(&self, _handler: usize) -> bool {
             *self.ticks.borrow_mut() += 1;
+            true
         }
         fn read_cvar(&self, path: &str) -> Value {
             self.cvars
@@ -2235,8 +2261,8 @@ mod tests {
     #[test]
     fn backend_is_object_safe_and_usable_via_dyn() {
         let be: Box<dyn Backend> = Box::new(MockBackend::default());
-        be.advance_tick();
-        be.advance_tick();
+        be.advance_time(1_000);
+        assert!(be.dispatch_isr(MOCK_SYSTICK));
         be.write_cvar("x", &Value::U32(42));
         assert_eq!(be.read_cvar("x"), Value::U32(42));
         assert_eq!(be.read_cvar("unset"), Value::U32(0));
@@ -2245,28 +2271,32 @@ mod tests {
     #[test]
     fn firmware_member_auto_mirrors_the_cvar_namespace() {
         // No per-signal declaration: the member enumerates + registers the whole
-        // (mock) namespace at enable and sweeps it into the historian each tick.
+        // (mock) namespace at enable and sweeps it into the historian each step that
+        // runs firmware.
         let be = Rc::new(MockBackend::with_leaves(&["counter"]));
         be.write_cvar("counter", &Value::U32(7));
 
         let cid = id("cvar:dut:counter");
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // enumerates + registers cvar:dut:counter
         assert_eq!(fm.cvar_leaf_count(), 1);
         assert_eq!(st.len(), 1);
 
-        // One full period -> one firmware tick + one mirror sweep.
+        // The systick comes due -> one firmware tick + one mirror sweep.
         st.set_time(1_000);
         advance_unwired(&mut fm, 1_000, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
         assert_eq!(st.current_value(&cid).unwrap(), Some(Value::U32(7)));
 
-        // A sub-period advance accumulates but does not tick the firmware.
+        // The tick is due by SIM TIME, not by an accumulator: a sub-period step in
+        // between dispatches nothing.
+        st.set_time(1_500);
         advance_unwired(&mut fm, 500, &mut st);
         assert_eq!(*be.ticks.borrow(), 1);
-        // The next 500us completes the period -> a second tick.
+        // The step the systick is due on ticks again.
+        st.set_time(2_000);
         advance_unwired(&mut fm, 500, &mut st);
         assert_eq!(*be.ticks.borrow(), 2);
     }
@@ -2274,11 +2304,11 @@ mod tests {
     #[test]
     fn firmware_member_flushes_fresh_cvars_before_ticking() {
         // The flush side: a command-written (dirty) cvar entry is pushed into
-        // firmware memory before advance_tick. A route/test records the entry; the
+        // firmware memory before the tick dispatch. A route/test records the entry; the
         // member flushes the fresh id — no per-signal `drive` declaration.
         let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
         let sid = id("cvar:dut:sensor_in");
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
 
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st); // auto-registers cvar:dut:sensor_in
@@ -2304,7 +2334,7 @@ mod tests {
         // mirrored leaves, only the ONE command-written entry is flushed; the
         // untouched two are never written back, yet all three still mirror.
         let be = Rc::new(MockBackend::with_leaves(&["a", "b", "c"]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2327,7 +2357,7 @@ mod tests {
     #[test]
     fn auto_registration_is_idempotent_across_re_enable() {
         let be = Rc::new(MockBackend::with_leaves(&["x", "y"]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!((st.len(), fm.cvar_leaf_count()), (2, 2));
@@ -2341,7 +2371,7 @@ mod tests {
     #[test]
     fn skip_by_prefix_drops_a_subtree() {
         let be = Rc::new(MockBackend::with_leaves(&["keep.a", "drop.b", "drop.c"]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         fm.skip_cvar_registration_by_prefix("drop");
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
@@ -2368,23 +2398,28 @@ mod tests {
 
     use std::ffi::CString;
 
-    /// A port-capable mock backend: its "firmware" reads port handle 0 each
-    /// tick and, when driven, writes twice that value to port handle 1 —
+    /// A port-capable mock backend: its "firmware" reads port handle 0 on each
+    /// kernel tick and, when driven, writes twice that value to port handle 1 —
     /// enough to prove the full cache-mediated loop through a FirmwareMember.
     #[derive(Default)]
     struct PortMock {
         ports: PortState,
         /// What the mock firmware saw on port 0 at its last tick.
         seen: RefCell<Option<f64>>,
+        irq: IrqRendezvous,
     }
 
     impl Backend for PortMock {
-        fn advance_tick(&self) {
+        mock_irq_seam!();
+
+        fn advance_time(&self, _elapsed_us: u64) {}
+        fn dispatch_isr(&self, _handler: usize) -> bool {
             let seen = self.ports.inner.borrow().read(0);
             *self.seen.borrow_mut() = seen;
             if let Some(v) = seen {
                 self.ports.inner.borrow_mut().write(1, v * 2.0);
             }
+            true
         }
         fn read_cvar(&self, _path: &str) -> Value {
             Value::U32(0)
@@ -2410,7 +2445,10 @@ mod tests {
     }
 
     fn port_mock_with_in_out() -> PortMock {
-        let mock = PortMock::default();
+        let mock = PortMock {
+            irq: systick_rendezvous(1_000),
+            ..Default::default()
+        };
         {
             let mut inner = mock.ports.inner.borrow_mut();
             assert_eq!(inner.register("vsig", "in_v", Some("V"), PortKind::Scalar), 0);
@@ -2440,7 +2478,7 @@ mod tests {
         // The full mirror-synced port loop: table -> input cache -> C read,
         // then C write -> output buffer -> table. Native format end to end.
         let mock = Rc::new(port_mock_with_in_out());
-        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone());
         let mut st = StateTable::new();
 
         // set_enabled applies the pending registrations immediately.
@@ -2462,7 +2500,7 @@ mod tests {
     #[test]
     fn undriven_port_reads_as_not_driven() {
         let mock = Rc::new(port_mock_with_in_out());
-        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2485,7 +2523,7 @@ mod tests {
     #[test]
     fn port_registered_mid_run_applies_at_next_advance() {
         let mock = Rc::new(port_mock_with_in_out());
-        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         assert_eq!(st.len(), 2);
@@ -2507,11 +2545,16 @@ mod tests {
     struct OutPortMock {
         ports: PortState,
         value: f64,
+        irq: IrqRendezvous,
     }
 
     impl Backend for OutPortMock {
-        fn advance_tick(&self) {
+        mock_irq_seam!();
+
+        fn advance_time(&self, _elapsed_us: u64) {}
+        fn dispatch_isr(&self, _handler: usize) -> bool {
             self.ports.inner.borrow_mut().write(0, self.value);
+            true
         }
         fn read_cvar(&self, _path: &str) -> Value {
             Value::U32(0)
@@ -2531,9 +2574,13 @@ mod tests {
         // A registered output port the firmware writes each tick: the value reaches
         // its table entry after the member's out-sync drain — the source path a
         // motor model consumes. No input, no route: just C write -> drain -> record.
-        let mock = Rc::new(OutPortMock { value: 0.75, ..Default::default() });
+        let mock = Rc::new(OutPortMock {
+            value: 0.75,
+            irq: systick_rendezvous(1_000),
+            ..Default::default()
+        });
         mock.ports.inner.borrow_mut().register("vsig", "duty", None, PortKind::Scalar);
-        let mut fm = FirmwareMember::with_backend("dut", mock.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", mock.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2691,6 +2738,7 @@ mod tests {
         mem: RefCell<Vec<u8>>,
         leaves: Vec<ShadowLeaf>,
         decodes: RefCell<Vec<u32>>,
+        irq: IrqRendezvous,
     }
 
     impl ShadowMock {
@@ -2705,6 +2753,7 @@ mod tests {
                     })
                     .collect(),
                 decodes: RefCell::new(vec![0u32; leaves.len()]),
+                irq: systick_rendezvous(1_000),
             }
         }
         fn set_u32(&self, off: usize, v: u32) {
@@ -2719,7 +2768,9 @@ mod tests {
     }
 
     impl Backend for ShadowMock {
-        fn advance_tick(&self) {}
+        mock_irq_seam!();
+
+        fn advance_time(&self, _elapsed_us: u64) {}
         fn read_cvar(&self, _path: &str) -> Value {
             Value::U32(0)
         }
@@ -2764,7 +2815,7 @@ mod tests {
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
 
@@ -2800,7 +2851,7 @@ mod tests {
         be.set_u32(0, 10);
         be.set_u32(62, 20);
         be.set_u32(72, 30);
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
@@ -2821,7 +2872,7 @@ mod tests {
         let be = Rc::new(ShadowMock::new(256, &[("a", 0), ("b", 200)]));
         be.set_u32(0, 1);
         be.set_u32(200, 2);
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         st.set_time(1_000);
@@ -2841,7 +2892,7 @@ mod tests {
         // absorbed the change.
         let be = Rc::new(ShadowMock::new(16, &[("a", 0)]));
         be.set_u32(0, 10);
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         let a = id("cvar:dut:a");
@@ -2869,22 +2920,32 @@ mod tests {
     // dispatch inside the member's step, and a masked firmware holds one pending.
 
     /// A backend with a name→address function map and an interrupt rendezvous, so a
-    /// member's whole interrupt path runs without a DLL. Records the order of
-    /// `advance_tick` and each dispatched handler, so a test can see *when* in a step
-    /// interrupts fire. `masked` makes every dispatch report the firmware masked.
+    /// member's whole interrupt path runs without a DLL. Logs each dispatched handler
+    /// in order (the systick as `tick`), so a test can see what runs in a step and in
+    /// what order. `masked` makes every dispatch report the firmware masked.
     #[derive(Default)]
     struct IrqMock {
         funcs: HashMap<String, usize>,
-        rendezvous: IrqRendezvous,
+        irq: IrqRendezvous,
         log: RefCell<Vec<String>>,
         masked: Cell<bool>,
     }
 
     impl IrqMock {
+        /// A backend whose port registered NO systick — nothing is due until the test
+        /// registers something.
         fn with_funcs(funcs: &[(&str, usize)]) -> Self {
             Self {
                 funcs: funcs.iter().map(|(n, a)| ((*n).to_string(), *a)).collect(),
                 ..Default::default()
+            }
+        }
+
+        /// ...plus the periodic systick a booted port registers.
+        fn with_systick(funcs: &[(&str, usize)], period_us: u64) -> Self {
+            Self {
+                irq: systick_rendezvous(period_us),
+                ..Self::with_funcs(funcs)
             }
         }
 
@@ -2894,9 +2955,9 @@ mod tests {
     }
 
     impl Backend for IrqMock {
-        fn advance_tick(&self) {
-            self.log.borrow_mut().push("tick".into());
-        }
+        mock_irq_seam!();
+
+        fn advance_time(&self, _elapsed_us: u64) {}
         fn read_cvar(&self, _path: &str) -> Value {
             Value::U32(0)
         }
@@ -2908,20 +2969,13 @@ mod tests {
             if self.masked.get() {
                 return false;
             }
-            self.log.borrow_mut().push(format!("isr:{handler:#x}"));
+            let entry = if handler == MOCK_SYSTICK {
+                "tick".to_string()
+            } else {
+                format!("isr:{handler:#x}")
+            };
+            self.log.borrow_mut().push(entry);
             true
-        }
-        fn irq_register(&self, handler: usize, kind: IrqKind, rate: u64, priority: u8) -> i32 {
-            self.rendezvous.register(handler, kind, rate, priority)
-        }
-        fn irq_cancel(&self, handle: i32) {
-            self.rendezvous.cancel(handle);
-        }
-        fn irq_set_enabled(&self, handle: i32, enabled: bool) {
-            self.rendezvous.set_enabled(handle, enabled);
-        }
-        fn irq_ops_since(&self, from: usize) -> Vec<IrqOp> {
-            self.rendezvous.ops_since(from)
         }
     }
 
@@ -2933,14 +2987,15 @@ mod tests {
 
     #[test]
     fn config_time_registration_resolves_the_handler_by_name() {
-        let be = Rc::new(IrqMock::with_funcs(&[("TIM1_UP_IRQHandler", 0xC0DE)]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let be = Rc::new(IrqMock::with_systick(&[("TIM1_UP_IRQHandler", 0xC0DE)], 1_000));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
 
         let h = fm
             .register_periodic_isr("TIM1_UP_IRQHandler", 2_000, 0)
             .expect("a known function resolves");
-        assert_eq!(h.raw(), 0);
+        // Handle 1: one allocator for both paths, and the port's systick took 0.
+        assert_eq!(h.raw(), 1);
         // An unknown name (and a zero period) never registers.
         assert!(fm.register_periodic_isr("NoSuchHandler", 1_000, 0).is_none());
         assert!(fm.register_periodic_isr("TIM1_UP_IRQHandler", 0, 0).is_none());
@@ -2951,12 +3006,12 @@ mod tests {
         for t in 1..=4u64 {
             irq_step(&mut fm, &mut st, t * 1_000);
         }
-        assert_eq!(fm.isr_dispatch_count(), 2);
-        // The handler resolved to the DWARF address, and fires INSIDE the step —
-        // after the kernel tick, so it sees the timebase this step advanced.
+        assert_eq!(fm.isr_dispatch_count(), 6, "4 systicks + 2 timer interrupts");
+        // The handler resolved to the DWARF address and fires on its own 2 ms cadence,
+        // ahead of the kernel tick it shares those steps with (priority 0 vs 15).
         assert_eq!(
             be.take_log(),
-            vec!["tick", "tick", "isr:0xc0de", "tick", "tick", "isr:0xc0de"]
+            vec!["tick", "isr:0xc0de", "tick", "tick", "isr:0xc0de", "tick"]
         );
     }
 
@@ -2966,8 +3021,8 @@ mod tests {
         // framework only knows an address. A scenario reaches it by resolving the
         // handler name, then masks it with the per-IRQ enable.
         let be = Rc::new(IrqMock::with_funcs(&[("HW_USB_sim_irqHandler", 0xBEEF)]));
-        be.rendezvous.register(0xBEEF, IrqKind::Periodic, 1_000, 8);
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        be.irq.register(0xBEEF, IrqKind::Periodic, 1_000, 8);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
 
         assert_eq!(fm.find_isr("HW_USB_sim_irqHandler"), None, "not applied yet");
@@ -2996,7 +3051,7 @@ mod tests {
         // Masked-holds-pending at the member level: dispatch refused by the port
         // (critical section / interrupts disabled) is retried, never dropped.
         let be = Rc::new(IrqMock::with_funcs(&[("h", 0x11)]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.register_oneshot_isr("h", 500, 0).unwrap();
         fm.set_enabled(true, &mut st);
@@ -3006,36 +3061,36 @@ mod tests {
             irq_step(&mut fm, &mut st, t * 1_000);
         }
         assert_eq!(fm.isr_dispatch_count(), 0);
-        assert!(be.take_log().iter().all(|e| e == "tick"));
+        assert!(be.take_log().is_empty(), "a masked firmware runs nothing");
 
         be.masked.set(false);
         irq_step(&mut fm, &mut st, 4_000);
         assert_eq!(fm.isr_dispatch_count(), 1);
-        assert_eq!(be.take_log(), vec!["tick", "isr:0x11"]);
+        assert_eq!(be.take_log(), vec!["isr:0x11"]);
     }
 
     #[test]
-    fn a_member_with_no_interrupts_never_reaches_the_dispatch_path() {
-        // Today's members register nothing: the step must look exactly as it did.
+    fn a_member_with_no_interrupts_runs_no_firmware() {
+        // Nothing registered — not even a systick, the shape of a firmware whose port
+        // never started a scheduler. Its steps advance the timebase and stop there.
         let be = Rc::new(IrqMock::default());
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.set_enabled(true, &mut st);
         for t in 1..=3u64 {
             irq_step(&mut fm, &mut st, t * 1_000);
         }
-        assert_eq!(be.take_log(), vec!["tick", "tick", "tick"]);
+        assert!(be.take_log().is_empty());
         assert_eq!(fm.isr_dispatch_count(), 0);
     }
 
     #[test]
-    fn a_finer_grid_dispatches_without_a_kernel_tick() {
-        // Stage-2 shape, provable today: an engine grid finer than the firmware tick.
-        // The interrupt is on the GRID, so it fires on sub-tick steps too, and those
-        // steps run no kernel tick.
-        let be = Rc::new(IrqMock::with_funcs(&[("h", 0x22)]));
-        // 1 ms firmware tick, but the engine steps every 250 us.
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+    fn a_finer_grid_dispatches_between_kernel_ticks() {
+        // An engine grid finer than the kernel tick. Everything is on the GRID, so the
+        // faster interrupt fires on the steps between ticks; on the step they share,
+        // priority puts it ahead of the tick (0 before 15).
+        let be = Rc::new(IrqMock::with_systick(&[("h", 0x22)], 1_000));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.register_periodic_isr("h", 500, 0).unwrap();
         fm.set_enabled(true, &mut st);
@@ -3044,14 +3099,33 @@ mod tests {
             st.set_time(t * 250);
             advance_unwired(&mut fm, 250, &mut st);
         }
-        // ISR at 500 and 1000; the kernel tick only at 1000, after which the ISR runs.
-        assert_eq!(be.take_log(), vec!["isr:0x22", "tick", "isr:0x22"]);
+        assert_eq!(be.take_log(), vec!["isr:0x22", "isr:0x22", "tick"]);
+    }
+
+    #[test]
+    fn the_kernel_tick_is_an_ordinary_table_entry() {
+        // What the port registers at scheduler start is a plain periodic entry, with
+        // no standing in the member: it dispatches after a higher-ranked driver
+        // interrupt on the step they share, and the per-IRQ enable silences it alone.
+        let be = Rc::new(IrqMock::with_systick(&[("h", 0x44)], 1_000));
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
+        let mut st = StateTable::new();
+        fm.register_periodic_isr("h", 1_000, 0).unwrap();
+        fm.set_enabled(true, &mut st);
+
+        irq_step(&mut fm, &mut st, 1_000);
+        assert_eq!(be.take_log(), vec!["isr:0x44", "tick"]);
+
+        // Handle 0 — the first thing a booted port registers.
+        fm.set_isr_enabled(IrqHandle::from_raw(0), false);
+        irq_step(&mut fm, &mut st, 2_000);
+        assert_eq!(be.take_log(), vec!["isr:0x44"], "only the tick is masked");
     }
 
     #[test]
     fn an_interrupt_finer_than_the_grid_coalesces_with_one_warning() {
         let be = Rc::new(IrqMock::with_funcs(&[("h", 0x33)]));
-        let mut fm = FirmwareMember::with_backend("dut", be.clone(), 1_000);
+        let mut fm = FirmwareMember::with_backend("dut", be.clone());
         let mut st = StateTable::new();
         fm.register_periodic_isr("h", 200, 0).unwrap();
         fm.set_enabled(true, &mut st);

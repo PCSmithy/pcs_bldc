@@ -52,27 +52,34 @@ carry the decision.
 
 ## 3. The control ABI (the only hand-written C surface)
 
-Lifecycle + the D1 advance. This is **control, not data** — you cannot "advance
-the scheduler" by poking a variable, so these stay functions. `advance_tick`
-internally swaps into the firmware fibers and returns when the firmware yields to
-quiescence (D1), so Rust sees a plain synchronous call and the fiber machinery
-stays hidden in the port layer.
+Lifecycle + the per-step advance. This is **control, not data** — you cannot
+"advance the scheduler" by poking a variable, so these stay functions.
+`dispatch_isr` internally swaps into the firmware fibers and returns when the
+firmware yields to quiescence (D1), so Rust sees a plain synchronous call and the
+fiber machinery stays hidden in the port layer.
 
 ```c
-// sil_fw.h — the entire stable Rust<->C surface
-bool sil_fw_start(void);        // HW init + create tasks + run scheduler to first quiescence
-void sil_fw_advance_tick(void); // advance one tick; return at quiescence (D1)
+// sil_fw.h — the stable Rust<->C surface
+bool sil_fw_start(void);                        // HW init + tasks + scheduler to first quiescence
+void sil_fw_advance_time(uint32_t elapsed_us);  // move the hardware timebase; runs no firmware
+bool sil_fw_dispatch_isr(SIL_irq_handler_F h);  // run one handler in the ISR bracket (D8)
 void sil_fw_shutdown(void);
 ```
 
+Firmware execution is entirely interrupt-driven, the kernel tick included: the
+port registers its systick with the framework's interrupt table at scheduler
+start ([`sim-interrupts.md`](sim-interrupts.md)) and it arrives back through
+`sil_fw_dispatch_isr` like any other handler.
+
 `sil_fw_start` returns `false` on init/task-creation failure (the framework
 reports it — the firmware never calls `Error_Handler` in SIL). **Pacing is the
-driver's choice:** because the driver *calls* `sil_fw_advance_tick` (rather than
-the port running its own tick loop), realtime-vs-fast is just whether the caller
-paces to wall-clock or runs flat out — the firmware exposes only the per-tick
-primitive. There are **no sim-specific data functions** beyond this; the firmware
-is otherwise unaware it is being simulated. (Implemented + driven by a stand-in C
-loop today in `sw/fw/src/main.c`; Phase 2 has Rust drive the same three calls.)
+driver's choice:** because the driver *drives* the step (rather than the port
+running its own tick loop), realtime-vs-fast is just whether the caller paces to
+wall-clock or runs flat out — the firmware exposes only the per-step
+primitives. There are **no sim-specific data functions** beyond this; the firmware
+is otherwise unaware it is being simulated. (The Rust framework is the driver;
+`sw/fw/src/main.c`'s SIM `main()` is a boot smoke check only — with no framework
+hooks installed nothing registers an interrupt, so no firmware advances.)
 
 ## 4. DWARF introspection — the State Table substrate
 

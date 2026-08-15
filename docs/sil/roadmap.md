@@ -33,7 +33,7 @@ D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
   port's ISR entry/exit bracket so `...FromISR` wakeups + `portYIELD_FROM_ISR`
   behave as on hardware. Exit: unit tests cover ordering, one-shot
   quantization, masking, cancel/disable, and a FromISR task wakeup.
-- ☐ **2. Systick onto the interrupt table, then sub-ms grid + perf gating**
+- ◐ **2. Systick onto the interrupt table, then sub-ms grid + perf gating**
   (owner-directed restructure, 2026-08-13) — the kernel tick becomes a
   plain table entry, as on hardware: the fiber port registers its own
   systick handler via `SIL_irq_registerPeriodic` at scheduler start
@@ -51,6 +51,9 @@ D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
   "gated discrete work" lever); re-baseline the performance report and
   record the target there. Exit: existing SIL tests pass on the refined
   grid with suite runtime within budget.
+  **Systick restructure landed** (port registers its tick at priority 15,
+  `sil_fw_advance_time(us)`, accumulator-free member step); the grid
+  refinement + gated-cadence half is what remains.
 - ☐ **3. Sim TRGO seam** (`fw~hal_tim_006`) — sim `HW_TIM` emits its
   configured trigger event (update / OC match): `HW_TIM_advanceTime`
   detects the crossing and calls registered sinks. Unity tests + tag close

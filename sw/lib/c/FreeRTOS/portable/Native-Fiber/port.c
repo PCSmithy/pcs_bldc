@@ -3,16 +3,16 @@
  *
  * Single OS thread. Each task is a Windows fiber; the driver ("framework") is
  * the main fiber. Context switches are fiber swaps (~tens of ns) at cooperative
- * points only (portYIELD, tick dispatch). The tick is framework-driven: the
- * driver calls vSilAdvanceTick() to advance one tick. Quiescence (all tasks
- * blocked -> idle runs) hands control back to the driver via the idle hook
- * calling vPortYieldToScheduler().
+ * points only (portYIELD, ISR dispatch). Quiescence (all tasks blocked -> idle
+ * runs) hands control back to the driver via the idle hook calling
+ * vPortYieldToScheduler().
  *
  * Validated by the D1 spike (sw/sil/spike/d1-tick): deterministic + ~5000x
  * realtime. See docs/sil/freertos-tick.md, docs/sil/performance.md.
  *
- * Non-systick interrupts arrive the same way: the framework calls
- * xSilDispatchIsr for each handler due on the sim grid, bracketed by ISR
+ * Every interrupt — the kernel tick included — arrives the same way: the port
+ * registers its systick with the framework at scheduler start, and the framework
+ * calls xSilDispatchIsr for each handler due on the sim grid, bracketed by ISR
  * entry/exit so ...FromISR wakeups and portYIELD_FROM_ISR behave as on hardware
  * (docs/sil/sim-interrupts.md).
  *
@@ -29,8 +29,14 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "SIL_irq.h"
 
 #define PORT_FIBER_STACK_BYTES   ( 64u * 1024u )
+
+/* Same-step dispatch order only (lower value first, no preemption). The kernel
+ * tick sits at the bottom of the ladder, as SysTick does on Cortex-M: a
+ * control-loop ISR and a peripheral ISR (sim HW_USB uses 8) both outrank it. */
+#define PORT_SYSTICK_PRIORITY    ( 15u )
 
 /* Upper bound on task fibers tracked for teardown (idle + timer + app tasks). */
 #define PORT_MAX_TASK_FIBERS     ( 32u )
@@ -84,6 +90,8 @@ static volatile UBaseType_t uxMainInterruptMask = 0;
 static volatile UBaseType_t uxIsrNesting      = 0;
 /* A ...FromISR call asked for a context switch; honored at bracket exit. */
 static volatile BaseType_t  xIsrYieldPending  = pdFALSE;
+/* This port's systick entry in the framework's interrupt table. */
+static int32_t              lSysTickHandle    = SIL_IRQ_HANDLE_INVALID;
 
 /* --- context switching --------------------------------------------------- */
 
@@ -171,6 +179,14 @@ BaseType_t xPortStartScheduler( void )
     xIsrYieldPending  = pdFALSE;
     uxCriticalNesting = 0;
 
+    /* The kernel tick is a plain interrupt-table entry, so the port registers it
+     * here, before the first task runs. The seam does no clock arithmetic — the
+     * caller hands it a period. With no framework hooks installed this no-ops and
+     * no tick ever fires, which is what a standalone/Unity run wants. */
+    lSysTickHandle = SIL_irq_registerPeriodic( vSilSysTickHandler,
+                                               1000000u / configTICK_RATE_HZ,
+                                               PORT_SYSTICK_PRIORITY );
+
     /* Kernel has selected the first task. Run the firmware until it reaches
      * quiescence (idle hook swaps back to pvMainFiber), then return so the
      * driver owns the outer loop. */
@@ -188,6 +204,10 @@ void vPortEndScheduler( void )
     configASSERT( pvCurrent == pvMainFiber );
 
     xSchedulerStopped = pdTRUE;
+
+    /* Drop the systick entry so a rebooted image registers a fresh one. */
+    SIL_irq_cancel( lSysTickHandle );
+    lSysTickHandle = SIL_IRQ_HANDLE_INVALID;
 
     /* Delete every task fiber (never the running one) and clear the bookkeeping. */
     for( UBaseType_t i = 0; i < uxTaskFiberCount; i++ )
@@ -236,19 +256,19 @@ void vPortYieldToScheduler( void )
     SwitchToFiber( pvMainFiber );
 }
 
-/* Framework-driven tick. Called from the main fiber while the firmware is
- * quiescent. Advances one tick; if it readies a higher-priority task, swap into
- * the firmware and run it to the next quiescence. */
-void vSilAdvanceTick( void )
+/* --- simulated interrupts ------------------------------------------------ */
+
+/* The kernel tick handler, dispatched from the framework's interrupt table like
+ * any other. Shaped exactly as a real port's SysTick_Handler: advance the tick,
+ * and if that readied a higher-priority task, let the bracket's exit tail-chain
+ * into it. Non-static so a scenario can resolve it by name from DWARF. */
+void vSilSysTickHandler( void )
 {
     if( xTaskIncrementTick() != pdFALSE )
     {
-        vTaskSwitchContext();
-        prvSwitchToSelectedTask( &uxMainCriticalNesting, &uxMainInterruptMask );
+        vPortYieldFromIsr();
     }
 }
-
-/* --- simulated interrupts ------------------------------------------------ */
 
 /* Whether firmware interrupts are currently masked — a critical section or an
  * explicit portDISABLE_INTERRUPTS / FromISR mask. */

@@ -134,7 +134,7 @@ impl Sil {
         assert!(fw.start(), "sil_fw_start() returned false");
         self.firmwares.push(Rc::downgrade(&fw));
         self.temp_paths.push(copy.clone());
-        let mut member = FirmwareMember::new(source_name, fw, TICK_US);
+        let mut member = FirmwareMember::new(source_name, fw);
         // Reboot-from-reset recipe: re-enabling this member reloads the same temp copy.
         member.set_reload_path(&copy);
         member
