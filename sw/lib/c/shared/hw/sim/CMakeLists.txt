@@ -3,3 +3,4 @@
 # channelized (no per-target split: they exist only on native).
 
 add_subdirectory(ports)
+add_subdirectory(irq)

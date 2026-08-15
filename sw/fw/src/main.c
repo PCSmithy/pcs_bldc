@@ -382,6 +382,7 @@ static bool prvCreateTasks(void)
 // Native fiber-port primitives (provided by the cooperative fiber port).
 extern void vSilAdvanceTick(void);
 extern void vPortYieldToScheduler(void);
+extern BaseType_t xSilDispatchIsr(void (*pxHandler)(void));
 
 // Quiescence handoff: when every task is blocked the idle task runs and hands
 // control back to the driver (framework) fiber.
@@ -390,7 +391,7 @@ void vApplicationIdleHook(void)
     vPortYieldToScheduler();
 }
 
-// --- SIL control ABI (D2) --------------------------------------------------
+// --- SIL control ABI (sil_fw.h) --------------------------------------------
 // The framework drives these; pacing (fast vs realtime) is the driver's choice.
 // The bring-up path is identical to the embedded main() below (minus HAL_Init):
 // the SAME HW/app init and the SAME four tasks. The fiber port runs the
@@ -399,6 +400,11 @@ void vApplicationIdleHook(void)
 void sil_fw_setHooks(const SIL_ports_hooks_S * const hooks)
 {
     SIL_ports_setHooks(hooks);
+}
+
+void sil_fw_setIrqHooks(const SIL_irq_hooks_S * const hooks)
+{
+    SIL_irq_setHooks(hooks);
 }
 
 bool sil_fw_start(void)
@@ -419,6 +425,11 @@ void sil_fw_advance_tick(void)
     // Hardware time first, so tasks waking this tick read a fresh timebase.
     HW_TIM_advanceTime(1000000U / configTICK_RATE_HZ);
     vSilAdvanceTick();
+}
+
+bool sil_fw_dispatch_isr(SIL_irq_handler_F handler)
+{
+    return (xSilDispatchIsr(handler) != pdFALSE);
 }
 
 void sil_fw_shutdown(void)

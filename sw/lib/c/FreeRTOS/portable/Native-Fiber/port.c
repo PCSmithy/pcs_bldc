@@ -11,6 +11,11 @@
  * Validated by the D1 spike (sw/sil/spike/d1-tick): deterministic + ~5000x
  * realtime. See docs/sil/freertos-tick.md, docs/sil/performance.md.
  *
+ * Non-systick interrupts arrive the same way: the framework calls
+ * xSilDispatchIsr for each handler due on the sim grid, bracketed by ISR
+ * entry/exit so ...FromISR wakeups and portYIELD_FROM_ISR behave as on hardware
+ * (docs/sil/sim-interrupts.md).
+ *
  * The port is restartable and shareable per thread. It converts the thread to a
  * fiber only when the thread is not already one (a second firmware image on the
  * same thread borrows the existing conversion), and vPortEndScheduler deletes the
@@ -39,6 +44,13 @@ typedef struct
     void *          pvFiber;
     TaskFunction_t  pxCode;
     void *          pvParams;
+    /* This context's critical nesting and interrupt mask, saved while it is
+     * switched out. On hardware BASEPRI/PRIMASK are part of a task's saved
+     * context; the kernel's blocking APIs (ulTaskNotifyTake, ...) yield from
+     * INSIDE a critical section, so a global counter would leave every other
+     * context looking masked. */
+    UBaseType_t     uxCriticalNesting;
+    UBaseType_t     uxInterruptMask;
 } ThreadState_t;
 
 /* pxCurrentTCB has external linkage in tasks.c (TCB_t* volatile). We only need
@@ -54,8 +66,42 @@ static BaseType_t           xOwnsConversion   = pdFALSE;
 /* Every task fiber created in pxPortInitialiseStack, for teardown deletion. */
 static void *               pvTaskFibers[ PORT_MAX_TASK_FIBERS ];
 static UBaseType_t          uxTaskFiberCount  = 0;
-static volatile UBaseType_t uxCriticalNesting = 0;
-static volatile BaseType_t  xSchedulerStopped = pdFALSE;
+/* The RUNNING context's critical nesting and interrupt mask (each switched-out
+ * context keeps its own in its ThreadState_t; the driver/main fiber's live in
+ * the uxMain* pair). */
+static volatile UBaseType_t uxCriticalNesting     = 0;
+static volatile UBaseType_t uxMainCriticalNesting = 0;
+static volatile BaseType_t  xSchedulerStopped     = pdFALSE;
+
+/* --- simulated-interrupt bookkeeping (docs/sil/sim-interrupts.md) --------- */
+
+/* Cooperative stand-in for PRIMASK, set by portDISABLE_INTERRUPTS and the
+ * FromISR mask macros. Together with uxCriticalNesting it is what holds a due
+ * simulated interrupt pending instead of dropping it. */
+static volatile UBaseType_t uxInterruptMask     = 0;
+static volatile UBaseType_t uxMainInterruptMask = 0;
+/* Non-zero while a dispatched handler is running (no nesting is modelled). */
+static volatile UBaseType_t uxIsrNesting      = 0;
+/* A ...FromISR call asked for a context switch; honored at bracket exit. */
+static volatile BaseType_t  xIsrYieldPending  = pdFALSE;
+
+/* --- context switching --------------------------------------------------- */
+
+/* Swap to the task the kernel has selected, carrying the per-context critical
+ * nesting and interrupt mask across: the outgoing context's are stashed in the
+ * puxOut pair, the incoming task's become current. Every switch into a task
+ * goes through here. */
+static void prvSwitchToSelectedTask( volatile UBaseType_t * puxOutNesting,
+                                     volatile UBaseType_t * puxOutMask )
+{
+    ThreadState_t * const pxNext = prvCurrentThreadState();
+
+    *puxOutNesting    = uxCriticalNesting;
+    *puxOutMask       = uxInterruptMask;
+    uxCriticalNesting = pxNext->uxCriticalNesting;
+    uxInterruptMask   = pxNext->uxInterruptMask;
+    SwitchToFiber( pxNext->pvFiber );
+}
 
 /* --- fiber entry --------------------------------------------------------- */
 
@@ -82,9 +128,11 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
                   & ~( ( size_t ) portBYTE_ALIGNMENT - 1u );
     ThreadState_t * ts = ( ThreadState_t * ) addr;
 
-    ts->pxCode   = pxCode;
-    ts->pvParams = pvParameters;
-    ts->pvFiber  = CreateFiber( PORT_FIBER_STACK_BYTES, prvFiberEntry, ts );
+    ts->pxCode            = pxCode;
+    ts->pvParams          = pvParameters;
+    ts->uxCriticalNesting = 0;
+    ts->uxInterruptMask   = 0;
+    ts->pvFiber           = CreateFiber( PORT_FIBER_STACK_BYTES, prvFiberEntry, ts );
     configASSERT( ts->pvFiber != NULL );
 
     /* Track the fiber so vPortEndScheduler can delete it at teardown. */
@@ -115,10 +163,18 @@ BaseType_t xPortStartScheduler( void )
 
     xSchedulerStopped = pdFALSE;
 
+    /* vTaskStartScheduler masks interrupts before calling here; on hardware the
+     * first task's context restore clears PRIMASK. Mirror that, or every
+     * simulated interrupt would read as masked forever. */
+    uxInterruptMask   = 0;
+    uxIsrNesting      = 0;
+    xIsrYieldPending  = pdFALSE;
+    uxCriticalNesting = 0;
+
     /* Kernel has selected the first task. Run the firmware until it reaches
      * quiescence (idle hook swaps back to pvMainFiber), then return so the
      * driver owns the outer loop. */
-    SwitchToFiber( prvCurrentThreadState()->pvFiber );
+    prvSwitchToSelectedTask( &uxMainCriticalNesting, &uxMainInterruptMask );
 
     return pdTRUE;
 }
@@ -161,14 +217,22 @@ void vPortEndScheduler( void )
  * from a task fiber (portYIELD / blocking API). */
 void vPortYield( void )
 {
+    ThreadState_t * const pxOut = prvCurrentThreadState();
+
     vTaskSwitchContext();
-    SwitchToFiber( prvCurrentThreadState()->pvFiber );
+    prvSwitchToSelectedTask( &pxOut->uxCriticalNesting, &pxOut->uxInterruptMask );
 }
 
 /* Called by the idle hook (vApplicationIdleHook) — quiescence handoff back to
  * the driver/main fiber. */
 void vPortYieldToScheduler( void )
 {
+    ThreadState_t * const pxOut = prvCurrentThreadState();
+
+    pxOut->uxCriticalNesting = uxCriticalNesting;
+    pxOut->uxInterruptMask   = uxInterruptMask;
+    uxCriticalNesting = uxMainCriticalNesting;
+    uxInterruptMask   = uxMainInterruptMask;
     SwitchToFiber( pvMainFiber );
 }
 
@@ -180,7 +244,66 @@ void vSilAdvanceTick( void )
     if( xTaskIncrementTick() != pdFALSE )
     {
         vTaskSwitchContext();
-        SwitchToFiber( prvCurrentThreadState()->pvFiber );
+        prvSwitchToSelectedTask( &uxMainCriticalNesting, &uxMainInterruptMask );
+    }
+}
+
+/* --- simulated interrupts ------------------------------------------------ */
+
+/* Whether firmware interrupts are currently masked — a critical section or an
+ * explicit portDISABLE_INTERRUPTS / FromISR mask. */
+BaseType_t xSilInterruptsMasked( void )
+{
+    return ( ( uxCriticalNesting > 0 ) || ( uxInterruptMask != 0 ) ) ? pdTRUE : pdFALSE;
+}
+
+/* Run one simulated interrupt handler in the firmware context, bracketed by ISR
+ * entry/exit so ...FromISR bookkeeping holds. Runs on the driver fiber (the
+ * firmware is quiescent) — the closest analogue of the handler mode an ISR runs
+ * in on hardware, which is no task's stack either. Returns pdFALSE without
+ * calling the handler when interrupts are masked; the framework then holds the
+ * interrupt pending and re-attempts on the next step. */
+BaseType_t xSilDispatchIsr( void ( * pxHandler )( void ) )
+{
+    BaseType_t xDispatched = pdFALSE;
+
+    if( ( pxHandler != NULL ) &&
+        ( pvMainFiber != NULL ) &&
+        ( xSchedulerStopped == pdFALSE ) &&
+        ( xSilInterruptsMasked() == pdFALSE ) )
+    {
+        uxIsrNesting     = 1;
+        xIsrYieldPending = pdFALSE;
+        pxHandler();
+        uxIsrNesting = 0;
+
+        /* A FromISR wakeup deferred its switch to here: run the readied task
+         * now, before returning to quiescence — the tail-chained context switch
+         * a real ISR exit performs. */
+        if( xIsrYieldPending != pdFALSE )
+        {
+            xIsrYieldPending = pdFALSE;
+            vTaskSwitchContext();
+            prvSwitchToSelectedTask( &uxMainCriticalNesting, &uxMainInterruptMask );
+        }
+        xDispatched = pdTRUE;
+    }
+
+    return xDispatched;
+}
+
+/* portYIELD_FROM_ISR / portEND_SWITCHING_ISR. Inside a dispatch bracket the
+ * switch is DEFERRED to bracket exit, so the handler always runs to completion
+ * as it would on hardware; outside one it is an ordinary cooperative yield. */
+void vPortYieldFromIsr( void )
+{
+    if( uxIsrNesting > 0 )
+    {
+        xIsrYieldPending = pdTRUE;
+    }
+    else
+    {
+        vPortYield();
     }
 }
 
@@ -199,8 +322,22 @@ void vPortExitCritical( void )
 
 void vPortDisableInterrupts( void )
 {
+    uxInterruptMask = 1;
 }
 
 void vPortEnableInterrupts( void )
 {
+    uxInterruptMask = 0;
+}
+
+UBaseType_t uxPortSetInterruptMaskFromISR( void )
+{
+    const UBaseType_t uxSaved = uxInterruptMask;
+    uxInterruptMask = 1;
+    return uxSaved;
+}
+
+void vPortClearInterruptMaskFromISR( UBaseType_t uxSaved )
+{
+    uxInterruptMask = uxSaved;
 }

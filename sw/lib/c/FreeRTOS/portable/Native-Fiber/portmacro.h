@@ -2,8 +2,8 @@
  * Native cooperative FIBER port for FreeRTOS V10.3.1 (SIL host build).
  *
  * Single OS thread; each task is a host fiber. Cooperative: context switches
- * happen only at portYIELD / tick-dispatch points. Validated by the D1 spike
- * (sw/sil/spike/d1-tick) — deterministic + many x realtime. See
+ * happen only at portYIELD / tick-dispatch points. Validated by the spike at
+ * sw/sil/spike/d1-tick — deterministic + many x realtime. See
  * docs/sil/freertos-tick.md, docs/sil/performance.md.
  *
  * Windows-first (uses Win32 fibers in port.c). A cross-platform context-switch
@@ -48,27 +48,38 @@ typedef unsigned long  UBaseType_t;
 #define portBYTE_ALIGNMENT    8
 #define portINLINE            __inline
 
-/* Scheduler / yield. */
+/* Scheduler / yield. A yield requested from inside a dispatched simulated
+ * interrupt is deferred to the ISR bracket's exit, so the handler runs to
+ * completion first; outside one it switches immediately. */
 void vPortYield( void );
+void vPortYieldFromIsr( void );
 #define portYIELD()                       vPortYield()
 #define portYIELD_WITHIN_API()            vPortYield()
-#define portEND_SWITCHING_ISR( xSwitch )  do { if( xSwitch ) vPortYield(); } while( 0 )
+#define portEND_SWITCHING_ISR( xSwitch )  do { if( xSwitch ) vPortYieldFromIsr(); } while( 0 )
 #define portYIELD_FROM_ISR( xSwitch )     portEND_SWITCHING_ISR( xSwitch )
 
-/* Critical sections — cooperative single thread, so these are a nesting
- * counter that masks tick dispatch (the only "interrupt" in this port). */
+/* Critical sections + interrupt masking — cooperative single thread, so these
+ * are counters/flags. They are what holds a due simulated interrupt PENDING
+ * (xSilInterruptsMasked); the framework re-attempts it on the next grid step. */
 void vPortEnterCritical( void );
 void vPortExitCritical( void );
 void vPortDisableInterrupts( void );
 void vPortEnableInterrupts( void );
+UBaseType_t uxPortSetInterruptMaskFromISR( void );
+void vPortClearInterruptMaskFromISR( UBaseType_t uxSaved );
 
 #define portENTER_CRITICAL()              vPortEnterCritical()
 #define portEXIT_CRITICAL()               vPortExitCritical()
 #define portDISABLE_INTERRUPTS()          vPortDisableInterrupts()
 #define portENABLE_INTERRUPTS()           vPortEnableInterrupts()
 
-#define portSET_INTERRUPT_MASK_FROM_ISR()       ( 0 )
-#define portCLEAR_INTERRUPT_MASK_FROM_ISR( x )  ( void ) ( x )
+#define portSET_INTERRUPT_MASK_FROM_ISR()       uxPortSetInterruptMaskFromISR()
+#define portCLEAR_INTERRUPT_MASK_FROM_ISR( x )  vPortClearInterruptMaskFromISR( x )
+
+/* Simulated-interrupt dispatch: the framework runs one handler in the
+ * firmware context through the ISR bracket. pdFALSE = masked, held pending. */
+BaseType_t xSilDispatchIsr( void ( * pxHandler )( void ) );
+BaseType_t xSilInterruptsMasked( void );
 
 /* Task function macros. */
 #define portTASK_FUNCTION_PROTO( vFunction, pvParameters ) \
