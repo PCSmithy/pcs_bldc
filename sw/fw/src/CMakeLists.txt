@@ -33,10 +33,11 @@ if(PCS_TARGET STREQUAL "native")
       COMMAND dsymutil $<TARGET_FILE:pcs_bldc_fw>
       VERBATIM)
   endif()
-  # sil_fw.h (included by main.c's SIM region) carries the port-hook vtable
-  # type from SIL_ports.h; link the seam explicitly rather than relying on a
-  # transitive include path through a sim driver.
-  target_link_libraries(pcs_bldc_fw PRIVATE hw_SIL_ports)
+  # sil_fw.h (included by main.c's SIM region) carries the port-hook and
+  # interrupt-hook vtable types from SIL_ports.h / SIL_irq.h; link both seams
+  # explicitly rather than relying on a transitive include path through a sim
+  # driver.
+  target_link_libraries(pcs_bldc_fw PRIVATE hw_SIL_ports hw_SIL_irq)
 else()
   add_executable(pcs_bldc_fw main.c)
 endif()
