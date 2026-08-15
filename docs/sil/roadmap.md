@@ -60,10 +60,16 @@ D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
   50 µs, coarse suite unchanged — [`performance.md`](performance.md) §15, which
   also flags `MotorModel`'s fixed 1 ms advance as what still keeps the *board*
   world off a fine grid.
-- ☐ **3. Sim TRGO seam** (`fw~hal_tim_006`) — sim `HW_TIM` emits its
+- ☑ **3. Sim TRGO seam** (`fw~hal_tim_006`) — sim `HW_TIM` emits its
   configured trigger event (update / OC match): `HW_TIM_advanceTime`
   detects the crossing and calls registered sinks. Unity tests + tag close
   the spec.
+  **Done** — `HW_TIM_registerTrgoCallback` on the sim target header (one sink
+  per peripheral, last registration wins, independent of `HW_TIM_init`), and
+  `HW_TIM_advanceTime` emits one trigger per landing on the source event's
+  counter value — wrap- and direction-aware, so an advance spanning several
+  periods emits one per crossing. `trgoOcUnit` picks the OC unit behind an
+  OC-match source (generator emits it). 8 Unity tests; OFT defects 23 → 22.
 - ☐ **4. Embedded injected ADC** (`fw~hal_adc_003/008`, stm32g4 target) —
   injected group on the phase-current inputs, TIM1-TRGO-triggered,
   interrupt transfer with JEOS completion callback + pollable status.

@@ -27,8 +27,18 @@ typedef struct
 
 typedef struct
 {
+    HW_TIM_trgoCallback_F callback;
+    void *                context;
+} HW_TIM_trgoSink_S;
+
+typedef struct
+{
     const HW_TIM_config_S * config;
     HW_TIM_peripheralData_S peripheralData[HW_TIM_PERIPHERAL_COUNT];
+
+    // Trigger-output sinks, one per peripheral. HW_TIM_init leaves them alone
+    // so registration order against init does not matter.
+    HW_TIM_trgoSink_S trgoSink[HW_TIM_PERIPHERAL_COUNT];
 
     // SIL output-port handles (SIL_PORTS_HANDLE_INVALID when unregistered): the
     // commanded bridge state a motor model consumes — normalized per-phase duty
@@ -55,6 +65,8 @@ static bool HW_TIM_private_validateChannel(const HW_TIM_config_S * const config,
 static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel);
 static void HW_TIM_private_publishEnabled(HW_TIM_channels_E channel);
 static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral);
+static uint64_t HW_TIM_private_landings(uint64_t from, uint64_t counts, uint64_t span, uint64_t target);
+static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts);
 
 /* Private Function Definitions */
 
@@ -128,6 +140,67 @@ static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral)
 {
     const bool enabled = data->peripheralData[peripheral].mainOutputEnabled;
     SIL_ports_write(data->moeHandle[peripheral], enabled ? 1.0 : 0.0);
+}
+
+// How many times an up-counter advancing `counts` ticks from `from` takes the
+// value `target`, modulo `span`. A counter already sitting on the target takes
+// it again a full lap later, so an advance landing exactly on the target counts
+// once whichever side of it the advance started.
+static uint64_t HW_TIM_private_landings(uint64_t from, uint64_t counts, uint64_t span, uint64_t target)
+{
+    uint64_t landings = 0U;
+    uint64_t first = ((span + target) - from) % span;   // ticks to the first landing
+    if (first == 0U)
+    {
+        first = span;
+    }
+    if (counts >= first)
+    {
+        landings = ((counts - first) / span) + 1U;
+    }
+    return landings;
+}
+
+// Emit a peripheral's trigger events for one advance of `counts` ticks from
+// counter value `from`: each landing on the configured source's counter value —
+// the reload value for an update source, the compare value for an OC-match one —
+// is one trigger. A down-counter is handled by mirroring both positions about
+// the span, so one landing count serves both directions.
+static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts)
+{
+    const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[peripheral];
+    const HW_TIM_trgoSink_S * const sink = &data->trgoSink[peripheral];
+    if ((peripheralConfig->configureTrgo) && (sink->callback != NULL))
+    {
+        const uint64_t span = (uint64_t)peripheralConfig->period + 1U;
+        const bool     down = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN);
+
+        uint64_t target = span;   // no source resolved: out of range, emits nothing
+        if (peripheralConfig->trgoSource == HW_TIM_TRGO_UPDATE)
+        {
+            target = down ? (uint64_t)peripheralConfig->period : 0U;
+        }
+        else if ((peripheralConfig->trgoSource == HW_TIM_TRGO_OC_MATCH) &&
+                 (peripheralConfig->trgoOcUnit < HW_TIM_OC_UNITS_PER_PERIPHERAL))
+        {
+            target = data->peripheralData[peripheral].compare[peripheralConfig->trgoOcUnit];
+        }
+        else
+        {
+            // HW_TIM_TRGO_NONE, or an OC unit outside the peripheral's units.
+        }
+
+        if (target < span)
+        {
+            const uint64_t fromPos   = down ? ((span - from) % span) : from;
+            const uint64_t targetPos = down ? ((span - target) % span) : target;
+            const uint64_t landings  = HW_TIM_private_landings(fromPos, counts, span, targetPos);
+            for (uint64_t n = 0U; n < landings; n++)
+            {
+                sink->callback(peripheral, sink->context);
+            }
+        }
+    }
 }
 
 /* Public Function Definitions */
@@ -221,6 +294,7 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
     return ret;
 }
 
+// [impl->fw~hal_tim_006~1]
 void HW_TIM_advanceTime(uint32_t elapsed_us)
 {
     if (data->initialized)
@@ -237,9 +311,25 @@ void HW_TIM_advanceTime(uint32_t elapsed_us)
                     ? ((cur + span) - (counts % span)) % span
                     : (cur + counts) % span;
                 data->peripheralData[p].counter = (uint32_t)next;
+                HW_TIM_private_emitTrgo((HW_TIM_peripheral_E)p, cur, counts);
             }
         }
     }
+}
+
+// [impl->fw~hal_tim_006~1]
+bool HW_TIM_registerTrgoCallback(HW_TIM_peripheral_E peripheral,
+                                 HW_TIM_trgoCallback_F callback,
+                                 void * context)
+{
+    bool ret = false;
+    if (peripheral < HW_TIM_PERIPHERAL_COUNT)
+    {
+        data->trgoSink[peripheral].callback = callback;
+        data->trgoSink[peripheral].context  = context;
+        ret = true;
+    }
+    return ret;
 }
 
 // [impl->fw~hal_tim_003~1]

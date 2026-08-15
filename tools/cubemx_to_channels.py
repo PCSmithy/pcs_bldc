@@ -566,6 +566,12 @@ def sim_trgo_source(trgo: str) -> str:
     return "HW_TIM_TRGO_OC_MATCH"      # OC1REF / OC2REF / ...
 
 
+def sim_trgo_oc_unit(trgo: str) -> int:
+    """Dense OC-unit index behind an OCxREF trigger source (OC1REF -> 0)."""
+    match = re.search(r'OC(\d)', trgo)
+    return int(match.group(1)) - 1 if match else 0
+
+
 def tim_trgo_constant(tim: TIMConfig) -> str:
     if tim.master is None:
         return "TIM_TRGO_RESET"
@@ -671,7 +677,10 @@ def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> st
     has_trgo = trgo != "TIM_TRGO_RESET"
     body.append(f"    .configureTrgo          = {'true' if has_trgo else 'false'},")
     if has_trgo:
-        body.append(f"    .trgoSource             = {sim_trgo_source(trgo)},")
+        source = sim_trgo_source(trgo)
+        body.append(f"    .trgoSource             = {source},")
+        if source == "HW_TIM_TRGO_OC_MATCH":
+            body.append(f"    .trgoOcUnit             = {sim_trgo_oc_unit(trgo)}U,")
     return emit_macro(f"HW_TIM_CUBEMX_SIM_PERIPH_{name}", body)
 
 
