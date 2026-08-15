@@ -34,6 +34,8 @@ typedef struct
     // Register a handler firing every period_us of sim time. Returns a handle,
     // or a negative value on failure. priority orders same-step dispatch only
     // (lower value first, no preemption); the first firing is one period away.
+    // The ladder mirrors an NVIC: control-loop ISRs at the top, peripheral ISRs
+    // below them (sim HW_USB at 8), the FreeRTOS port's kernel tick last at 15.
     int32_t (*registerPeriodic)(void * context, SIL_irq_handler_F handler,
                                 uint32_t period_us, uint8_t priority);
 
