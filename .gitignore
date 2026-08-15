@@ -74,6 +74,10 @@ __pycache__/
 *.pb.h
 *.pb.c
 
+# Generated build identity (refreshed every build from git state — see
+# sw/fw/src/lib/build/generate_identity.cmake)
+lib_build_identity.h
+
 # Claude Code runtime artifacts (committed config like skills/ stays tracked)
 .claude/scheduled_tasks.lock
 

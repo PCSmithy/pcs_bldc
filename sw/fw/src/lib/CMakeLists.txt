@@ -3,3 +3,5 @@
 add_subdirectory(timer)
 # protobuf/ carries lib_protobuf's project side: the generated schema bindings.
 add_subdirectory(protobuf)
+# build/ carries lib_build's project side: the generated build identity.
+add_subdirectory(build)

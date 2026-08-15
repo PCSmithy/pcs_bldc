@@ -15,9 +15,11 @@ package pcs;
 message Envelope {
   uint32 request_id = 1;
   oneof payload {
-    PingRequest ping     = 2;
-    Response    response = 3;
-    LogText     log      = 4;
+    PingRequest     ping             = 2;
+    Response        response         = 3;
+    LogText         log              = 4;
+    IdentityRequest identity_request = 5;
+    Identity        identity         = 6;
   }
 }
 
@@ -34,4 +36,15 @@ message Response {
 // A chunk of firmware standard-output text.
 message LogText {
   string text = 1;
+}
+
+// Query the running firmware's build identity.
+message IdentityRequest {
+}
+
+// The build identity: commit hash of the built source, extended with a
+// hash of the uncommitted diff when the tree was dirty. Doubles as the
+// firmware version string.
+message Identity {
+  string build_id = 1;
 }

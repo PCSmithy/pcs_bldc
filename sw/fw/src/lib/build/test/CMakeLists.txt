@@ -1,0 +1,3 @@
+add_executable(test_lib_build_config test_lib_build_config.c)
+target_link_libraries(test_lib_build_config PRIVATE lib_build_config unity)
+add_test(NAME lib_build_config COMMAND test_lib_build_config)
