@@ -3,6 +3,38 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## Native-Coro port: interrupt-controller catch-up (BLOCKS non-Windows SIL)
+
+**When:** ASAP — before the next sil -> main PR. The branch does not link on
+macOS/Linux since the interrupt-controller stage: `main.c`'s SIM region
+references `xSilDispatchIsr`/`xSilInterruptsMasked`, which only the
+Native-Fiber port implements. CI only runs on PRs, so nothing has caught it.
+
+**What:** mirror the Fiber port's interrupt work onto Native-Coro: the ISR
+entry/exit bracket (`xSilDispatchIsr`, deferred `vPortYieldFromIsr`, real
+FromISR mask macros in its portmacro.h), per-context critical nesting AND
+per-context interrupt mask carried in its ThreadState/switch path, systick
+self-registration via `SIL_irq_registerPeriodic` at scheduler start + cancel
+at teardown, and delete its stale `vSilAdvanceTick`. Windows cannot build or
+run the Coro port, so proof is the next PR's macOS/ubuntu CI (or a draft PR
+opened early to trigger it).
+
+## One API header per HW module (kill the per-target header split)
+
+**When:** next natural lull between sprint stages (owner request 2026-08-15).
+
+**What:** each split-target HW module carries two hand-mirrored headers
+(`hw/<Module>/sim/HW_<Module>.h` + `.../stm32g4/HW_<Module>.h`). The shared
+types (enums, input configs, function signatures) are duplicated by manual
+mirroring — silent-drift risk (the ADC trigger/xfer enums are
+register-encoded). Replace with ONE `hw/<Module>/HW_<Module>.h` carrying the
+API + shared types, including a small per-target header for the
+target-specific `channelConfig_S` shape; `hw_<Module>` CMake targets expose
+the module root include dir (consumer includes unchanged). `HW_USB` first
+(its two headers are already signature-identical), then the channelized
+modules; update the channelization section of `c-coding-conventions.md`.
+Scope: `hw/` only (owner scoping TBD for io-layer).
+
 ## Current sense: model the low-side-shunt duty visibility (bench-confirmed)
 
 **When:** before matching sim phase-current traces against bench captures at
