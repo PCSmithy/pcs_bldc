@@ -24,7 +24,7 @@ D8 and the TRGO seam are its prerequisites. Closes `fw~hal_tim_006`,
 
 **Stages** (each lands as its own reviewed commit):
 
-- ☐ **1. D8 interrupt controller** (voyant + fiber port) — the framework
+- ☑ **1. D8 interrupt controller** (voyant + fiber port) — the framework
   interrupt table per [`sim-interrupts.md`](sim-interrupts.md): periodic +
   one-shot entries, config-time (by name via DWARF) and runtime (by pointer
   via a C→Rust upcall vtable, `SIL_ports`-style) registration,
@@ -223,11 +223,12 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   with was removed 2026-07-12); `vsig` dests deferred to
   a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
   firmware `cvar`, suspend/resume gating).
-- ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
-  config-time registration by name; C→Rust upcall vtable for runtime
-  registration; port dispatch shim (ISR entry/exit, FromISR/yield) —
-  **deferred** (owner, 2026-07-12) to the interrupt-driven-control sprint;
-  the current firmware control path is fully cooperative in `task_1ms`
+- ☑ **Interrupt controller** (D8, `voyant::irq`): table of periodic + one-shot
+  entries; config-time registration by name (DWARF `low_pc` + slide); C→Rust
+  upcall vtable (`SIL_irq`) for runtime registration; port dispatch bracket
+  (ISR entry/exit, deferred FromISR yield, per-context critical nesting).
+  Landed in the interrupt-driven-sampling sprint, stage 1; the sim `HW_USB`
+  driver is its first consumer (its device interrupt wakes `task_usb`)
 - ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
   Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
   advance sim time (monotonic, wall-clock-free) → advance models (registration
