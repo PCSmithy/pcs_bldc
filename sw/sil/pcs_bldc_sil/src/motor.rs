@@ -18,11 +18,7 @@ use std::f64::consts::{PI, TAU};
 
 use voyant::{vsig_id, Member, MemberCtx, SignalId, StateTable, Value};
 
-pub const MOTOR_MODEL_STEP_PERIOD_US: u16 = 1000;
 pub const MOTOR_INTEGRATOR_STEP_PERIOD_US: u16 = 1;
-// The integrator step must evenly divide the model tick (u16 division truncates).
-#[allow(clippy::modulo_one)] // the divisor is a placeholder; the guard exists for when it changes
-const _: () = assert!(MOTOR_MODEL_STEP_PERIOD_US.is_multiple_of(MOTOR_INTEGRATOR_STEP_PERIOD_US));
 
 const DIODE_ENGAGE_MARGIN_V: f64 = 0.005;
 
@@ -151,7 +147,8 @@ impl Member for MotorModel {
     }
 
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
-        debug_assert_eq!(dt_us, MOTOR_MODEL_STEP_PERIOD_US as u64);
+        // The integrator step must evenly divide the model tick
+        debug_assert!(dt_us.is_multiple_of(MOTOR_INTEGRATOR_STEP_PERIOD_US as u64));
 
         // Input ports: the bridge command + bus voltage the sim wiring routed in.
         let v_bus = Self::observe(ctx.st, &self.name, "v_bus");
@@ -166,7 +163,7 @@ impl Member for MotorModel {
         let mut e: [f64; 3] = [0.0; 3]; // back emf
         let mut v_n = 0.0;
 
-        let n = MOTOR_MODEL_STEP_PERIOD_US / MOTOR_INTEGRATOR_STEP_PERIOD_US; // number of integrator sub-steps per model step
+        let n = dt_us / MOTOR_INTEGRATOR_STEP_PERIOD_US as u64; // number of integrator sub-steps per model step
         let dt_s = f64::from(MOTOR_INTEGRATOR_STEP_PERIOD_US) * 1e-6;
 
         // per integrator sub-step
