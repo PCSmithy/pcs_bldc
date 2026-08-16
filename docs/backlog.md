@@ -120,3 +120,30 @@ scaling become consumers.
 
 **Origin:** TODO in `app_server_config.c` (2026-08-16), serial-protocol
 branch.
+
+## Sim USB: model the unconfigured (pre-enumeration) state
+
+**When:** with the SIL transport work, or the next time USB lifecycle
+behavior matters in a test.
+
+**What it is:** the sim `HW_USB` (loopback) has no notion of the device
+being unconfigured: reads/writes touch its buffers from tick 0. Real
+TinyUSB is unsafe there — its CDC FIFO paths claim endpoints unguarded,
+and before the host configures the device the CDC endpoints are address
+0, so a read during enumeration queues transfers on the control endpoint
+and trips `TU_ASSERT(ep_status.busy == 0)` in `usbd_edpt_xfer`. This
+exact failure shipped on the serial-protocol branch (server task pumping
+`tud_cdc_read` every 1 ms from boot → "Device Descriptor Request Failed"
+on the bench) and no native test could see it.
+
+**The fix, when picked up:** give the sim a `configured` flag distinct
+from `connected` (mounted vs port-open, mirroring `tud_ready()` vs
+`tud_cdc_connected()`): FIFO paths return 0 / accept nothing while
+unconfigured, a `HW_USB_sim_setConfigured()` hook drives it, and reset
+starts unconfigured. Then a unit test asserting "no FIFO traffic before
+configuration" turns this class of bench bug into a red test. Keep the
+guard in `stm32g4/HW_USB.c` regardless — defense in depth at the layer
+that owns the constraint.
+
+**Origin:** bench enumeration failure on the serial-protocol branch
+(2026-08-16), root-caused to the unguarded TinyUSB CDC read path.

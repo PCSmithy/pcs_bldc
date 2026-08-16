@@ -169,10 +169,14 @@ void app_server_run1ms(void)
 {
     if (data->config != NULL)
     {
-        app_server_private_pumpRequests();
-
+        // Everything gates on an open host connection — including the request
+        // pump: a host can only send once it holds the port open, and touching
+        // the CDC read path before USB is configured corrupts enumeration
+        // (TinyUSB's read path claims endpoints unguarded).
         if (IO_serial_connected(data->config->serial))
         {
+            app_server_private_pumpRequests();
+
             data->telemetryDivider++;
             if (data->telemetryDivider >= APP_SERVER_TELEMETRY_PERIOD_TICKS)
             {
