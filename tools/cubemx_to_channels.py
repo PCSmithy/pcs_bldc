@@ -36,6 +36,18 @@ TIM_OUT = REPO_ROOT / "sw/fw/src/hw/TIM/HW_TIM_channels.cubemx.h"
 # the SIM config's counterWidthBits (the stm32g4 side never needs it).
 TIM_32BIT_INSTANCES = {2, 5}
 
+# Timer kernel clock the SIM config's countsPerUs is derived against: HSE
+# 24 MHz (HSE_VALUE in sw/fw/src/hw/stm32g4/stm32g4xx_hal_conf.h) / PLLM 2
+# x PLLN 24 / PLLR 2 = 144 MHz, with both APB prescalers at 1 so the timer
+# clock equals HCLK. Update alongside SystemClock_Config.
+TIM_KERNEL_CLOCK_HZ = 144_000_000
+
+# countsPerUs values that do not follow from the prescaler. A timer whose
+# prescaled rate is not a whole number of counts per microsecond needs one
+# here -- a deliberate choice by the owner of the sim timebase, recorded
+# rather than silently rounded.
+TIM_COUNTS_PER_US_OVERRIDE: dict[int, int] = {}
+
 
 # ---------------------------------------------------------------------------
 # Common helpers
@@ -572,6 +584,24 @@ def sim_trgo_oc_unit(trgo: str) -> int:
     return int(match.group(1)) - 1 if match else 0
 
 
+def sim_counts_per_us(inum: int, prescaler: str) -> int | None:
+    """Counter counts per sim microsecond, from the timer kernel clock and the
+    CubeMX prescaler. Returns None when the rate is not a whole number of
+    counts per microsecond and no override covers the timer -- the caller
+    leaves countsPerUs out rather than emit a rounded rate the sim timebase
+    would silently drift on."""
+    if inum in TIM_COUNTS_PER_US_OVERRIDE:
+        return TIM_COUNTS_PER_US_OVERRIDE[inum]
+    try:
+        divider = int(prescaler) + 1
+    except ValueError:
+        return None
+    tick_hz, remainder = divmod(TIM_KERNEL_CLOCK_HZ, divider)
+    if remainder != 0 or tick_hz % 1_000_000 != 0:
+        return None
+    return tick_hz // 1_000_000
+
+
 def tim_trgo_constant(tim: TIMConfig) -> str:
     if tim.master is None:
         return "TIM_TRGO_RESET"
@@ -667,6 +697,16 @@ def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> st
         f"    .counterWidthBits = {width}U,",
         f"    .countDir         = {sim_count_dir(init.get('CounterMode', ''))},",
     ]
+    counts_per_us = sim_counts_per_us(inum, init.get('Prescaler', ''))
+    if counts_per_us is None:
+        print(f"  WARN: {tim.instance} prescaler {init.get('Prescaler', '?')} does not "
+              f"divide {TIM_KERNEL_CLOCK_HZ} Hz into whole counts per microsecond; "
+              f"its sim counter will not track sim time until "
+              f"TIM_COUNTS_PER_US_OVERRIDE names a value.", file=sys.stderr)
+    else:
+        body.append(f"    .countsPerUs      = {counts_per_us}U,")
+    if "RepetitionCounter" in init:
+        body.append(f"    .rcr              = {init['RepetitionCounter']}U,")
     if has_bdt:
         bdt = dict(tim.bdt)
         break_on = bdt.get("BreakState", "") == "TIM_BREAK_ENABLE"

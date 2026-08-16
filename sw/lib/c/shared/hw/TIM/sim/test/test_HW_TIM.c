@@ -359,8 +359,7 @@ static void test_clearBreakFlags(void)
 }
 
 /* ---- fw~hal_tim_002: counter direction and period ---- */
-// The sim models up- and down-counting; the spec's center-aligned mode has no
-// sim counterpart, so these cover the up/down halves only.
+// All three count directions are modelled: up, down, and center-aligned.
 
 // advanceTime drives only countsPerUs-configured counters: the timebase
 // peripheral tracks elapsed sim time (wrapping modulo period+1); a
@@ -420,6 +419,46 @@ static void test_advanceTime_counts_down(void)
     HW_TIM_advanceTime(90U);
     TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
     TEST_ASSERT_EQUAL_UINT32(79U, base); // 69 - 90 wraps through the period
+}
+
+// Center-aligned: the counter walks up to the period and back down, so it reads
+// out in both phases and a full cycle spans 2 x period counts.
+// [test->fw~hal_tim_002~1]
+static void test_advanceTime_counts_center_aligned(void)
+{
+    timPeripherals[BASE_PERIPH].countsPerUs = 1U;
+    timPeripherals[BASE_PERIPH].period = 99U;
+    timPeripherals[BASE_PERIPH].counterWidthBits = 16U;
+    timPeripherals[BASE_PERIPH].countDir = HW_TIM_COUNT_CENTER;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+
+    uint32_t base = 0xFFFFU;
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(0U, base);   // seeded at the valley, counting up
+
+    HW_TIM_advanceTime(40U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(40U, base);  // up phase
+
+    HW_TIM_advanceTime(59U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(99U, base);  // the crest
+
+    HW_TIM_advanceTime(30U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(69U, base);  // down phase: the same readout, falling
+
+    HW_TIM_advanceTime(69U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(0U, base);   // 198 counts: one full cycle
+
+    HW_TIM_advanceTime(198U);
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(0U, base);
+
+    HW_TIM_advanceTime(298U);             // a cycle plus 100: one count past the crest
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(BASE_PERIPH, &base));
+    TEST_ASSERT_EQUAL_UINT32(98U, base);
 }
 
 /* ---- fw~hal_tim_006: trigger output ---- */
@@ -512,6 +551,78 @@ static void test_trgo_update_on_down_counter(void)
     TEST_ASSERT_EQUAL_UINT32(3U, trgoCount);
 }
 
+// A center-aligned counter reloads at both extremes, so with rcr = 0 — an
+// update event per reload — the trigger lands twice per cycle.
+// [test->fw~hal_tim_006~1]
+static void test_trgo_update_center_fires_at_both_extremes(void)
+{
+    buildTrgoTimebase(HW_TIM_TRGO_UPDATE);
+    timPeripherals[BASE_PERIPH].countDir = HW_TIM_COUNT_CENTER;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(BASE_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(98U);    // one short of the crest
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoCount);
+
+    HW_TIM_advanceTime(1U);     // the crest: overflow
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(99U);    // the valley: underflow, one full cycle done
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+
+    HW_TIM_advanceTime(198U);   // another full cycle: both extremes again
+    TEST_ASSERT_EQUAL_UINT32(4U, trgoCount);
+}
+
+// With rcr = 1 the countdown spends one reload and expires on the next, so a
+// center-aligned counter started at the valley triggers once per cycle — at the
+// valley, the crest having spent the countdown.
+// [test->fw~hal_tim_006~1]
+static void test_trgo_update_center_with_rcr_fires_at_the_valley(void)
+{
+    buildTrgoTimebase(HW_TIM_TRGO_UPDATE);
+    timPeripherals[BASE_PERIPH].countDir = HW_TIM_COUNT_CENTER;
+    timPeripherals[BASE_PERIPH].rcr      = 1U;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(BASE_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(99U);    // the crest
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoCount);
+
+    HW_TIM_advanceTime(99U);    // the valley
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(99U);    // the next crest
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(99U);    // and its valley
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+
+    HW_TIM_advanceTime(594U);   // three full cycles
+    TEST_ASSERT_EQUAL_UINT32(5U, trgoCount);
+}
+
+// The repetition counter thins an edge-aligned counter's updates too: one
+// update event per rcr + 1 period boundaries.
+// [test->fw~hal_tim_006~1]
+static void test_trgo_update_honours_repetition_counter(void)
+{
+    buildTrgoTimebase(HW_TIM_TRGO_UPDATE);
+    timPeripherals[BASE_PERIPH].rcr = 2U;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(BASE_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(100U);
+    HW_TIM_advanceTime(100U);
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoCount);
+
+    HW_TIM_advanceTime(100U);   // the third boundary expires the countdown
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(600U);   // six more boundaries: two more updates
+    TEST_ASSERT_EQUAL_UINT32(3U, trgoCount);
+}
+
 // An OC-match source triggers when the counter reaches the compare value.
 // [test->fw~hal_tim_006~1]
 static void test_trgo_oc_match_fires_at_compare(void)
@@ -549,6 +660,35 @@ static void test_trgo_oc_match_uses_configured_unit(void)
 
     HW_TIM_advanceTime(300U);          // unit 1's
     TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+}
+
+// A center-aligned counter takes the compare value once per phase, so an
+// OC-match source triggers on both crossings of a cycle.
+// [test->fw~hal_tim_006~1]
+static void test_trgo_oc_match_center_fires_on_both_crossings(void)
+{
+    timPeripherals[PWM_PERIPH].countsPerUs = 1U;
+    timPeripherals[PWM_PERIPH].countDir    = HW_TIM_COUNT_CENTER;
+    timPeripherals[PWM_PERIPH].trgoSource  = HW_TIM_TRGO_OC_MATCH;
+    timPeripherals[PWM_PERIPH].trgoOcUnit  = 0U;   // PWM_U, compare 400 of period 1000
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(PWM_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(PWM_COMPARE);   // the up-phase crossing
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(1199U);         // over the crest, one short of the way back down
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+
+    HW_TIM_advanceTime(1U);            // the down-phase crossing
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+
+    uint32_t pwm = 0U;
+    TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &pwm));
+    TEST_ASSERT_EQUAL_UINT32(PWM_COMPARE, pwm);
+
+    HW_TIM_advanceTime(2U * PWM_PERIOD);   // one full cycle: both crossings again
+    TEST_ASSERT_EQUAL_UINT32(4U, trgoCount);
 }
 
 // No trigger output configured, no source selected, or a counter that does not
@@ -736,13 +876,18 @@ int main(void)
     RUN_TEST(test_advanceTime_tracks_sim_time);
     RUN_TEST(test_advanceTime_wraps_at_period);
     RUN_TEST(test_advanceTime_counts_down);
+    RUN_TEST(test_advanceTime_counts_center_aligned);
 
     RUN_TEST(test_trgo_update_fires_at_period_boundary);
     RUN_TEST(test_trgo_update_fires_per_crossing_in_one_advance);
     RUN_TEST(test_trgo_update_counts_a_landing_once);
     RUN_TEST(test_trgo_update_on_down_counter);
+    RUN_TEST(test_trgo_update_center_fires_at_both_extremes);
+    RUN_TEST(test_trgo_update_center_with_rcr_fires_at_the_valley);
+    RUN_TEST(test_trgo_update_honours_repetition_counter);
     RUN_TEST(test_trgo_oc_match_fires_at_compare);
     RUN_TEST(test_trgo_oc_match_uses_configured_unit);
+    RUN_TEST(test_trgo_oc_match_center_fires_on_both_crossings);
     RUN_TEST(test_trgo_silent_when_not_configured);
     RUN_TEST(test_trgo_registration);
 
