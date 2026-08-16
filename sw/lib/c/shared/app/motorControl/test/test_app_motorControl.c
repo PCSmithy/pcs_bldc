@@ -461,6 +461,26 @@ static void test_velocity_estimate_smooth_across_wrap(void)
     }
 }
 
+// [test->fw~est_velocity_001~1]
+// The alignment-offset capture steps mechanicalAngle by up to pi in one tick;
+// that step must not alias into the velocity estimate (the bench showed a
+// -120 rad/s single-sample spike at first enable).
+static void test_velocity_estimate_immune_to_alignment_capture(void)
+{
+    mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(170.0f));
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+
+    app_motorControl_run1ms();          // alignment begins
+    advanceTime_ms(ALIGN_ADVANCE_MS);
+    app_motorControl_run1ms();          // dwell expires, offset := 170 deg captured
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
+
+    app_motorControl_run1ms();          // and the tick after stays clean
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
+}
+
 // [test->fw~safety_001~1]
 // clearFault releases the latch; with currents nominal the drive resumes.
 static void test_clear_fault_releases_latch_and_resumes(void)
@@ -683,6 +703,7 @@ int main(void)
     RUN_TEST(test_velocity_setpoint_exposed);
     RUN_TEST(test_velocity_estimate_converges_to_angle_rate);
     RUN_TEST(test_velocity_estimate_smooth_across_wrap);
+    RUN_TEST(test_velocity_estimate_immune_to_alignment_capture);
     RUN_TEST(test_clear_fault_releases_latch_and_resumes);
 
     RUN_TEST(test_encoder_fault_latches_past_limit);

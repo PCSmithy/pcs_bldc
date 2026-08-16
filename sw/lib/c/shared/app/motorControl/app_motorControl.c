@@ -58,7 +58,7 @@ typedef struct
     float32_t magneticAngleTarget_rad;
 
     float32_t velocityMeasured_radPerSec;
-    float32_t prevMechanicalAngle_rad;
+    float32_t prevRotorPosition_rad;   // RAW encoder angle: immune to the alignment-offset capture step
     bool velocitySeeded;   // first tick has no previous angle to difference
     lib_filterIIR_channel_S velocityFilter;
 
@@ -212,7 +212,10 @@ void app_motorControl_run1ms(void)
             // EMA-filtered; the first tick only seeds the previous angle.
             if (channelData->velocitySeeded)
             {
-                float32_t delta_rad = channelData->mechanicalAngle_rad - channelData->prevMechanicalAngle_rad;
+                // Difference the RAW encoder angle: the alignment-offset
+                // capture steps mechanicalAngle by up to pi in one tick, which
+                // would alias into a huge one-tick velocity spike.
+                float32_t delta_rad = rotorPosition_rad - channelData->prevRotorPosition_rad;
                 delta_rad = WRAP_RAD_TO_PI(delta_rad);
                 const float32_t velocityRaw_radPerSec = delta_rad / VELOCITY_TICK_S;
 
@@ -233,7 +236,7 @@ void app_motorControl_run1ms(void)
                 channelData->velocitySeeded = true;
             }
 
-            channelData->prevMechanicalAngle_rad = channelData->mechanicalAngle_rad;
+            channelData->prevRotorPosition_rad = rotorPosition_rad;
 
             // [impl->fw~safety_002~1] Latch a fault on a persistently invalid
             // encoder — a stale position would commutate the live bridge wrong.
