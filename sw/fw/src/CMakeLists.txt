@@ -129,6 +129,8 @@ target_link_libraries(pcs_bldc_fw PRIVATE
   app_rgbLedRing_channels
   app_motorControl_channels
   app_userControls
+  io_COBSFrame_channels
+  app_server_config
 )
 
 # Embedded-target post-build: emit .bin and .hex artifacts and print the

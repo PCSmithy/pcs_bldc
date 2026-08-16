@@ -13,6 +13,7 @@ pub mod models;
 pub mod motor;
 mod sil;
 pub mod trace;
+pub mod wire;
 pub mod wiring;
 
 pub use as5048::{decode_frame, As5048Model};

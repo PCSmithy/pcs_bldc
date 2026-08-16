@@ -6,10 +6,11 @@ tags: [firmware, conn, proto, driver]
 # Protocol framing and schema
 
 The protocol stack over the serial byte stream: messages are defined in
-a shared protocol-buffer schema (maintained at `sw/proto/`) and cross
-the wire as COBS-delimited, CRC-validated frames carried by the
-`IO_COBSFrame` io-layer frame driver over an `IO_serial` channel
-([[serial]]).
+protocol-buffer schemas — the reusable framework schema at
+`sw/lib/c/shared/proto/`, importing the board schema at `sw/proto/` for
+the envelope's fixed-name board payloads — and cross the wire as
+COBS-delimited, CRC-validated frames carried by the `IO_COBSFrame`
+io-layer frame driver over an `IO_serial` channel ([[serial]]).
 
 See also: the system specs `sys~conn_001~1` (schema) and `sys~conn_002~1`
 (framing).

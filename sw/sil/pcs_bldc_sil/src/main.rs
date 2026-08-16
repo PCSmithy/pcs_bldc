@@ -86,7 +86,7 @@ fn diag_per_tick_table(fw: &Firmware) {
         "xTickCount",
         "task1msRuns",
         "task10msRuns",
-        "telemRuns",
+        "serverRuns",
         "task200msRuns",
         "taskUsbRuns",
     ] {
@@ -99,7 +99,7 @@ fn diag_per_tick_table(fw: &Firmware) {
 
     println!(
         "         {:>4}  {:>10}  {:>9}  {:>7}  {:>8}  {:>5}  {:>7}",
-        "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "telem", "taskUsb"
+        "tick", "xTickCount", "nextUnblk", "task1ms", "task10ms", "server", "taskUsb"
     );
     // Row 0 = post-boot baseline (all tasks just blocked; no tick applied yet).
     for i in 0..=TICKS {
@@ -110,7 +110,7 @@ fn diag_per_tick_table(fw: &Firmware) {
             rd("xNextTaskUnblockTime"),
             rd("task1msRuns"),
             rd("task10msRuns"),
-            rd("telemRuns"),
+            rd("serverRuns"),
             rd("taskUsbRuns")
         );
         if i < TICKS {

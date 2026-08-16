@@ -7,7 +7,7 @@ use voyant::SignalId;
 // [test->fw~hal_tim_003~1]
 #[test]
 fn tasks_advance() {
-    const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "telemRuns"];
+    const COUNTERS: [&str; 4] = ["task1msRuns", "task10msRuns", "taskUsbRuns", "serverRuns"];
     const N: u64 = 50;
 
     let mut sim = Sil::new();
@@ -42,13 +42,13 @@ fn tasks_advance() {
         .map(|(b, a)| a.saturating_sub(*b))
         .collect();
 
-    // 1 ms task fires once per tick; 10 ms every 10; telemetry every 2 ms; USB
-    // delays 1 tick per iteration (so ~once per tick). Tolerance bands, not exact
-    // equality (scheduling phase can shift a fire in or out of the window).
+    // 1 ms task fires once per tick; 10 ms every 10; the server once per tick;
+    // USB delays 1 tick per iteration (so ~once per tick). Tolerance bands, not
+    // exact equality (scheduling phase can shift a fire in or out of the window).
     assert!((45..=55).contains(&d[0]), "task1msRuns +{}", d[0]);
     assert!((3..=7).contains(&d[1]), "task10msRuns +{}", d[1]);
     assert!((40..=60).contains(&d[2]), "taskUsbRuns +{}", d[2]);
-    assert!((20..=30).contains(&d[3]), "telemRuns +{}", d[3]);
+    assert!((45..=55).contains(&d[3]), "serverRuns +{}", d[3]);
 
     // The sim timebase flows: TIM2 advances with sim time, so lib_timer's
     // accumulated microseconds equal exactly one tick per step (the clock behind the
