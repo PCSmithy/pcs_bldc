@@ -258,6 +258,15 @@ static void task_200ms(void * params)
 
         // app
 
+        // 1 Hz heartbeat through printf: exercises the log stream end to end
+        // (fw~obs_log_001/002) and gives any bench session a liveness line.
+        if ((task200msRuns % 5U) == 0U)
+        {
+            printf("heartbeat %lus up, server %lu runs\n",
+                   (unsigned long)(task200msRuns / 5U),
+                   (unsigned long)serverRuns);
+        }
+
         profileUpdate(PROFILE_TASK_200MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
 }
