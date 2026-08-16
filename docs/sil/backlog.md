@@ -3,20 +3,19 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
-## fw: HSE_VALUE says 24 MHz; the board crystal Y1 is 25 MHz
+## hw: sync the design files with the as-built board (Y1 = 24 MHz)
 
-**When:** owner call — it changes the ARM binary and re-baselines every
-bench-derived timing. Found 2026-08-15 during the sim center-aligned work.
+**When:** next hardware-design touch. Owner confirmed 2026-08-16: the
+assembled board carries a 24 MHz crystal at Y1 (assembly-time substitution)
+— `HSE_VALUE = 24000000` is CORRECT and silicon runs 144 MHz; it is the
+schematic/BOM that are stale (they say 25 MHz). As-built deviations now
+live in `hw/rework-log.md` — update the schematic/BOM to match, and log any
+future rework there.
 
-**What:** `stm32g4xx_hal_conf.h` sets `HSE_VALUE = 24000000` but the
-schematic + BOM say Y1 is a 25 MHz crystal, so real silicon runs the PLL at
-150 MHz while the HAL computes for 144 MHz — every HAL-derived timing
-(lib_timer µs, PWM frequency, telemetry timestamps, baud-ish things) is ~4%
-fast on hardware. Also downstream: TIM1 PWM is 16.94 kHz/59 µs at the
-configured 144 MHz (17.65 kHz if 150 is the truth), NOT the 20 kHz/50 µs
-the sprint docs assumed. Fix = correct HSE_VALUE (and/or CubeMX clock tree),
-re-verify bench-derived constants (encoder-noise sample timing, campaign
-CSV timebases), and re-baseline sprint timing numbers.
+**Related fw follow-up (owner-directed):** TIM1's `.period = 4249` was
+sized for a 170 MHz clock (20 kHz center-aligned); at the real 144 MHz it
+gives 16.94 kHz. ARR 3600 restores exactly 20.000 kHz / 50 µs. Lands with
+the owner's injected-ADC CubeMX work.
 
 ## Motor model: raise the ~4.5x-realtime ceiling (integrator levers)
 
