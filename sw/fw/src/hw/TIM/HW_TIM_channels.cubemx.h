@@ -26,7 +26,7 @@
 #define HW_TIM_CUBEMX_INIT_TIM1 \
     .Prescaler         = 0, \
     .CounterMode       = TIM_COUNTERMODE_CENTERALIGNED1, \
-    .Period            = 4249, \
+    .Period            = 3600, \
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
     .RepetitionCounter = 1, \
     .AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE,
@@ -61,7 +61,7 @@
 
 #define HW_TIM_CUBEMX_MASTER_TIM1 \
     .MasterOutputTrigger  = TIM_TRGO_UPDATE, \
-    .MasterOutputTrigger2 = TIM_TRGO2_RESET, \
+    .MasterOutputTrigger2 = TIM_TRGO2_OC4REF, \
     .MasterSlaveMode      = TIM_MASTERSLAVEMODE_DISABLE,
 
 #define HW_TIM_CUBEMX_G4_PERIPH_TIM1 \
@@ -79,7 +79,7 @@
 #define HW_TIM_CUBEMX_SIM_PERIPH_TIM1 \
     .nameStr          = "TIM1", \
     .prescaler        = 0U, \
-    .period           = 4249U, \
+    .period           = 3600U, \
     .counterWidthBits = 16U, \
     .countDir         = HW_TIM_COUNT_CENTER, \
     .countsPerUs      = 144U, \
@@ -132,6 +132,20 @@
         .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
     },
 
+#define HW_TIM_CUBEMX_G4_OC_TIM1_CH4 \
+    .complementary = false, \
+    .channel       = TIM_CHANNEL_4, \
+    .oc = \
+    { \
+        .OCMode       = TIM_OCMODE_PWM2, \
+        .Pulse        = 3528, \
+        .OCPolarity   = TIM_OCPOLARITY_HIGH, \
+        .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
+        .OCFastMode   = TIM_OCFAST_DISABLE, \
+        .OCIdleState  = TIM_OCIDLESTATE_RESET, \
+        .OCNIdleState = TIM_OCNIDLESTATE_RESET, \
+    },
+
 #define HW_TIM_CUBEMX_SIM_OC_TIM1_CH1 \
     .complementary = true, .compare = 0U, .inactiveLevel = 0U,
 
@@ -140,6 +154,9 @@
 
 #define HW_TIM_CUBEMX_SIM_OC_TIM1_CH3 \
     .complementary = true, .compare = 0U, .inactiveLevel = 0U,
+
+#define HW_TIM_CUBEMX_SIM_OC_TIM1_CH4 \
+    .complementary = false, .compare = 3528U, .inactiveLevel = 0U,
 
 // ----- TIM2 -----
 
@@ -175,12 +192,14 @@
 #define HW_TIM_CUBEMX_OC_TIM1_CH1  HW_TIM_CUBEMX_G4_OC_TIM1_CH1
 #define HW_TIM_CUBEMX_OC_TIM1_CH2  HW_TIM_CUBEMX_G4_OC_TIM1_CH2
 #define HW_TIM_CUBEMX_OC_TIM1_CH3  HW_TIM_CUBEMX_G4_OC_TIM1_CH3
+#define HW_TIM_CUBEMX_OC_TIM1_CH4  HW_TIM_CUBEMX_G4_OC_TIM1_CH4
 #define HW_TIM_CUBEMX_PERIPH_TIM2  HW_TIM_CUBEMX_G4_PERIPH_TIM2
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
 #define HW_TIM_CUBEMX_PERIPH_TIM1  HW_TIM_CUBEMX_SIM_PERIPH_TIM1
 #define HW_TIM_CUBEMX_OC_TIM1_CH1  HW_TIM_CUBEMX_SIM_OC_TIM1_CH1
 #define HW_TIM_CUBEMX_OC_TIM1_CH2  HW_TIM_CUBEMX_SIM_OC_TIM1_CH2
 #define HW_TIM_CUBEMX_OC_TIM1_CH3  HW_TIM_CUBEMX_SIM_OC_TIM1_CH3
+#define HW_TIM_CUBEMX_OC_TIM1_CH4  HW_TIM_CUBEMX_SIM_OC_TIM1_CH4
 #define HW_TIM_CUBEMX_PERIPH_TIM2  HW_TIM_CUBEMX_SIM_PERIPH_TIM2
 #else
 #error "BUILD_TARGET must be BUILD_TARGET_STM32G4 or BUILD_TARGET_SIM"
