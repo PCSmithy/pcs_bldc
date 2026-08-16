@@ -3,6 +3,21 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## fw: HSE_VALUE says 24 MHz; the board crystal Y1 is 25 MHz
+
+**When:** owner call — it changes the ARM binary and re-baselines every
+bench-derived timing. Found 2026-08-15 during the sim center-aligned work.
+
+**What:** `stm32g4xx_hal_conf.h` sets `HSE_VALUE = 24000000` but the
+schematic + BOM say Y1 is a 25 MHz crystal, so real silicon runs the PLL at
+150 MHz while the HAL computes for 144 MHz — every HAL-derived timing
+(lib_timer µs, PWM frequency, telemetry timestamps, baud-ish things) is ~4%
+fast on hardware. Also downstream: TIM1 PWM is 16.94 kHz/59 µs at the
+configured 144 MHz (17.65 kHz if 150 is the truth), NOT the 20 kHz/50 µs
+the sprint docs assumed. Fix = correct HSE_VALUE (and/or CubeMX clock tree),
+re-verify bench-derived constants (encoder-noise sample timing, campaign
+CSV timebases), and re-baseline sprint timing numbers.
+
 ## Motor model: raise the ~4.5x-realtime ceiling (integrator levers)
 
 **When:** when a long single scenario or the Phase-4 fast-mode/pytest sweeps
