@@ -15,6 +15,7 @@ tools/pcs_client_gen/ (gitignored).
 """
 
 import argparse
+import itertools
 import struct
 import subprocess
 import sys
@@ -125,6 +126,33 @@ def show(env, pb2, board_pb2):
         print(f"[?] id={env.request_id} payload={kind}")
 
 
+def session(ser, pb2, board_pb2, next_id):
+    """Greet the board, then stream until the port dies (SerialException)."""
+    for payload in ("identity_request", "ping"):
+        env = pb2.Envelope(request_id=next(next_id))
+        getattr(env, payload).SetInParent()
+        ser.write(frame(env.SerializeToString()))
+
+    buffer = bytearray()
+    while True:
+        buffer += ser.read(4096)
+        while b"\x00" in buffer:
+            segment, _, buffer = buffer.partition(b"\x00")
+            if not segment:
+                continue
+            payload = deframe(bytes(segment))
+            if payload is None:
+                print(f"[frame] discarded {len(segment)}-byte invalid segment")
+                continue
+            env = pb2.Envelope()
+            try:
+                env.ParseFromString(payload)
+            except Exception:
+                print(f"[frame] {len(payload)} bytes did not decode as Envelope")
+                continue
+            show(env, pb2, board_pb2)
+
+
 def run(port: str, baud: int):
     import serial  # pyserial, from the venv
 
@@ -132,31 +160,24 @@ def run(port: str, baud: int):
     import board_pb2
     import shared_pb2 as pb2
 
-    with serial.Serial(port, baud, timeout=0.05) as ser:
-        for req_id, payload in ((1, "identity_request"), (2, "ping")):
-            env = pb2.Envelope(request_id=req_id)
-            getattr(env, payload).SetInParent()
-            ser.write(frame(env.SerializeToString()))
-        print(f"connected to {port}; streaming (Ctrl-C to stop)")
-
-        buffer = bytearray()
-        while True:
-            buffer += ser.read(4096)
-            while b"\x00" in buffer:
-                segment, _, buffer = buffer.partition(b"\x00")
-                if not segment:
-                    continue
-                payload = deframe(bytes(segment))
-                if payload is None:
-                    print(f"[frame] discarded {len(segment)}-byte invalid segment")
-                    continue
-                env = pb2.Envelope()
-                try:
-                    env.ParseFromString(payload)
-                except Exception:
-                    print(f"[frame] {len(payload)} bytes did not decode as Envelope")
-                    continue
-                show(env, pb2, board_pb2)
+    # Survive board resets: when the port dies (or isn't there yet), poll for
+    # re-enumeration and start a fresh session — new greeting, empty buffer.
+    next_id = itertools.count(1)
+    sessions = 0
+    waiting_announced = False
+    while True:
+        try:
+            with serial.Serial(port, baud, timeout=0.05) as ser:
+                waiting_announced = False
+                sessions += 1
+                verb = "connected" if sessions == 1 else "reconnected"
+                print(f"{verb} to {port}; streaming (Ctrl-C to stop)")
+                session(ser, pb2, board_pb2, next_id)
+        except serial.SerialException:
+            if not waiting_announced:
+                print(f"[port] {port} unavailable (board resetting?); waiting...")
+                waiting_announced = True
+            time.sleep(0.5)
 
 
 def selftest() -> int:
