@@ -1,5 +1,0 @@
-# nanopb static-allocation bounds for pcs_bldc.proto. Strings become
-# fixed-size char arrays of these capacities in the generated C structs.
-pcs.Response.cause    max_size:64
-pcs.LogText.text      max_size:128
-pcs.Identity.build_id max_size:32

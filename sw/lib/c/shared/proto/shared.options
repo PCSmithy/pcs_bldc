@@ -1,0 +1,4 @@
+# nanopb static-allocation bounds for shared.proto.
+shared.Response.cause    max_size:64
+shared.LogText.text      max_size:128
+shared.Identity.build_id max_size:32

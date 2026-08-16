@@ -5,7 +5,8 @@
 # whenever the schema changes. The project venv is a hard build requirement
 # here — ./setup.sh creates it. tools/generate_proto.sh is the standalone
 # manual path.
-set(PCS_PROTO_SCHEMA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../proto)
+set(PCS_BOARD_PROTO_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/../../../../proto)
+set(PCS_SHARED_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../lib/c/shared/proto)
 set(PCS_REPO_ROOT        ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
 if(EXISTS ${PCS_REPO_ROOT}/.venv/Scripts/python.exe)
   set(PCS_VENV_PY ${PCS_REPO_ROOT}/.venv/Scripts/python.exe)
@@ -19,22 +20,27 @@ endif()
 
 add_custom_command(
   OUTPUT
-    ${CMAKE_CURRENT_SOURCE_DIR}/generated/pcs_bldc.pb.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/generated/pcs_bldc.pb.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/shared.pb.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/shared.pb.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/board.pb.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/board.pb.h
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/generated
   COMMAND ${PCS_VENV_PY} -m nanopb.generator.nanopb_generator
-    --proto-path=${PCS_PROTO_SCHEMA_DIR}
+    --proto-path=${PCS_SHARED_PROTO_DIR}
+    --proto-path=${PCS_BOARD_PROTO_DIR}
     --output-dir=${CMAKE_CURRENT_SOURCE_DIR}/generated
-    pcs_bldc.proto
+    shared.proto board.proto
   DEPENDS
-    ${PCS_PROTO_SCHEMA_DIR}/pcs_bldc.proto
-    ${PCS_PROTO_SCHEMA_DIR}/pcs_bldc.options
-  COMMENT "nanopb: regenerating lib/protobuf/generated/pcs_bldc.pb.{h,c} from sw/proto/"
+    ${PCS_SHARED_PROTO_DIR}/shared.proto
+    ${PCS_SHARED_PROTO_DIR}/shared.options
+    ${PCS_BOARD_PROTO_DIR}/board.proto
+  COMMENT "nanopb: regenerating lib/protobuf/generated/{shared,board}.pb.{h,c}"
   VERBATIM
 )
 
 add_library(lib_protobuf_config STATIC
-  generated/pcs_bldc.pb.c
+  generated/shared.pb.c
+  generated/board.pb.c
 )
 target_include_directories(lib_protobuf_config PUBLIC . generated)
 target_link_libraries(lib_protobuf_config PUBLIC lib_types nanopb)

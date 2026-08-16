@@ -10,8 +10,9 @@ PY=.venv/Scripts/python
 [ -x "$PY" ] || PY=.venv/bin/python
 
 "$PY" -m nanopb.generator.nanopb_generator \
+  --proto-path=sw/lib/c/shared/proto \
   --proto-path=sw/proto \
   --output-dir=sw/fw/src/lib/protobuf/generated \
-  pcs_bldc.proto
+  shared.proto board.proto
 
-echo "Generated sw/fw/src/lib/protobuf/generated/pcs_bldc.pb.{h,c}"
+echo "Generated sw/fw/src/lib/protobuf/generated/{shared,board}.pb.{h,c}"

@@ -1,0 +1,59 @@
+// pcs_bldc's board schema: the contents of the two fixed-name extension
+// messages the framework envelope (shared.proto) carries. This file is the
+// board-specific half of the protocol — a future board replaces it wholesale.
+
+syntax = "proto3";
+
+package board;
+
+// Motor-control operating mode (mirrors app_motorControl_mode_E).
+enum Mode {
+  MODE_OFF           = 0;
+  MODE_SIX_STEP_TRAP = 1;
+}
+
+// Coarse drive state (mirrors app_motorControl_state_E).
+enum DriveState {
+  DRIVE_STATE_DISABLED = 0;
+  DRIVE_STATE_ENABLED  = 1;
+  DRIVE_STATE_FAULTED  = 2;
+}
+
+// Inbound board commands, dispatched to the board's handleRequest hook.
+message Request {
+  oneof command {
+    SetMode     set_mode     = 1;
+    SetVelocity set_velocity = 2;
+    ClearFault  clear_fault  = 3;
+  }
+}
+
+message SetMode {
+  Mode mode = 1;
+}
+
+message SetVelocity {
+  float velocity_radps = 1;
+}
+
+message ClearFault {
+}
+
+// Results for data-returning board commands (the board half of the
+// result-or-Response convention in shared.proto). Its result oneof grows
+// with the first such command; action-only commands are answered with the
+// framework Response and never appear here.
+message Reply {
+}
+
+// Periodic board status, published at 10 Hz while a host holds the serial
+// port open; built by the board's buildTelemetry hook.
+message Telemetry {
+  uint32     timestamp_ms            = 1;
+  Mode       mode                    = 2;
+  DriveState state                   = 3;
+  float      bus_voltage_v           = 4;
+  float      bus_current_a           = 5;
+  float      velocity_measured_radps = 6;
+  float      velocity_setpoint_radps = 7;
+}
