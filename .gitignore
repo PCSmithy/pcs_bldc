@@ -78,6 +78,9 @@ __pycache__/
 # sw/fw/src/lib/build/generate_identity.cmake)
 lib_build_identity.h
 
+# Python protobuf bindings for the console client (generated on demand)
+tools/pcs_client_gen/
+
 # Claude Code runtime artifacts (committed config like skills/ stays tracked)
 .claude/scheduled_tasks.lock
 
