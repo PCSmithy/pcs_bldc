@@ -82,6 +82,8 @@
     .period           = 4249U, \
     .counterWidthBits = 16U, \
     .countDir         = HW_TIM_COUNT_CENTER, \
+    .countsPerUs      = 144U, \
+    .rcr              = 1U, \
     .configureBreakDeadTime = true, \
     .deadTime               = 43U, \
     .hasBreakInput          = true, \

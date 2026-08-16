@@ -42,6 +42,8 @@ typedef struct
     HW_TIM_countDir_E countDir;
     uint32_t          countsPerUs;        // counter counts per sim microsecond
                                           // (0 = counter does not track sim time)
+    uint32_t          rcr;                // repetition counter: reload events per
+                                          // update event, minus one (0 = every reload)
 
     bool     configureBreakDeadTime;
     uint32_t deadTime;        // dead-time generator ticks (0..255)
@@ -67,14 +69,16 @@ typedef struct
 /* Public Function Declarations */
 
 // Advance sim time: each peripheral with countsPerUs > 0 advances its counter
-// by elapsed_us * countsPerUs, wrapping modulo (period + 1) in its count
-// direction. The platform tick calls this once per sim tick — it is the clock
-// behind the timebase peripherals (lib_timer's 1 us source rides TIM2).
+// by elapsed_us * countsPerUs. An up- or down-counter walks period + 1 counts
+// per cycle; a center-aligned one walks 2 * period, up to the period and back
+// down. The platform tick calls this once per sim tick — it is the clock behind
+// the timebase peripherals (lib_timer's 1 us source rides TIM2).
 //
-// A peripheral with a trigger output configured emits one trigger per landing
-// on its source event's counter value, so an advance spanning several periods
-// emits several. Sinks run after the counter has taken its end-of-advance
-// value.
+// A peripheral with a trigger output configured emits one trigger per source
+// event, so an advance spanning several cycles emits several. An update source
+// fires once per rcr + 1 reload events (a center-aligned counter reloads at
+// both extremes); an OC-match source fires on each landing on the compare
+// value. Sinks run after the counter has taken its end-of-advance value.
 void HW_TIM_advanceTime(uint32_t elapsed_us);
 
 // Register the sink for a peripheral's trigger output. Only sim-target
