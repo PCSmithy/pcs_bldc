@@ -3,6 +3,7 @@
 
 #include "lib_utils.h"
 #include "lib_timer.h"
+#include "lib_filterIIR.h"
 
 #include "app_motorControl.h"
 
@@ -37,6 +38,11 @@
 // valid read resets the count.
 #define ENCODER_FAULT_LIMIT (5U)
 
+// Velocity estimate (fw~est_velocity_001): first-order IIR on the per-tick
+// angle derivative; alpha = dt/tau = 1 ms / 10 ms.
+#define VELOCITY_TICK_S      (0.001f)
+#define VELOCITY_FILTER_ALPHA (0.1f)
+
 /* Typedefs */
 
 typedef struct
@@ -50,6 +56,11 @@ typedef struct
     float32_t mechanicalAngle_rad;
     float32_t magneticAngle_rad;
     float32_t magneticAngleTarget_rad;
+
+    float32_t velocityMeasured_radPerSec;
+    float32_t prevMechanicalAngle_rad;
+    bool velocitySeeded;   // first tick has no previous angle to difference
+    lib_filterIIR_channel_S velocityFilter;
 
     bool isAligned;
     float32_t alignmentOffset_rad;
@@ -132,6 +143,13 @@ bool app_motorControl_init(const app_motorControl_config_S * const config)
             // at config time rather than defend at every use.
             channelsValid &= (cfg->motorPolePairs > 0U);
             channelsValid &= (cfg->maxVelocity_radPerSec > ZERO);
+
+            lib_filterIIR_channel_S filter =
+            {
+                .type = LIB_FILTERIIR_TYPE_EMA,
+                .ema.alpha = (VELOCITY_TICK_S / cfg->velocityEstimateFilterTau_s),
+            };
+            channelsValid &= lib_filterIIR_init(&filter);
         }
 
         if (channelsValid)
@@ -150,6 +168,11 @@ bool app_motorControl_init(const app_motorControl_config_S * const config)
                 data->channels[channel].faultLatched = false;
                 data->channels[channel].bridgeEnabled = false;
                 data->channels[channel].encoderFaultCount = 0U;
+
+                data->channels[channel].velocityFilter.type = LIB_FILTERIIR_TYPE_EMA;
+                data->channels[channel].velocityFilter.ema.alpha = (VELOCITY_TICK_S / config->channels[channel].velocityEstimateFilterTau_s);
+                data->channels[channel].velocityFilter.init = false;
+                // lib_filterIIR_init(&data->channels[channel].velocityFilter);
             }
             success = true;
         }
@@ -184,6 +207,33 @@ void app_motorControl_run1ms(void)
 
             const float32_t magneticOffset = fmodf((channelData->mechanicalAngle_rad * channelConfig->motorPolePairs), TWO_PI);
             channelData->magneticAngle_rad = magneticOffset < ZERO ? (magneticOffset + TWO_PI) : magneticOffset;
+
+            // [impl->fw~est_velocity_001~1] Wrapped per-tick angle derivative,
+            // EMA-filtered; the first tick only seeds the previous angle.
+            if (channelData->velocitySeeded)
+            {
+                float32_t delta_rad = channelData->mechanicalAngle_rad - channelData->prevMechanicalAngle_rad;
+                delta_rad = WRAP_RAD_TO_PI(delta_rad);
+                const float32_t velocityRaw_radPerSec = delta_rad / VELOCITY_TICK_S;
+
+                channelData->velocityFilter.ema.x_k = velocityRaw_radPerSec;
+                if (channelData->velocityFilter.init)
+                {
+                    lib_filterIIR_update(&channelData->velocityFilter);
+                }
+                else
+                {
+                    // First real sample: init seeds the filter output to it.
+                    (void)lib_filterIIR_init(&channelData->velocityFilter);
+                }
+                channelData->velocityMeasured_radPerSec = channelData->velocityFilter.ema.y_k;
+            }
+            else
+            {
+                channelData->velocitySeeded = true;
+            }
+
+            channelData->prevMechanicalAngle_rad = channelData->mechanicalAngle_rad;
 
             // [impl->fw~safety_002~1] Latch a fault on a persistently invalid
             // encoder — a stale position would commutate the live bridge wrong.
@@ -359,6 +409,7 @@ bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorC
         snapshot->isAligned         = channelData->isAligned;
         snapshot->magneticAngle_rad = channelData->magneticAngle_rad;
         snapshot->velocitySetpoint_radPerSec = channelData->velocitySetpointCurrent_radPerSec;
+        snapshot->velocityMeasured_radPerSec = channelData->velocityMeasured_radPerSec;
 
         // Coarse state the ring reads for fw~mc_009 (the ring carries that impl
         // tag): fault wins, else the live bridge-enable distinguishes driving

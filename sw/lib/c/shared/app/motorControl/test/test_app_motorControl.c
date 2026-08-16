@@ -90,6 +90,7 @@ static void buildConfigs(void)
         .gateDriver = GD_MAIN,
         .bridge = MOTOR_BRIDGE,
         .maxVelocity_radPerSec = MAX_VELOCITY,
+        .velocityEstimateFilterTau_s = 0.01f,   // 10 ms, matching fw~est_velocity_001's bounds
         .encoder = ENC_MOTOR,
         // One pole pair keeps electrical angle == rotor angle, so a commutation
         // test can place the field in a chosen sector by setting the rotor angle.
@@ -403,6 +404,63 @@ static void test_velocity_setpoint_exposed(void)
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -5.0f, motorSetpoint());
 }
 
+/* ---- fw~est_velocity_001: encoder-derived velocity estimate ---- */
+
+static float32_t motorVelocity(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.velocityMeasured_radPerSec;
+}
+
+// [test->fw~est_velocity_001~1]
+// A constant angle rate converges to the matching velocity: 0.05 rad/tick =
+// 50 rad/s, run for 10 filter time constants.
+static void test_velocity_estimate_converges_to_angle_rate(void)
+{
+    float32_t angle = 0.0f;
+    for (uint32_t i = 0U; i < 100U; i++)
+    {
+        angle += 0.05f;
+        if (angle >= 6.2831853f)
+        {
+            angle -= 6.2831853f;
+        }
+        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+        app_motorControl_run1ms();
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, motorVelocity());
+}
+
+// [test->fw~est_velocity_001~1]
+// Crossing the 0/2pi wrap produces no velocity discontinuity: once converged,
+// every tick through repeated wraps stays near the true rate.
+static void test_velocity_estimate_smooth_across_wrap(void)
+{
+    float32_t angle = 0.0f;
+    for (uint32_t i = 0U; i < 100U; i++)
+    {
+        angle += 0.05f;
+        if (angle >= 6.2831853f)
+        {
+            angle -= 6.2831853f;
+        }
+        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+        app_motorControl_run1ms();
+    }
+    for (uint32_t i = 0U; i < 200U; i++)
+    {
+        angle += 0.05f;
+        if (angle >= 6.2831853f)
+        {
+            angle -= 6.2831853f;
+        }
+        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+        app_motorControl_run1ms();
+        TEST_ASSERT_FLOAT_WITHIN(5.0f, 50.0f, motorVelocity());
+    }
+}
+
 // [test->fw~safety_001~1]
 // clearFault releases the latch; with currents nominal the drive resumes.
 static void test_clear_fault_releases_latch_and_resumes(void)
@@ -623,6 +681,8 @@ int main(void)
 
     RUN_TEST(test_state_view_tracks_disabled_enabled_faulted);
     RUN_TEST(test_velocity_setpoint_exposed);
+    RUN_TEST(test_velocity_estimate_converges_to_angle_rate);
+    RUN_TEST(test_velocity_estimate_smooth_across_wrap);
     RUN_TEST(test_clear_fault_releases_latch_and_resumes);
 
     RUN_TEST(test_encoder_fault_latches_past_limit);

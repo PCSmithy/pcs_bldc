@@ -24,6 +24,7 @@ target_include_directories(test_app_motorControl PRIVATE
 target_link_libraries(test_app_motorControl PRIVATE
   lib_types
   lib_utils
+  lib_filterIIR      # velocity-estimate EMA — app_motorControl.c includes it
   unity
   mock_hw_TIM        # shared: shadow HW_TIM.h + recording double
   mock_hw_ADC        # shared: shadow HW_ADC.h + injectable volts

@@ -1,0 +1,3 @@
+add_executable(test_lib_filterIIR test_lib_filterIIR.c)
+target_link_libraries(test_lib_filterIIR PRIVATE lib_filterIIR unity)
+add_test(NAME lib_filterIIR COMMAND test_lib_filterIIR)

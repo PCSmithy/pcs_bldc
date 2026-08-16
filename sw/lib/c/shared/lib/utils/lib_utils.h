@@ -7,6 +7,12 @@
 #define DEG_TO_RAD(a) ((a) * PI / 180.0f)
 #define RPM_TO_RAD_PER_SEC(a) ((a) * 2.0f * PI / 60.0f)
 
+// Wrap a radian angle one step into (-PI, PI]. Single-step: correct for
+// inputs within (-2*PI, 2*PI), e.g. the difference of two angles each in
+// [0, 2*PI).
+#define WRAP_RAD_TO_PI(a) \
+    (((a) > PI) ? ((a) - (2.0f * PI)) : ((((a) < -PI)) ? ((a) + (2.0f * PI)) : (a)))
+
 /**
  * COUNTOF(arr) — number of elements in a static-sized array.
  *
