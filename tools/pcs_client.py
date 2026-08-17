@@ -105,8 +105,20 @@ def deframe(segment: bytes):
 
 # --- display ---
 
-def show(env, pb2, board_pb2):
+def show(env, pb2, board_pb2, log_buffer):
     kind = env.WhichOneof("payload")
+    if kind == "log":
+        # LogText chunks split without regard to line boundaries; buffer and
+        # emit whole lines so every heartbeat gets its own [log] prefix.
+        log_buffer.append(env.log.text)
+        text = "".join(log_buffer)
+        log_buffer.clear()
+        while "\n" in text:
+            line, _, text = text.partition("\n")
+            print(f"[log] {line}")
+        if text:
+            log_buffer.append(text)
+        return
     if kind == "telemetry":
         t = env.telemetry
         mode = board_pb2.Mode.Name(t.mode)
@@ -115,8 +127,6 @@ def show(env, pb2, board_pb2):
               f"vbus={t.bus_voltage_v:.2f}V ibus={t.bus_current_a:.3f}A "
               f"vel={t.velocity_measured_radps:+.2f}rad/s "
               f"set={t.velocity_setpoint_radps:+.2f}rad/s")
-    elif kind == "log":
-        print(f"[log] {env.log.text}", end="" if env.log.text.endswith("\n") else "\n")
     elif kind == "identity":
         print(f"[identity] id={env.request_id} build={env.identity.build_id}")
     elif kind == "response":
@@ -126,14 +136,29 @@ def show(env, pb2, board_pb2):
         print(f"[?] id={env.request_id} payload={kind}")
 
 
-def session(ser, pb2, board_pb2, next_id):
+def session(ser, pb2, board_pb2, next_id, commands):
     """Greet the board, then stream until the port dies (SerialException)."""
     for payload in ("identity_request", "ping"):
         env = pb2.Envelope(request_id=next(next_id))
         getattr(env, payload).SetInParent()
         ser.write(frame(env.SerializeToString()))
 
+    # One-shot board commands from the CLI (first session only — a board
+    # reset must not silently re-apply an old command on reconnect).
+    while commands:
+        kind, value = commands.pop(0)
+        env = pb2.Envelope(request_id=next(next_id))
+        if kind == "set_mode":
+            env.board_request.set_mode.mode = value
+        elif kind == "set_velocity":
+            env.board_request.set_velocity.velocity_radps = value
+        elif kind == "clear_fault":
+            env.board_request.clear_fault.SetInParent()
+        print(f"[cmd] id={env.request_id} {kind} {value if value is not None else ''}")
+        ser.write(frame(env.SerializeToString()))
+
     buffer = bytearray()
+    log_buffer = []
     while True:
         buffer += ser.read(4096)
         while b"\x00" in buffer:
@@ -150,15 +175,24 @@ def session(ser, pb2, board_pb2, next_id):
             except Exception:
                 print(f"[frame] {len(payload)} bytes did not decode as Envelope")
                 continue
-            show(env, pb2, board_pb2)
+            show(env, pb2, board_pb2, log_buffer)
 
 
-def run(port: str, baud: int):
+def run(port: str, baud: int, args):
     import serial  # pyserial, from the venv
 
     ensure_bindings()
     import board_pb2
     import shared_pb2 as pb2
+
+    commands = []
+    if args.set_mode is not None:
+        mode = board_pb2.MODE_SIX_STEP_TRAP if args.set_mode == "six_step" else board_pb2.MODE_OFF
+        commands.append(("set_mode", mode))
+    if args.set_velocity is not None:
+        commands.append(("set_velocity", args.set_velocity))
+    if args.clear_fault:
+        commands.append(("clear_fault", None))
 
     # Survive board resets: when the port dies (or isn't there yet), poll for
     # re-enumeration and start a fresh session — new greeting, empty buffer.
@@ -172,7 +206,7 @@ def run(port: str, baud: int):
                 sessions += 1
                 verb = "connected" if sessions == 1 else "reconnected"
                 print(f"{verb} to {port}; streaming (Ctrl-C to stop)")
-                session(ser, pb2, board_pb2, next_id)
+                session(ser, pb2, board_pb2, next_id, commands)
         except serial.SerialException:
             if not waiting_announced:
                 print(f"[port] {port} unavailable (board resetting?); waiting...")
@@ -203,6 +237,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", help="serial port (e.g. COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=115200, help="ignored by USB CDC")
+    ap.add_argument("--set-mode", choices=["off", "six_step"], help="send a SetMode command on connect")
+    ap.add_argument("--set-velocity", type=float, metavar="RAD_PER_S", help="send a SetVelocity command on connect")
+    ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
     ap.add_argument("--selftest", action="store_true", help="verify framing + bindings offline")
     args = ap.parse_args()
 
@@ -211,7 +248,7 @@ def main():
     if not args.port:
         ap.error("--port is required (or use --selftest)")
     try:
-        run(args.port, args.baud)
+        run(args.port, args.baud, args)
     except KeyboardInterrupt:
         pass
 
