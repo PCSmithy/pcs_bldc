@@ -1,5 +1,7 @@
 #pragma once
 
+/* Includes */
+#include "lib_utils.h"   // RPM_TO_RAD_PER_SEC
 
 /* Defines */
 #define APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC RPM_TO_RAD_PER_SEC(200.0f)

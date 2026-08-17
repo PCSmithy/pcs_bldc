@@ -1,6 +1,7 @@
 /* Includes */
 #include "app_server.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "FreeRTOS.h"
@@ -41,14 +42,99 @@ const app_server_config_S app_server_config =
 
 /* Private Function Definitions */
 
-// Board commands land with the control-service work; until then every
-// command is rejected.
+// Board commands write the same requested-mode/setpoint state the on-device
+// controls write; the most recent command prevails (sys~ops_002).
 static void app_server_config_private_handleRequest(const board_Request * const request,
                                                     shared_Response * const response)
 {
-    (void) request;
     response->accepted = false;
-    (void) strcpy(response->cause, "not implemented");
+    switch (request->which_command)
+    {
+        // [impl->fw~conn_server_002~1]
+        case board_Request_set_mode_tag:
+        {
+            app_motorControl_mode_E requestedMode = APP_MOTORCONTROL_MODE_OFF;
+            bool modeKnown = true;
+            switch (request->command.set_mode.mode)
+            {
+                case board_Mode_MODE_OFF:
+                    requestedMode = APP_MOTORCONTROL_MODE_OFF;
+                    break;
+                case board_Mode_MODE_SIX_STEP_TRAP:
+                    requestedMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP;
+                    break;
+                default:
+                    modeKnown = false;
+                    break;
+            }
+
+            if (!modeKnown)
+            {
+                (void) strcpy(response->cause, "unknown mode");
+            }
+            else if (requestedMode == APP_MOTORCONTROL_MODE_OFF)
+            {
+                // MODE_OFF is the disable request (fw~mc_006), never a method
+                // selection: a stop is always accepted.
+                app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, APP_MOTORCONTROL_MODE_OFF);
+                response->accepted = true;
+            }
+            else
+            {
+                // Method values: selection only while the bridge is disabled
+                // (sys~mc_005) and never while faulted (button-path parity,
+                // fw~mc_007) — an accepted-but-inert command would lie.
+                app_motorControl_snapshot_S snapshot = { 0 };
+                taskENTER_CRITICAL();
+                (void) app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &snapshot);
+                taskEXIT_CRITICAL();
+
+                if (snapshot.state == APP_MOTORCONTROL_STATE_FAULTED)
+                {
+                    (void) strcpy(response->cause, "fault latched");
+                }
+                else if ((snapshot.state == APP_MOTORCONTROL_STATE_ENABLED) &&
+                         (requestedMode != snapshot.mode))
+                {
+                    (void) strcpy(response->cause, "bridge enabled");
+                }
+                else
+                {
+                    app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, requestedMode);
+                    response->accepted = true;
+                }
+            }
+            break;
+        }
+
+        // [impl->fw~conn_server_003~1]
+        case board_Request_set_velocity_tag:
+        {
+            const float32_t velocity_radPerSec = request->command.set_velocity.velocity_radps;
+            if ((isfinite(velocity_radPerSec)) &&
+                (fabsf(velocity_radPerSec) <= APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC))
+            {
+                app_motorControl_setVelocity(APP_MOTORCONTROL_CHANNEL_MAIN, velocity_radPerSec);
+                response->accepted = true;
+            }
+            else
+            {
+                (void) strcpy(response->cause, "velocity out of range");
+            }
+            break;
+        }
+
+        // [impl->fw~conn_server_004~1]
+        case board_Request_clear_fault_tag:
+            // Idempotent: clearing an already-clear latch succeeds.
+            app_motorControl_clearFault(APP_MOTORCONTROL_CHANNEL_MAIN);
+            response->accepted = true;
+            break;
+
+        default:
+            (void) strcpy(response->cause, "unknown command");
+            break;
+    }
 }
 
 // [impl->fw~obs_status_001~1]

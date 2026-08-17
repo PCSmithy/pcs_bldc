@@ -192,11 +192,13 @@ file is the real description; the ID is just a stable index.
 - **Type** marks the artifact type: `sys`, `fw`, or `app`.
 - **Topic** is a short canonical abbreviation drawn from the table below.
 - **Subtopic** is an *optional* second-level abbreviation used to give a
-  busy topic per-area number spaces instead of one flat pool. It is
-  currently used by the `hal` topic, which carries one sub-topic per
-  peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, `hal_dma`, `hal_tim`, ...
-  Most topics omit the sub-topic entirely. Sub-topics are lowercase
-  abbreviations; they are not separately enumerated in the topic table.
+  busy topic per-area number spaces instead of one flat pool. `hal`
+  carries one sub-topic per peripheral (`hal_spi`, `hal_adc`, ...); other
+  in-use examples are `conn_serial`/`conn_proto`/`conn_server`,
+  `io_i2c`/`io_bridge`, `est_encoder`/`est_velocity`, and
+  `obs_led`/`obs_status`/`obs_log`/`obs_identity`. Most topics omit the
+  sub-topic entirely. Sub-topics are lowercase abbreviations; they are
+  not separately enumerated in the topic table.
 - **NNN** is a zero-padded 3-digit sequential number, scoped to the
   `(type, topic, subtopic)` tuple. `sys~mc_001`, `sys~mc_002`, ...,
   `sys~mc_999`. `fw~mc_001` is a separate number space from `sys~mc_001`,

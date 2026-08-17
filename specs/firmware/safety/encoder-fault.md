@@ -19,7 +19,8 @@ See also: [[overcurrent]] (fw~safety_001~1, the other in-module trip),
 Each control cycle the application shall read the rotor encoder's integrity
 status (IO_AS5048) and count consecutive invalid reads; above five consecutive
 invalid reads it shall command the bridge disabled through the enable gate and
-latch a fault, released only by the fault-clear action (fw~mc_007~1). A valid
+latch a fault, released only by the fault-clear action (the button hold
+of fw~mc_007~1 or the host command of fw~conn_server_004~1). A valid
 read resets the count.
 
 Acceptance:

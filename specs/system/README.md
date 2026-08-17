@@ -45,8 +45,8 @@ specs in them yet.
   (`sys~obs_005`), signal write (`sys~obs_006`), text log stream
   (`sys~obs_007`)
 - `ops/` — system mode state machine (idle / calibrate / run / fault),
-  command authority, mode transitions (anchor `sys~ops_001` lives in
-  [[overview]])
+  command authority (`sys~ops_002`, [[command-authority]]), mode
+  transitions (anchor `sys~ops_001` lives in [[overview]])
 - `safety/` — protections (overcurrent, overtemp, encoder-loss,
   gate-driver fault), fault recovery
 - `pd/` — USB-PD sink power monitoring (anchor `sys~pd_001`), power-up
