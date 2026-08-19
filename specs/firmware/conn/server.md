@@ -6,8 +6,10 @@ tags: [firmware, conn, server]
 # Request server
 
 The app_server module: envelope dispatch over the frame driver
-([[proto]]), answering each received envelope with a correlated reply
-and applying board commands to the shared motor-control request state.
+([[proto]]), answering each received envelope with a correlated reply,
+applying board commands to the shared motor-control request state, and
+serving the trace services ([[trace]]) — watch streaming, memory read
+and write, and the trace capability report.
 
 ### Request acknowledgement
 `fw~conn_server_001~1`

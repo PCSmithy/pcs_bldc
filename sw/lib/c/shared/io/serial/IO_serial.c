@@ -163,7 +163,7 @@ uint32_t IO_serial_txFree(IO_serial_channel_E channel)
 }
 
 // [impl->fw~conn_serial_005~1]
-bool IO_serial_connected(IO_serial_channel_E channel)
+bool IO_serial_isConnected(IO_serial_channel_E channel)
 {
     bool connected = false;
     if ((data->config != NULL) && (channel < IO_SERIAL_CHANNEL_COUNT))

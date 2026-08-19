@@ -1,0 +1,9 @@
+# nanopb static-allocation bounds for trace.proto.
+#
+# WatchRequest.watches decodes through a callback (no static array): the
+# server streams entries into its own watch table, so a large list never
+# rides in the Envelope union.
+trace.WatchRequest.watches type:FT_CALLBACK
+trace.Samples.data         max_size:256
+trace.ReadReply.data       max_size:128
+trace.WriteRequest.data    max_size:8

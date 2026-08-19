@@ -198,6 +198,14 @@ static void task_1ms(void * params)
         // app
         app_userControls_run1ms();   // button + dial -> motor mode/velocity commands
         app_motorControl_run1ms();   // in-module overcurrent trip + enable gating (fw~safety_001 / fw~mc_006)
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        {
+            // Sim trace window word [0]: the SIL trace scenarios' 1 kHz signal.
+            extern uint32_t app_server_simTraceWindow32[];
+            app_server_simTraceWindow32[0]++;
+        }
+#endif
+        app_server_sample1ms();      // capture trace watches after the control update (fw~conn_trace_004)
 
         profileUpdate(PROFILE_TASK_1MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }

@@ -7,6 +7,8 @@ target_link_libraries(app_server_config
     app_server
     app_motorControl
     hw_ADC
+    lib_build
+    lib_utils
 )
 
 if(PCS_TARGET STREQUAL "native")

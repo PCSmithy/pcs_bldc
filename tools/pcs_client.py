@@ -30,7 +30,7 @@ def ensure_bindings():
     """Generate shared_pb2/board_pb2 from the schemas when missing or stale."""
     shared_dir = REPO / "sw" / "lib" / "c" / "shared" / "proto"
     board_dir = REPO / "sw" / "proto"
-    protos = [shared_dir / "shared.proto", board_dir / "board.proto"]
+    protos = [shared_dir / "shared.proto", shared_dir / "trace.proto", board_dir / "board.proto"]
     out = GEN_DIR / "shared_pb2.py"
     newest = max(p.stat().st_mtime for p in protos)
     if (not out.exists()) or (out.stat().st_mtime < newest):
@@ -38,7 +38,7 @@ def ensure_bindings():
         subprocess.run(
             [sys.executable, "-m", "grpc_tools.protoc",
              f"-I{shared_dir}", f"-I{board_dir}", f"--python_out={GEN_DIR}",
-             "shared.proto", "board.proto"],
+             "shared.proto", "trace.proto", "board.proto"],
             check=True,
         )
     sys.path.insert(0, str(GEN_DIR))
@@ -105,8 +105,44 @@ def deframe(segment: bytes):
 
 # --- display ---
 
-def show(env, pb2, board_pb2, log_buffer):
+def show(env, pb2, board_pb2, log_buffer, trace=None):
     kind = env.WhichOneof("payload")
+    if kind == "samples":
+        if trace is None or not trace.get("watches"):
+            print(f"[samples] t={env.samples.tick_ms} {len(env.samples.data)}B (no local watch list)")
+            return
+        tick = env.samples.tick_ms
+        expected = trace.get("next_tick")
+        if expected is not None and tick != expected:
+            print(f"[samples] GAP: expected t={expected}, got t={tick} "
+                  f"({tick - expected} tick(s) dropped)")
+        # The phase-locked due rule: membership is every watch whose period
+        # divides the tick, data in list order (fw~conn_trace_004).
+        due = [w for w in trace["watches"] if tick % w[2] == 0]
+        trace["next_tick"] = tick + min(w[2] for w in trace["watches"])
+        trace["count"] = trace.get("count", 0) + 1
+        if (trace["count"] - 1) % trace.get("print_every", 100) != 0:
+            return
+        offset = 0
+        parts = []
+        for addr, size, _period, fmt in due:
+            chunk = env.samples.data[offset:offset + size]
+            offset += size
+            if fmt == "f":
+                value = struct.unpack("<f" if size == 4 else "<d", chunk)[0]
+                parts.append(f"0x{addr:08X}={value:+.4f}")
+            else:
+                parts.append(f"0x{addr:08X}=0x{int.from_bytes(chunk, 'little'):0{size * 2}X}")
+        print(f"[samples] t={tick} " + " ".join(parts))
+        return
+    if kind == "trace_status":
+        s = env.trace_status
+        print(f"[trace] id={env.request_id} ram {s.ram_worst_tick_bytes}/{s.ram_budget_bytes}B "
+              f"link {s.link_rate_bytes_per_s}/{s.link_budget_bytes_per_s}B/s")
+        return
+    if kind == "read_reply":
+        print(f"[read] id={env.request_id} {env.read_reply.data.hex()}")
+        return
     if kind == "log":
         # LogText chunks split without regard to line boundaries; buffer and
         # emit whole lines so every heartbeat gets its own [log] prefix.
@@ -136,11 +172,23 @@ def show(env, pb2, board_pb2, log_buffer):
         print(f"[?] id={env.request_id} payload={kind}")
 
 
-def session(ser, pb2, board_pb2, next_id, commands):
+def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=100):
     """Greet the board, then stream until the port dies (SerialException)."""
     for payload in ("identity_request", "ping"):
         env = pb2.Envelope(request_id=next(next_id))
         getattr(env, payload).SetInParent()
+        ser.write(frame(env.SerializeToString()))
+
+    # The watch list re-sends every session: it clears on port close and on a
+    # board reset (fw~conn_trace_003), so a reconnect must re-install it.
+    trace = {"watches": watches or [], "next_tick": None, "print_every": print_every}
+    if watches:
+        env = pb2.Envelope(request_id=next(next_id))
+        env.watch_request.SetInParent()
+        for addr, size, period, _fmt in watches:
+            env.watch_request.watches.add(address=addr, size=size, period_ms=period)
+        print(f"[cmd] id={env.request_id} watch " +
+              " ".join(f"0x{a:08X}:{s}:{p}ms" for a, s, p, _ in watches))
         ser.write(frame(env.SerializeToString()))
 
     # One-shot board commands from the CLI (first session only — a board
@@ -154,6 +202,11 @@ def session(ser, pb2, board_pb2, next_id, commands):
             env.board_request.set_velocity.velocity_radps = value
         elif kind == "clear_fault":
             env.board_request.clear_fault.SetInParent()
+        elif kind == "read":
+            env.read_request.address, env.read_request.size = value
+        elif kind == "write":
+            env.write_request.address = value[0]
+            env.write_request.data = bytes(value[1])
         print(f"[cmd] id={env.request_id} {kind} {value if value is not None else ''}")
         ser.write(frame(env.SerializeToString()))
 
@@ -175,7 +228,7 @@ def session(ser, pb2, board_pb2, next_id, commands):
             except Exception:
                 print(f"[frame] {len(payload)} bytes did not decode as Envelope")
                 continue
-            show(env, pb2, board_pb2, log_buffer)
+            show(env, pb2, board_pb2, log_buffer, trace)
 
 
 def run(port: str, baud: int, args):
@@ -193,6 +246,32 @@ def run(port: str, baud: int, args):
         commands.append(("set_velocity", args.set_velocity))
     if args.clear_fault:
         commands.append(("clear_fault", None))
+    # Writes before reads, so a write -> read round trip works in one invocation.
+    for spec in (args.write or []):
+        try:
+            addr_s, hexbytes = spec.split(":")
+            commands.append(("write", (int(addr_s, 0), bytes.fromhex(hexbytes))))
+        except ValueError:
+            sys.exit(f"bad --write '{spec}' (expected ADDR:HEXBYTES, e.g. 0x20000110:00000000)")
+    for spec in (args.read or []):
+        try:
+            addr, size = (int(p, 0) for p in spec.split(":"))
+            commands.append(("read", (addr, size)))
+        except ValueError:
+            sys.exit(f"bad --read '{spec}' (expected ADDR:SIZE)")
+
+    watches = []
+    for spec in (args.watch or []):
+        try:
+            parts = spec.split(":")
+            addr, size, period = (int(part, 0) for part in parts[:3])
+            fmt = parts[3] if len(parts) > 3 else "u"
+            if fmt not in ("u", "f") or (fmt == "f" and size not in (4, 8)):
+                raise ValueError
+        except ValueError:
+            sys.exit(f"bad --watch '{spec}' (expected ADDR:SIZE:PERIOD_MS[:u|f]; "
+                     "f = decode as float, size 4 or 8)")
+        watches.append((addr, size, period, fmt))
 
     # Survive board resets: when the port dies (or isn't there yet), poll for
     # re-enumeration and start a fresh session — new greeting, empty buffer.
@@ -206,7 +285,8 @@ def run(port: str, baud: int, args):
                 sessions += 1
                 verb = "connected" if sessions == 1 else "reconnected"
                 print(f"{verb} to {port}; streaming (Ctrl-C to stop)")
-                session(ser, pb2, board_pb2, next_id, commands)
+                session(ser, pb2, board_pb2, next_id, commands,
+                        watches=watches, print_every=args.print_every)
         except serial.SerialException:
             if not waiting_announced:
                 print(f"[port] {port} unavailable (board resetting?); waiting...")
@@ -229,6 +309,16 @@ def selftest() -> int:
     round_trip = pb2.Envelope()
     round_trip.ParseFromString(deframe(frame(env.SerializeToString())[1:-1]))
     assert round_trip.request_id == 7 and round_trip.WhichOneof("payload") == "ping"
+
+    env = pb2.Envelope(request_id=8)
+    env.watch_request.SetInParent()
+    env.watch_request.watches.add(address=0x20000000, size=4, period_ms=1)
+    env.watch_request.watches.add(address=0x20000010, size=2, period_ms=10)
+    round_trip = pb2.Envelope()
+    round_trip.ParseFromString(deframe(frame(env.SerializeToString())[1:-1]))
+    assert round_trip.WhichOneof("payload") == "watch_request"
+    assert [(w.address, w.size, w.period_ms) for w in round_trip.watch_request.watches] == \
+        [(0x20000000, 4, 1), (0x20000010, 2, 10)]
     print("selftest ok")
     return 0
 
@@ -240,6 +330,16 @@ def main():
     ap.add_argument("--set-mode", choices=["off", "six_step"], help="send a SetMode command on connect")
     ap.add_argument("--set-velocity", type=float, metavar="RAD_PER_S", help="send a SetVelocity command on connect")
     ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
+    ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_MS",
+                    help="install a trace watch (repeatable, e.g. 0x20000000:4:1); "
+                         "the list re-sends on every (re)connect")
+    ap.add_argument("--read", action="append", metavar="ADDR:SIZE",
+                    help="one-shot memory read on connect (repeatable)")
+    ap.add_argument("--write", action="append", metavar="ADDR:HEXBYTES",
+                    help="one-shot memory write on connect (repeatable; bytes land "
+                         "in memory order, e.g. 0x20000110:00000000)")
+    ap.add_argument("--print-every", type=int, default=100, metavar="N",
+                    help="print every Nth Samples message (default 100); gaps always print")
     ap.add_argument("--selftest", action="store_true", help="verify framing + bindings offline")
     args = ap.parse_args()
 

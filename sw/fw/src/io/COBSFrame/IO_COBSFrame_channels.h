@@ -3,8 +3,9 @@
 /* Defines */
 
 // Largest decoded frame payload any channel may declare; sizes the driver's
-// static assembly/held-frame buffers.
-#define IO_COBSFRAME_MAX_PAYLOAD  256U
+// static assembly/held-frame buffers. 448 clears the largest inbound
+// envelope: a watch-capacity WatchRequest (32 x ~12 B entries + overhead).
+#define IO_COBSFRAME_MAX_PAYLOAD  448U
 
 /* Typedefs */
 

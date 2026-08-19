@@ -2,6 +2,12 @@
 
 /* Includes */
 #include "lib_types.h"
+// The board only DECODES trace.WatchRequest (its repeated watches stream
+// through a nanopb callback into the server's own table), so it contributes
+// nothing to the envelope's ENCODE bound; defining its size as zero keeps
+// nanopb's shared_Envelope_size defined for everything the board transmits.
+#define trace_WatchRequest_size 0
+
 // [impl->fw~conn_proto_001~1] shared_Envelope: request_id + oneof of all
 // protocol payloads. Generated from the framework schema
 // (sw/lib/c/shared/proto/shared.proto), which imports this board's

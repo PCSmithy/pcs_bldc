@@ -13,6 +13,6 @@ PY=.venv/Scripts/python
   --proto-path=sw/lib/c/shared/proto \
   --proto-path=sw/proto \
   --output-dir=sw/fw/src/lib/protobuf/generated \
-  shared.proto board.proto
+  shared.proto trace.proto board.proto
 
 echo "Generated sw/fw/src/lib/protobuf/generated/{shared,board}.pb.{h,c}"

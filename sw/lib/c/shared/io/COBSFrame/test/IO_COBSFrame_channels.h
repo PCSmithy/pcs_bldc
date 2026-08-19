@@ -6,8 +6,9 @@
 /* Defines */
 
 // Largest decoded frame payload any channel may declare; sizes the driver's
-// static assembly/held-frame buffers.
-#define IO_COBSFRAME_MAX_PAYLOAD  256U
+// static assembly/held-frame buffers. Mirrors the fw seam's 448 so the suite
+// exercises the deployed bound.
+#define IO_COBSFRAME_MAX_PAYLOAD  448U
 
 /* Typedefs */
 

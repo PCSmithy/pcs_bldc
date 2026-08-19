@@ -140,10 +140,10 @@ static void test_connection_status(void)
     TEST_ASSERT_TRUE(IO_serial_init(&config));
 
     HW_USB_sim_setConnected(true);
-    TEST_ASSERT_TRUE(IO_serial_connected(IO_SERIAL_CHANNEL_CDC));
+    TEST_ASSERT_TRUE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
 
     HW_USB_sim_setConnected(false);
-    TEST_ASSERT_FALSE(IO_serial_connected(IO_SERIAL_CHANNEL_CDC));
+    TEST_ASSERT_FALSE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
 }
 
 /* ---- fw~conn_serial_006: free transmit capacity ---- */

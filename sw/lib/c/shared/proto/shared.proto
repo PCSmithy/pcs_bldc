@@ -11,6 +11,7 @@ syntax = "proto3";
 package shared;
 
 import "board.proto";
+import "trace.proto";
 
 // Every frame payload is exactly one Envelope. request_id correlates a
 // Response to the request that caused it; board-initiated stream messages
@@ -25,7 +26,14 @@ message Envelope {
     IdentityRequest identity_request = 5;
     Identity        identity         = 6;
 
-    // trace feature: 30..59 (arrives with the signal-trace work)
+    // trace feature: 30..59
+    trace.WatchRequest       watch_request        = 30;
+    trace.TraceStatus        trace_status         = 31;
+    trace.TraceStatusRequest trace_status_request = 32;
+    trace.Samples            samples              = 33;
+    trace.ReadRequest        read_request         = 34;
+    trace.ReadReply          read_reply           = 35;
+    trace.WriteRequest       write_request        = 36;
 
     // board extension point — the only board-typed fields; every board.proto
     // defines exactly these three message names. Request/Reply are the

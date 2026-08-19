@@ -13,6 +13,8 @@ target_include_directories(test_app_server_config PRIVATE
 target_link_libraries(test_app_server_config PRIVATE
   app_server           # app_server.h + transitive frame/serial/binding paths
   mock_hw_ADC          # shared shadow HW_ADC.h + injectable volts
+  lib_build
+  lib_utils
   freertos_host_hooks
   unity
 )

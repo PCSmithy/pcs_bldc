@@ -6,7 +6,9 @@
 
 /* Defines */
 
-#define HW_USB_SIM_BUF  512U
+// Sized past the frame cap's wire expansion so tests and SIL scenarios can
+// stage whole max-size frames (watch lists in, Samples out) in one pass.
+#define HW_USB_SIM_BUF  2048U
 
 /* Private Data Definitions */
 

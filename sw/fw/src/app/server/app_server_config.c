@@ -7,10 +7,21 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include "lib_build.h"
+#include "lib_utils.h"
+
 #include "HW_ADC.h"
 #include "app_motorControl.h"
 
 /* Defines */
+
+// Trace-service resources (fw~conn_trace_001). Link budget is 90% of the
+// USB FS bulk ceiling. The RAM point (32 watches + 2 KB ring) matches the
+// 256-byte Samples cap exactly (32 x 8 B worst tick) and leaves SRAM
+// headroom for the motor-control application.
+#define APP_SERVER_WATCH_CAPACITY          (32U)
+#define APP_SERVER_SAMPLE_RAM_BYTES        (2048U)
+#define APP_SERVER_LINK_BUDGET_BYTES_PER_S (1100000U)
 
 // VBUS sense front end (board dividers). Voltage: 0.15 V/V divider.
 // Current: INA180A2 over 12 mOhm, 0.6 V/A.
@@ -27,6 +38,46 @@ static void app_server_config_private_handleRequest(const board_Request * const 
                                                     shared_Response * const response);
 static bool app_server_config_private_buildTelemetry(board_Telemetry * const telemetry);
 
+/* Private Data Definitions */
+
+static app_server_watch_S app_server_config_watchStorage[2U * APP_SERVER_WATCH_CAPACITY];
+static uint8_t app_server_config_sampleStorage[APP_SERVER_SAMPLE_RAM_BYTES];
+
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+
+// Identity-mapped MCU memory: all of SRAM readable and writable, all of
+// flash read-only.
+static const app_server_region_S app_server_config_readableRegions[] =
+{
+    { .start = 0x20000000U, .length = 32U * 1024U,  .base = 0x20000000U },
+    { .start = 0x08000000U, .length = 128U * 1024U, .base = 0x08000000U },
+};
+static const app_server_region_S app_server_config_writableRegions[] =
+{
+    { .start = 0x20000000U, .length = 32U * 1024U, .base = 0x20000000U },
+};
+
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+
+// Hosted pointers don't fit the 32-bit protocol address space, so the sim
+// backs an SRAM-like protocol range with a dedicated window. Word [0] is a
+// 1 kHz counter task_1ms increments — the SIL trace scenarios' known signal;
+// the rest is scratch for read/write scenarios.
+uint32_t app_server_simTraceWindow32[256];
+
+static const app_server_region_S app_server_config_readableRegions[] =
+{
+    { .start = 0x20000000U, .length = sizeof(app_server_simTraceWindow32),
+      .base = (uintptr_t) app_server_simTraceWindow32 },
+};
+static const app_server_region_S app_server_config_writableRegions[] =
+{
+    { .start = 0x20000000U, .length = sizeof(app_server_simTraceWindow32),
+      .base = (uintptr_t) app_server_simTraceWindow32 },
+};
+
+#endif
+
 /* Public Data Definitions */
 
 // Single-instance config: the server answers the CDC protocol channel; the
@@ -36,6 +87,17 @@ const app_server_config_S app_server_config =
 {
     .frame          = IO_COBSFRAME_CHANNEL_CDC,
     .serial         = IO_SERIAL_CHANNEL_CDC,
+
+    .readableRegions     = app_server_config_readableRegions,
+    .readableRegionCount = COUNTOF(app_server_config_readableRegions),
+    .writableRegions     = app_server_config_writableRegions,
+    .writableRegionCount = COUNTOF(app_server_config_writableRegions),
+    .watchStorage        = app_server_config_watchStorage,
+    .watchCapacity       = APP_SERVER_WATCH_CAPACITY,
+    .sampleStorage       = app_server_config_sampleStorage,
+    .sampleRamBudgetBytes = APP_SERVER_SAMPLE_RAM_BYTES,
+    .linkBudgetBytesPerS  = APP_SERVER_LINK_BUDGET_BYTES_PER_S,
+
     .handleRequest  = app_server_config_private_handleRequest,
     .buildTelemetry = app_server_config_private_buildTelemetry,
 };

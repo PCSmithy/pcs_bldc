@@ -37,7 +37,9 @@ Sub-folders are created when a topic gets its first spec.
 - `conn/` — device↔app connectivity (the firmware side). Per-area sub-topic
   IDs: `fw~conn_serial_*` (IO_serial byte-stream transport over USB CDC),
   `fw~conn_proto_*` (protobuf schema + IO_COBSFrame framing),
-  `fw~conn_server_*` (app_server request dispatch)
+  `fw~conn_server_*` (app_server request dispatch), `fw~conn_trace_*`
+  (app_server trace services: watch streaming, memory read/write,
+  trace capability report)
 - `motion/` — velocity loop, position loop, trajectory generator
 - `drivers/` — AS5048 encoder, ADC current sensing, USB CDC stack
 - `telemetry/` — USB streaming frame format, ring buffers, sample-rate

@@ -22,6 +22,8 @@ add_custom_command(
   OUTPUT
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/shared.pb.c
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/shared.pb.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/trace.pb.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated/trace.pb.h
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/board.pb.c
     ${CMAKE_CURRENT_SOURCE_DIR}/generated/board.pb.h
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/generated
@@ -29,17 +31,20 @@ add_custom_command(
     --proto-path=${PCS_SHARED_PROTO_DIR}
     --proto-path=${PCS_BOARD_PROTO_DIR}
     --output-dir=${CMAKE_CURRENT_SOURCE_DIR}/generated
-    shared.proto board.proto
+    shared.proto trace.proto board.proto
   DEPENDS
     ${PCS_SHARED_PROTO_DIR}/shared.proto
     ${PCS_SHARED_PROTO_DIR}/shared.options
+    ${PCS_SHARED_PROTO_DIR}/trace.proto
+    ${PCS_SHARED_PROTO_DIR}/trace.options
     ${PCS_BOARD_PROTO_DIR}/board.proto
-  COMMENT "nanopb: regenerating lib/protobuf/generated/{shared,board}.pb.{h,c}"
+  COMMENT "nanopb: regenerating lib/protobuf/generated/{shared,trace,board}.pb.{h,c}"
   VERBATIM
 )
 
 add_library(lib_protobuf_config STATIC
   generated/shared.pb.c
+  generated/trace.pb.c
   generated/board.pb.c
 )
 target_include_directories(lib_protobuf_config PUBLIC . generated)
