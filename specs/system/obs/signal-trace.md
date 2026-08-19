@@ -32,4 +32,4 @@ Covers:
   infrastructure" — control loop internals, references, estimator
   states, raw sensor data at meaningful rates.)
 
-Needs: fw, test
+Needs: fw, app, test
