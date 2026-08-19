@@ -30,7 +30,6 @@
 
 mod backend;
 mod duplex;
-mod dwarf;
 pub mod engine;
 pub mod log;
 pub mod member;

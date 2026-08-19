@@ -13,7 +13,7 @@
 //! data fed by this resolver.
 
 use crate::duplex::{tx_rx_ids, DuplexHandle, DuplexRouter};
-use crate::dwarf::{DwarfMap, Leaf, Scalar};
+use dwarf_map::{scalar_byte_size, DwarfMap, Leaf, Scalar};
 use crate::log::LogLevel;
 use crate::member::{Member, MemberCtx};
 use crate::signal::{SignalId, Value};
@@ -1687,17 +1687,6 @@ unsafe fn write_uint(p: *mut u8, size: u64, v: u64) {
         4 => (p as *mut u32).write_unaligned(v as u32),
         8 => (p as *mut u64).write_unaligned(v),
         _ => panic!("unsupported enum size {size}"),
-    }
-}
-
-/// The byte width of a firmware [`Scalar`] leaf — the size the shadow sweep reads
-/// and compares for that leaf.
-fn scalar_byte_size(kind: Scalar) -> usize {
-    match kind {
-        Scalar::U8 | Scalar::I8 | Scalar::Bool => 1,
-        Scalar::U16 | Scalar::I16 => 2,
-        Scalar::U32 | Scalar::I32 | Scalar::F32 => 4,
-        Scalar::U64 | Scalar::I64 | Scalar::F64 => 8,
     }
 }
 

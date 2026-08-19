@@ -6,9 +6,9 @@ publish = false
 description = "Clairvoyant software-in-the-loop: run embedded firmware in a deterministic virtual world with total white-box state visibility."
 
 [dependencies]
+dwarf_map = { path = "../../lib/rust/dwarf_map" }
 libloading = "0.8"
 object = "0.36"
-gimli = "0.31"
 indexmap = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

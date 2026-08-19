@@ -1,0 +1,10 @@
+[package]
+name = "dwarf_map"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "DWARF reader for firmware images: resolve variable paths to link-time addresses and scalar leaf types, and enumerate the traceable static namespace."
+
+[dependencies]
+object = "0.36"
+gimli = "0.31"

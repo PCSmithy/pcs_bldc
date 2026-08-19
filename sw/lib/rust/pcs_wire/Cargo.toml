@@ -1,0 +1,6 @@
+[package]
+name = "pcs_wire"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "The board protocol's wire codec: COBS-delimited, CRC-32-validated frames, whole-buffer and streaming deframers."

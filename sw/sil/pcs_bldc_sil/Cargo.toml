@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 voyant = { path = "../voyant" }
+pcs_wire = { path = "../../lib/rust/pcs_wire" }
 prng = { path = "../../lib/rust/prng" }
 
 [lib]

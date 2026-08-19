@@ -7,6 +7,11 @@
 #                project implements.
 # pcs_bldc_sil — the pcs_bldc instantiation: implements voyant's traits and
 #                wires up this board's firmware, models, and routes.
+#
+# The shared sw/lib/rust crates (prng, dwarf_map, pcs_wire — also consumed by
+# the desktop app) stay workspace-less: cargo forbids members above the
+# workspace root, so each consumer workspace resolves them by path and
+# tools/run_sil.sh runs their test suites explicitly.
 [workspace]
 resolver = "2"
 members = ["voyant", "pcs_bldc_sil"]

@@ -59,10 +59,10 @@ fn dsym_dwarf_path(lib: &Path) -> Option<PathBuf> {
 
 type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
 
-/// A DWARF base/enum scalar leaf kind. The cvar resolver coerces these into the
-/// logical [`crate::signal::Value`].
+/// A DWARF base/enum scalar leaf kind. Consumers coerce these into their own
+/// value currency (the SIL's `Value`, the app's plot samples).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Scalar {
+pub enum Scalar {
     U8,
     U16,
     U32,
@@ -79,16 +79,27 @@ pub(crate) enum Scalar {
 /// A resolved leaf type: a plain scalar, or an enum (identified by its type
 /// offset, so the cvar resolver can map the raw integer to an enumerator name).
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Leaf {
+pub enum Leaf {
     Scalar(Scalar),
     Enum(usize),
+}
+
+/// The byte width of a [`Scalar`] leaf — the size a consumer reads, watches,
+/// or compares for that leaf.
+pub fn scalar_byte_size(kind: Scalar) -> usize {
+    match kind {
+        Scalar::U8 | Scalar::I8 | Scalar::Bool => 1,
+        Scalar::U16 | Scalar::I16 => 2,
+        Scalar::U32 | Scalar::I32 | Scalar::F32 => 4,
+        Scalar::U64 | Scalar::I64 | Scalar::F64 => 8,
+    }
 }
 
 /// The result of a whole-namespace leaf enumeration ([`DwarfMap::enumerate_leaves`]).
 /// `paths` are traceable scalar/enum leaves in the resolver's path syntax
 /// (`var.member[i].field`); the counters report what the exclusion policy dropped.
 #[derive(Default)]
-pub(crate) struct LeafEnumeration {
+pub struct LeafEnumeration {
     /// Every traceable leaf path (scalars, expanded struct members + array
     /// elements), sorted deterministically by top-level variable then walk order.
     pub paths: Vec<String>,
@@ -163,13 +174,13 @@ struct Maps {
     enums: HashMap<usize, EnumInfo>,
 }
 
-pub(crate) struct DwarfMap(Maps);
+pub struct DwarfMap(Maps);
 
 impl DwarfMap {
     /// Load the firmware's DWARF given the shared-library path. ELF/PE embed it
     /// in the image; macOS ld64 leaves it in a sibling `.dSYM` bundle (produced
     /// by `dsymutil`), so fall back to that when the image itself carries none.
-    pub(crate) fn from_lib_path(lib: &Path) -> Result<Self, Box<dyn Error>> {
+    pub fn from_lib_path(lib: &Path) -> Result<Self, Box<dyn Error>> {
         let image = std::fs::read(lib)?;
         if image_has_dwarf(&image) {
             return Self::parse(&image);
@@ -188,7 +199,7 @@ impl DwarfMap {
 
     /// Parse DWARF from an object image (ELF/PE firmware, or the Mach-O inside a
     /// macOS `.dSYM`).
-    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let object = object::File::parse(bytes)?;
 
         let load =
@@ -208,7 +219,7 @@ impl DwarfMap {
     /// Link-time address of a top-level variable. A piece-composed (SRA'd)
     /// variable has no single whole-object address, so it yields `None` — it
     /// cannot serve as an ASLR anchor.
-    pub(crate) fn var_addr(&self, name: &str) -> Option<u64> {
+    pub fn var_addr(&self, name: &str) -> Option<u64> {
         match self.0.vars.get(name) {
             Some((VarLoc::Addr(addr), _)) => Some(*addr),
             _ => None,
@@ -218,17 +229,17 @@ impl DwarfMap {
     /// Link-time entry address (`DW_AT_low_pc`) of a function. Basis matches
     /// [`var_addr`](Self::var_addr) — a file-relative vaddr in a PIC image — so the
     /// same ASLR `slide` (`runtime - link`) applies to either anchor kind.
-    pub(crate) fn func_addr(&self, name: &str) -> Option<u64> {
+    pub fn func_addr(&self, name: &str) -> Option<u64> {
         self.0.functions.get(name).copied()
     }
 
     /// Count of top-level variables carrying a link address (diagnostics).
-    pub(crate) fn var_count(&self) -> usize {
+    pub fn var_count(&self) -> usize {
         self.0.vars.len()
     }
 
     /// Count of defining functions carrying a `low_pc` (diagnostics).
-    pub(crate) fn func_count(&self) -> usize {
+    pub fn func_count(&self) -> usize {
         self.0.functions.len()
     }
 
@@ -238,7 +249,7 @@ impl DwarfMap {
     /// maps it through the variable's location — a plain base+offset for a
     /// whole-object address, or the covering piece for a piece-composed static
     /// (None if the leaf lands in a storage-less piece or spans pieces).
-    pub(crate) fn resolve(&self, path: &str) -> Option<(u64, Leaf)> {
+    pub fn resolve(&self, path: &str) -> Option<(u64, Leaf)> {
         let mut segs = path.split('.');
 
         let (name, indices) = split_indices(segs.next()?)?;
@@ -277,7 +288,7 @@ impl DwarfMap {
     /// prefix reaches into it, forcing just the reached element(s). Multi-dimensional
     /// and unknown-length arrays are skipped whole (resolver is 1-D only). Non-scalar
     /// leaves (pointers, functions, opaque aggregates) are skipped and counted.
-    pub(crate) fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
+    pub fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
         let mut ctx = EnumCtx {
             threshold,
             includes,
@@ -380,17 +391,17 @@ impl DwarfMap {
     }
 
     /// The byte size of an enum type.
-    pub(crate) fn enum_size(&self, off: usize) -> Option<u64> {
+    pub fn enum_size(&self, off: usize) -> Option<u64> {
         self.0.enums.get(&off).map(|e| e.size)
     }
 
     /// The enumerator name for a numeric value.
-    pub(crate) fn enum_name(&self, off: usize, value: i64) -> Option<&str> {
+    pub fn enum_name(&self, off: usize, value: i64) -> Option<&str> {
         self.0.enums.get(&off)?.values.get(&value).map(String::as_str)
     }
 
     /// The numeric value for an enumerator name (for writes).
-    pub(crate) fn enum_value(&self, off: usize, name: &str) -> Option<i64> {
+    pub fn enum_value(&self, off: usize, name: &str) -> Option<i64> {
         let e = self.0.enums.get(&off)?;
         e.values.iter().find(|(_, n)| *n == name).map(|(&v, _)| v)
     }
@@ -816,12 +827,21 @@ fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
     }
 }
 
-#[cfg(test)]
 impl DwarfMap {
+    /// The byte size of a resolved [`Leaf`] — a scalar's fixed width, or an
+    /// enum's DWARF `byte_size` (`None` for an unknown enum offset).
+    pub fn leaf_size(&self, leaf: Leaf) -> Option<usize> {
+        match leaf {
+            Leaf::Scalar(kind) => Some(scalar_byte_size(kind)),
+            Leaf::Enum(off) => self.enum_size(off).map(|s| s as usize),
+        }
+    }
+
     /// Build a [`DwarfMap`] with only the var/func address maps populated — for
-    /// anchor-selection tests in other modules (which cannot reach the private
+    /// anchor-selection tests in consumer crates (which cannot reach the private
     /// [`Maps`]). Types are irrelevant to the anchor (only the address delta matters).
-    pub(crate) fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
+    #[doc(hidden)]
+    pub fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
         let mut m = Maps::default();
         for (n, a) in vars {
             m.vars.insert((*n).to_string(), (VarLoc::Addr(*a), 0));
