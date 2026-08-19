@@ -236,7 +236,6 @@ drivers grew `HW_<Module>_sim.h` headers exposing `HW_<Module>_sim_*`
 inject/inspect functions (set pin state, inject SPI RX, read USB TX, stall
 ADC, ...). Files, as of 2026-07-04:
 
-- `sw/lib/c/shared/hw/ADC/sim/HW_ADC_sim.h`
 - `sw/lib/c/shared/hw/DMA/sim/HW_DMA_sim.h`
 - `sw/lib/c/shared/hw/GPIO/sim/HW_GPIO_sim.h`
 - `sw/lib/c/shared/hw/OPAMP/sim/HW_OPAMP_sim.h`
@@ -287,9 +286,14 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   (CDC RX) joins the defect baseline until a firmware RX consumer exists
   (desktop-app protocol); the `usb_cdc` sig_type item above stands on its
   own for telemetry-as-signals.
-- ☐ **ADC** (conversion-stall), **DMA**, **OPAMP** — final sweep after sprint
-  stage 7: pick per-capability replacements (test-owned hooks double or DWARF
-  write), rewrite/retire the suites, delete the headers.
+- ☑ **ADC** — DONE 2026-08-18: conversion-stall injection and multimode
+  inspection move to SIL DWARF write/read (`tests/adc_faults.rs`); sim
+  `HW_ADC_init` is re-entrant, so the Unity suite's clean slate is a rejected
+  init and the config-rejection / readout-guard tests stay there;
+  `HW_ADC_sim.h` deleted.
+- ☐ **DMA**, **OPAMP** — final sweep after sprint stage 7: pick
+  per-capability replacements (test-owned hooks double or DWARF write),
+  rewrite/retire the suites, delete the headers.
 - ☐ **Exit criterion / enforcement:** no `*_sim.h` files remain under
   `sw/lib/c/shared/hw/`, and a grep for `_sim_` there comes back empty —
   worth a CI lint line once the last header falls, so the crutch can't grow

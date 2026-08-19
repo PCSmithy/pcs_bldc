@@ -1,5 +1,4 @@
 #include "HW_ADC.h"
-#include "HW_ADC_sim.h"
 #include "unity.h"
 
 #define VREF        (3.3f)
@@ -39,7 +38,9 @@ static void buildGoodConfig(void)
 
 void setUp(void)
 {
-    HW_ADC_sim_reset();
+    // A rejected init is the clean slate: init drops the driver to its
+    // uninitialized state before it looks at the config.
+    (void)HW_ADC_init(NULL);
     buildGoodConfig();
 }
 
@@ -89,9 +90,17 @@ static void test_init_rejects_injected_gap(void)
 static void test_software_polled_initializes_and_samples(void)
 {
     TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+
+    // No pass has run yet: status reports IDLE.
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_FAULT;
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_IDLE, status);
+
     HW_ADC_run1ms();
     uint32_t count = 0U;
     TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
 }
 
 /* ---- fw~hal_adc_002: regular-sequence channel/input addressing ---- */
@@ -133,42 +142,6 @@ static void test_sampling_before_init_is_noop(void)
     HW_ADC_run1ms();
     uint32_t count = 0U;
     TEST_ASSERT_FALSE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
-}
-
-// [test->fw~hal_adc_004~1]
-static void test_conversion_fault_status_and_count_retained(void)
-{
-    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-
-    // A read before any pass: status reports IDLE.
-    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_FAULT;
-    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
-    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_IDLE, status);
-
-    // A clean pass: status OK, count populated.
-    HW_ADC_run1ms();
-    uint32_t good = 0U;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &good));
-    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
-    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
-
-    // Inject a stalled conversion: status FAULT, prior count retained.
-    HW_ADC_sim_setConversionStall(HW_ADC_CHANNEL_1, true);
-    HW_ADC_run1ms();
-    uint32_t afterStall = 0U;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &afterStall));
-    TEST_ASSERT_EQUAL_UINT32(good, afterStall);
-    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
-    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_FAULT, status);
-
-    // Clearing the stall resumes sampling: status OK, count advances.
-    HW_ADC_sim_setConversionStall(HW_ADC_CHANNEL_1, false);
-    HW_ADC_run1ms();
-    uint32_t recovered = 0U;
-    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &recovered));
-    TEST_ASSERT_TRUE(recovered != afterStall);
-    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
-    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
 }
 
 // [test->fw~hal_adc_004~1]
@@ -226,18 +199,6 @@ static void test_injected_sampling_and_readout(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, expected, volts);
 }
 
-/* ---- fw~hal_adc_007: dual-ADC multimode configuration ---- */
-// [test->fw~hal_adc_007~1]
-static void test_multimode_applied_to_master_only(void)
-{
-    adcChannels[HW_ADC_CHANNEL_1].configureMultimode = true;   // master
-    adcChannels[HW_ADC_CHANNEL_2].configureMultimode = false;  // slave
-    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-
-    TEST_ASSERT_TRUE(HW_ADC_sim_getMultimodeApplied(HW_ADC_CHANNEL_1));
-    TEST_ASSERT_FALSE(HW_ADC_sim_getMultimodeApplied(HW_ADC_CHANNEL_2));
-}
-
 int main(void)
 {
     UNITY_BEGIN();
@@ -254,14 +215,11 @@ int main(void)
     RUN_TEST(test_channels_addressed_independently);
 
     RUN_TEST(test_sampling_before_init_is_noop);
-    RUN_TEST(test_conversion_fault_status_and_count_retained);
     RUN_TEST(test_status_failure_modes);
 
     RUN_TEST(test_readout_failure_modes);
 
     RUN_TEST(test_injected_sampling_and_readout);
-
-    RUN_TEST(test_multimode_applied_to_master_only);
 
     return UNITY_END();
 }

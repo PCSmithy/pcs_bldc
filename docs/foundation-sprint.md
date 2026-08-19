@@ -94,7 +94,8 @@ ADC (`HW_ADC`) — closed in the Phase 1/2 pass:
   now rejects gappy/duplicate regular ranks (must be contiguous `1..N`).
 - ✅ **`run1ms` fault status** (`fw~hal_adc_004~1`). `run1ms` stays `void`; each
   channel exposes a pollable `HW_ADC_getStatus` (IDLE/OK/FAULT) set on a poll
-  timeout. Sim models faults via `HW_ADC_sim_setConversionStall`; tested.
+  timeout. Sim models faults via a per-channel stall flag SIL writes by DWARF;
+  tested.
 - ✅ **Wired into the runtime** (Phase 2). `HW_ADC_run1ms` runs in the 1 ms
   task; the USB task prints ADC1_IN6 / ADC2_IN11 counts + volts + status over
   CDC for hardware verification. (Hardware check still pending on-bench.)

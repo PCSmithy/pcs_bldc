@@ -46,6 +46,7 @@ typedef enum
 typedef enum
 {
     HW_ADC_CONVERSION_STATUS_IDLE,
+    HW_ADC_CONVERSION_STATUS_BUSY, // a non-blocking sequence is in flight
     HW_ADC_CONVERSION_STATUS_OK,
     HW_ADC_CONVERSION_STATUS_FAULT,
 } HW_ADC_conversionStatus_E;

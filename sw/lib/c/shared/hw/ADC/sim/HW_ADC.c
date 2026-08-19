@@ -3,7 +3,6 @@
 #include "lib_types.h"
 
 #include "HW_ADC.h"
-#include "HW_ADC_sim.h"
 #include "SIL_ports.h"
 
 /* Defines */
@@ -22,8 +21,8 @@ typedef struct
     HW_ADC_channelData_S channelData[HW_ADC_CHANNEL_COUNT];
     bool multimodeApplied[HW_ADC_CHANNEL_COUNT];
 
-    // Per-channel outcome of the last _run1ms pass, and the SIL injection
-    // hook that forces a pass to fault (HW_ADC_sim_setConversionStall).
+    // Per-channel outcome of the last _run1ms pass; a stalled channel forces
+    // that pass to fault. SIL writes the stall flag by DWARF.
     HW_ADC_conversionStatus_E status[HW_ADC_CHANNEL_COUNT];
     bool conversionStall[HW_ADC_CHANNEL_COUNT];
 
@@ -69,6 +68,18 @@ static uint32_t HW_ADC_private_voltsToCounts(double volts,
 bool HW_ADC_init(const HW_ADC_config_S * const config)
 {
     bool ret = false;
+
+    // Re-entrant: every call, accepted or rejected, drops the driver back to
+    // its uninitialized state, so a second init in one process is a clean slate.
+    *data = (HW_ADC_data_S){ 0 };
+    for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
+    {
+        for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)
+        {
+            data->portHandles[ch][input] = SIL_PORTS_HANDLE_INVALID;
+        }
+    }
+
     if ((config != NULL) &&
         (config->channels != NULL) &&
         (config->numChannels <= HW_ADC_CHANNEL_COUNT))
@@ -121,13 +132,6 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
             data->config       = config;
             data->tickCounter  = 0U;
             data->initialized  = true;
-            for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
-            {
-                for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)
-                {
-                    data->portHandles[ch][input] = SIL_PORTS_HANDLE_INVALID;
-                }
-            }
             for (size_t ch = 0U; ch < config->numChannels; ch++)
             {
                 const HW_ADC_channelConfig_S * const channelConfig = &config->channels[ch];
@@ -303,28 +307,4 @@ bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * con
         ret = true;
     }
     return ret;
-}
-
-void HW_ADC_sim_reset(void)
-{
-    *data = (HW_ADC_data_S){ 0 };
-}
-
-void HW_ADC_sim_setConversionStall(HW_ADC_channels_E channel, bool stall)
-{
-    if (channel < HW_ADC_CHANNEL_COUNT)
-    {
-        data->conversionStall[channel] = stall;
-    }
-}
-
-// SIL inspection: was multimode applied for this channel at init?
-bool HW_ADC_sim_getMultimodeApplied(HW_ADC_channels_E channel)
-{
-    bool applied = false;
-    if (channel < HW_ADC_CHANNEL_COUNT)
-    {
-        applied = data->multimodeApplied[channel];
-    }
-    return applied;
 }
