@@ -67,7 +67,14 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial, ...)
 │   │   │       ├── dev/              Device drivers (switch, ...)
 │   │   │       └── app/              App-layer modules (rgbLedRing, ...)
-│   │   └── rust/         Rust libraries (future)
+│   │   └── rust/         Rust libraries, workspace-less path deps:
+│   │       ├── prng/         Deterministic PRNG (SIL models)
+│   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
+│   │       ├── pcs_wire/     Protocol wire codec (COBS+CRC frames, deframers)
+│   │       └── pcs_proto/    prost schema bindings (protox — no protoc needed)
+│   ├── gui/              Desktop operator app (Tauri 2: Rust core `src-tauri/`
+│   │                     + static webview frontend `dist/`; own workspace)
+│   ├── sil/              SIL harness workspace (voyant + pcs_bldc_sil)
 │   └── fw/               Firmware project (pcs_bldc-specific integration)
 │       ├── stm32cube/g4/ STM32CubeMX-generated reference (not built directly)
 │       └── src/

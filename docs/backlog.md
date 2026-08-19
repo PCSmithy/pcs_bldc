@@ -147,3 +147,51 @@ that owns the constraint.
 
 **Origin:** bench enumeration failure on the serial-protocol branch
 (2026-08-16), root-caused to the unguarded TinyUSB CDC read path.
+
+## OFT trace scan time (build output under sw/)
+
+**When:** when the ~9 s `oft trace` round trip starts to chafe (it runs
+after every spec edit); it will grow with the app's dependency tree.
+
+**What it is:** the canonical invocation `tools/oft/oft.sh trace specs/
+sw/ README.md` crawls everything under `sw/`, which now includes Rust
+build output (`sw/gui/src-tauri/target/` ~200 MB after the Tauri
+scaffold, `sw/sil/target/`, `sw/lib/rust/*/target/`). OFT skips binary
+content but still visits every file; measured 2026-08-18: ~9 s wall vs
+~5 s before the app scaffold. No correctness impact — the 42-defect
+baseline is unchanged, no false tags.
+
+**The fix, when picked up:** either (a) have `oft.sh` (or a thin
+wrapper) enumerate source roots instead of `sw/` wholesale — `sw/fw
+sw/lib/c sw/proto sw/sil/voyant sw/sil/pcs_bldc_sil sw/lib/rust/*/src
+sw/gui/src-tauri/src sw/gui/dist` — accepting the list needs upkeep as
+the tree grows, or (b) stage a filtered copy/file-list excluding any
+`target/`, `build/`, `gen/` dir before invoking OFT. Update CLAUDE.md's
+verification command and CI in the same change so the scanned set stays
+identical everywhere.
+
+## Own USB identity (VID/PID + device name in the app's port list)
+
+**When:** cosmetic until the port picker matters to someone other than
+us; required before any public/field use (the placeholder VID squats on
+TinyUSB's test space).
+
+**What it is:** the board enumerates as TinyUSB's placeholder
+`cafe:4001` (`sw/lib/c/shared/hw/USB/stm32g4/HW_USB_descriptors.c:7`,
+which already carries the TODO). The descriptor strings are already
+"pcs_bldc"/"pcs_bldc CDC", but Windows shows "USB Serial Device"
+regardless — the in-box usbser driver's INF supplies the friendly
+name, not the device's iProduct — so a string change alone won't fix
+the port list.
+
+**The fix, when picked up:**
+
+1. Firmware: request a free PID under the pid.codes VID (0x1209) via
+   their GitHub PR process; drop it into USB_VID/USB_PID. The new
+   identity re-enumerates fresh (no stale friendly-name cache).
+2. App: map the known VID:PID to the board's display name in
+   `list_ports` (`sw/gui/src-tauri/src/session.rs`) — e.g.
+   "pcs_bldc [1209:xxxx]" — and sort/badge matching ports first. This
+   is also the discovery seam the multi-device stretch goal
+   (sys~arch_004) wants: enumerate = filter by our VID:PID.
+3. `tools/pcs_client.py` can reuse the same mapping for port hints.

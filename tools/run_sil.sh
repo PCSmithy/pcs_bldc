@@ -117,7 +117,7 @@ fi
 # The shared sw/lib/rust crates are workspace-less (each consumer workspace
 # resolves them by path), so their suites — dwarf_map's dSYM regressions
 # included — run here explicitly.
-for lib_crate in prng dwarf_map pcs_wire; do
+for lib_crate in prng dwarf_map pcs_wire pcs_proto; do
   echo "==> [3/4] Running shared-crate checks: $lib_crate"
   cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} \
     --manifest-path "$ROOT/sw/lib/rust/$lib_crate/Cargo.toml" || status=$?

@@ -1,0 +1,23 @@
+[package]
+name = "pcs_gui"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "pcs_bldc operator app: observe, command, and diagnose the board over its USB serial protocol."
+
+# Own workspace root: the app's dependency tree (tauri, serialport) stays out
+# of the SIL's lockfile; the shared sw/lib/rust crates are path deps.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = "4"
+prost = "0.13"
+pcs_wire = { path = "../../lib/rust/pcs_wire" }
+pcs_proto = { path = "../../lib/rust/pcs_proto" }
+dwarf_map = { path = "../../lib/rust/dwarf_map" }
