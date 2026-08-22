@@ -146,6 +146,12 @@ static void buildGoodConfig(void)
         .complementary = true, .compare = PWM_COMPARE, .inactiveLevel = 0U,
         .channelNameStr = "PWM_W" };
 
+    // Non-complementary trigger-point channel on its own OC unit; unnamed so
+    // the port set stays the three PWM pairs + MOE.
+    timChannels[HW_TIM_CHANNEL_INJ_TRIG] = (HW_TIM_channelConfig_S){
+        .peripheral = PWM_PERIPH, .role = HW_TIM_ROLE_OUTPUT_COMPARE, .ocUnit = 3U,
+        .complementary = false, .compare = PWM_COMPARE, .inactiveLevel = 0U };
+
     timConfig = (HW_TIM_config_S){
         .peripherals    = timPeripherals,
         .numPeripherals = HW_TIM_PERIPHERAL_COUNT,

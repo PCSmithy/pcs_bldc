@@ -355,6 +355,9 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
             {
                 ok = (HAL_TIMEx_PWMN_Stop(htim, channelConfig->channel) == HAL_OK);
             }
+            // HAL_TIM_PWM(N)_Stop clears CEN once no CCx unit is enabled; the
+            // counter is a free-running timebase (TRGO/TRGO2), so re-assert it.
+            __HAL_TIM_ENABLE(htim);
         }
         ret = ok;
     }
