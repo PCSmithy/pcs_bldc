@@ -34,12 +34,6 @@ typedef struct
 
 /* Public Function Declarations */
 
-// Initialize every peripheral and logical channel in `config`. Validates the
-// config (NULL pointers, bad counts, unsupported count direction, an
-// out-of-range dead-time, a channel with an unsupported role or an
-// out-of-range peripheral/ocUnit, an initial compare exceeding the peripheral's
-// period), applies the library-managed init sequence, and starts each counter
-// with its outputs disabled. Returns false on any failure.
 bool HW_TIM_init(const HW_TIM_config_S * const config);
 
 // Read the present free-running counter value of a peripheral in raw counts.

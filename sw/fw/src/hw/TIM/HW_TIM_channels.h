@@ -12,5 +12,6 @@ typedef enum
     HW_TIM_CHANNEL_PWM_U,      // TIM1 CH1: phase-U complementary PWM
     HW_TIM_CHANNEL_PWM_V,      // TIM1 CH2: phase-V complementary PWM
     HW_TIM_CHANNEL_PWM_W,      // TIM1 CH3: phase-W complementary PWM
+    HW_TIM_CHANNEL_INJ_TRIG,   // TIM1 CH4: injected-ADC trigger point (TRGO2, no pin)
     HW_TIM_CHANNEL_COUNT,
 } HW_TIM_channels_E;
