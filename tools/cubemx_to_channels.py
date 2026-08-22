@@ -571,11 +571,11 @@ def sim_count_dir(counter_mode: str) -> str:
 
 
 def sim_trgo_source(trgo: str) -> str:
-    if trgo == "TIM_TRGO_UPDATE":
+    if trgo.endswith("_UPDATE"):
         return "HW_TIM_TRGO_UPDATE"
-    if trgo == "TIM_TRGO_RESET":
+    if trgo.endswith("_RESET"):
         return "HW_TIM_TRGO_NONE"
-    return "HW_TIM_TRGO_OC_MATCH"      # OC1REF / OC2REF / ...
+    return "HW_TIM_TRGO_OC_MATCH"      # OC1REF / OC2REF / ... (TRGO or TRGO2)
 
 
 def sim_trgo_oc_unit(trgo: str) -> int:
@@ -603,9 +603,16 @@ def sim_counts_per_us(inum: int, prescaler: str) -> int | None:
 
 
 def tim_trgo_constant(tim: TIMConfig) -> str:
+    """The trigger source the sim's single trigger output models. TRGO2 wins
+    when configured: it is the ADC-facing line (injected hardware triggers),
+    which is the output a sim consumer wires to."""
     if tim.master is None:
         return "TIM_TRGO_RESET"
-    return dict(tim.master).get("MasterOutputTrigger", "TIM_TRGO_RESET")
+    master = dict(tim.master)
+    trgo2 = master.get("MasterOutputTrigger2", "TIM_TRGO2_RESET")
+    if not trgo2.endswith("_RESET"):
+        return trgo2
+    return master.get("MasterOutputTrigger", "TIM_TRGO_RESET")
 
 
 def gen_tim_oc_macros(name: str, tim: TIMConfig,
@@ -714,7 +721,7 @@ def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> st
         body.append(f"    .deadTime               = {bdt.get('DeadTime', '0')}U,")
         body.append(f"    .hasBreakInput          = {'true' if break_on else 'false'},")
     trgo = tim_trgo_constant(tim)
-    has_trgo = trgo != "TIM_TRGO_RESET"
+    has_trgo = not trgo.endswith("_RESET")
     body.append(f"    .configureTrgo          = {'true' if has_trgo else 'false'},")
     if has_trgo:
         source = sim_trgo_source(trgo)
@@ -732,7 +739,7 @@ def gen_tim_macros(tims: list[TIMConfig],
         has_oc = bool(tim.oc_units)
         has_bdt = tim.bdt is not None
         has_brkin = bool(tim.break_inputs)
-        has_trgo = tim_trgo_constant(tim) != "TIM_TRGO_RESET"
+        has_trgo = not tim_trgo_constant(tim).endswith("_RESET")
 
         parts.append(f"// ----- {name} -----")
         parts.append("")

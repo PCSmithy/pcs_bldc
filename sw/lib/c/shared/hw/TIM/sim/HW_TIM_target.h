@@ -26,9 +26,20 @@ typedef enum
     HW_TIM_TRGO_OC_MATCH,   // counter reaches trgoOcUnit's compare value
 } HW_TIM_trgoSource_E;
 
+// Count direction at a trigger event. A center-aligned counter lands on an
+// OC compare value once per phase; the consumer (the sim ADC's edge select)
+// distinguishes the two. Update events and up-/down-counter matches report
+// the counter's direction.
+typedef enum
+{
+    HW_TIM_TRGO_CROSS_UP,
+    HW_TIM_TRGO_CROSS_DOWN,
+} HW_TIM_trgoCross_E;
+
 // Invoked once per trigger event a peripheral emits. `context` is the pointer
 // supplied to HW_TIM_registerTrgoCallback.
-typedef void (*HW_TIM_trgoCallback_F)(HW_TIM_peripheral_E peripheral, void * context);
+typedef void (*HW_TIM_trgoCallback_F)(HW_TIM_peripheral_E peripheral,
+                                      HW_TIM_trgoCross_E cross, void * context);
 
 // One timer peripheral. Lacks HAL handles; carries explicit scalar fields
 // the stm32g4 target derives from htim.Init.
