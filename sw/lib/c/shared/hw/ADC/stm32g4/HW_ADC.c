@@ -54,6 +54,10 @@ typedef struct
     HW_ADC_injectedCallback_F injectedConversionCompleteCallback;
     void * injectedConversionCompleteCallbackContext;
 
+    // Total HAL error-callback edges on this channel; never latches, never
+    // clears except at init.
+    uint32_t errorCount;
+
 } HW_ADC_channelData_S;
 
 typedef struct
@@ -132,6 +136,8 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
 {
     bool ret = true;
     const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
+
+    data->channelData[channel].errorCount = 0U;
 
     // Feature guard: reject trigger/transfer combinations the driver has not
     // built, rather than silently misconfiguring. Regular: software + polled
@@ -378,6 +384,14 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
     {
         data->channelData[channel].injectedConversionStatus = HW_ADC_CONVERSION_STATUS_BUSY;
         ret &= HAL_ADCEx_InjectedStart_IT(&data->channelData[channel].hadc) == HAL_OK;
+        if (ret)
+        {
+            // Start_IT arms per-conversion JEOC when EOCSelection is
+            // SINGLE_CONV (the regular path's setting); this driver's
+            // contract is sequence-complete, so arm JEOS instead.
+            __HAL_ADC_DISABLE_IT(&data->channelData[channel].hadc, ADC_IT_JEOC);
+            __HAL_ADC_ENABLE_IT(&data->channelData[channel].hadc, ADC_IT_JEOS);
+        }
     }
 
     return ret;
@@ -434,6 +448,7 @@ void HW_ADC_private_errorCallback(ADC_HandleTypeDef * hadc)
         {
             HW_ADC_channelData_S * const channelData = &data->channelData[channel];
 
+            channelData->errorCount++;
             channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_FAULT;
 
             if (channelData->injectedConversionCompleteCallback != NULL)
@@ -672,6 +687,20 @@ bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
         (out != NULL))
     {
         *out = data->channelData[channel].injectedConversionStatus;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_getErrorCount(HW_ADC_channels_E channel, uint32_t * const out)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT) &&
+        (out != NULL))
+    {
+        *out = data->channelData[channel].errorCount;
         ret = true;
     }
     return ret;
