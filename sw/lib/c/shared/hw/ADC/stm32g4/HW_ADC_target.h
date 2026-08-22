@@ -30,6 +30,13 @@ typedef struct
     ADC_InjectionConfTypeDef sConfig;
 } HW_ADC_injectedInputConfig_S;
 
+typedef enum
+{
+    HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
+    // expand with other entries from Table 167 in stm32g4 RM as needed
+    HW_ADC_TIMER_TRIGGER_COUNT,
+} HW_ADC_timerTrigger_E;
+
 // One ADC peripheral.
 //
 // Library-managed regular-path hadc.Init fields (whatever you put here
@@ -79,4 +86,13 @@ typedef struct
 
     // Injected sequence inputs, indexed by sequence position (dense).
     HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
+
+    HW_ADC_timerTrigger_E injectedTimerTrigger;
+    HW_ADC_triggerEdge_E  injectedTriggerEdge;
+
 } HW_ADC_channelConfig_S;
+
+// ADC1/2 shared-vector IRQ dispatch: stm32g4xx_it.c's ADC1_2_IRQHandler calls
+// this; it services every initialized peripheral's handle (the HAL no-ops the
+// one whose flags are clear).
+void HW_ADC_irqHandler(void);

@@ -21,6 +21,12 @@ typedef struct
     char * inputNameStr;         // human-readable; aids sim trace logs
 } HW_ADC_injectedInputConfig_S;
 
+
+typedef enum
+{
+    HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+} HW_ADC_timerTrigger_E;
+
 // One ADC peripheral. Lacks HAL handles; carries explicit numBits (the stm32g4
 // target derives it from Init.Resolution).
 typedef struct
@@ -40,4 +46,7 @@ typedef struct
 
     HW_ADC_inputConfig_S         inputs[HW_ADC_INPUTS_PER_CHANNEL];
     HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
+
+    HW_ADC_timerTrigger_E injectedTimerTrigger;
+    HW_ADC_triggerEdge_E  injectedTriggerEdge;
 } HW_ADC_channelConfig_S;

@@ -27,7 +27,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
     [HW_ADC_CHANNEL_1] =
     {
-        // ADC1: master of the ADC1+2 dual pair.
+        // ADC1: independent mode; injected U/V simultaneity comes from the
+        // shared TIM1 TRGO2 hardware trigger, not a dual-ADC pairing.
         .hadc =
         {
             .Instance = HW_ADC_CUBEMX_HADC_INSTANCE_ADC1,
@@ -39,8 +40,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
 
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
-        .injectedXferMode    = HW_ADC_XFER_POLLED,
+        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
+        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
         .vref                = 3.3f,
 
         .inputs         =
@@ -63,20 +64,31 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 },
             },
         },
-        .injectedInputs = { { 0 } },  // No injected inputs configured yet.
-                                  // FOC current sensing will put phase U on
-                                  // this channel's slot 0, with ADC2's slot 0
-                                  // = phase V, both triggered simultaneously
-                                  // by TIM1 in dual-injected mode (multimode
-                                  // becomes ADC_DUALMODE_INJECSIMULT). One
-                                  // injected slot per ADC; the dual-mode
-                                  // pairing is what gets the "exact same
-                                  // instant" sampling that FOC needs.
+        .injectedInputs =
+        {
+            [0] =
+            {
+                .enabled = true,
+                .sConfig =
+                {
+                    .InjectedChannel = ADC_CHANNEL_6, // Phase U ISENSE
+                    // injected rank inferred from 'injectedInputs' array index
+                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSingleDiff = ADC_SINGLE_ENDED,
+                    .InjectedOffsetNumber = ADC_OFFSET_NONE,
+                    .InjectedOffset = 0,
+                    .InjectedOffsetSign = ADC_OFFSET_SIGN_NEGATIVE,
+                    .InjectedOffsetSaturation = DISABLE,
+                }
+            }
+        },
+        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
+        .injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
     [HW_ADC_CHANNEL_2] =
     {
-        // ADC2: slave of the ADC1+2 dual pair.
+        // ADC2: independent mode, same shared-TRGO2 trigger as ADC1.
         .hadc =
         {
             .Instance = HW_ADC_CUBEMX_HADC_INSTANCE_ADC2,
@@ -88,8 +100,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
 
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
-        .injectedXferMode    = HW_ADC_XFER_POLLED,
+        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
+        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
         .vref                = 3.3f,
 
         .inputs         =
@@ -126,13 +138,33 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 },
             },
         },
-        .injectedInputs = { { 0 } },
+        .injectedInputs =
+        {
+            [0] =
+            {
+                .enabled = true,
+                .sConfig =
+                {
+                    .InjectedChannel = ADC_CHANNEL_7, // Phase V ISENSE
+                    // injected rank inferred from 'injectedInputs' array index
+                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSingleDiff = ADC_SINGLE_ENDED,
+                    .InjectedOffsetNumber = ADC_OFFSET_NONE,
+                    .InjectedOffset = 0,
+                    .InjectedOffsetSign = ADC_OFFSET_SIGN_NEGATIVE,
+                    .InjectedOffsetSaturation = DISABLE,
+                }
+            }
+        },
+        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
+        .injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
     [HW_ADC_CHANNEL_1] =
     {
         .channelNameStr      = "ADC1",
+        .configureMultimode  = true,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
         .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
@@ -151,6 +183,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
     [HW_ADC_CHANNEL_2] =
     {
         .channelNameStr      = "ADC2",
+        .configureMultimode  = false,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
         .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
