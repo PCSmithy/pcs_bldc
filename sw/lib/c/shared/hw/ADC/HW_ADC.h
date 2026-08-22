@@ -95,4 +95,8 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
 bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
                               HW_ADC_conversionStatus_E * const out);
 
+// Total HAL error-callback edges on the channel since init; monotonic, no
+// latched state — observe deltas to detect new errors.
+bool HW_ADC_getErrorCount(HW_ADC_channels_E channel, uint32_t * const out);
+
 bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
