@@ -68,7 +68,8 @@ cmake -S "${REPO_ROOT}/${SOURCE_SUBDIR}" -B "${BUILD_DIR}" \
       -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
       -DPCS_OPT_LEVEL="${OPT}" \
-      -DPCS_LTO="${LTO_CMAKE}"
+      -DPCS_LTO="${LTO_CMAKE}" \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 echo "==> Building"
 cmake --build "${BUILD_DIR}"

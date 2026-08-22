@@ -39,7 +39,8 @@ fi
 echo "==> Configuring (arm, ${SOURCE_SUBDIR})"
 cmake -S "${REPO_ROOT}/${SOURCE_SUBDIR}" -B "${BUILD_DIR}" \
       -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}"
+      -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 echo "==> Building"
 cmake --build "${BUILD_DIR}"
