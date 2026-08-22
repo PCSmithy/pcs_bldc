@@ -16,8 +16,9 @@ Sub-folders are created when a topic gets its first spec.
 - `obs/` — the acquisition model: ELF/DWARF signal selection
   ([[signal-picker]]), the build-identity gate ([[access-gate]]), the
   trace client and Samples demultiplexer ([[trace-client]])
-- `views/` — presentation surfaces: [[live-plot]], [[telemetry]],
-  [[log]]
+- `views/` — presentation surfaces: [[live-plot]] (plot, axes, trace
+  appearance), [[telemetry]], [[log]], [[workspace]], [[cursor]]
+  (cursor + pointed trace), [[table]], [[timeline]], [[watch-panel]]
 
 Convention: `obs/` holds acquisition and access — what bytes mean and
 when capabilities are available; `views/` holds presentation surfaces —

@@ -26,4 +26,4 @@ Covers:
   infrastructure" — rich USB-streamed telemetry at meaningful rates,
   paired with a desktop visualizer / control app.)
 
-Needs: fw, test
+Needs: fw, app, test

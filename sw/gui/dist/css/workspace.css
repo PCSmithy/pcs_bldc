@@ -1,0 +1,653 @@
+/* Workspace interior: widget grid, plot/table widgets, shared cursor.
+   Values follow the design handoff README §4–6; every color is a token. */
+
+/* [hidden] must beat the shell's display:flex on these overlays. */
+.workspace-empty[hidden],
+.widget-grid[hidden],
+.trace-gate[hidden],
+.reject-scrim[hidden] {
+  display: none !important;
+}
+
+.widget-grid {
+  display: grid;
+  /* auto-fill (not -fit): empty tracks persist, so a column span has real
+     tracks to grow into. Rows size to each widget's explicit height. */
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+  height: 100%;
+}
+
+.widget {
+  min-height: 248px;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--hair-rgb), 0.1);
+  border-top-color: var(--edge-lit);
+  border-radius: var(--r-widget);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+  position: relative;
+}
+.widget--dragging { opacity: 0.75; z-index: 3; }
+
+.widget-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow: hidden;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.07);
+  cursor: move;
+  flex: none;
+}
+.widget-head > .icon { color: var(--color-neutral-700); margin-left: -3px; flex: none; }
+.widget-title {
+  font-size: 13.5px;
+  white-space: nowrap;
+  color: var(--color-neutral-200);
+}
+.widget-tag {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--color-neutral-500);
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.widget-menu {
+  background: none;
+  border: 0;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+  padding: 2px;
+  flex: none;
+}
+.widget-menu:hover { color: var(--color-neutral-200); }
+
+.axis-mode {
+  display: inline-flex;
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+.axis-mode button {
+  font: 600 10.5px "Figtree", system-ui, sans-serif;
+  color: var(--color-neutral-500);
+  background: transparent;
+  border: 0;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.axis-mode button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
+.axis-mode button.is-selected {
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  color: var(--ink-bg);
+}
+
+.widget-legend {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex: none;
+  overflow: hidden;
+}
+.legend-entry { display: inline-flex; align-items: center; gap: 5px; cursor: default; }
+.plot-widget--split .legend-entry { cursor: pointer; }
+.legend-bar { width: 8px; height: 2.5px; border-radius: 1px; display: inline-block; flex: none; }
+.legend-name { font-size: 11px; color: var(--color-neutral-300); }
+.legend-period { font-size: 10px; color: var(--color-neutral-700); }
+
+.plot-body {
+  flex: 1;
+  min-height: 96px;
+  display: flex;
+  padding: 8px 12px 4px;
+  gap: 6px;
+}
+.y-axis {
+  width: 44px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  font-size: 10.5px;
+  color: var(--color-neutral-600);
+  padding: 2px 0;
+}
+.y-axis--right { align-items: flex-start; width: 46px; padding-left: 7px; }
+.y-axis--accent span { color: var(--color-accent-500); }
+.y-axis[hidden] { display: none; }
+
+.plot-canvas {
+  flex: 1;
+  position: relative;
+  background: var(--ink-well);
+  background-image: var(--well-grad);
+  border-radius: var(--r-canvas);
+  overflow: hidden;
+  min-width: 0;
+}
+.plot-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(var(--hair-rgb), 0.055) 1px, transparent 1px) 0 0 / 100% 25%,
+    linear-gradient(90deg, rgba(var(--hair-rgb), 0.04) 1px, transparent 1px) 0 0 / 12.5% 100%;
+}
+/* uPlot inline-sizes its own wrapper and canvas from the px we pass at
+   create/setSize time — never fight that with percentage overrides (a
+   100%-of-auto chain collapses the canvas to 0×0). */
+.uplot-host { position: absolute; inset: 0; }
+.plot-watermark {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--ink-hint);
+  pointer-events: none;
+}
+.gap-ribbon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(var(--hair-rgb), 0.04);
+  pointer-events: none;
+}
+.gap-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--color-accent-400);
+  opacity: 0.85;
+}
+
+.x-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--color-neutral-700);
+  padding: 2px 14px 8px 68px;
+  flex: none;
+}
+.plot-widget--split .x-axis { padding-left: 76px; padding-right: 58px; }
+
+.resize-handle {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid rgba(var(--hair-rgb), 0.22);
+  border-bottom: 2px solid rgba(var(--hair-rgb), 0.22);
+  border-bottom-right-radius: 4px;
+  cursor: nwse-resize;
+}
+
+/* ── shared cursor ── */
+.cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-accent-400);
+  box-shadow: var(--cursor-glow);
+  pointer-events: none;
+}
+.cursor-readout {
+  position: absolute;
+  top: 10px;
+  width: 192px;
+  padding: 8px 10px;
+  background: rgba(var(--surface-rgb), 0.96);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-row);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 2;
+}
+.readout-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.readout-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-accent-400);
+}
+.readout-pager { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; color: var(--color-neutral-500); }
+.readout-pager button { background: none; border: 0; color: var(--color-neutral-500); cursor: pointer; padding: 0 2px; }
+.readout-pager button:hover { color: var(--color-neutral-200); }
+.readout-group-label {
+  font: 600 9.5px "Figtree", system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  margin: 2px 0 4px;
+}
+.readout-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+.readout-name { font-size: 11.5px; color: var(--color-neutral-300); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.readout-value { font-size: 12px; color: var(--color-neutral-200); }
+.readout-value--absent { color: var(--color-neutral-700); }
+
+/* ── table widget ── */
+.table-body { flex: 1; overflow: auto; padding: 4px 12px 10px; }
+.value-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.value-table th {
+  font: 600 9.5px "Figtree", system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  text-align: left;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.12);
+  padding: 6px 8px;
+}
+.value-table td { padding: 6px 8px; border-bottom: 1px solid rgba(var(--hair-rgb), 0.06); color: var(--color-neutral-200); }
+.value-table tr:last-child td { border-bottom: 0; }
+.value-table .legend-bar { width: 7px; height: 7px; border-radius: 2px; margin-right: 7px; }
+.value-table .col-value, .value-table .col-period { text-align: right; }
+.value-table .col-type { color: var(--color-neutral-600); }
+.value-table .col-period { color: var(--color-neutral-500); }
+.value--enum { color: var(--color-accent-400); }
+.value--ok { color: var(--color-accent-2-300); }
+
+.drop-target {
+  margin-top: 8px;
+  border: 1px dashed rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-card);
+  padding: 10px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+/* period segmented control grown inside an active picker row */
+.signal-row--active {
+  background: var(--ink-raised);
+  box-shadow: 0 0 0 1px rgba(var(--lit-rgb), 0.45);
+}
+.period-seg { display: inline-flex; border: 1px solid rgba(var(--hair-rgb), 0.14); border-radius: var(--r-pill); overflow: hidden; flex: none; }
+.period-seg button {
+  font: 600 10px "Figtree", system-ui, sans-serif;
+  color: var(--color-neutral-500);
+  background: transparent;
+  border: 0;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.period-seg button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
+.period-seg button.is-selected { background: var(--color-accent); background-image: var(--accent-grad); color: var(--ink-bg); }
+.budget-count { font-size: 10.5px; color: var(--color-neutral-500); margin-left: auto; margin-right: 8px; }
+
+.reject-fix {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--color-accent-2-300);
+  padding: 3px 0;
+}
+
+/* ── timeline bar (app~views_008): span pills + pause/resume ─────────────── */
+
+.timeline-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  row-gap: 8px;
+  padding: 10px 12px 0;
+}
+/* The bar rides with the grid: no widgets, no timeline. */
+.workspace:has(.widget-grid[hidden]) .timeline-bar { display: none; }
+
+.timeline-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  white-space: nowrap;
+}
+.span-group {
+  display: inline-flex;
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+.span-pill {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 0;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.span-pill + .span-pill { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
+.span-pill:hover:not(:disabled):not(.is-selected) { color: var(--color-accent-300); }
+.span-pill.is-selected {
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  color: var(--ink-bg);
+}
+.span-pill:disabled { color: var(--color-neutral-700); cursor: default; }
+.timeline-readout { font-size: 11px; color: var(--color-neutral-500); white-space: nowrap; }
+
+/* Drag-select region over a paused plot canvas. */
+.select-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(var(--lit-rgb), 0.12);
+  border-left: 1px solid rgba(var(--lit-rgb), 0.45);
+  border-right: 1px solid rgba(var(--lit-rgb), 0.45);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ── axes configuration popover (opened from a widget's ⋯ / axis chip) ── */
+
+.axes-popover {
+  position: fixed;
+  z-index: 30;
+  width: 264px;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-card);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.axes-title { font-size: 13.5px; }
+.axes-rows { display: flex; flex-direction: column; }
+.axes-row { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
+.axes-row .legend-bar { flex: none; }
+.axes-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--color-neutral-300);
+}
+.axes-empty { font-size: 11.5px; color: var(--color-neutral-700); padding: 4px 0; }
+
+.side-seg {
+  display: inline-flex;
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+.side-seg button {
+  font: 600 10px "Figtree", system-ui, sans-serif;
+  color: var(--color-neutral-500);
+  background: transparent;
+  border: 0;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.side-seg button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
+.side-seg button.is-selected {
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  color: var(--ink-bg);
+}
+
+.axes-remove {
+  background: none;
+  border: 0;
+  color: var(--color-neutral-700);
+  font: 500 10.5px "Figtree", system-ui, sans-serif;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex: none;
+}
+.axes-remove:hover { color: var(--color-accent-400); }
+
+.axes-scale {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.07);
+  flex-wrap: wrap;
+}
+.axes-scale-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  flex: 1;
+  white-space: nowrap;
+}
+.scale-range { display: inline-flex; align-items: center; gap: 4px; }
+.scale-range[hidden] { display: none !important; } /* auto mode: no bounds */
+.scale-range input {
+  width: 58px;
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-pill);
+  color: var(--color-neutral-200);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  text-align: right;
+}
+/* Invalid manual bounds (min !< max): the accent raises it; the previous
+   valid pair keeps ruling the axis. */
+.scale-range.is-invalid input { border-color: var(--color-accent-400); }
+.scale-range-dash { color: var(--color-neutral-700); }
+
+.axes-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.07);
+}
+
+/* The derived shared/split chip: an indicator that opens the popover. */
+.axis-mode--derived {
+  font: 600 10.5px "Figtree", system-ui, sans-serif;
+  color: var(--color-neutral-500);
+  background: transparent;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.axis-mode--derived:hover { color: var(--color-neutral-200); }
+
+/* An emptied plot keeps its place and invites the next drop. */
+.plot-empty-hint {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-card);
+  font: 500 11.5px "Figtree", system-ui, sans-serif;
+  color: var(--color-neutral-700);
+  pointer-events: none;
+  z-index: 3;
+}
+/* The class's display:grid would beat the UA's [hidden] rule. */
+.plot-empty-hint[hidden] { display: none; }
+
+/* ── watch panel (app~views_010): the picker-docked master watch list ───── */
+.watch-panel {
+  flex: none;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.1);
+  background: var(--ink-surface);
+}
+.watch-panel:empty { display: none; }
+.watch-panel-head {
+  padding: 8px 12px 4px;
+  flex: none;
+}
+.watch-rows { overflow-y: auto; padding: 0 8px 8px; }
+.watch-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px;
+  border-radius: var(--r-row);
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.06);
+}
+.watch-row:last-child { border-bottom: none; }
+.watch-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-neutral-300);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watch-seg {
+  display: flex;
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+.watch-seg-opt {
+  background: transparent;
+  border: none;
+  color: var(--color-neutral-500);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.watch-seg-opt + .watch-seg-opt { border-left: 1px solid rgba(var(--hair-rgb), 0.1); }
+.watch-seg-opt--on {
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  color: var(--ink-bg);
+}
+.watch-value {
+  flex: none;
+  min-width: 62px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--color-neutral-200);
+  font-variant-numeric: tabular-nums;
+}
+.watch-remove {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--color-neutral-700);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.watch-remove:hover { color: var(--color-accent-400); }
+
+/* ── trace appearance editor (app~views_011, inside the config popover) ── */
+.axes-row--editing { background: rgba(var(--hair-rgb), 0.06); border-radius: var(--r-row); }
+.swatch-btn {
+  background: none;
+  border: 1px solid rgba(var(--hair-rgb), 0.18);
+  border-radius: var(--r-pill);
+  padding: 3px 5px;
+  cursor: pointer;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.swatch-btn:hover { border-color: var(--color-accent-400); }
+.axes-appearance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px 8px 22px;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.07);
+}
+.appearance-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.appearance-label {
+  font: 600 9.5px "Figtree", system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  width: 38px;
+  flex: none;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(var(--hair-rgb), 0.25);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+.swatch:hover { border-color: var(--color-accent-400); }
+.swatch--auto {
+  width: auto;
+  background: transparent;
+  color: var(--color-neutral-500);
+  font: 500 10px "Figtree", system-ui, sans-serif;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+}
+.swatch--auto.is-selected {
+  color: var(--color-accent-2-300);
+  border-color: rgba(var(--ok-rgb), 0.4);
+}
+.axes-appearance input[type="color"] {
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(var(--hair-rgb), 0.25);
+  border-radius: 4px;
+  background: var(--ink-raised);
+  cursor: pointer;
+}
+.dots-toggle {
+  background: transparent;
+  color: var(--color-neutral-500);
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  font: 500 10.5px "Figtree", system-ui, sans-serif;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.dots-toggle.is-selected {
+  color: var(--ink-bg);
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  border-color: transparent;
+}
+
+/* ── pointed-trace emphasis (app~views_012): the marked readout row ── */
+.readout-row--pointed {
+  background: var(--ink-raised);
+  box-shadow: inset 0 0 0 1px rgba(var(--lit-rgb), 0.35);
+  border-radius: 4px;
+  padding-left: 4px;
+  padding-right: 4px;
+  margin: 0 -4px;
+}

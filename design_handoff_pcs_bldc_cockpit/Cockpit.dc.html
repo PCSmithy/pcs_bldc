@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/organic-40ae866d-a0fc-4edd-93ae-317e66e9da42/styles.css">
+<script src="_ds/organic-40ae866d-a0fc-4edd-93ae-317e66e9da42/_ds_bundle.js"></script>
+<script type="module" src="rotor-view.js"></script>
+<style>
+/* ── theme: Warm (default) — the Organic ground inverted onto its own dark ramp ── */
+:root{
+  --ink-bg:#1b1916;--ink-chrome:#211f1b;--ink-surface:#262320;--ink-raised:#302c27;
+  --ink-well:#131110;--ink-hint:#3d3831;--ink-warn:#33261c;
+  --hair-rgb:238,231,219;--lit-rgb:246,160,107;--accent-rgb:198,113,57;--ok-rgb:174,191,146;
+  --surface-rgb:38,35,32;--bg-rgb:27,25,22;--well-rgb:19,17,16;
+  --r-widget:20px;--r-dialog:26px;--r-card:16px;--r-row:12px;--r-canvas:10px;--r-pill:999px;
+  --font-display:"Caprasimo",system-ui,serif;--display-track:normal;--display-case:none;--display-weight:400;
+  --icon-stroke:2.75;--icon-cap:round;
+  --chrome-grad:none;--surface-grad:none;--well-grad:none;--accent-grad:none;
+  --cursor-glow:0 0 8px rgba(var(--lit-rgb),.5);--chip-glow:none;--edge-lit:transparent;
+  --trace-1:var(--color-accent-400);--trace-2:var(--color-accent-2-400);
+  --trace-3:#e0c46a;--trace-4:#86b8c4;--trace-5:#d98a9c;--trace-6:#c9c1b4;
+}
+/* ── theme: Graphite — angular, cool grey, a restrained instrument ── */
+:root[data-theme="graphite"]{
+  --ink-bg:#111315;--ink-chrome:#15181a;--ink-surface:#1b1f22;--ink-raised:#242a2e;
+  --ink-well:#0a0c0d;--ink-hint:#2c3338;--ink-warn:#22282b;
+  --hair-rgb:223,228,231;--lit-rgb:95,216,232;--accent-rgb:47,168,189;--ok-rgb:142,217,159;
+  --surface-rgb:27,31,34;--bg-rgb:17,19,21;--well-rgb:10,12,13;
+  --color-neutral-200:#dfe4e7;--color-neutral-300:#bfc7cc;--color-neutral-500:#8b959b;
+  --color-neutral-600:#69737a;--color-neutral-700:#4a5257;
+  --color-accent:#2fa8bd;--color-accent-300:#a8ecf5;--color-accent-400:#5fd8e8;--color-accent-500:#2b95a8;
+  --color-accent-2-300:#c6e8cf;--color-accent-2-400:#8ed99f;
+  --r-widget:3px;--r-dialog:4px;--r-card:2px;--r-row:2px;--r-canvas:1px;--r-pill:3px;
+  /* a condensed technical face where one exists on the machine, else the UI sans */
+  --font-display:"Bahnschrift Condensed","Bahnschrift SemiCondensed","DIN Condensed","Avenir Next Condensed","Arial Narrow","Roboto Condensed","Liberation Sans Narrow",system-ui,sans-serif;
+  --display-track:.09em;--display-case:uppercase;--display-weight:600;
+  --icon-stroke:2;--icon-cap:square;
+  --chrome-grad:linear-gradient(180deg,rgba(var(--hair-rgb),.055),rgba(var(--hair-rgb),0) 70%);
+  --surface-grad:linear-gradient(180deg,rgba(var(--hair-rgb),.045),rgba(var(--hair-rgb),0) 46%);
+  --well-grad:repeating-linear-gradient(0deg,rgba(var(--hair-rgb),.03) 0 1px,rgba(var(--hair-rgb),0) 1px 3px);
+  --accent-grad:linear-gradient(180deg,#6fdff0,#25879a);
+  --cursor-glow:0 0 10px rgba(var(--lit-rgb),.5),0 0 26px rgba(var(--lit-rgb),.16);
+  --chip-glow:inset 0 1px 0 rgba(var(--hair-rgb),.12);--edge-lit:rgba(var(--hair-rgb),.09);
+  --trace-3:#e8c46a;--trace-4:#9d8bf0;--trace-5:#f07aa8;--trace-6:#b9c2c7;
+}
+/* ── theme: Neon — same geometry, pushed to a cyberpunk key ── */
+:root[data-theme="neon"]{
+  --ink-bg:#08070d;--ink-chrome:#0c0b14;--ink-surface:#13101f;--ink-raised:#1c1730;
+  --ink-well:#040309;--ink-hint:#2a2340;--ink-warn:#1f0f1c;
+  --hair-rgb:231,226,245;--lit-rgb:255,111,224;--accent-rgb:224,31,184;--ok-rgb:79,240,192;
+  --surface-rgb:19,16,31;--bg-rgb:8,7,13;--well-rgb:4,3,9;
+  --color-neutral-200:#e7e2f5;--color-neutral-300:#c3bcd9;--color-neutral-500:#8b83a6;
+  --color-neutral-600:#6a6383;--color-neutral-700:#4a4463;
+  --color-accent:#e01fb8;--color-accent-300:#ffb3ee;--color-accent-400:#ff6fe0;--color-accent-500:#c018a0;
+  --color-accent-2-300:#b7f7e2;--color-accent-2-400:#4ff0c0;
+  --r-widget:2px;--r-dialog:2px;--r-card:2px;--r-row:2px;--r-canvas:0px;--r-pill:2px;
+  /* wide-tracked mono: the terminal voice, deliberately not the condensed one */
+  --font-display:"Iosevka Term","JetBrains Mono","IBM Plex Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --display-track:.13em;--display-case:uppercase;--display-weight:700;
+  --icon-stroke:1.6;--icon-cap:square;
+  --chrome-grad:linear-gradient(180deg,rgba(var(--lit-rgb),.07),rgba(var(--lit-rgb),0) 78%),linear-gradient(90deg,rgba(79,240,192,.05),rgba(79,240,192,0) 42%);
+  --surface-grad:linear-gradient(160deg,rgba(var(--lit-rgb),.075),rgba(var(--lit-rgb),0) 38%);
+  --well-grad:repeating-linear-gradient(0deg,rgba(var(--hair-rgb),.035) 0 1px,rgba(var(--hair-rgb),0) 1px 3px),radial-gradient(120% 90% at 50% 120%,rgba(var(--lit-rgb),.12),rgba(var(--lit-rgb),0) 70%);
+  --accent-grad:linear-gradient(135deg,#ff7ce4,#a04dff);
+  --cursor-glow:0 0 12px rgba(var(--lit-rgb),.85),0 0 34px rgba(var(--lit-rgb),.3);
+  --chip-glow:0 0 12px rgba(var(--accent-rgb),.35);--edge-lit:rgba(var(--lit-rgb),.22);
+  --trace-3:#ffd84f;--trace-4:#5fd8ff;--trace-5:#a56fff;--trace-6:#c3bcd9;
+}
+/* the design system pins its controls to pills; the angular themes retune that */
+:root[data-theme="graphite"] .btn,:root[data-theme="graphite"] .tag,
+:root[data-theme="neon"] .btn,:root[data-theme="neon"] .tag{border-radius:var(--r-pill)}
+html,body{margin:0;height:100%;background:var(--ink-bg);color:var(--color-neutral-200);font-family:"Figtree",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4,h5,h6{margin:0}
+a{color:var(--color-accent-400);text-decoration:none}
+a:hover{color:var(--color-accent-300)}
+::selection{background:rgba(var(--lit-rgb),.3)}
+:focus-visible{outline:2px solid var(--color-accent-400);outline-offset:2px}
+*{scrollbar-width:none}*::-webkit-scrollbar{width:0;height:0;display:none}
+@keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</helmet>
+
+<div class="app-shell" style="height:100vh;display:flex;flex-direction:column;background:var(--ink-bg);overflow:hidden;font-size:14px">
+
+  <!-- ═══ connection bar ═══ -->
+  <sc-if value="{{ isMatched }}" hint-placeholder-val="{{ true }}">
+  <header class="conn-bar conn-bar--matched" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:14px;row-gap:8px;padding:10px 16px;background:var(--ink-surface);background-image:var(--chrome-grad);border-bottom:1px solid rgba(var(--hair-rgb),.1)">
+    <div class="app-mark" style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:17px;letter-spacing:-.01em;color:var(--color-accent-400);padding-right:4px">pcs_bldc</div>
+    <div class="conn-port" style="flex:none;white-space:nowrap;display:flex;align-items:center;gap:6px;padding:5px 6px 5px 12px;background:var(--ink-raised);border:1px solid rgba(var(--hair-rgb),.12);border-radius:var(--r-pill)">
+      <span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent-2-400);box-shadow:0 0 0 3px rgba(var(--ok-rgb),.16)"></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">/dev/cu.usbmodem3201</span>
+      <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:11.5px;padding:2px 10px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);background:transparent;cursor:pointer">Disconnect</button>
+    </div>
+    <div class="conn-identity" style="flex:none;white-space:nowrap;display:flex;align-items:center;gap:10px;padding:5px 14px;background:rgba(var(--ok-rgb),.1);border:1px solid rgba(var(--ok-rgb),.3);border-radius:var(--r-pill)">
+      <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-2-400);font-weight:700">Matched</span>
+      <span style="width:1px;height:14px;background:rgba(var(--ok-rgb),.3)"></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-accent-2-300)">g431-v0.9.4 · 8f31c0a</span>
+      <span style="font-size:11.5px;color:var(--color-neutral-500)">704/704 symbols resolve</span>
+    </div>
+    <div class="conn-elf" style="flex:0 1 auto;min-width:0;margin-left:auto;display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:var(--color-neutral-500)">
+      <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase">elf</span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-neutral-300)">build/pcs_bldc.elf</span>
+      <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:11.5px;padding:2px 10px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);background:transparent;cursor:pointer">Reload</button>
+    </div>
+    <div class="theme-switch" style="flex:none;display:flex;align-items:center;gap:3px;padding:3px;background:var(--ink-raised);border:1px solid rgba(var(--hair-rgb),.12);border-radius:var(--r-pill)">
+      <sc-for list="{{ themes }}" as="t" hint-placeholder-count="3">
+        <button onClick="{{ t.pick }}" title="{{ t.title }}" style="{{ t.style }}"><span style="{{ t.dot }}"></span>{{ t.label }}</button>
+      </sc-for>
+    </div>
+  </header>
+  </sc-if>
+
+  <sc-if value="{{ isMismatch }}" hint-placeholder-val="{{ false }}">
+  <header class="conn-bar conn-bar--mismatch" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:14px;row-gap:8px;padding:10px 16px;background:var(--ink-warn);background-image:var(--chrome-grad);border-bottom:1px solid rgba(var(--lit-rgb),.42)">
+    <div class="app-mark" style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:17px;letter-spacing:-.01em;color:var(--color-accent-400);padding-right:4px">pcs_bldc</div>
+    <div class="conn-port" style="flex:none;white-space:nowrap;display:flex;align-items:center;gap:6px;padding:5px 6px 5px 12px;background:var(--ink-raised);border:1px solid rgba(var(--hair-rgb),.12);border-radius:var(--r-pill)">
+      <span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent-2-400);box-shadow:0 0 0 3px rgba(var(--ok-rgb),.16)"></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">/dev/cu.usbmodem3201</span>
+      <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:11.5px;padding:2px 10px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);background:transparent;cursor:pointer">Disconnect</button>
+    </div>
+    <div class="conn-identity conn-identity--mismatch" style="flex:none;white-space:nowrap;display:flex;align-items:center;gap:10px;padding:5px 14px;background:rgba(var(--lit-rgb),.14);border:1px solid var(--color-accent-400);border-radius:var(--r-pill)">
+      <span style="display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-400);font-weight:700"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m10.29 3.86-8.19 14.2A2 2 0 0 0 3.83 21h16.34a2 2 0 0 0 1.73-2.94l-8.19-14.2a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>Mismatch</span>
+      <span style="width:1px;height:14px;background:rgba(var(--lit-rgb),.4)"></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-accent-300)">board 8f31c0a · elf 1d77b2e</span>
+      <span style="font-size:11.5px;color:var(--color-neutral-300)">tracing off</span>
+    </div>
+    <div class="conn-gate-note" style="flex:none;white-space:nowrap;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--color-neutral-300)">
+      <span>Telemetry and logs keep flowing.</span>
+      <a href="#" style="border-bottom:1px solid rgba(var(--lit-rgb),.5)">Load the matching .elf</a>
+    </div>
+    <div class="conn-elf" style="flex:none;margin-left:auto;display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:var(--color-neutral-500)">
+      <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase">elf</span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-neutral-300)">build/pcs_bldc.elf</span>
+      <button class="btn btn-primary" style="font-family:'Figtree',system-ui,sans-serif;font-size:11.5px;padding:2px 12px;background:var(--color-accent);background-image:var(--accent-grad);box-shadow:var(--chip-glow);color:var(--ink-bg);cursor:pointer">Choose…</button>
+    </div>
+    <div class="theme-switch" style="flex:none;display:flex;align-items:center;gap:3px;padding:3px;background:var(--ink-raised);border:1px solid rgba(var(--hair-rgb),.12);border-radius:var(--r-pill)">
+      <sc-for list="{{ themes }}" as="t" hint-placeholder-count="3">
+        <button onClick="{{ t.pick }}" title="{{ t.title }}" style="{{ t.style }}"><span style="{{ t.dot }}"></span>{{ t.label }}</button>
+      </sc-for>
+    </div>
+  </header>
+  </sc-if>
+
+  <!-- ═══ telemetry strip ═══ -->
+  <section class="telemetry-strip" style="flex:none;display:flex;align-items:stretch;gap:0;overflow-x:auto;white-space:nowrap;padding:0 16px;background:var(--ink-chrome);background-image:var(--chrome-grad);border-bottom:1px solid rgba(var(--hair-rgb),.08)">
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px 8px 0">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">link</span>
+      <span style="display:flex;align-items:center;gap:6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-accent-2-300)"><span style="display:flex;color:var(--color-accent-2-400);animation:pulseDot 2s ease-in-out infinite"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>10 Hz</span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px;border-left:1px solid rgba(var(--hair-rgb),.08)">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">drive state</span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-neutral-200)">RUN · FOC_VEL</span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px;border-left:1px solid rgba(var(--hair-rgb),.08)">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">v<sub>bus</sub></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-neutral-200)">19.84 V</span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px;border-left:1px solid rgba(var(--hair-rgb),.08)">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">i<sub>bus</sub></span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-neutral-200)">1.271 A</span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px;border-left:1px solid rgba(var(--hair-rgb),.08)">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">velocity — cmd / meas</span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-neutral-200)">1400.0 <span style="color:var(--color-neutral-700)">/</span> <span style="color:var(--color-accent-400)">1387.4</span> <span style="font-size:11.5px;color:var(--color-neutral-600)">rpm</span></span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;display:flex;flex-direction:column;gap:1px;padding:8px 16px;border-left:1px solid rgba(var(--hair-rgb),.08)">
+      <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">tick</span>
+      <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--color-neutral-500)">184 209 ms</span>
+    </div>
+    <div class="telemetry-cell" style="flex:none;white-space:nowrap;margin-left:auto;display:flex;align-items:center;gap:8px;padding:8px 0 8px 16px">
+      <span class="tag" style="white-space:nowrap;background:rgba(var(--accent-rgb),.16);color:var(--color-accent-400);font-size:10.5px;padding:3px 10px">14 signals watched</span>
+      <span class="tag" style="white-space:nowrap;background:rgba(var(--hair-rgb),.07);color:var(--color-neutral-500);font-size:10.5px;padding:3px 10px">3 gaps</span>
+    </div>
+  </section>
+
+  <!-- ═══ body: picker + workspace ═══ -->
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- ─── signal picker ─── -->
+    <aside class="signal-picker" style="flex:none;width:302px;overflow:hidden;display:flex;flex-direction:column;min-height:0;background:var(--ink-chrome);background-image:var(--chrome-grad);border-right:1px solid rgba(var(--hair-rgb),.08)">
+      <div style="flex:none;padding:12px 14px 10px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px">
+          <h5 style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:15px;color:var(--color-neutral-200)">Signals</h5>
+          <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-600)">704 from DWARF</span>
+        </div>
+        <div class="picker-search" style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--ink-raised);border:1px solid rgba(var(--lit-rgb),.55);border-radius:var(--r-pill)">
+          <span style="display:flex;color:var(--color-neutral-500)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+          <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:var(--color-neutral-200)">phaseCurrent</span>
+          <span style="width:1px;height:14px;background:var(--color-accent-400);margin-left:-4px"></span>
+          <span style="margin-left:auto;font-size:11px;color:var(--color-neutral-600)">6</span>
+        </div>
+      </div>
+
+      <!-- watch budgets -->
+      <div class="budget-meters" style="flex:none;margin:0 14px 10px;padding:11px 13px;background:var(--ink-surface);border-radius:var(--r-card)">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)">device budget</span>
+          <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-500)">accepted</span>
+        </div>
+        <div class="budget-meter" style="display:flex;flex-direction:column;gap:4px;margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--color-neutral-300)">watch RAM</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-neutral-500)">412 / 512 B</span></div>
+          <div style="height:5px;border-radius:var(--r-pill);background:rgba(var(--hair-rgb),.1);overflow:hidden"><div style="width:80.5%;height:100%;border-radius:var(--r-pill);background:var(--color-accent-2-400)"></div></div>
+        </div>
+        <div class="budget-meter" style="display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--color-neutral-300)">link bandwidth</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-accent-400)">88 / 100 %</span></div>
+          <div style="height:5px;border-radius:var(--r-pill);background:rgba(var(--hair-rgb),.1);overflow:hidden"><div style="width:88%;height:100%;border-radius:var(--r-pill);background:var(--color-accent-400);background-image:var(--accent-grad);box-shadow:var(--chip-glow)"></div></div>
+        </div>
+      </div>
+
+      <!-- results / tree -->
+      <div class="picker-tree" style="flex:1;min-height:0;overflow:auto;padding:0 8px 8px">
+        <div class="picker-group" style="padding:7px 6px 5px;display:flex;align-items:center;gap:7px">
+          <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;letter-spacing:.02em;color:var(--color-accent-2-400)">app_motorControl_data.channels[0]</span>
+          <span style="flex:1;height:1px;background:rgba(var(--hair-rgb),.08)"></span>
+        </div>
+
+        <div class="signal-row signal-row--watched" draggable="true" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);background:rgba(var(--lit-rgb),.1);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--color-accent-400);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrent[0]</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">f32</span>
+          <span class="period-pill" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;padding:1px 7px;border-radius:var(--r-pill);background:rgba(var(--ok-rgb),.18);color:var(--color-accent-2-300)">1 ms</span>
+        </div>
+        <div class="signal-row signal-row--watched" draggable="true" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);background:rgba(var(--lit-rgb),.1);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--color-accent-2-400);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrent[1]</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">f32</span>
+          <span class="period-pill" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;padding:1px 7px;border-radius:var(--r-pill);background:rgba(var(--ok-rgb),.18);color:var(--color-accent-2-300)">1 ms</span>
+        </div>
+
+        <!-- row with the period selector open -->
+        <div class="signal-row signal-row--active" draggable="true" style="position:relative;display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);background:var(--ink-raised);box-shadow:0 0 0 1px rgba(var(--lit-rgb),.45);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--trace-3);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrent[2]</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">f32</span>
+          <div class="period-seg" style="display:flex;border:1px solid rgba(var(--hair-rgb),.16);border-radius:var(--r-pill);overflow:hidden">
+            <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;padding:1px 7px;background:var(--color-accent);background-image:var(--accent-grad);color:var(--ink-bg)">1</span>
+            <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;padding:1px 7px;color:var(--color-neutral-500);border-left:1px solid rgba(var(--hair-rgb),.16)">10</span>
+            <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;padding:1px 7px;color:var(--color-neutral-500);border-left:1px solid rgba(var(--hair-rgb),.16)">100</span>
+          </div>
+        </div>
+
+        <div class="picker-group" style="padding:11px 6px 5px;display:flex;align-items:center;gap:7px">
+          <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-accent-2-400)">app_motorControl_data.channels[0].bridge</span>
+          <span style="flex:1;height:1px;background:rgba(var(--hair-rgb),.08)"></span>
+        </div>
+        <div class="signal-row" draggable="true" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--color-neutral-700);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrentRaw[0]</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">i16</span>
+          <span style="font-size:10.5px;color:var(--color-neutral-700)">add</span>
+        </div>
+        <div class="signal-row" draggable="true" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--color-neutral-700);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrentOffset[0]</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">i16</span>
+          <span style="font-size:10.5px;color:var(--color-neutral-700)">add</span>
+        </div>
+        <div class="signal-row" draggable="true" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-row);cursor:grab">
+          <span style="width:8px;height:8px;border-radius:2px;background:var(--color-neutral-700);flex:none"></span>
+          <span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">phaseCurrentValid</span>
+          <span style="font-size:10px;color:var(--color-neutral-600)">bool</span>
+          <span style="font-size:10.5px;color:var(--color-neutral-700)">add</span>
+        </div>
+
+        <div class="picker-hint" style="margin:12px 6px 0;padding:10px 12px;border:1px dashed rgba(var(--hair-rgb),.16);border-radius:var(--r-card);font-size:11.5px;line-height:1.45;color:var(--color-neutral-500)">
+          Drag a signal onto a plot to trace it, or onto a table for latest value. Changing the watch list restarts the stream.
+        </div>
+      </div>
+    </aside>
+
+    <!-- ─── workspace canvas ─── -->
+    <main class="workspace" style="position:relative;flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column;background:var(--ink-bg);background-image:radial-gradient(rgba(var(--hair-rgb),.07) 1px,transparent 1px);background-size:22px 22px">
+
+      <sc-if value="{{ hasWidgets }}" hint-placeholder-val="{{ true }}">
+      <div class="widget-grid" style="flex:1;min-height:0;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));grid-auto-rows:minmax(248px,1fr);gap:12px;padding:12px">
+
+        <!-- plot 1 — phase currents, shared axis -->
+        <section class="plot-widget" style="position:relative;display:flex;flex-direction:column;min-height:248px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--hair-rgb),.1);border-top-color:var(--edge-lit);border-radius:var(--r-widget);box-shadow:0 3px 14px rgba(0,0,0,.32);overflow:hidden">
+          <header class="widget-head" style="flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:10px;overflow:hidden;padding:9px 12px 8px;border-bottom:1px solid rgba(var(--hair-rgb),.07);cursor:move">
+            <span style="display:flex;color:var(--color-neutral-700);margin-left:-3px"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg></span>
+            <span style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:13.5px;white-space:nowrap;color:var(--color-neutral-200)">Phase currents</span>
+            <div class="axis-mode" style="display:flex;flex:none;border:1px solid rgba(var(--hair-rgb),.14);border-radius:var(--r-pill);overflow:hidden">
+              <span style="font-size:10px;padding:2px 9px;background:var(--color-accent);background-image:var(--accent-grad);color:var(--ink-bg)">shared Y</span>
+              <span style="font-size:10px;padding:2px 9px;color:var(--color-neutral-500);border-left:1px solid rgba(var(--hair-rgb),.14)">split</span>
+            </div>
+            <div class="widget-legend" style="margin-left:auto;display:flex;flex:none;align-items:center;gap:10px">
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-accent-400)"></span>ia<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-accent-2-400)"></span>ib<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--trace-3)"></span>ic<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;color:var(--color-neutral-600);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+            </div>
+          </header>
+          <div class="plot-body" style="flex:1;min-height:96px;display:flex;padding:8px 12px 4px">
+            <div class="y-axis" style="flex:none;width:44px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding-right:7px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-600)">
+              <span>+4 A</span><span>+2</span><span>0</span><span>−2</span><span>−4 A</span>
+            </div>
+            <div class="plot-canvas" style="position:relative;flex:1;min-width:0;background:var(--ink-well);background-image:var(--well-grad);border-radius:var(--r-canvas);overflow:hidden">
+              <div style="position:absolute;inset:0;background:linear-gradient(rgba(var(--hair-rgb),.055) 1px,transparent 1px) 0 0/100% 25%,linear-gradient(90deg,rgba(var(--hair-rgb),.04) 1px,transparent 1px) 0 0/12.5% 100%"></div>
+              <div style="position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(var(--hair-rgb),.12)"></div>
+              <!-- drop gap ribbon -->
+              <div class="gap-ribbon" style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(var(--hair-rgb),.04)">
+                <span style="position:absolute;left:38%;width:1.4%;top:0;bottom:0;background:var(--color-accent-400)"></span>
+                <span style="position:absolute;left:71%;width:.7%;top:0;bottom:0;background:var(--color-accent-400)"></span>
+              </div>
+              <span style="position:absolute;left:9px;bottom:9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:9.5px;color:var(--ink-hint)">canvas · uPlot</span>
+              <!-- synchronized cursor -->
+              <div class="cursor-line" style="position:absolute;top:0;bottom:0;left:62%;width:1px;background:var(--color-accent-400);box-shadow:var(--cursor-glow)"></div>
+              <div class="cursor-readout" style="position:absolute;left:calc(62% + 10px);top:10px;width:186px;padding:8px 10px;background:rgba(var(--surface-rgb),.96);border:1px solid rgba(var(--lit-rgb),.35);border-radius:var(--r-row);box-shadow:0 6px 18px rgba(0,0,0,.5)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-accent-400)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/></svg>t = 12 480 ms</span>
+                  <span style="font-size:9.5px;color:var(--color-neutral-600)">1 / 1</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:3px">
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--color-accent-400);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">ia</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">+1.284</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--color-accent-2-400);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">ib</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">−0.902</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--trace-3);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">ic</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">−0.381</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="x-axis" style="flex:none;display:flex;justify-content:space-between;padding:0 12px 8px 68px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-700)">
+            <span>11 200</span><span>11 600</span><span>12 000</span><span>12 400</span><span>12 800 ms</span>
+          </div>
+          <span class="resize-handle" style="position:absolute;right:5px;bottom:5px;width:12px;height:12px;border-right:2px solid rgba(var(--hair-rgb),.22);border-bottom:2px solid rgba(var(--hair-rgb),.22);border-bottom-right-radius:4px;cursor:nwse-resize"></span>
+        </section>
+
+        <!-- plot 2 — phase voltages, shared axis -->
+        <section class="plot-widget" style="position:relative;display:flex;flex-direction:column;min-height:248px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--hair-rgb),.1);border-top-color:var(--edge-lit);border-radius:var(--r-widget);box-shadow:0 3px 14px rgba(0,0,0,.32);overflow:hidden">
+          <header class="widget-head" style="flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:10px;overflow:hidden;padding:9px 12px 8px;border-bottom:1px solid rgba(var(--hair-rgb),.07);cursor:move">
+            <span style="display:flex;color:var(--color-neutral-700);margin-left:-3px"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg></span>
+            <span style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:13.5px;white-space:nowrap;color:var(--color-neutral-200)">Phase voltages</span>
+            <div class="axis-mode" style="display:flex;flex:none;border:1px solid rgba(var(--hair-rgb),.14);border-radius:var(--r-pill);overflow:hidden">
+              <span style="font-size:10px;padding:2px 9px;background:var(--color-accent);background-image:var(--accent-grad);color:var(--ink-bg)">shared Y</span>
+              <span style="font-size:10px;padding:2px 9px;color:var(--color-neutral-500);border-left:1px solid rgba(var(--hair-rgb),.14)">split</span>
+            </div>
+            <div class="widget-legend" style="margin-left:auto;display:flex;flex:none;align-items:center;gap:10px">
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--trace-4)"></span>va<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--trace-5)"></span>vb<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--trace-6)"></span>vc<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;color:var(--color-neutral-600);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+            </div>
+          </header>
+          <div class="plot-body" style="flex:1;min-height:96px;display:flex;padding:8px 12px 4px">
+            <div class="y-axis" style="flex:none;width:44px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding-right:7px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-600)">
+              <span>20 V</span><span>15</span><span>10</span><span>5</span><span>0 V</span>
+            </div>
+            <div class="plot-canvas" style="position:relative;flex:1;min-width:0;background:var(--ink-well);background-image:var(--well-grad);border-radius:var(--r-canvas);overflow:hidden">
+              <div style="position:absolute;inset:0;background:linear-gradient(rgba(var(--hair-rgb),.055) 1px,transparent 1px) 0 0/100% 25%,linear-gradient(90deg,rgba(var(--hair-rgb),.04) 1px,transparent 1px) 0 0/12.5% 100%"></div>
+              <div class="gap-ribbon" style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(var(--hair-rgb),.04)">
+                <span style="position:absolute;left:38%;width:1.4%;top:0;bottom:0;background:var(--color-accent-400)"></span>
+              </div>
+              <span style="position:absolute;left:9px;bottom:9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:9.5px;color:var(--ink-hint)">canvas · uPlot</span>
+              <div class="cursor-line" style="position:absolute;top:0;bottom:0;left:62%;width:1px;background:var(--color-accent-400);box-shadow:var(--cursor-glow)"></div>
+              <div class="cursor-readout" style="position:absolute;left:calc(62% + 10px);top:10px;width:186px;padding:8px 10px;background:rgba(var(--surface-rgb),.96);border:1px solid rgba(var(--lit-rgb),.35);border-radius:var(--r-row);box-shadow:0 6px 18px rgba(0,0,0,.5)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-accent-400)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/></svg>t = 12 480 ms</span>
+                  <span style="font-size:9.5px;color:var(--color-neutral-600)">1 / 1</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:3px">
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--trace-4);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">va</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">12.417</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--trace-5);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">vb</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">7.884</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--trace-6);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">vc</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">9.031</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="x-axis" style="flex:none;display:flex;justify-content:space-between;padding:0 12px 8px 68px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-700)">
+            <span>11 200</span><span>11 600</span><span>12 000</span><span>12 400</span><span>12 800 ms</span>
+          </div>
+          <span class="resize-handle" style="position:absolute;right:5px;bottom:5px;width:12px;height:12px;border-right:2px solid rgba(var(--hair-rgb),.22);border-bottom:2px solid rgba(var(--hair-rgb),.22);border-bottom-right-radius:4px;cursor:nwse-resize"></span>
+        </section>
+
+        <!-- plot 3 — rotor velocity, SPLIT axes -->
+        <section class="plot-widget plot-widget--split" style="position:relative;display:flex;flex-direction:column;min-height:248px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--hair-rgb),.1);border-top-color:var(--edge-lit);border-radius:var(--r-widget);box-shadow:0 3px 14px rgba(0,0,0,.32);overflow:hidden">
+          <header class="widget-head" style="flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:10px;overflow:hidden;padding:9px 12px 8px;border-bottom:1px solid rgba(var(--hair-rgb),.07);cursor:move">
+            <span style="display:flex;color:var(--color-neutral-700);margin-left:-3px"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg></span>
+            <span style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:13.5px;white-space:nowrap;color:var(--color-neutral-200)">Rotor velocity</span>
+            <div class="axis-mode" style="display:flex;flex:none;border:1px solid rgba(var(--hair-rgb),.14);border-radius:var(--r-pill);overflow:hidden">
+              <span style="font-size:10px;padding:2px 9px;color:var(--color-neutral-500)">shared Y</span>
+              <span style="font-size:10px;padding:2px 9px;background:var(--color-accent);background-image:var(--accent-grad);color:var(--ink-bg);border-left:1px solid rgba(var(--hair-rgb),.14)">split</span>
+            </div>
+            <div class="widget-legend" style="margin-left:auto;display:flex;flex:none;align-items:center;gap:10px">
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-accent-400)"></span>cmd<span style="color:var(--color-neutral-700)">10ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-accent-2-400)"></span>meas<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--trace-4)"></span>err<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;color:var(--color-neutral-600);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+            </div>
+          </header>
+          <div class="plot-body" style="flex:1;min-height:96px;display:flex;padding:8px 12px 4px">
+            <div class="y-axis y-axis--group1" style="flex:none;width:52px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding-right:7px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-accent-500)">
+              <span>1600</span><span>1400</span><span>1200</span><span>1000</span><span>rpm</span>
+            </div>
+            <div class="plot-canvas" style="position:relative;flex:1;min-width:0;background:var(--ink-well);background-image:var(--well-grad);border-radius:var(--r-canvas);overflow:hidden">
+              <div style="position:absolute;inset:0;background:linear-gradient(rgba(var(--hair-rgb),.055) 1px,transparent 1px) 0 0/100% 25%,linear-gradient(90deg,rgba(var(--hair-rgb),.04) 1px,transparent 1px) 0 0/12.5% 100%"></div>
+              <div class="gap-ribbon" style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(var(--hair-rgb),.04)"><span style="position:absolute;left:38%;width:1.4%;top:0;bottom:0;background:var(--color-accent-400)"></span></div>
+              <span style="position:absolute;left:9px;bottom:9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:9.5px;color:var(--ink-hint)">canvas · uPlot · 2 scales</span>
+              <div class="cursor-line" style="position:absolute;top:0;bottom:0;left:62%;width:1px;background:var(--color-accent-400);box-shadow:var(--cursor-glow)"></div>
+              <!-- paginated readout: group 2 of 2 -->
+              <div class="cursor-readout cursor-readout--flipped" style="position:absolute;right:calc(38% + 10px);top:10px;width:196px;padding:8px 10px;background:rgba(var(--surface-rgb),.96);border:1px solid rgba(var(--lit-rgb),.35);border-radius:var(--r-row);box-shadow:0 6px 18px rgba(0,0,0,.5)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-accent-400)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><circle cx="12" cy="12" r="10"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/></svg>t = 12 480 ms</span>
+                  <span style="display:flex;align-items:center;gap:5px;font-size:9.5px;color:var(--color-neutral-600)"><span style="display:flex;cursor:pointer;color:var(--color-neutral-300)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m15 18-6-6 6-6"/></svg></span>2 / 2<span style="display:flex;cursor:pointer;color:var(--color-neutral-300)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m9 18 6-6-6-6"/></svg></span></span>
+                </div>
+                <div style="font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:4px">error · scale 2</div>
+                <div style="display:flex;flex-direction:column;gap:3px">
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--trace-4);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)">err</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-200)">−12.6</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:2.5px;border-radius:2px;background:var(--ink-hint);flex:none"></span><span style="flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-700)">iTerm</span><span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-700)">no sample</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="y-axis y-axis--group2" style="flex:none;width:46px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-start;padding-left:7px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--trace-4)">
+              <span>+40</span><span>+20</span><span>0</span><span>−20</span><span>rpm</span>
+            </div>
+          </div>
+          <div class="x-axis" style="flex:none;display:flex;justify-content:space-between;padding:0 58px 8px 76px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-700)">
+            <span>11 200</span><span>11 600</span><span>12 000</span><span>12 400</span><span>12 800 ms</span>
+          </div>
+          <span class="resize-handle" style="position:absolute;right:5px;bottom:5px;width:12px;height:12px;border-right:2px solid rgba(var(--hair-rgb),.22);border-bottom:2px solid rgba(var(--hair-rgb),.22);border-bottom-right-radius:4px;cursor:nwse-resize"></span>
+        </section>
+
+        <!-- 3D rotor widget -->
+        <section class="rotor-widget" style="position:relative;display:flex;flex-direction:column;min-height:248px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--hair-rgb),.1);border-top-color:var(--edge-lit);border-radius:var(--r-widget);box-shadow:0 3px 14px rgba(0,0,0,.32);overflow:hidden">
+          <header class="widget-head" style="flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:10px;overflow:hidden;padding:9px 12px 8px;border-bottom:1px solid rgba(var(--hair-rgb),.07);cursor:move">
+            <span style="display:flex;color:var(--color-neutral-700);margin-left:-3px"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg></span>
+            <span style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:13.5px;white-space:nowrap;color:var(--color-neutral-200)">Rotor assembly</span>
+            <div class="axis-mode" style="display:flex;flex:none;border:1px solid rgba(var(--hair-rgb),.14);border-radius:var(--r-pill);overflow:hidden">
+              <button onClick="{{ pickLive }}" style="{{ liveStyle }}">live</button>
+              <button onClick="{{ pickCursor }}" style="{{ cursorStyle }}">at cursor</button>
+            </div>
+            <span class="tag" style="white-space:nowrap;background:rgba(var(--hair-rgb),.07);color:var(--color-neutral-600);font-size:10px;padding:2px 9px">stand-in mesh</span>
+            <div class="widget-legend" style="margin-left:auto;display:flex;flex:none;align-items:center;gap:10px">
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-300)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-accent-400)"></span>rotorA<span style="color:var(--color-neutral-700)">1ms</span></span>
+              <span style="display:flex;align-items:center;gap:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--color-neutral-600)"><span style="width:8px;height:2.5px;border-radius:2px;background:var(--color-neutral-700)"></span>rotorB<span style="color:var(--color-neutral-700)">target</span></span>
+              <span style="display:flex;color:var(--color-neutral-600);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+            </div>
+          </header>
+          <div class="rotor-body" style="flex:1;min-height:96px;display:flex;padding:8px 12px 4px">
+            <div class="rotor-stage" style="position:relative;flex:1;min-width:0;background:var(--ink-well);background-image:var(--well-grad);border-radius:var(--r-canvas);overflow:hidden">
+              <div style="position:absolute;inset:0">
+                <x-import component-from-global-scope="rotor-view" mode="{{ mode3d }}" view="{{ view3d }}" pattern="{{ ledPattern }}" rpm="{{ rpm3d }}" cursor-ms="{{ cursorMs }}" stale="{{ stale3d }}" fault="{{ fault3d }}" theme-key="{{ themeKey }}" hint-size="100%,100%"></x-import>
+              </div>
+              <div class="rotor-readout" style="position:absolute;left:10px;top:9px;display:flex;flex-direction:column;gap:2px;pointer-events:none">
+                <span style="display:flex;align-items:center;gap:6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)"><span style="width:34px;color:var(--color-neutral-600)">θm</span><span ref="{{ refMech }}" style="color:var(--color-neutral-200)">0.0°</span></span>
+                <span style="display:flex;align-items:center;gap:6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)"><span style="width:34px;color:var(--color-neutral-600)">θe</span><span ref="{{ refElec }}" style="color:var(--color-neutral-200)">0.0°</span></span>
+                <span style="display:flex;align-items:center;gap:6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--color-neutral-300)"><span style="width:34px;color:var(--color-neutral-600)">rpm</span><span ref="{{ refRpm }}" style="color:var(--color-accent-400)">1387.4</span></span>
+              </div>
+              <div class="led-pattern-chips" style="position:absolute;left:10px;bottom:9px;display:flex;align-items:center;gap:4px">
+                <span style="font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--color-neutral-700);padding-right:2px">led arc</span>
+                <sc-for list="{{ patterns }}" as="p" hint-placeholder-count="5">
+                  <button onClick="{{ p.pick }}" title="{{ p.title }}" style="{{ p.style }}">{{ p.label }}</button>
+                </sc-for>
+              </div>
+              <div class="spin-chips" style="position:absolute;left:10px;bottom:34px;display:flex;align-items:center;gap:4px">
+                <span style="font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--color-neutral-700);padding-right:2px">speed</span>
+                <sc-for list="{{ spins }}" as="s" hint-placeholder-count="2">
+                  <button onClick="{{ s.pick }}" style="{{ s.style }}">{{ s.label }}</button>
+                </sc-for>
+              </div>
+              <div class="view-gizmo" style="position:absolute;right:9px;bottom:9px;display:flex;align-items:center;gap:3px;padding:3px;background:rgba(var(--surface-rgb),.86);border:1px solid rgba(var(--hair-rgb),.12);border-radius:var(--r-pill)">
+                <sc-for list="{{ views3d }}" as="v" hint-placeholder-count="3">
+                  <button onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</button>
+                </sc-for>
+              </div>
+              <sc-if value="{{ stale3d }}" hint-placeholder-val="{{ false }}">
+              <span class="pose-held" style="position:absolute;right:9px;top:9px;display:flex;align-items:center;gap:6px;padding:3px 10px;background:rgba(var(--lit-rgb),.14);border:1px solid rgba(var(--lit-rgb),.4);border-radius:var(--r-pill);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-accent-400)">pose held · no sample</span>
+              </sc-if>
+            </div>
+          </div>
+          <div class="x-axis" style="flex:none;display:flex;justify-content:space-between;padding:0 12px 8px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--color-neutral-700)">
+            <span>channels[0] · 14 pole pairs · 36 RGB at 10° · arc smears above ~200 rpm, as on the bench</span><span>drag to orbit · scroll to zoom</span>
+          </div>
+          <span class="resize-handle" style="position:absolute;right:5px;bottom:5px;width:12px;height:12px;border-right:2px solid rgba(var(--hair-rgb),.22);border-bottom:2px solid rgba(var(--hair-rgb),.22);border-bottom-right-radius:4px;cursor:nwse-resize"></span>
+        </section>
+
+        <!-- table widget -->
+        <section class="table-widget" style="position:relative;display:flex;flex-direction:column;min-height:248px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--hair-rgb),.1);border-top-color:var(--edge-lit);border-radius:var(--r-widget);box-shadow:0 3px 14px rgba(0,0,0,.32);overflow:hidden">
+          <header class="widget-head" style="flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:10px;overflow:hidden;padding:9px 12px 8px;border-bottom:1px solid rgba(var(--hair-rgb),.07);cursor:move">
+            <span style="display:flex;color:var(--color-neutral-700);margin-left:-3px"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01"/></svg></span>
+            <span style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:13.5px;white-space:nowrap;color:var(--color-neutral-200)">Live values</span>
+            <span class="tag" style="background:rgba(var(--hair-rgb),.07);color:var(--color-neutral-500);font-size:10px;padding:2px 9px">at cursor · 12 480 ms</span>
+            <span style="margin-left:auto;display:flex;color:var(--color-neutral-600);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+          </header>
+          <div style="flex:1;min-height:0;overflow:auto;padding:2px 6px 6px">
+            <table class="value-table" style="width:100%;border-collapse:collapse;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:7px 8px;font-family:'Figtree',system-ui,sans-serif;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600);font-weight:600;border-bottom:1px solid rgba(var(--hair-rgb),.12)">signal</th>
+                  <th style="text-align:right;padding:7px 8px;font-family:'Figtree',system-ui,sans-serif;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600);font-weight:600;border-bottom:1px solid rgba(var(--hair-rgb),.12)">value</th>
+                  <th style="text-align:left;padding:7px 8px;font-family:'Figtree',system-ui,sans-serif;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600);font-weight:600;border-bottom:1px solid rgba(var(--hair-rgb),.12)">type</th>
+                  <th style="text-align:right;padding:7px 8px;font-family:'Figtree',system-ui,sans-serif;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600);font-weight:600;border-bottom:1px solid rgba(var(--hair-rgb),.12)">period</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--color-accent-400);margin-right:7px"></span>channels[0].velocityCmd</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-200);border-bottom:1px solid rgba(var(--hair-rgb),.06)">1400.000</td><td style="padding:6px 8px;color:var(--color-neutral-600);border-bottom:1px solid rgba(var(--hair-rgb),.06)">f32</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500);border-bottom:1px solid rgba(var(--hair-rgb),.06)">10 ms</td></tr>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--color-accent-2-400);margin-right:7px"></span>channels[0].velocityMeas</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-200);border-bottom:1px solid rgba(var(--hair-rgb),.06)">1387.400</td><td style="padding:6px 8px;color:var(--color-neutral-600);border-bottom:1px solid rgba(var(--hair-rgb),.06)">f32</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500);border-bottom:1px solid rgba(var(--hair-rgb),.06)">1 ms</td></tr>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--trace-4);margin-right:7px"></span>est_flux_data.thetaEl</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-200);border-bottom:1px solid rgba(var(--hair-rgb),.06)">2.7183</td><td style="padding:6px 8px;color:var(--color-neutral-600);border-bottom:1px solid rgba(var(--hair-rgb),.06)">f32</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500);border-bottom:1px solid rgba(var(--hair-rgb),.06)">1 ms</td></tr>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--trace-5);margin-right:7px"></span>drv_gate_data.faultLatch</td><td style="padding:6px 8px;text-align:right;color:var(--color-accent-2-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)">false</td><td style="padding:6px 8px;color:var(--color-neutral-600);border-bottom:1px solid rgba(var(--hair-rgb),.06)">bool</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500);border-bottom:1px solid rgba(var(--hair-rgb),.06)">100 ms</td></tr>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300);border-bottom:1px solid rgba(var(--hair-rgb),.06)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--trace-3);margin-right:7px"></span>app_motorControl_data.mode</td><td style="padding:6px 8px;text-align:right;color:var(--color-accent-400);border-bottom:1px solid rgba(var(--hair-rgb),.06)">FOC_VEL</td><td style="padding:6px 8px;color:var(--color-neutral-600);border-bottom:1px solid rgba(var(--hair-rgb),.06)">enum</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500);border-bottom:1px solid rgba(var(--hair-rgb),.06)">100 ms</td></tr>
+                <tr><td style="padding:6px 8px;color:var(--color-neutral-300)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--trace-6);margin-right:7px"></span>sys_sched_data.loopOverruns</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-200)">0</td><td style="padding:6px 8px;color:var(--color-neutral-600)">u32</td><td style="padding:6px 8px;text-align:right;color:var(--color-neutral-500)">100 ms</td></tr>
+              </tbody>
+            </table>
+            <div class="drop-target" style="margin:8px 8px 0;padding:9px;border:1px dashed rgba(var(--hair-rgb),.16);border-radius:var(--r-card);text-align:center;font-family:'Figtree',system-ui,sans-serif;font-size:11.5px;color:var(--color-neutral-700)">drop a signal to add a row</div>
+          </div>
+          <span class="resize-handle" style="position:absolute;right:5px;bottom:5px;width:12px;height:12px;border-right:2px solid rgba(var(--hair-rgb),.22);border-bottom:2px solid rgba(var(--hair-rgb),.22);border-bottom-right-radius:4px;cursor:nwse-resize"></span>
+        </section>
+      </div>
+      </sc-if>
+
+      <!-- empty workspace -->
+      <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+      <div class="workspace-empty" style="flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:40px">
+        <div style="flex:none;width:340px;min-height:96px;height:150px;border:1.5px dashed rgba(var(--hair-rgb),.2);border-radius:var(--r-widget);display:flex;align-items:center;justify-content:center;background:rgba(var(--well-rgb),.5)">
+          <span style="display:flex;align-items:center;gap:9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-neutral-600)"><span style="display:flex;color:var(--color-accent-400)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h14M12 5v14"/></svg></span>drop a signal here</span>
+        </div>
+        <div style="max-width:420px;text-align:center">
+          <h4 style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:20px;color:var(--color-neutral-200);margin-bottom:7px">An empty bench</h4>
+          <p style="font-size:13px;line-height:1.55;color:var(--color-neutral-500);margin:0 0 14px">Drag any of the 704 firmware variables from the left onto the canvas. A plot appears where you drop it; drop onto an existing plot to overlay.</p>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button class="btn btn-primary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;background:var(--color-accent);background-image:var(--accent-grad);box-shadow:var(--chip-glow);color:var(--ink-bg);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h14M12 5v14"/></svg>New plot widget</button>
+            <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);cursor:pointer"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="M5 12h14M12 5v14"/></svg>New table widget</button>
+            <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);cursor:pointer">Load layout…</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- gate scrim over the widgets -->
+      <sc-if value="{{ isMismatch }}" hint-placeholder-val="{{ false }}">
+      <div class="trace-gate" style="position:absolute;inset:0;background:rgba(var(--bg-rgb),.78);backdrop-filter:saturate(.4);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh">
+        <div class="trace-gate-note" style="width:min(520px,86%);display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--lit-rgb),.4);border-radius:var(--r-dialog);box-shadow:0 14px 40px rgba(0,0,0,.55)">
+          <div style="display:flex;align-items:center;gap:9px">
+            <span style="display:flex;color:var(--color-accent-400)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m10.29 3.86-8.19 14.2A2 2 0 0 0 3.83 21h16.34a2 2 0 0 0 1.73-2.94l-8.19-14.2a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+            <h4 style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:17px;color:var(--color-neutral-200)">Tracing is paused — build identity doesn't match</h4>
+          </div>
+          <p style="margin:0;font-size:13px;line-height:1.55;color:var(--color-neutral-300)">The board reports <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-accent-300)">g431-v0.9.4 · 8f31c0a</span>; the loaded .elf is <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-accent-300)">1d77b2e</span>. Symbol addresses from a different build would read the wrong memory, so the watch list is held. Telemetry and the log keep streaming.</p>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn btn-primary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;background:var(--color-accent);background-image:var(--accent-grad);box-shadow:var(--chip-glow);color:var(--ink-bg);cursor:pointer">Choose matching .elf…</button>
+            <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);cursor:pointer">Keep layout, trace anyway</button>
+          </div>
+          <span style="font-size:11px;color:var(--color-neutral-600)">Layout and watch list are preserved — tracing resumes the moment identities agree.</span>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- watch-list rejection -->
+      <sc-if value="{{ isRejected }}" hint-placeholder-val="{{ false }}">
+      <div class="reject-scrim" style="position:absolute;inset:0;background:rgba(var(--bg-rgb),.6);display:flex;align-items:center;justify-content:center;padding:24px">
+        <div class="reject-dialog" style="width:min(460px,92%);display:flex;flex-direction:column;gap:11px;padding:20px 22px;background:var(--ink-surface);background-image:var(--surface-grad);border:1px solid rgba(var(--lit-rgb),.4);border-radius:var(--r-dialog);box-shadow:0 18px 48px rgba(0,0,0,.6)">
+          <h4 style="font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);text-transform:var(--display-case);font-size:18px;color:var(--color-neutral-200)">Device refused the watch list</h4>
+          <div style="padding:10px 12px;background:var(--ink-bg);border-radius:var(--r-card);border-left:2px solid var(--color-accent-400)">
+            <div style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:3px">reason from firmware</div>
+            <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-accent-300)">E_WATCH_BUDGET: 17 entries at 1 ms needs 129 % of link (max 100 %); RAM 596 / 512 B</div>
+          </div>
+          <p style="margin:0;font-size:13px;line-height:1.55;color:var(--color-neutral-300)">The previous list is still running — nothing was lost. Drop a signal, or move some to a slower period.</p>
+          <div style="display:flex;flex-direction:column;gap:6px;padding:2px 0">
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-neutral-500)"><span style="width:5px;height:5px;border-radius:50%;background:var(--color-accent-2-400)"></span>Move the 6 raw ADC signals to 10 ms → 71 % of link</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-neutral-500)"><span style="width:5px;height:5px;border-radius:50%;background:var(--color-accent-2-400)"></span>Drop <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--color-neutral-300)">est_flux_data.thetaElRaw</span> → 94 %</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn btn-primary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;background:var(--color-accent);background-image:var(--accent-grad);box-shadow:var(--chip-glow);color:var(--ink-bg);cursor:pointer">Apply first fix</button>
+            <button class="btn btn-secondary" style="font-family:'Figtree',system-ui,sans-serif;font-size:12.5px;padding:6px 14px;border-color:rgba(var(--hair-rgb),.18);color:var(--color-neutral-200);cursor:pointer">Edit watch list</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+    </main>
+  </div>
+
+  <!-- ═══ log pane ═══ -->
+  <section class="log-pane" style="flex:none;max-height:34vh;display:flex;flex-direction:column;background:var(--ink-chrome);background-image:var(--chrome-grad);border-top:1px solid rgba(var(--hair-rgb),.1)">
+    <header style="display:flex;align-items:center;gap:10px;padding:7px 16px;cursor:ns-resize">
+      <span style="display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-600)"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>firmware log</span>
+      <span class="tag" style="background:rgba(var(--ok-rgb),.14);color:var(--color-accent-2-300);font-size:10px;padding:2px 9px">printf · live</span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:12px;font-size:11.5px;color:var(--color-neutral-700)">
+        <span>112 lines</span><span style="cursor:pointer;color:var(--color-neutral-500)">clear</span><span style="display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--color-neutral-500)">collapse<svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;flex:none;fill:none;stroke:currentColor;stroke-width:var(--icon-stroke);stroke-linecap:var(--icon-cap);stroke-linejoin:var(--icon-cap)"><path d="m6 9 6 6 6-6"/></svg></span>
+      </span>
+    </header>
+    <div class="log-lines" style="height:clamp(58px,13vh,104px);overflow:auto;padding:0 16px 10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.75;color:var(--color-neutral-500)">
+      <div><span style="color:var(--color-neutral-700)">184 016</span>  <span style="color:var(--color-accent-2-400)">i</span>  watch list accepted: 14 entries, 412 B, 88 % link</div>
+      <div><span style="color:var(--color-neutral-700)">184 021</span>  <span style="color:var(--color-accent-2-400)">i</span>  stream restart, tick base = 0</div>
+      <div><span style="color:var(--color-neutral-700)">184 118</span>  <span style="color:var(--color-accent-400)">w</span>  tx queue high water 61/64 — 3 ticks dropped</div>
+      <div><span style="color:var(--color-neutral-700)">184 193</span>  <span style="color:var(--color-accent-2-400)">i</span>  vel loop settled, |err| &lt; 15 rpm for 500 ms</div>
+      <div><span style="color:var(--color-neutral-700)">184 209</span>  <span style="color:var(--color-accent-2-400)">i</span>  encoder mag 0.71, no dropouts</div>
+    </div>
+  </section>
+
+  <!-- mockup-only state switcher -->
+  <div class="mock-switcher" style="position:fixed;right:14px;bottom:14px;display:flex;align-items:center;gap:5px;padding:5px 6px;background:rgba(var(--surface-rgb),.95);border:1px solid rgba(var(--hair-rgb),.14);border-radius:var(--r-pill);box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:50">
+    <span style="font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-neutral-700);padding:0 6px">state</span>
+    <sc-for list="{{ views }}" as="v" hint-placeholder-count="4">
+      <button onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</button>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;warm&quot;,&quot;graphite&quot;,&quot;neon&quot;],&quot;default&quot;:&quot;warm&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Theme&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;matched&quot;,&quot;mismatch&quot;,&quot;empty&quot;,&quot;rejected&quot;],&quot;default&quot;:&quot;matched&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Mockup state&quot;},&quot;ledPattern&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;position&quot;,&quot;comet&quot;,&quot;commutation&quot;,&quot;electrical&quot;,&quot;sweep&quot;],&quot;default&quot;:&quot;position&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Rotor pane&quot;}}">
+const THEMES = [
+  { id: "warm", label: "Warm", title: "Organic, dark ground — rounded", dot: "#c67139" },
+  { id: "graphite", label: "Graphite", title: "Angular cool grey — cyan accent", dot: "#2fa8bd" },
+  { id: "neon", label: "Neon", title: "Angular, cyberpunk key — magenta accent", dot: "#e01fb8" }
+];
+
+// position is the firmware's actual pattern; the rest are kept as alternates
+const LED_PATTERNS = [
+  ["position", "Position", "The real one — one LED tracks mechanical angle"],
+  ["comet", "Comet", "Alternate: lit head with a decay tail behind travel"],
+  ["commutation", "6-step", "Alternate: the 60°-electrical sector being energised"],
+  ["electrical", "θe", "Alternate: electrical angle — 14 cycles per revolution"],
+  ["sweep", "Bargraph", "Alternate: filled from zero to the angle"]
+];
+const VIEWS_3D = [["iso", "iso"], ["top", "top"], ["front", "front"]];
+const DEG = 180 / Math.PI;
+
+class Component extends DCLogic {
+  state = { view: null, theme: null, mode3d: "live", view3d: "iso", ledPattern: null };
+  refMech = React.createRef();
+  refElec = React.createRef();
+  refRpm = React.createRef();
+
+  componentDidMount() {
+    this.applyTheme();
+    this._onPose = e => {
+      const d = e.detail;
+      // written straight to the DOM: a 10 Hz readout must not re-render the app
+      if (this.refMech.current) this.refMech.current.textContent = (d.mech * DEG).toFixed(1) + "°";
+      if (this.refElec.current) this.refElec.current.textContent = (d.elec * DEG).toFixed(1) + "°";
+      if (this.refRpm.current) this.refRpm.current.textContent = d.live ? d.rpm.toFixed(1) : "held";
+    };
+    window.addEventListener("pose", this._onPose);
+  }
+  componentWillUnmount() { window.removeEventListener("pose", this._onPose); }
+  get view() { return this.state.view ?? this.props.state ?? "matched"; }
+  get theme() { return this.state.theme ?? this.props.theme ?? "warm"; }
+  componentDidUpdate() { this.applyTheme(); }
+  applyTheme() {
+    const t = this.theme;
+    if (t === "warm") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+  }
+  renderVals() {
+    const v = this.view;
+    const th = this.theme;
+    const themes = THEMES.map(t => ({
+      label: t.label, title: t.title,
+      pick: () => this.setState({ theme: t.id }),
+      dot: `width:8px;height:8px;flex:none;border-radius:${t.id === "warm" ? "50%" : "1px"};background:${t.dot}` +
+           (th === t.id ? ";box-shadow:0 0 0 2px rgba(var(--hair-rgb),.25)" : ""),
+      style: "display:flex;align-items:center;gap:6px;font-family:Figtree,system-ui,sans-serif;font-size:11px;" +
+             "padding:3px 10px;border:0;border-radius:var(--r-pill);cursor:pointer;" +
+             (th === t.id
+               ? "background:rgba(var(--hair-rgb),.12);color:var(--color-neutral-200)"
+               : "background:transparent;color:var(--color-neutral-600)")
+    }));
+    const defs = [["matched","Matched"],["mismatch","Mismatch gate"],["empty","Empty canvas"],["rejected","Rejection"]];
+    const base = "font-family:Figtree,system-ui,sans-serif;font-size:11.5px;padding:4px 11px;border:0;border-radius:var(--r-pill);cursor:pointer;";
+    const pat = this.state.ledPattern ?? this.props.ledPattern ?? "position";
+    const chip = on =>
+      "font-family:Figtree,system-ui,sans-serif;font-size:10px;padding:2px 8px;border:0;border-radius:var(--r-pill);cursor:pointer;" +
+      (on ? "background:rgba(var(--lit-rgb),.2);color:var(--color-accent-400)"
+          : "background:rgba(var(--surface-rgb),.8);color:var(--color-neutral-600)");
+    const seg = on =>
+      "font-family:Figtree,system-ui,sans-serif;font-size:10px;padding:2px 9px;border:0;cursor:pointer;" +
+      (on ? "background:var(--color-accent);background-image:var(--accent-grad);color:var(--ink-bg)"
+          : "background:transparent;color:var(--color-neutral-500)");
+    const m3 = this.state.mode3d, v3 = this.state.view3d;
+    // At 1387 rpm the arc is a uniform smear — true on the bench, unreadable in a
+    // mockup. Jog is a real bench command, so this shows the pattern without lying.
+    const spin = this.state.spin ?? "jog";
+    const spins = [["jog", "jog 45", 45], ["run", "run 1387", 1387.4]];
+
+    return {
+      themes,
+      themeKey: th,
+      mode3d: m3,
+      view3d: v3,
+      ledPattern: pat,
+      rpm3d: spin === "jog" ? 45 : 1387.4,
+      spins: spins.map(([id, label]) => ({
+        label, pick: () => this.setState({ spin: id }), style: chip(spin === id)
+      })),
+      cursorMs: 12480,
+      stale3d: v === "mismatch" || v === "rejected",
+      fault3d: v === "mismatch",
+      pickLive: () => this.setState({ mode3d: "live" }),
+      pickCursor: () => this.setState({ mode3d: "cursor" }),
+      liveStyle: seg(m3 === "live"),
+      cursorStyle: seg(m3 === "cursor"),
+      refMech: this.refMech,
+      refElec: this.refElec,
+      refRpm: this.refRpm,
+      patterns: LED_PATTERNS.map(([id, label, title]) => ({
+        label, title, pick: () => this.setState({ ledPattern: id }), style: chip(pat === id)
+      })),
+      views3d: VIEWS_3D.map(([id, label]) => ({
+        label, pick: () => this.setState({ view3d: id }),
+        style: "font-family:Figtree,system-ui,sans-serif;font-size:10px;padding:2px 8px;border:0;border-radius:var(--r-pill);cursor:pointer;" +
+          (v3 === id ? "background:rgba(var(--hair-rgb),.14);color:var(--color-neutral-200)" : "background:transparent;color:var(--color-neutral-600)")
+      })),
+      isMatched: v !== "mismatch",
+      isMismatch: v === "mismatch",
+      isEmpty: v === "empty",
+      isRejected: v === "rejected",
+      hasWidgets: v !== "empty",
+      views: defs.map(([id, label]) => ({
+        label, pick: () => this.setState({ view: id }),
+        style: base + (v === id ? "background:var(--color-accent);color:var(--ink-bg)" : "background:transparent;color:var(--color-neutral-500)")
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

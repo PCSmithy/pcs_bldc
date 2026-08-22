@@ -47,8 +47,7 @@ Acceptance:
 
 - With watches at 1 ms, 10 ms, and 100 ms periods, every received
   message's bytes map to exactly the due signals, in list order.
-- A tick-count discontinuity yields values at exactly the received
-  ticks.
+- A tick-count gap yields values at exactly the received ticks.
 - A signal's bytes decode per its scalar type: width, signedness, and
   floating-point format.
 

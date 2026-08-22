@@ -1,0 +1,17 @@
+/* Vendored faces — no runtime network fetches (Tauri may run offline).
+   Figtree ships as one variable file covering 100–900. The angular themes'
+   display faces are platform fonts and need no files. */
+@font-face {
+  font-family: "Caprasimo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../vendor/fonts/caprasimo-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../vendor/fonts/figtree-var.woff2") format("woff2");
+}

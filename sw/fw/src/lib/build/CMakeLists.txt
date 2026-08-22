@@ -13,9 +13,11 @@ add_custom_target(pcs_build_identity
   VERBATIM
 )
 
-add_library(lib_build_config INTERFACE)
-target_include_directories(lib_build_config INTERFACE . generated)
-target_link_libraries(lib_build_config INTERFACE lib_types)
+# STATIC (not INTERFACE): lib_build_identity.c compiles the identity into a
+# named, DWARF-visible object every consumer links.
+add_library(lib_build_config STATIC lib_build_identity.c)
+target_include_directories(lib_build_config PUBLIC . generated)
+target_link_libraries(lib_build_config PUBLIC lib_types)
 add_dependencies(lib_build_config pcs_build_identity)
 
 if(PCS_TARGET STREQUAL "native")

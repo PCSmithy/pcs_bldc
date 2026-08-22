@@ -1,111 +1,28 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>pcs_bldc</title>
-<style>
-  :root {
-    --ground: #14191B;
-    --surface: #1C2427;
-    --ink: #E4EAE8;
-    --muted: #8CA3A0;
-    --accent: #3BB8AF;
-    --line: #2C3A3B;
-    --alert: #E09A52;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body {
-    margin: 0;
-    padding: 2rem;
-    background: var(--ground);
-    color: var(--ink);
-    font-family: "Segoe UI", system-ui, sans-serif;
-    display: grid;
-    place-items: center;
-  }
-  main {
-    width: min(30rem, 92vw);
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 1.6rem 1.8rem;
-  }
-  h1 {
-    font-size: 1.1rem;
-    letter-spacing: 0.02em;
-    margin: 0 0 0.25rem;
-  }
-  .sub { color: var(--muted); font-size: 0.82rem; margin: 0 0 1.2rem; }
-  .row { display: flex; gap: 0.6rem; align-items: center; }
-  select, button {
-    font: inherit;
-    background: var(--ground);
-    color: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    padding: 0.45rem 0.7rem;
-  }
-  select { flex: 1; }
-  button { cursor: pointer; }
-  button:hover, button:focus-visible { border-color: var(--accent); outline: none; }
-  #status {
-    margin-top: 1.1rem;
-    font-family: Consolas, monospace;
-    font-size: 0.82rem;
-    color: var(--muted);
-    min-height: 1.2em;
-    overflow-wrap: anywhere;
-  }
-  #status.ok { color: var(--accent); }
-  #status.err { color: var(--alert); }
-</style>
+<link rel="stylesheet" href="css/fonts.css" />
+<link rel="stylesheet" href="css/tokens.css" />
+<link rel="stylesheet" href="css/app.css" />
+<link rel="stylesheet" href="vendor/uplot/uPlot.min.css" />
+<link rel="stylesheet" href="css/workspace.css" />
+<script src="vendor/uplot/uPlot.iife.min.js"></script>
 </head>
 <body>
-<main>
-  <h1>pcs_bldc</h1>
-  <p class="sub">Operator app scaffold — select the board's port and connect.</p>
-  <div class="row">
-    <select id="ports" aria-label="Serial port"></select>
-    <button id="refresh">Refresh</button>
-    <button id="connect">Connect</button>
+<div class="app-shell">
+  <header class="conn-bar"></header>
+  <div class="telemetry-strip"></div>
+  <div class="app-mid">
+    <aside class="signal-picker"></aside>
+    <main class="workspace">
+      <div class="workspace-empty"></div>
+      <div class="trace-gate" hidden></div>
+    </main>
   </div>
-  <div id="status"></div>
-</main>
-<script>
-  const { invoke } = window.__TAURI__.core;
-  const portsEl = document.getElementById("ports");
-  const statusEl = document.getElementById("status");
-
-  async function refresh() {
-    const ports = await invoke("list_ports");
-    portsEl.replaceChildren(...ports.map((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.name;
-      opt.textContent = `${p.name} — ${p.kind}`;
-      return opt;
-    }));
-    if (!ports.length) {
-      statusEl.textContent = "no serial ports found";
-      statusEl.className = "";
-    }
-  }
-
-  document.getElementById("refresh").addEventListener("click", refresh);
-  document.getElementById("connect").addEventListener("click", async () => {
-    statusEl.textContent = "connecting…";
-    statusEl.className = "";
-    try {
-      const buildId = await invoke("connect", { port: portsEl.value });
-      statusEl.textContent = `connected — firmware build ${buildId}`;
-      statusEl.className = "ok";
-    } catch (e) {
-      statusEl.textContent = String(e);
-      statusEl.className = "err";
-    }
-  });
-
-  refresh();
-</script>
+  <footer class="log-pane"></footer>
+</div>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

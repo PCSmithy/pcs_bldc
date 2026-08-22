@@ -86,7 +86,9 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
 
         case shared_Envelope_identity_request_tag:
             reply->which_payload = shared_Envelope_identity_tag;
-            (void) strcpy(reply->payload.identity.build_id, LIB_BUILD_IDENTITY);
+            // Serve the named identity object, so wire and image report the
+            // same bytes (and the anchor is always linked).
+            (void) strcpy(reply->payload.identity.build_id, lib_build_identityString);
             break;
 
         case shared_Envelope_board_request_tag:
