@@ -256,10 +256,18 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
         const uint64_t period = peripheralConfig->period;
         const uint64_t cycle  = HW_TIM_private_cycleCounts(peripheralConfig);
 
-        uint64_t triggers = 0U;
+        uint64_t upTriggers   = 0U;
+        uint64_t downTriggers = 0U;
         if (peripheralConfig->trgoSource == HW_TIM_TRGO_UPDATE)
         {
-            triggers = updates;
+            if (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+            {
+                downTriggers = updates;
+            }
+            else
+            {
+                upTriggers = updates;
+            }
         }
         else if ((peripheralConfig->trgoSource == HW_TIM_TRGO_OC_MATCH) &&
                  (peripheralConfig->trgoOcUnit < HW_TIM_OC_UNITS_PER_PERIPHERAL))
@@ -268,7 +276,14 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
             const uint64_t match = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
                 ? (period - compare)
                 : compare;
-            triggers = HW_TIM_private_landings(from, counts, cycle, match);
+            if (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+            {
+                downTriggers = HW_TIM_private_landings(from, counts, cycle, match);
+            }
+            else
+            {
+                upTriggers = HW_TIM_private_landings(from, counts, cycle, match);
+            }
 
             if (peripheralConfig->countDir == HW_TIM_COUNT_CENTER)
             {
@@ -277,7 +292,7 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
                 const uint64_t mirror = ((2U * period) - compare) % cycle;
                 if (mirror != match)
                 {
-                    triggers += HW_TIM_private_landings(from, counts, cycle, mirror);
+                    downTriggers = HW_TIM_private_landings(from, counts, cycle, mirror);
                 }
             }
         }
@@ -286,9 +301,16 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
             // HW_TIM_TRGO_NONE, or an OC unit outside the peripheral's units.
         }
 
-        for (uint64_t n = 0U; n < triggers; n++)
+        // Batched per advance (up-phase landings, then down-phase); within one
+        // advance the counter has already taken its final value, so intra-
+        // advance ordering carries no timing meaning.
+        for (uint64_t n = 0U; n < upTriggers; n++)
         {
-            sink->callback(peripheral, sink->context);
+            sink->callback(peripheral, HW_TIM_TRGO_CROSS_UP, sink->context);
+        }
+        for (uint64_t n = 0U; n < downTriggers; n++)
+        {
+            sink->callback(peripheral, HW_TIM_TRGO_CROSS_DOWN, sink->context);
         }
     }
 }

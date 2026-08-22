@@ -88,7 +88,8 @@
     .deadTime               = 43U, \
     .hasBreakInput          = true, \
     .configureTrgo          = true, \
-    .trgoSource             = HW_TIM_TRGO_UPDATE,
+    .trgoSource             = HW_TIM_TRGO_OC_MATCH, \
+    .trgoOcUnit             = 3U,
 
 #define HW_TIM_CUBEMX_G4_OC_TIM1_CH1 \
     .complementary = true, \

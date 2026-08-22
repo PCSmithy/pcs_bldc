@@ -81,20 +81,30 @@ static int32_t portHandle(const char * name)
 // peripheral + context it was handed; recordTrgoAlt is the second sink used to
 // show which registration wins.
 static uint32_t            trgoCount;
+static uint32_t            trgoUpCount;
+static uint32_t            trgoDownCount;
 static HW_TIM_peripheral_E trgoPeripheral;
 static void *              trgoContext;
 static uint32_t            trgoAltCount;
 
-static void recordTrgo(HW_TIM_peripheral_E peripheral, void * context)
+static void recordTrgo(HW_TIM_peripheral_E peripheral, HW_TIM_trgoCross_E cross, void * context)
 {
     trgoCount++;
+    if (cross == HW_TIM_TRGO_CROSS_UP)
+    {
+        trgoUpCount++;
+    }
+    else
+    {
+        trgoDownCount++;
+    }
     trgoPeripheral = peripheral;
     trgoContext    = context;
 }
 
-static void recordTrgoAlt(HW_TIM_peripheral_E peripheral, void * context)
+static void recordTrgoAlt(HW_TIM_peripheral_E peripheral, HW_TIM_trgoCross_E cross, void * context)
 {
-    (void)peripheral; (void)context;
+    (void)peripheral; (void)cross; (void)context;
     trgoAltCount++;
 }
 
@@ -176,6 +186,8 @@ void setUp(void)
         (void)HW_TIM_registerTrgoCallback((HW_TIM_peripheral_E)p, NULL, NULL);
     }
     trgoCount      = 0U;
+    trgoUpCount    = 0U;
+    trgoDownCount  = 0U;
     trgoAltCount   = 0U;
     trgoPeripheral = HW_TIM_PERIPHERAL_COUNT;
     trgoContext    = NULL;
@@ -647,6 +659,7 @@ static void test_trgo_oc_match_fires_at_compare(void)
 
     HW_TIM_advanceTime(PWM_PERIOD + 1U);   // one full lap: the same match again
     TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoUpCount);   // up-counter: every event is an up-cross
 }
 
 // The trigger follows the configured OC unit's compare value, not another
@@ -682,12 +695,16 @@ static void test_trgo_oc_match_center_fires_on_both_crossings(void)
 
     HW_TIM_advanceTime(PWM_COMPARE);   // the up-phase crossing
     TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoUpCount);
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoDownCount);
 
     HW_TIM_advanceTime(1199U);         // over the crest, one short of the way back down
     TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
 
     HW_TIM_advanceTime(1U);            // the down-phase crossing
     TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoUpCount);
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoDownCount);
 
     uint32_t pwm = 0U;
     TEST_ASSERT_TRUE(HW_TIM_getCounter(PWM_PERIPH, &pwm));
