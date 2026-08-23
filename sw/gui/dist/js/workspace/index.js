@@ -14,6 +14,7 @@ import { evalMonotoneRun, monotoneTangents } from "./interp.js";
 import {
   initTimeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow,
 } from "./timeline.js";
+import { markBatch, perfSnapshot } from "../perf.js";
 
 export function initWorkspace() {
   initWatchflow();
@@ -22,19 +23,29 @@ export function initWorkspace() {
   initPickerWatchControls();
   initWatchPanel();
 
+  // One perf measurement per batch CYCLE: the append half (possibly several
+  // coalesced "samples" events) accumulates here and the rAF refresh half
+  // closes the measurement — two markBatch calls would halve the apparent
+  // per-cycle cost.
+  let pendingAppendMs = 0;
   let refreshQueued = false;
   const refreshAll = () => {
     refreshQueued = false;
-    forEachWidget((w) => w.refresh());
+    const t0 = performance.now();
+    forEachWidget((w) => (w.refreshBatch ?? w.refresh).call(w));
+    markBatch(pendingAppendMs + (performance.now() - t0));
+    pendingAppendMs = 0;
   };
 
   subscribe("samples", (batch) => {
+    const t0 = performance.now();
     for (const sig of batch.signals || []) {
       const w = store.watched.get(sig.path);
       if (!w) continue; // late batch for a signal just removed
       const h = historyFor(sig.path, w.period_ms);
       h.append(sig.points);
     }
+    pendingAppendMs += performance.now() - t0;
     if (!refreshQueued) {
       refreshQueued = true;
       requestAnimationFrame(refreshAll);
@@ -46,7 +57,7 @@ export function initWorkspace() {
 
   // An appearance edit propagates everywhere the signal renders: refresh the
   // watched map's resolved color (legend/picker/watch-panel/table all read
-  // it), rebuild the plots (series opts are fixed at instance creation), and
+  // it), rebuild the plots so legends and trace styles re-derive, and
   // persist — appearance restores with the layout.
   subscribe("appearance", (path) => {
     const w = store.watched.get(path);
@@ -59,10 +70,10 @@ export function initWorkspace() {
   });
 
   // A theme is a token block — the trace cycle retints with it. Colors are
-  // slot-stable per signal; re-resolve and rebuild (series strokes are fixed
-  // at instance creation). The appearance rule applies here: an un-overridden
-  // signal re-resolves to its slot's new token, while a user-overridden color
-  // is absolute and comes back from resolvedColor exactly as chosen.
+  // slot-stable per signal; re-resolve and rebuild so legends and traces
+  // retint. The appearance rule applies here: an un-overridden signal
+  // re-resolves to its slot's new token, while a user-overridden color is
+  // absolute and comes back from resolvedColor exactly as chosen.
   new MutationObserver(() => {
     for (const [path, w] of store.watched) {
       store.watched.set(path, { ...w, color: resolvedColor(path) });
@@ -79,5 +90,6 @@ export function initWorkspace() {
     timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow },
     appearance: { of: appearanceOf, set: setAppearance, resolvedColor },
     interp: { evalMonotoneRun, monotoneTangents },
+    perf: { snapshot: perfSnapshot },
   };
 }

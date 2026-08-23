@@ -11,6 +11,8 @@ import { traceColor } from "./colors.js";
 import { cursor } from "./cursor.js";
 import { formatValue } from "./plotwidget.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
+import { wireTitleEditor } from "./titlebar.js";
+import { throttleTrailing } from "../perf.js";
 
 const esc = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -23,15 +25,26 @@ export class TableWidget {
     this.el = document.createElement("div");
     this.el.className = "table-widget widget";
     this.el.dataset.widgetId = cfg.id;
+    // The batch-rate entry point (refreshAll): live values change ~20×/s but
+    // read fine at 10 Hz, so the full-tbody rebuild is throttled with a
+    // trailing edge (the newest batch always lands). Everything else —
+    // cursor moves, membership edits, explicit calls — uses refresh()
+    // directly and renders immediately.
+    this.refreshBatch = throttleTrailing(() => this.refresh());
     this.render();
     this.unsubs = [subscribe("cursor", () => this.refresh())];
+  }
+
+  // [impl->app~views_016~1] unset title: a table reads `Live values`.
+  title() {
+    return this.cfg.title || "Live values";
   }
 
   render() {
     this.el.innerHTML = `
       <div class="widget-head" data-drag-handle>
         ${icon("grip-vertical")}
-        <span class="widget-title display">Live values</span>
+        <span class="widget-title display">${esc(this.title())}</span>
         <span class="widget-tag table-mode-tag"></span>
         <span class="widget-legend"></span>
         <button class="widget-menu" data-axesconfig aria-label="Widget menu">${icon("more-horizontal")}</button>
@@ -51,6 +64,7 @@ export class TableWidget {
       ev.stopPropagation();
       toggleAxesConfig(this, menu);
     });
+    wireTitleEditor(this);
     this.refresh();
   }
 
@@ -73,13 +87,11 @@ export class TableWidget {
   rowValue(path) {
     const h = histories.get(path);
     if (!h) return null;
-    if (cursor.tick === null) return h.latest();
-    const t = h.tickAtOrBefore(cursor.tick);
-    if (t === null || cursor.tick - t >= h.period) return null; // in a tick-count gap
-    return h.valueAt(t);
+    return cursor.tick === null ? h.latest() : h.valueNear(cursor.tick);
   }
 
   refresh() {
+    this.refreshBatch.touch();
     const atCursor = cursor.tick !== null;
     this.el.querySelector(".table-mode-tag").textContent = atCursor
       ? `at cursor · ${cursor.tick.toLocaleString("en-US").replace(/,/g, " ")} ms`
@@ -92,7 +104,7 @@ export class TableWidget {
         const absent = v === null;
         return `<tr>
           <td><span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : w?.color || traceColor(path)}"></span><span class="mono">${esc(path)}</span></td>
-          <td class="col-value mono ${absent ? "readout-value--absent" : ""} ${m?.kind === "enum" ? "value--enum" : ""} ${m?.kind === "bool" && v === 0 ? "value--ok" : ""}">${formatValue(v, m?.kind)}</td>
+          <td class="col-value mono ${absent ? "readout-value--absent" : ""} ${m?.kind === "enum" ? "value--enum" : ""} ${m?.kind === "bool" && v === 0 ? "value--ok" : ""}">${esc(formatValue(v, m?.kind, m?.enums))}</td>
           <td class="col-type">${esc(m?.kind ?? "—")}</td>
           <td class="col-period mono">${w ? `${w.period_ms} ms` : "—"}</td>
         </tr>`;
@@ -102,12 +114,14 @@ export class TableWidget {
 
   destroy() {
     closeAxesConfigFor(this);
+    this.refreshBatch.cancel();
     this.unsubs.forEach((u) => u());
     this.el.remove();
   }
 
   toJSON() {
-    const { id, signals, w, hpx } = this.cfg;
-    return { type: "table", id, signals, w, hpx };
+    const { id, signals, x, y, w, h, title } = this.cfg;
+    // Derived titles are never persisted — only a user-set name survives.
+    return { type: "table", id, signals, x, y, w, h, ...(title ? { title } : {}) };
   }
 }

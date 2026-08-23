@@ -32,6 +32,33 @@ for (const [group, leaves] of MODULES) {
     });
   }
 }
+// Enumerator lists ([value, name] pairs, the backend's serialization).
+// buttonState deliberately omits value 3 — the enum waveform reaches it, so
+// the no-enumerator raw-number fallback stays exercisable (app~views_013).
+const AS5048_STATUS = [
+  [0, "AS5048_OK"],
+  [1, "AS5048_WEAK_FIELD"],
+  [2, "AS5048_HIGH_FIELD"],
+  [3, "AS5048_CRC_ERROR"],
+];
+const ENUMS = {
+  "IO_AS5048_data.channels[0].status": AS5048_STATUS,
+  "IO_AS5048_data.channels[1].status": AS5048_STATUS,
+  "app_userControls_data.buttonState": [
+    [0, "SWITCH_RELEASED"],
+    [1, "SWITCH_PRESSED"],
+    [2, "SWITCH_HELD"],
+  ],
+  "app_userControls_data.modeRequested": [
+    [0, "APP_MOTORCONTROL_MODE_IDLE"],
+    [1, "APP_MOTORCONTROL_MODE_SIX_STEP_TRAP"],
+    [2, "APP_MOTORCONTROL_MODE_VELOCITY"],
+    [3, "APP_MOTORCONTROL_MODE_CALIBRATE"],
+  ],
+};
+for (const s of signals) {
+  if (ENUMS[s.path]) s.enums = ENUMS[s.path];
+}
 signals.push({ path: "task1msRuns", kind: "u32", size: 4, readonly: false });
 signals.push({ path: "serverRuns", kind: "u32", size: 4, readonly: false });
 let n = signals.length;

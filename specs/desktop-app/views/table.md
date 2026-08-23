@@ -9,8 +9,9 @@ tags: [app, views]
 `app~views_006~1`
 
 A table widget shall display one row per signal added to it — the
-signal's name, its value per the mode below, its scalar type, and its
-sample period — values formatted per the signal's scalar type:
+signal's name, its value per the mode below, rendered per
+the value rendering table (`app~views_013~1`), its scalar type, and
+its sample period:
 
 | Mode | Value shown |
 |------|-------------|
@@ -23,8 +24,6 @@ Acceptance:
   the type and period it was resolved with.
 - With a cursor time held (`app~views_005~1`), each row shows the
   value at that time.
-- A boolean renders as true or false; an integer renders as a whole
-  number.
 
 See also: [[cursor]], [[workspace]]
 

@@ -502,8 +502,11 @@
   display: flex;
   flex-direction: column;
   background: var(--ink-bg);
+  /* The same 50 px lattice the widget canvas snaps to (workspace.css), so
+     the empty state and the canvas read as one surface. */
   background-image: radial-gradient(rgba(var(--hair-rgb), .07) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-size: 50px 50px;
+  background-position: 25px 25px;
 }
 .workspace-empty {
   flex: 1;

@@ -509,6 +509,9 @@ mod tests {
             ),
             (Leaf::Scalar(Scalar::Bool), vec![2], 1.0),
             (Leaf::Enum(42), vec![3, 0, 0, 0], 3.0),
+            // The enum wire contract: bytes zero-extend, never sign-extend —
+            // firmware.rs's enumerator wrap relies on this domain.
+            (Leaf::Enum(42), vec![0xFF], 255.0),
         ];
         for (leaf, bytes, expected) in cases {
             let table = WatchTable {

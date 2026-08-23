@@ -7,6 +7,7 @@ import { initChrome } from "./chrome.js";
 import { initPicker } from "./picker.js";
 import { initLogPane } from "./logpane.js";
 import { initWorkspace } from "./workspace/index.js";
+import { initPerf } from "./perf.js";
 import { icon } from "./icons.js";
 
 function renderEmptyWorkspace() {
@@ -63,6 +64,7 @@ async function boot() {
   initLogPane();
   renderEmptyWorkspace();
   initWorkspace();
+  initPerf();
   subscribe("elf", renderEmptyWorkspace);
 
   // Workspace-creation intents: the workspace module subscribes to these.

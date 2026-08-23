@@ -59,6 +59,23 @@ fn loads_firmware_and_resolves_signals() {
 
     // A bogus path errors instead of resolving.
     assert!(fw.resolve_watch("no_such_symbol_xyz").is_err());
+
+    // An enumeration resolves with its enumerator names by value: some enum
+    // leaf exists in the namespace and its list is non-empty and value-sorted
+    // (name agreement with the per-value lookup is the dwarf_map crate's own
+    // test); a scalar leaf carries none.
+    let enum_leaf = fw
+        .signal_paths()
+        .iter()
+        .find_map(|p| match fw.resolve_watch(p) {
+            Ok((_, _, leaf @ dwarf_map::Leaf::Enum(_))) => Some(leaf),
+            _ => None,
+        })
+        .expect("the firmware namespace holds at least one enum leaf");
+    let enums = fw.enumerators(enum_leaf).expect("enum leaf lists enumerators");
+    assert!(!enums.is_empty());
+    assert!(enums.windows(2).all(|w| w[0].0 < w[1].0), "value-sorted");
+    assert!(fw.enumerators(leaf).is_none(), "scalar leaf carries no enumerators");
 }
 
 // [test->app~obs_006~1]

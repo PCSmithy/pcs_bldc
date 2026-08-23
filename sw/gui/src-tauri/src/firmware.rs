@@ -45,6 +45,11 @@ pub struct SignalInfo {
     /// True when the signal's storage is a non-writable section (const /
     /// rodata) — it cannot change at runtime.
     pub readonly: bool,
+    /// An enum signal's (value, name) enumerators, value-sorted; absent for
+    /// every other kind.
+    // [impl->app~obs_001~1]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enums: Option<Vec<(i64, String)>>,
 }
 
 /// The image's section ranges with writability, collected once at load so
@@ -166,6 +171,19 @@ impl LoadedFirmware {
         &self.signal_paths
     }
 
+    /// An enum leaf's (value, name) enumerators, value-sorted in the wire's
+    /// unsigned domain. `None` for scalar leaves.
+    // [impl->app~obs_001~1]
+    pub fn enumerators(&self, leaf: dwarf_map::Leaf) -> Option<Vec<(i64, String)>> {
+        match leaf {
+            dwarf_map::Leaf::Enum(off) => {
+                let size = self.map.enum_size(off).unwrap_or(4);
+                self.map.enumerators(off).map(|e| wrap_enumerators(size, e))
+            }
+            dwarf_map::Leaf::Scalar(_) => None,
+        }
+    }
+
     /// Resolve a signal path to a watch entry: device address (link-time ==
     /// runtime on this MCU), byte size, and leaf type. Leaves outside the
     /// 1..8-byte watch range are rejected.
@@ -185,6 +203,23 @@ impl LoadedFirmware {
         }
         Ok((addr as u32, size as u32, leaf))
     }
+}
+
+/// Reinterpret enumerator values into the unsigned domain of the enum's
+/// byte size, re-sorted. DWARF parses enumerator constants signed-first
+/// (a 1-byte `0x80` arrives as -128), but trace samples decode zero-extended
+/// — the display map must live in the wire's domain or negative enumerators
+/// never match a sample. 8-byte enums pass through (no wider domain to
+/// wrap into).
+fn wrap_enumerators(size: u64, mut enums: Vec<(i64, String)>) -> Vec<(i64, String)> {
+    if size < 8 {
+        let mask = (1i64 << (8 * size)) - 1;
+        for e in &mut enums {
+            e.0 &= mask;
+        }
+        enums.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    }
+    enums
 }
 
 /// The identity gate's comparison: exact string equality between the
@@ -223,13 +258,46 @@ pub fn list_signals(
         .filter_map(|p| {
             let (addr, leaf) = firmware.map.resolve(p)?;
             let size = firmware.map.leaf_size(leaf)? as u32;
+            let enums = firmware.enumerators(leaf);
             Some(SignalInfo {
                 path: p.clone(),
                 kind: leaf_kind(leaf).to_string(),
                 size,
                 readonly: firmware.is_readonly(addr),
+                enums,
             })
         })
         .take(limit)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // [test->app~obs_001~1] enumerator values reach the frontend in the
+    // wire's unsigned domain: a signed-parsed -1 in a 1-byte enum names the
+    // zero-extended sample value 255.
+    #[test]
+    fn wrap_enumerators_reinterprets_into_the_unsigned_domain() {
+        let wrapped = wrap_enumerators(
+            1,
+            vec![
+                (0, "OK".to_string()),
+                (-1, "ERR".to_string()),
+                (-128, "STATUS".to_string()),
+            ],
+        );
+        assert_eq!(
+            wrapped,
+            vec![
+                (0, "OK".to_string()),
+                (128, "STATUS".to_string()),
+                (255, "ERR".to_string()),
+            ]
+        );
+        // 8-byte enums pass through: there is no wider domain to wrap into.
+        let full = vec![(-1, "ALL".to_string()), (7, "SEVEN".to_string())];
+        assert_eq!(wrap_enumerators(8, full.clone()), full);
+    }
 }

@@ -15,15 +15,36 @@ The workspace's strip-chart widget ([[workspace]]).
 A plot widget shall plot each of its signals' demultiplexed
 values (`app~obs_004~1`) against their tick timestamps as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
-appending points as messages arrive, each gap-free run of ticks
-rendered as one connected segment.
+extending as messages arrive, each gap-free run of ticks rendered as
+one connected segment, its points rendered per `app~views_014~1`.
 
 Acceptance:
 
-- Each signal renders as its own trace whose points are the received
-  (tick, value) pairs, extending while the stream runs.
 - A trace spanning a tick-count gap renders as separate segments with
   no line across the gap.
+
+Covers:
+- sys~arch_002~1
+
+Needs: impl, test
+
+### Trace decimation
+`app~views_014~1`
+
+A plot widget shall render each trace's points by pixel column of the
+plotted X range:
+
+| Samples in a pixel column | Rendered points |
+|---------------------------|-----------------|
+| More than two | The column's minimum and maximum samples |
+| At most two | The column's samples |
+
+Acceptance:
+
+- A column holding more than two samples renders exactly its minimum
+  and maximum samples, a single-sample spike preserved.
+- Zooming while paused (`app~views_009~1`) until every column holds
+  at most two samples renders every sample.
 
 Covers:
 - sys~arch_002~1
@@ -68,8 +89,9 @@ The app shall render a signal's trace, on every plot widget holding
 it, per the signal's appearance, set in a widget's configuration menu:
 its color — an automatically assigned trace color, assigned when the
 signal is first selected and held stable until changed — a solid,
-dotted, or dashed line; an optional dot at each sample point; and an
-interpolation, applied within each gap-free run of ticks
+dotted, or dashed line; an optional dot at each rendered sample
+(`app~views_014~1`); and an interpolation, applied between
+consecutive rendered samples within each gap-free run of ticks
 (`app~views_001~1`):
 
 | Interpolation | Rendering |

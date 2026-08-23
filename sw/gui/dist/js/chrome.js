@@ -4,6 +4,7 @@
 import { icon } from "./icons.js";
 import { api, store, subscribe, prefs } from "./state.js";
 import { pickFile } from "./bridge.js";
+import { perfCellText } from "./perf.js";
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) =>
@@ -138,6 +139,7 @@ function renderTelemetry() {
   const strip = $(".telemetry-strip");
   const cells = [
     ["link", store.linkHz ? `${icon("activity")}${Math.round(store.linkHz)} Hz` : dash, "telemetry-cell--link"],
+    ["render", `<span data-perf-cell>${perfCellText()}</span>`],
     ["drive state", t ? `${esc(t.state.replace("DRIVE_STATE_", ""))} · ${esc(t.mode.replace("MODE_", ""))}` : dash],
     ["vbus", t ? `${t.bus_voltage_v.toFixed(2)} V` : dash],
     ["ibus", t ? `${t.bus_current_a.toFixed(3)} A` : dash],

@@ -5,6 +5,17 @@
 
 import { store } from "../state.js";
 
+/** First index with xs[i] >= t (xs ascending). */
+export function lowerBound(xs, t) {
+  let lo = 0, hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 const CAP_MS = 120_000; // live retention horizon per signal
 
 // While paused, the frozen span is sacred: nothing at or after the paused
@@ -16,6 +27,13 @@ const CAP_MS = 120_000; // live retention horizon per signal
 // pause cannot grow memory without limit (max retained while paused:
 // span + PAUSE_CATCHUP_MS of samples).
 const PAUSE_CATCHUP_MS = 120_000;
+
+// Trimming the horizon by splicing the array head is a memmove of the whole
+// retained history (120 k samples at 1 ms) — done per 50 ms batch it was a
+// steady tax. The horizon still bounds what readers SEE (windowTable starts
+// at a binary-searched index), so physical trimming only needs to be
+// occasional: let this many stale samples pool, then splice once.
+const TRIM_SLACK = 4096;
 
 export class SignalHistory {
   constructor(period_ms) {
@@ -42,13 +60,17 @@ export class SignalHistory {
     const newest = this.ticks[this.ticks.length - 1] ?? 0;
     let horizon = newest - CAP_MS;
     if (paused) horizon = Math.min(horizon, tl.pausedSpan[0]);
-    let drop = 0;
-    while (drop < this.ticks.length && this.ticks[drop] < horizon) drop++;
-    if (drop) {
+    const drop = this.indexAtOrAfter(horizon);
+    if (drop > TRIM_SLACK) {
       this.ticks.splice(0, drop);
       this.values.splice(0, drop);
     }
     while (this.gaps.length && this.gaps[0][1] < horizon) this.gaps.shift();
+  }
+
+  /** First index with ticks[i] >= t. */
+  indexAtOrAfter(t) {
+    return lowerBound(this.ticks, t);
   }
 
   newestTick() {
@@ -57,6 +79,14 @@ export class SignalHistory {
 
   latest() {
     return this.values.length ? this.values[this.values.length - 1] : null;
+  }
+
+  /** The sample at-or-before `tick`, accepted only within one period — a
+   *  tick-count gap reads as absent, never as a stale bridged number. */
+  valueNear(tick) {
+    const t = this.tickAtOrBefore(tick);
+    if (t === null || tick - t >= this.period) return null;
+    return this.valueAt(t);
   }
 
   /** Exact-tick lookup; null when the tick has no sample (gap or off-phase). */
@@ -85,14 +115,14 @@ export class SignalHistory {
   }
 
   /** [ticks, values] within [t0, t1], with an explicit null sample injected
-   *  after each real gap so the plot breaks the line there (uPlot treats
-   *  null as a gap; alignment holes from uPlot.join stay undefined). */
+   *  after each real gap so the plot breaks the line there (the renderer
+   *  splits a trace into runs at null markers). */
   windowTable(t0, t1) {
     const xs = [], ys = [];
     let gi = 0;
-    for (let i = 0; i < this.ticks.length; i++) {
+    for (let i = this.indexAtOrAfter(t0); i < this.ticks.length; i++) {
       const t = this.ticks[i];
-      if (t < t0 || t > t1) continue;
+      if (t > t1) break;
       while (gi < this.gaps.length && this.gaps[gi][1] <= t) {
         const [from] = this.gaps[gi];
         if (from >= t0) { xs.push(from + this.period); ys.push(null); }
@@ -122,8 +152,4 @@ export function historyFor(path, period_ms) {
     histories.set(path, h);
   }
   return h;
-}
-
-export function resetHistories() {
-  histories.clear();
 }

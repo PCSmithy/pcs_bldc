@@ -11,6 +11,7 @@ import { meta, setPeriod, removeWatch } from "./watchflow.js";
 import { WATCH_CAPACITY } from "./budget.js";
 import { forEachWidget, persist } from "./layout.js";
 import { formatValue } from "./plotwidget.js";
+import { throttleTrailing } from "../perf.js";
 
 const PERIODS = [1, 10, 100];
 const esc = (s) =>
@@ -40,7 +41,7 @@ function renderRows() {
           ${PERIODS.map((p) => `<button class="watch-seg-opt ${p === w.period_ms ? "watch-seg-opt--on" : ""}"
               data-period="${p}">${p}</button>`).join("")}
         </span>
-        <span class="watch-value mono" data-value>${formatValue(histories.get(path)?.latest() ?? null, m?.kind)}</span>
+        <span class="watch-value mono" data-value>${esc(formatValue(histories.get(path)?.latest() ?? null, m?.kind, m?.enums))}</span>
         <button class="watch-remove" aria-label="Remove ${esc(path)} from the watch list">×</button>
       </div>`;
     })
@@ -53,16 +54,19 @@ function renderRows() {
     : "";
 }
 
-/** Value cells refresh in place at batch rate; rows only re-render on
- *  membership/period changes. */
+/** Value cells refresh in place — throttled to 10 Hz with a trailing edge
+ *  (batches arrive at ~20 Hz; the eye can't use more, the DOM writes cost).
+ *  Rows only re-render on membership/period changes. */
 function refreshValues() {
   if (!host || !store.watched.size) return;
   for (const row of host.querySelectorAll(".watch-row")) {
     const path = row.dataset.path;
     const cell = row.querySelector("[data-value]");
-    if (cell) cell.textContent = formatValue(histories.get(path)?.latest() ?? null, meta.get(path)?.kind);
+    if (cell) cell.textContent = formatValue(histories.get(path)?.latest() ?? null, meta.get(path)?.kind, meta.get(path)?.enums);
   }
 }
+
+const throttledRefreshValues = throttleTrailing(refreshValues);
 
 export function initWatchPanel() {
   host = document.querySelector(".watch-panel");
@@ -77,7 +81,7 @@ export function initWatchPanel() {
   });
 
   subscribe("watched", renderRows);
-  subscribe("samples", refreshValues);
+  subscribe("samples", throttledRefreshValues);
   subscribe("stream-restart", refreshValues);
   renderRows();
 }

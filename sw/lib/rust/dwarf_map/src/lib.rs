@@ -406,6 +406,15 @@ impl DwarfMap {
         e.values.iter().find(|(_, n)| *n == name).map(|(&v, _)| v)
     }
 
+    /// Every (value, name) enumerator of an enum type, sorted by value.
+    pub fn enumerators(&self, off: usize) -> Option<Vec<(i64, String)>> {
+        let e = self.0.enums.get(&off)?;
+        let mut out: Vec<(i64, String)> =
+            e.values.iter().map(|(&v, n)| (v, n.clone())).collect();
+        out.sort_unstable_by_key(|&(v, _)| v);
+        Some(out)
+    }
+
     /// Apply `[i][j]...` to an array type, advancing the byte offset and returning
     /// the (peeled) element type. A flat multi-dimensional array (GCC emits one
     /// `array_type` with N `subrange` children) consumes N indices row-major against
@@ -1047,6 +1056,35 @@ mod tests {
         assert!(matches!(leaf, Leaf::Scalar(Scalar::U32)));
         // A partial index (fewer than the array's dimensions) does not resolve.
         assert!(dw.resolve("grid[1]").is_none());
+    }
+
+    #[test]
+    fn enumerators_list_sorted_by_value() {
+        let mut m = Maps::default();
+        let mut e = EnumInfo { size: 1, ..Default::default() };
+        e.values.insert(2, "FAULT".to_string());
+        e.values.insert(0, "IDLE".to_string());
+        e.values.insert(1, "RUN".to_string());
+        m.enums.insert(50, e);
+        m.sizes.insert(50, 1);
+        m.vars.insert("mode".to_string(), (VarLoc::Addr(0x4000), 50));
+        let dw = DwarfMap(m);
+
+        // The variable resolves as an enum leaf carrying its type offset...
+        let (_, leaf) = dw.resolve("mode").expect("mode resolves");
+        let Leaf::Enum(off) = leaf else { panic!("mode must be an enum leaf") };
+        // ...whose full enumerator list comes back value-sorted, agreeing with
+        // the per-value lookup.
+        assert_eq!(
+            dw.enumerators(off),
+            Some(vec![
+                (0, "IDLE".to_string()),
+                (1, "RUN".to_string()),
+                (2, "FAULT".to_string()),
+            ])
+        );
+        assert_eq!(dw.enum_name(off, 2), Some("FAULT"));
+        assert_eq!(dw.enumerators(10), None); // not an enum type
     }
 
     #[test]

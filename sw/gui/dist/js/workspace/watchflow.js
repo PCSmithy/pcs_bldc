@@ -49,7 +49,10 @@ export function addWatch(path, period_ms = 10) {
   if (store.gate !== "matched") return; // gated: never fire while mismatched
   if (!store.watched.has(path) && store.watched.size >= WATCH_CAPACITY) return;
   const sig = store.signals.find((s) => s.path === path);
-  if (sig) meta.set(path, { size: sig.size, kind: sig.kind });
+  if (sig) meta.set(path, { size: sig.size, kind: sig.kind, enums: sig.enums });
+  // An already-watched signal keeps its entry untouched (the drop handler
+  // re-adds before joining a widget — a join must not clobber the period).
+  if (store.watched.has(path)) return;
   const color = resolvedColor(path);
   store.watched.set(path, { period_ms, color });
   historyFor(path, period_ms);
@@ -102,6 +105,22 @@ export function initWatchflow() {
     if (gate === "matched" && store.watched.size) commit();
   });
   subscribe("trace-status", renderPreview);
+  // Snapshot-restored meta is only as fresh as the last session (an old
+  // snapshot has no enums; a reloaded ELF may rename them) — every arriving
+  // signal list re-resolves the watched paths' meta.
+  subscribe("signals", (signals) => {
+    let changed = false;
+    for (const s of signals) {
+      if (store.watched.has(s.path)) {
+        meta.set(s.path, { size: s.size, kind: s.kind, enums: s.enums });
+        changed = true;
+      }
+    }
+    if (changed) {
+      renderPreview();
+      notify("watched", store.watched);
+    }
+  });
   renderPreview();
 }
 

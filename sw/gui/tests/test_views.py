@@ -4,6 +4,7 @@ file:// with the browser devmock (no board, no Tauri).
 Run:  .venv/Scripts/python sw/gui/tests/test_views.py
 """
 
+import os
 import sys
 import threading
 from functools import partial
@@ -62,6 +63,48 @@ def wait_for_samples(page, path, min_points=50):
     )
 
 
+def fresh_boot(page):
+    """Wipe persistence, then a full boot — each bench batch starts clean."""
+    page.evaluate("() => localStorage.clear()")
+    boot(page)
+
+
+def restart(page, load_elf=False, wait_js=None, timeout=5000):
+    """Reload and wait for the app shell; optionally reload the (mock) ELF
+    and wait for a page condition (widget counts, the gate) to hold."""
+    page.reload()
+    page.wait_for_function("() => window.__cockpit !== undefined")
+    if load_elf:
+        page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
+    if wait_js:
+        page.wait_for_function(wait_js, timeout=timeout)
+
+
+def widget_eval(page, wid, expr, arg=None):
+    """Evaluate `expr` as (w, arg) => ... against the widget with id `wid`."""
+    return page.evaluate(
+        "([id, arg]) => { let w = null; __cockpit.forEachWidget(x => { if (x.cfg.id === id) w = x; });"
+        f" return ({expr})(w, arg); }}",
+        [wid, arg],
+    )
+
+
+# Nearest sample-y of `p` around window-time `t` (px space) — the shared
+# probe idiom for placing real-mouse targets on a rendered trace.
+NEAREST_Y_JS = (
+    "const nearestY = (w, p, t, rect) => {"
+    " const [txs, tys] = w.renderedTables().get(p);"
+    " let bi = -1, bd = 1e18;"
+    " for (let i = 0; i < txs.length; i++) {"
+    "   if (tys[i] == null) continue;"
+    "   const d = Math.abs(txs[i] - t);"
+    "   if (d < bd) { bd = d; bi = i; }"
+    " }"
+    " return bi < 0 ? null : w.yPxOf(tys[bi], w.sideOf(p), rect.height);"
+    " };"
+)
+
+
 def run(page):
     print("suite: views")
 
@@ -96,6 +139,30 @@ def run(page):
         page.locator(".plot-widget").count() == 1
         and page.evaluate("() => __cockpit.store.watched.has('task1msRuns')"),
     )
+    # The first drop was dispatched at workspace-relative (200, 100); the
+    # RENDERED top-left must sit at that point snapped into CANVAS
+    # coordinates (the canvas origin sits below the timeline bar that
+    # appears with it).
+    placed = page.evaluate(
+        """() => { const g = document.querySelector('.widget-grid');
+          const gr = g.getBoundingClientRect();
+          const ws = document.querySelector('.workspace').getBoundingClientRect();
+          const wr = document.querySelector('.widget').getBoundingClientRect();
+          const snap = (v) => Math.round(v / 50) * 50;
+          let c = null; __cockpit.forEachWidget(w => c = w.cfg);
+          return {
+            rendered: { x: wr.left - gr.left + g.scrollLeft, y: wr.top - gr.top + g.scrollTop },
+            expected: { x: snap(200 - (gr.left - ws.left)), y: snap(100 - (gr.top - ws.top)) },
+            cfg: { x: c.x, y: c.y, w: c.w, h: c.h } }; }"""
+    )
+    check(
+        "views_004 drop lands the widget at the snapped drop point",
+        placed["rendered"] == placed["expected"]
+        and placed["cfg"]["x"] == placed["expected"]["x"]
+        and placed["cfg"]["y"] == placed["expected"]["y"]
+        and all(v % 50 == 0 for v in placed["cfg"].values()),
+        placed,
+    )
 
     # Two plots for the shared-cursor assertions.
     add_plot_with(page, ["app_motorControl_data.channels[0].velocityMeasured_radPerSec"], 1)
@@ -104,7 +171,9 @@ def run(page):
 
     # ── [test->app~views_001~1] traces render; a tick-count gap breaks them ──
     plot_ready = page.evaluate(
-        "() => { let n = 0; __cockpit.forEachWidget(w => { if (w.uplot?.data[0].length > 40) n++; }); return n; }"
+        "() => { let n = 0; __cockpit.forEachWidget(w => {"
+        "  if (w.renderedTables && [...w.renderedTables().values()].some(([xs]) => xs.length > 40)) n++; });"
+        " return n; }"
     )
     check("views_001 both plots hold trace data", plot_ready == 2, plot_ready)
     # Wait past a mock gap window (every 5 s), then assert: an explicit null
@@ -113,13 +182,18 @@ def run(page):
         "() => __cockpit.histories.get('task1msRuns')?.gaps.length >= 1", timeout=9000
     )
     has_null = page.evaluate(
-        """() => { let found = false;
-          __cockpit.forEachWidget(w => { if (!w.uplot) return;
-            for (let s = 1; s < w.uplot.data.length; s++)
-              if (w.uplot.data[s].some(v => v === null)) found = true; });
-          return found; }"""
+        """() => { let found = false, drew = true;
+          __cockpit.forEachWidget(w => { if (!w.renderedTables) return;
+            if (!(w.gl && w.gl.drawCount > 0)) drew = false;
+            for (const [, ys] of w.renderedTables().values())
+              if (ys.some(v => v === null)) found = true; });
+          return { found, drew }; }"""
     )
-    check("views_001 gap yields a broken trace (explicit null)", has_null)
+    check(
+        "views_001 gap yields a broken trace (explicit null, actually drawn)",
+        has_null["found"] and has_null["drew"],
+        has_null,
+    )
     check("views_001 gap ribbon span shown", page.locator(".gap-span").count() >= 1)
 
     # ── [test->app~views_005~1] one shared cursor across every plot ──
@@ -177,9 +251,10 @@ def run(page):
     wid = page.evaluate(
         "() => { let id = null; __cockpit.forEachWidget(w => { if (!id && w.setSide) id = w.cfg.id; }); return id; }"
     )
-    page.evaluate(
-        f"() => __cockpit.forEachWidget(w => {{ if (w.cfg.id === '{wid}' && w.cfg.signals.length < 2)"
-        " w.addSignal('app_motorControl_data.channels[0].velocityMeasured_radPerSec'); })"
+    widget_eval(
+        page, wid,
+        "(w) => { if (w.cfg.signals.length < 2)"
+        " w.addSignal('app_motorControl_data.channels[0].velocityMeasured_radPerSec'); }",
     )
     check("views_007 a multi-signal plot exists", wid is not None, wid)
     page.click(f"[data-widget-id='{wid}'] .widget-menu")
@@ -196,11 +271,26 @@ def run(page):
     derived = page.locator(f"[data-widget-id='{wid}'] .axis-mode--derived").inner_text()
     check("views_007 derived chip reads split", derived == "split", derived)
 
+    # ── [test->app~views_005~1] split axes: the readout lists BOTH scale
+    #    groups' values at once (regression: the paged readout dropped the
+    #    right-axis signal from the hover popup) ──
+    newest = page.evaluate("() => __cockpit.histories.get('task1msRuns').newestTick()")
+    page.evaluate(f"() => __cockpit.setCursorTick({newest - 500})")
+    ro = page.locator(f"[data-widget-id='{wid}'] .cursor-readout")
+    nsig = widget_eval(page, wid, "(w) => w.cfg.signals.length")
+    rows = ro.locator(".readout-row").count()
+    labels = ro.locator(".readout-group-label").all_inner_texts()
+    check(
+        "views_005 split readout lists both groups' values at once",
+        rows == nsig and nsig >= 2 and len(labels) == 2,
+        (rows, nsig, labels),
+    )
+    page.evaluate("() => __cockpit.clearCursor()")
+
     # Auto vs manual on a scratch plot fed a monotonic (ramp-kind) signal.
     ramp = page.evaluate(
         "() => (__cockpit.store.signals.find(s => (s.kind === 'u16' || s.kind === 'u32')"
-        " && !__cockpit.store.watched.has(s.path)) || {}).path || None"
-        .replace("None", "null")
+        " && !__cockpit.store.watched.has(s.path)) || {}).path || null"
     )
     check("views_007 a ramp-kind signal exists for the auto check", ramp is not None, ramp)
     page.evaluate(f"() => __cockpit.addWatch({ramp!r}, 1)")
@@ -210,9 +300,7 @@ def run(page):
     wait_for_samples(page, ramp, 100)
 
     def scale_l(widget_id):
-        return page.evaluate(
-            f"() => {{ let m = null; __cockpit.forEachWidget(w => {{ if (w.cfg.id === '{widget_id}' && w.uplot && w.uplot.scales.L) m = [w.uplot.scales.L.min, w.uplot.scales.L.max]; }}); return m; }}"
-        )
+        return widget_eval(page, widget_id, "(w) => w.ranges().L ?? null")
 
     a1 = scale_l(scratch)
     page.wait_for_timeout(400)
@@ -241,9 +329,9 @@ def run(page):
 
     # ── [test->app~views_004~1] deselect via the configuration menu ──
     page.click(".axes-popover .axes-row [data-deselect]")
-    left_state = page.evaluate(
-        f"() => {{ let s = null; __cockpit.forEachWidget(w => {{ if (w.cfg.id === '{scratch}') s = {{ n: w.cfg.signals.length,"
-        " hint: !w.el.querySelector('.plot-empty-hint').hidden } }); return s; }"
+    left_state = widget_eval(
+        page, scratch,
+        "(w) => ({ n: w.cfg.signals.length, hint: !w.el.querySelector('.plot-empty-hint').hidden })",
     )
     check(
         "views_004 deselect leaves the widget with its drop hint",
@@ -257,9 +345,7 @@ def run(page):
     page.keyboard.press("Escape")
     popover_gone = page.evaluate("() => !document.querySelector('.axes-popover')")
     check("views_007 Escape dismisses the popover", popover_gone)
-    page.evaluate(
-        f"() => __cockpit.forEachWidget(w => {{ if (w.cfg.id === '{scratch}') w.hooks.onRemove(w.cfg.id); }})"
-    )
+    widget_eval(page, scratch, "(w) => w.hooks.onRemove(w.cfg.id)")
     # Flush the deselect's debounced re-commit NOW: the mock restarts its
     # stream on acceptance, and the timeline block must not race that.
     page.evaluate("() => __cockpit.commit()")
@@ -319,6 +405,10 @@ def run(page):
     )
     check("views_009 zoom applies to every plot", synced)
 
+    # The free canvas scrolls; earlier clicks may have scrolled this plot out
+    # of the viewport, and real mouse events land on whatever is at the
+    # coordinates. Park it center-screen before the drag work.
+    canvas.evaluate("el => el.scrollIntoView({ block: 'center' })")
     box = canvas.bounding_box()
     y = box["y"] + box["height"] / 2
     page.mouse.move(box["x"] + box["width"] * 0.3, y)
@@ -445,10 +535,7 @@ def run(page):
         "   c.push({ id: w.cfg.id, sides: w.cfg.sides || null, scales: w.cfg.scales || null })); return c; })() })"
     )
     before = page.evaluate(snapshot_js)
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
-    page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
-    page.wait_for_function("() => document.querySelectorAll('.widget').length > 0", timeout=5000)
+    restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.widget').length > 0")
     after = page.evaluate(snapshot_js)
     check(
         "views_004 restart restores arrangement/signals/colors/axes config",
@@ -504,8 +591,7 @@ def run(page):
 
     # ── [test->app~views_004~1] the corner handle resizes the widget, and
     #    the size survives the restart round trip ──
-    page.evaluate("() => localStorage.clear()")
-    boot(page)
+    fresh_boot(page)
     add_plot_with(page, ["task1msRuns"])
     page.wait_for_selector(".plot-widget")
     hb = page.locator(".resize-handle").first.bounding_box()
@@ -521,10 +607,7 @@ def run(page):
         after_h >= before_h + 150,
         (before_h, after_h),
     )
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
-    page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
-    page.wait_for_function("() => document.querySelectorAll('.plot-widget').length > 0", timeout=5000)
+    restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.plot-widget').length > 0")
     restored_h = page.locator(".plot-widget").first.bounding_box()["height"]
     check(
         "views_004 resized height survives restart",
@@ -611,6 +694,41 @@ def run(page):
         gone,
     )
 
+    # ── [test->app~obs_003~1] a drop-join of an already-watched signal keeps
+    #    its period (regression: addWatch reset a 1 ms watch back to 10 ms) ──
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.setPeriod('task1msRuns', 1)")
+    page.wait_for_selector(
+        ".watch-row[data-path='task1msRuns'] [data-period='1'].watch-seg-opt--on"
+    )
+    page.evaluate(
+        """() => {
+          const dt = new DataTransfer();
+          dt.setData('text/x-signal', 'task1msRuns');
+          const el = document.querySelector('.plot-widget');
+          const r = el.getBoundingClientRect();
+          el.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          el.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+        }"""
+    )
+    after_drop = page.evaluate(
+        """() => ({
+          period: __cockpit.store.watched.get('task1msRuns')?.period_ms,
+          joined: (() => { let j = false; __cockpit.forEachWidget(w =>
+            { if (w.cfg.signals.includes('task1msRuns')) j = true; }); return j; })(),
+          seg: !!document.querySelector(
+            ".watch-row[data-path='task1msRuns'] [data-period='1'].watch-seg-opt--on"),
+        })"""
+    )
+    check(
+        "obs_003 drop-join keeps the 1 ms period and joins the widget",
+        after_drop["period"] == 1 and after_drop["joined"] and after_drop["seg"],
+        after_drop,
+    )
+    # Leave the workspace as views_010 left it (unwatched, emptied plot).
+    page.click(".watch-row[data-path='task1msRuns'] .watch-remove")
+
     # ── picker column resize + collapse (chrome ergonomics; no spec) ──
     rz = page.locator(".picker-resizer").bounding_box()
     w0 = page.locator(".signal-picker").bounding_box()["width"]
@@ -623,8 +741,7 @@ def run(page):
     page.click(".picker-collapse")
     wc = page.locator(".signal-picker").bounding_box()["width"]
     check("picker collapses to a rail", wc < 50, wc)
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
+    restart(page)
     wr = page.locator(".signal-picker").bounding_box()["width"]
     check("collapsed state persists", wr < 50, wr)
     page.click(".picker-expand")
@@ -653,13 +770,10 @@ def run(page):
     page.evaluate(f"() => __cockpit.appearance.set({sig_a!r}, {{ style: 'dashed', dots: true }})")
     opts = page.evaluate(
         f"""() => {{ const out = [];
-          __cockpit.forEachWidget(w => {{ if (!w.uplot) return;
-            const i = w.cfg.signals.indexOf({sig_a!r});
-            if (i < 0) return;
-            const s = w.uplot.series[i + 1];
-            // dots via the widget's series-opts mapping: uPlot normalizes
-            // points internally, so the live object hides the plain flag.
-            out.push({{ dash: s.dash, dots: w.seriesOpts({sig_a!r}).points.show, name: s.paths.name }}); }});
+          __cockpit.forEachWidget(w => {{ if (!w.traceInfo) return;
+            if (!w.cfg.signals.includes({sig_a!r})) return;
+            const t = w.traceInfo({sig_a!r});
+            out.push({{ dash: t.dash, dots: t.dots }}); }});
           return out; }}"""
     )
     check(
@@ -673,20 +787,20 @@ def run(page):
     page.wait_for_function(
         f"() => (__cockpit.histories.get({sig_a!r})?.gaps.length || 0) >= 1", timeout=9000
     )
-    for mode, builder in (("zoh", "steppedPaths"), ("cubic", "monotonePaths"), ("linear", "linearPaths")):
+    for mode in ("zoh", "cubic", "linear"):
         page.evaluate(f"() => __cockpit.appearance.set({sig_a!r}, {{ interp: {mode!r} }})")
         state = page.evaluate(
-            f"""() => {{ const out = {{ names: [], hasNull: false }};
-              __cockpit.forEachWidget(w => {{ if (!w.uplot) return;
-                const i = w.cfg.signals.indexOf({sig_a!r});
-                if (i < 0) return;
-                out.names.push(w.uplot.series[i + 1].paths.name);
-                if (w.uplot.data[i + 1].some(v => v === null)) out.hasNull = true; }});
+            f"""() => {{ const out = {{ modes: [], hasNull: false }};
+              __cockpit.forEachWidget(w => {{ if (!w.traceInfo) return;
+                if (!w.cfg.signals.includes({sig_a!r})) return;
+                out.modes.push(w.traceInfo({sig_a!r}).interp);
+                const [, ys] = w.renderedTables().get({sig_a!r});
+                if (ys.some(v => v === null)) out.hasNull = true; }});
               return out; }}"""
         )
         check(
-            f"views_011 {mode} uses {builder} and keeps gap markers",
-            state["names"] and all(n == builder for n in state["names"]) and state["hasNull"],
+            f"views_011 {mode} interpolation applies and keeps gap markers",
+            state["modes"] and all(n == mode for n in state["modes"]) and state["hasNull"],
             state,
         )
 
@@ -739,7 +853,7 @@ def run(page):
     targets = page.evaluate(
         f"""() => {{ let res = null;
           __cockpit.forEachWidget(w => {{
-            if (res || !w.uplot || w.cfg.signals.length !== 2) return;
+            if (res || !w.renderedTables || w.cfg.signals.length !== 2) return;
             // The grid scrolls: the widget must be truly on screen, or the
             // real mouse events land on whatever covers those coordinates.
             w.el.scrollIntoView({{ block: 'center' }});
@@ -748,21 +862,11 @@ def run(page):
             const inCanvas = ([x, y]) =>
               document.elementFromPoint(x, y)?.closest('.plot-canvas') === canvas;
             const rect = canvas.getBoundingClientRect();
-            const u = w.uplot, xs = u.data[0];
+            {NEAREST_Y_JS}
             for (const frac of [0.5, 0.4, 0.6, 0.3, 0.7]) {{
               const px = rect.width * frac;
-              const t = u.posToVal(px, 'x');
-              const ys = [];
-              for (let s = 1; s < u.data.length; s++) {{
-                const col = u.data[s];
-                let bi = -1, bd = 1e18;
-                for (let i = 0; i < xs.length; i++) {{
-                  if (col[i] == null) continue;
-                  const d = Math.abs(xs[i] - t);
-                  if (d < bd) {{ bd = d; bi = i; }}
-                }}
-                ys.push(bi < 0 ? null : u.valToPos(col[bi], u.series[s].scale, false));
-              }}
+              const t = w.tickAtPx(px, rect.width);
+              const ys = w.cfg.signals.map((p) => nearestY(w, p, t, rect));
               if (ys.some(v => v === null)) continue;
               const [yA, yB] = ys;
               if (Math.abs(yA - yB) < 30) continue;
@@ -798,8 +902,8 @@ def run(page):
 
     widths_of = (
         """(id) => { let out = null;
-          __cockpit.forEachWidget(w => { if (w.cfg.id === id && w.uplot)
-            out = w.uplot.series.slice(1).map(s => s.width); });
+          __cockpit.forEachWidget(w => { if (w.cfg.id === id && w.traceInfo)
+            out = w.cfg.signals.map(p => w.traceInfo(p).widthPx); });
           return out; }"""
     )
     page.mouse.move(*targets["nearA"])
@@ -837,8 +941,7 @@ def run(page):
     page.mouse.move(10, 10)
 
     # ── persistence: appearance restores, emphasis leaves no trace ──
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
+    restart(page)
     restored = page.evaluate(f"() => __cockpit.appearance.of({sig_a!r})")
     check(
         "views_011 appearance persists across restart",
@@ -847,7 +950,8 @@ def run(page):
     )
     base_widths = page.evaluate(
         """() => { const out = [];
-          __cockpit.forEachWidget(w => { if (w.uplot) out.push(...w.uplot.series.slice(1).map(s => s.width)); });
+          __cockpit.forEachWidget(w => { if (w.traceInfo)
+            out.push(...w.cfg.signals.map(p => w.traceInfo(p).widthPx)); });
           return out; }"""
     )
     check(
@@ -859,8 +963,7 @@ def run(page):
     # ═══ batch 4: hide-const, group collapse, session restore, prefs ═══
 
     # ── [test->app~obs_006~1] the exclusion narrows to writable ∩ matches ──
-    page.evaluate("() => localStorage.clear()")
-    boot(page)
+    fresh_boot(page)
     page.wait_for_function("() => document.querySelectorAll('.signal-row').length > 0")
     page.fill(".picker-search input", "phaseCurrent")
     page.wait_for_function(
@@ -920,9 +1023,7 @@ def run(page):
         ),
     )
     page.wait_for_timeout(600)  # prefs debounce
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
-    page.wait_for_function("() => __cockpit.store.gate === 'matched'", timeout=8000)
+    restart(page, wait_js="() => __cockpit.store.gate === 'matched'", timeout=8000)
     page.wait_for_selector('.picker-group[data-group="IO_bridge_channelConfig"]')
     check(
         "picker collapsed set persists across restart",
@@ -971,8 +1072,7 @@ def run(page):
     )
 
     # ── [test->app~views_011~1] explicit solid beats the overflow dash ──
-    page.evaluate("() => localStorage.clear()")
-    boot(page)
+    fresh_boot(page)
     seven = [
         "app_motorControl_data.channels[0].velocityMeasured_radPerSec",
         "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec",
@@ -984,10 +1084,10 @@ def run(page):
     ]
     add_plot_with(page, seven, 100)
     dash_state = (
-        "() => { let d = null; __cockpit.forEachWidget(w => { if (!w.uplot) return;"
-        "  const s = w.uplot.series.find(s => s.label === 'task1msRuns' || (s.paths && s._path === 'task1msRuns'));"
-        "  const last = w.uplot.series[w.uplot.series.length - 1];"
-        "  d = Boolean((s || last).dash && (s || last).dash.length); }); return d; }"
+        "() => { let d = null; __cockpit.forEachWidget(w => { if (!w.traceInfo) return;"
+        "  if (!w.cfg.signals.includes('task1msRuns')) return;"
+        "  const t = w.traceInfo('task1msRuns');"
+        "  d = Boolean(t.dash && t.dash.length); }); return d; }"
     )
     check("views_011 the 7th slot dashes by default (overflow)", page.evaluate(dash_state) is True)
     page.click(".plot-widget [data-axesconfig]")
@@ -1005,10 +1105,7 @@ def run(page):
     page.wait_for_function(f"() => ({dash_state})() === false")
     check("views_011 explicit solid overrides the overflow dash", True)
     page.wait_for_timeout(600)
-    page.reload()
-    page.wait_for_function("() => window.__cockpit !== undefined")
-    page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
-    page.wait_for_function("() => document.querySelectorAll('.plot-widget').length > 0", timeout=5000)
+    restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.plot-widget').length > 0")
     check("views_011 explicit solid survives restart", page.evaluate(dash_state) is False)
 
     # ── [test->app~arch_002~1] session restore: cold boot, full return ──
@@ -1078,6 +1175,1229 @@ def run(page):
     page.click('[data-theme-pick="warm"]')
     page.click('[data-log="collapse"]')
 
+    # ═══ batch 5 (#22): the free layout canvas — snap, stack, raise, migrate ═══
+
+    fresh_boot(page)
+    add_plot_with(page, ["task1msRuns"])
+    page.wait_for_selector(".plot-widget")
+
+    # ── [test->app~views_004~1] positionless widgets stack vertically ──
+    page.evaluate("() => __cockpit.addWidget({ type: 'plot', signals: [] })")
+    geo = page.evaluate(
+        "() => { const g = []; __cockpit.forEachWidget(w =>"
+        " g.push({ x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h })); return g; }"
+    )
+    check(
+        "views_004 default placement stacks vertically on the lattice",
+        len(geo) == 2
+        and geo[0]["x"] == geo[1]["x"]
+        and geo[1]["y"] >= geo[0]["y"] + geo[0]["h"]
+        and all(v % 50 == 0 for g in geo for v in g.values()),
+        geo,
+    )
+
+    # ── [test->app~views_004~1] header drag moves anywhere, snapped 50 px ──
+    ids = page.evaluate(
+        "() => { const out = []; __cockpit.forEachWidget(w => out.push(w.cfg.id)); return out; }"
+    )
+    wid_a, wid_b = ids[0], ids[1]
+    head = page.locator(f"[data-widget-id='{wid_b}'] .widget-head").bounding_box()
+    page.mouse.move(head["x"] + head["width"] / 2, head["y"] + 10)
+    page.mouse.down()
+    page.mouse.move(head["x"] + head["width"] / 2 + 137, head["y"] + 10 - 213, steps=6)
+    page.mouse.up()
+    moved = widget_eval(page, wid_b, "(w) => ({ x: w.cfg.x, y: w.cfg.y })")
+    check(
+        "views_004 header drag moves the widget onto the lattice",
+        moved == {"x": geo[1]["x"] + 150, "y": geo[1]["y"] - 200},
+        (geo[1], moved),
+    )
+
+    # ── [test->app~views_004~1] widgets overlap; pointerdown raises to front ──
+    grid_box = page.locator(".widget-grid").bounding_box()
+    overlap_owner = (
+        "() => { const g = document.querySelector('.widget-grid');"
+        " const r = g.getBoundingClientRect();"
+        " const el = document.elementFromPoint(r.left + 400 - g.scrollLeft, r.top + 300 - g.scrollTop);"
+        " return el?.closest('.widget')?.dataset.widgetId || null; }"
+    )
+    check(
+        "views_004 overlap region belongs to the raised (dragged) widget",
+        page.evaluate(overlap_owner) == wid_b,
+        page.evaluate(overlap_owner),
+    )
+    # Click widget A's visible head strip (above B's top edge) to raise it.
+    page.mouse.move(grid_box["x"] + 400, grid_box["y"] + 70)
+    page.mouse.down()
+    page.mouse.up()
+    check(
+        "views_004 pointerdown raises the back widget to the front",
+        page.evaluate(overlap_owner) == wid_a,
+        page.evaluate(overlap_owner),
+    )
+
+    # ── [test->app~views_004~1] corner resize snaps BOTH extents to 50 px ──
+    hb = page.locator(f"[data-widget-id='{wid_a}'] .resize-handle").bounding_box()
+    page.mouse.move(hb["x"] + 6, hb["y"] + 6)
+    page.mouse.down()
+    page.mouse.move(hb["x"] + 6 + 63, hb["y"] + 6 + 88, steps=4)
+    page.mouse.up()
+    sized = widget_eval(page, wid_a, "(w) => ({ w: w.cfg.w, h: w.cfg.h })")
+    check(
+        "views_004 corner resize snaps width and height to the lattice",
+        sized == {"w": geo[0]["w"] + 50, "h": geo[0]["h"] + 100},
+        (geo[0], sized),
+    )
+
+    # ── [test->app~views_004~1] restart restores geometry + stacking exactly ──
+    geometry_js = (
+        "() => { const g = []; __cockpit.forEachWidget(w => g.push({ id: w.cfg.id,"
+        " x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h, z: w.el.style.zIndex })); return g; }"
+    )
+    geo_before = page.evaluate(geometry_js)
+    restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.widget').length === 2")
+    geo_after = page.evaluate(geometry_js)
+    check(
+        "views_004 restart restores positions, sizes, and stacking",
+        geo_before == geo_after,
+        (geo_before, geo_after),
+    )
+
+    # ── [test->app~views_004~1] flow-grid snapshots migrate to the canvas ──
+    page.evaluate(
+        """() => { localStorage.clear();
+          localStorage.setItem('cockpit.config.v1', JSON.stringify({
+            'cockpit.workspace.v1': {
+              widgets: [
+                { type: 'plot', id: 'w1', signals: [], w: 2, hpx: 340 },
+                { type: 'table', id: 'w2', signals: [], w: 1, hpx: 263 },
+                { type: 'plot', id: 'w3', signals: [], x: 100, y: 50, w: 800, h: 350 },
+              ],
+              watched: [], colors: null, appearance: null } })); }"""
+    )
+    restart(page, wait_js="() => document.querySelectorAll('.widget').length === 3")
+    mig = page.evaluate(
+        "() => { const g = []; __cockpit.forEachWidget(w => g.push({ id: w.cfg.id,"
+        " x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h, hpx: w.cfg.hpx ?? null })); return g; }"
+    )
+    check(
+        "views_004 flow cfgs migrate to the stack; canvas cfgs pass through",
+        mig == [
+            {"id": "w1", "x": 50, "y": 50, "w": 900, "h": 350, "hpx": None},
+            {"id": "w2", "x": 50, "y": 450, "w": 450, "h": 250, "hpx": None},
+            {"id": "w3", "x": 100, "y": 50, "w": 800, "h": 350, "hpx": None},
+        ],
+        mig,
+    )
+    rewritten = page.evaluate(
+        "() => JSON.parse(localStorage.getItem('cockpit.config.v1'))['cockpit.workspace.v1'].widgets"
+    )
+    check(
+        "views_004 migrated snapshot persists in the canvas shape",
+        all(("x" in w) and ("hpx" not in w) for w in rewritten),
+        rewritten,
+    )
+
+    # ═══ batch 6 (#23): enum string display — the value rendering table ═══
+
+    fresh_boot(page)
+
+    # ── [test->app~views_013~1] the rendering table, row by row ──
+    fv = page.evaluate(
+        """async () => {
+          const { formatValue } = await import('./js/workspace/plotwidget.js');
+          const enums = [[0, 'IDLE'], [2, 'FAULT']];
+          return {
+            named: formatValue(2, 'enum', enums),
+            unnamed: formatValue(1, 'enum', enums),   // value with no enumerator
+            bare: formatValue(1, 'enum', undefined),  // no enumerators resolved
+            rounded: formatValue(1.9, 'enum', enums), // decoded floats round first
+            boolT: formatValue(1, 'bool'),
+            boolF: formatValue(0, 'bool'),
+            integer: formatValue(42.0, 'u32'),
+            floatSmall: formatValue(3.14159, 'f32'),
+            floatBig: formatValue(1234.5678, 'f32'),
+          }; }"""
+    )
+    check(
+        "views_013 enum value with a resolved name renders the name",
+        fv["named"] == "FAULT" and fv["rounded"] == "FAULT",
+        fv,
+    )
+    check(
+        "views_013 enum value with no enumerator renders the whole number",
+        fv["unnamed"] == "1" and fv["bare"] == "1",
+        fv,
+    )
+    check(
+        "views_013 bool/integer/float rows render per the table",
+        fv["boolT"] == "true"
+        and fv["boolF"] == "false"
+        and fv["integer"] == "42"
+        and fv["floatSmall"] == "3.1416"
+        and fv["floatBig"] == "1234.6",
+        fv,
+    )
+
+    # ── [test->app~views_013~1] the name renders in all three surfaces ──
+    enum_sig = "IO_AS5048_data.channels[0].status"
+    add_plot_with(page, [enum_sig], period=10)
+    wait_for_samples(page, enum_sig, 5)
+    # Watch panel row (views_010's surface); the cell refreshes at batch rate,
+    # so wait for the next refresh rather than racing it.
+    page.wait_for_function(
+        f"""() => (document.querySelector(".watch-row[data-path='{enum_sig}'] [data-value]")
+          ?.textContent || "").startsWith("AS5048_")""",
+        timeout=5000,
+    )
+    panel_val = page.locator(
+        f".watch-row[data-path='{enum_sig}'] [data-value]"
+    ).inner_text()
+    check(
+        "views_013 watch panel renders the enumerator name",
+        panel_val.startswith("AS5048_"),
+        panel_val,
+    )
+    # Value table cell (views_006's surface), keeping its enum accent class.
+    page.evaluate(
+        f"""() => {{ const t = __cockpit.addWidget({{ type: 'table', signals: [] }});
+          t.addSignal({enum_sig!r}); }}"""
+    )
+    page.evaluate("() => __cockpit.forEachWidget(w => w.refresh())")
+    cell = page.evaluate(
+        """() => { const td = document.querySelector('.value-table td.col-value');
+          return { text: td.textContent, enumClass: td.classList.contains('value--enum') }; }"""
+    )
+    check(
+        "views_013 value table renders the enumerator name with its accent",
+        cell["text"].startswith("AS5048_") and cell["enumClass"],
+        cell,
+    )
+    # Cursor readout (views_005's surface), at the newest sampled tick — on
+    # the widget that HOLDS the enum signal, waiting for its row to render.
+    # (First-match readout sampling was order/timing-flaky: which plot sits
+    # first in the DOM depends on suite history, and reading between batch
+    # re-renders raced the row's content.)
+    enum_wid = page.evaluate(
+        f"""() => {{ let id = null; __cockpit.forEachWidget(w => {{
+          if (w.renderedTables && w.cfg.signals.includes({enum_sig!r})) id = w.cfg.id; }});
+          return id; }}"""
+    )
+    check("views_013 a plot holds the enum signal", enum_wid is not None, enum_wid)
+    page.evaluate(
+        f"() => __cockpit.setCursorTick(__cockpit.histories.get({enum_sig!r}).newestTick())"
+    )
+    page.wait_for_function(
+        f"""() => (document.querySelector(
+          "[data-widget-id='{enum_wid}'] .cursor-readout .readout-row[data-path='{enum_sig}'] .readout-value")
+          ?.textContent || "").startsWith("AS5048_")""",
+        timeout=5000,
+    )
+    readout = page.locator(f"[data-widget-id='{enum_wid}'] .cursor-readout").inner_text()
+    check(
+        "views_013 cursor readout renders the enumerator name",
+        "AS5048_" in readout,
+        readout[:120],
+    )
+    page.evaluate("() => __cockpit.clearCursor()")
+
+    # ── [test->app~views_013~1] enumerators survive restart via the snapshot ──
+    page.wait_for_timeout(700)  # let the watched-list persist debounce settle
+    restart(page)
+    boot(page)
+    page.wait_for_function(
+        f"() => (__cockpit.histories.get({enum_sig!r})?.ticks.length || 0) >= 3",
+        timeout=8000,
+    )
+    panel_val = page.locator(
+        f".watch-row[data-path='{enum_sig}'] [data-value]"
+    ).inner_text()
+    check(
+        "views_013 restored watch renders the name from the snapshot's enumerators",
+        panel_val.startswith("AS5048_"),
+        panel_val,
+    )
+
+    # ── [test->app~views_013~1] a pre-enum snapshot heals on connect: the
+    #    watched entry carries kind but NO enumerators, and the arriving
+    #    signal list refreshes the meta so names appear ──
+    page.evaluate(
+        f"""() => {{ localStorage.clear();
+          localStorage.setItem('cockpit.config.v1', JSON.stringify({{
+            'cockpit.workspace.v1': {{
+              widgets: [],
+              watched: [{{ path: {enum_sig!r}, period_ms: 10, size: 1, kind: 'enum' }}],
+              colors: null, appearance: null }} }})); }}"""
+    )
+    restart(page)
+    boot(page)
+    page.wait_for_function(
+        f"""() => (document.querySelector(".watch-row[data-path='{enum_sig}'] [data-value]")
+          ?.textContent || "").startsWith("AS5048_")""",
+        timeout=8000,
+    )
+    healed = page.locator(
+        f".watch-row[data-path='{enum_sig}'] [data-value]"
+    ).inner_text()
+    check(
+        "views_013 enum-less old snapshot heals when the signal list arrives",
+        healed.startswith("AS5048_"),
+        healed,
+    )
+
+
+    # ═══ batch 7 (#21): perf round — FPS readout, trace decimation, culling ═══
+
+    # ── the render-perf cell (unspecced chrome) reports real frames ──
+    page.wait_for_function(
+        "() => /fps/.test(document.querySelector('[data-perf-cell]')?.textContent || '')",
+        timeout=5000,
+    )
+    check(
+        "perf cell reports fps and worst frame",
+        "worst" in page.locator("[data-perf-cell]").inner_text(),
+        page.locator("[data-perf-cell]").inner_text(),
+    )
+
+    # ── [test->app~views_014~1] dense trace: ≤2 rendered points per pixel
+    #    column, every column's extent equal to the raw extent, a
+    #    single-sample spike preserved ──
+    dense_sig = "task1msRuns"
+    page.evaluate(f"() => __cockpit.addWatch({dense_sig!r}, 1)")
+    dense_id = page.evaluate(
+        f"() => {{ const w = __cockpit.addWidget({{ type: 'plot', signals: [] }});"
+        f"  w.addSignal({dense_sig!r}); return w.cfg.id; }}"
+    )
+    # Deterministic dense history: 10 000 samples @1 ms seeded AT the live
+    # edge (the devmock stream keeps moving globalNewest, so the seed anchors
+    # to it and the live window lands exactly on the synthetic span). One
+    # spike at base+6000.
+    base = page.evaluate(
+        f"""() => {{
+          const newest = [...__cockpit.histories.values()]
+            .reduce((n, h) => Math.max(n, h.newestTick() ?? 0), 0);
+          const base = Math.ceil(newest) + 1;
+          const h = __cockpit.histories.get({dense_sig!r});
+          h.ticks.length = 0; h.values.length = 0; h.gaps.length = 0;
+          for (let t = 0; t <= 9999; t++) {{
+            h.ticks.push(base + t);
+            h.values.push(t === 6000 ? 99 : Math.sin(t / 37));
+          }}
+          __cockpit.timeline.setSpan(10000);
+          __cockpit.forEachWidget(w => w.refresh());
+          return base;
+        }}"""
+    )
+    dec = page.evaluate(
+        f"""() => {{
+          let out = null;
+          __cockpit.forEachWidget(w => {{
+            if (w.cfg.id !== {dense_id!r} || !w.renderedTables) return;
+            const [xs, ys] = w.renderedTables().get({dense_sig!r});
+            const host = w.el.querySelector('.trace-host');
+            const cols = Math.round(host.getBoundingClientRect().width *
+                                    (window.devicePixelRatio || 1));
+            const [t0, t1] = w.window;
+            const colMs = (t1 - t0) / cols;
+            const perCol = new Map();
+            let n = 0, min = Infinity, max = -Infinity, spike = false;
+            for (let i = 0; i < xs.length; i++) {{
+              const v = ys[i];
+              if (v === null || v === undefined) continue;
+              n++;
+              const c = Math.floor((xs[i] - t0) / colMs);
+              perCol.set(c, (perCol.get(c) || 0) + 1);
+              if (v < min) min = v;
+              if (v > max) max = v;
+              if (v === 99) spike = true;
+            }}
+            out = {{ n, worstCol: Math.max(...perCol.values()), min, max, spike, cols,
+                     drew: Boolean(w.gl && w.gl.drawCount > 0 && w.gl.alive()) }};
+          }});
+          return out;
+        }}"""
+    )
+    check(
+        "views_014 dense trace renders at most two points per pixel column",
+        dec and dec["worstCol"] <= 2 and dec["n"] < 10000 and dec["drew"],
+        dec,
+    )
+    check(
+        "views_014 decimated extent equals the raw extent, spike preserved",
+        dec and dec["spike"] and dec["max"] == 99 and abs(dec["min"] - (-1)) < 0.01,
+        dec,
+    )
+
+    # ── [test->app~views_014~1] paused zoom below two samples per column
+    #    renders every raw sample ──
+    page.evaluate("() => __cockpit.timeline.pause()")
+    page.evaluate(f"() => __cockpit.timeline.selectRange({base} + 5900, {base} + 6100)")
+    sparse = page.evaluate(
+        f"""() => {{
+          const lo = {base} + 5900, hi = {base} + 6100;
+          let out = null;
+          __cockpit.forEachWidget(w => {{
+            if (w.cfg.id !== {dense_id!r} || !w.renderedTables) return;
+            const [xs, ys] = w.renderedTables().get({dense_sig!r});
+            let n = 0, spike = false;
+            for (let i = 0; i < xs.length; i++) {{
+              if (ys[i] === null || ys[i] === undefined) continue;
+              if (xs[i] >= lo && xs[i] <= hi) n++;
+              if (ys[i] === 99) spike = true;
+            }}
+            const h = __cockpit.histories.get({dense_sig!r});
+            let raw = 0;
+            for (const t of h.ticks) if (t >= lo && t <= hi) raw++;
+            out = {{ n, raw, spike }};
+          }});
+          return out;
+        }}"""
+    )
+    check(
+        "views_014 paused sparse zoom renders every raw sample",
+        sparse and sparse["n"] == sparse["raw"] and sparse["spike"],
+        sparse,
+    )
+    page.evaluate("() => __cockpit.timeline.resume()")
+
+    # ── [test->app~views_014~1] non-finite samples never poison a column's
+    #    extent: NaNs are skipped for min/max, an all-NaN dense column emits
+    #    nothing, and the finite extent (a spike beside NaNs) is preserved ──
+    nan_dec = page.evaluate(
+        """async () => {
+          const { decimateTable } = await import('./js/workspace/decimate.js');
+          const xs = [], ys = [];
+          for (let t = 0; t < 1000; t++) {
+            xs.push(t);
+            let v = Math.sin(t / 9);
+            if (t >= 50 && t <= 54) v = NaN;     // NaNs beside the spike
+            if (t === 55) v = 42;                 // global max
+            if (t >= 200 && t <= 209) v = NaN;    // one all-NaN column
+            ys.push(v);
+          }
+          const [oxs, oys] = decimateTable(xs, ys, 0, 1000, 100); // 10/column
+          const finite = oys.filter(v => v !== null && Number.isFinite(v));
+          const rawFiniteMin = Math.min(...ys.filter(Number.isFinite));
+          return {
+            hasNaN: oys.some(v => v !== null && !Number.isFinite(v)),
+            max: Math.max(...finite),
+            minOk: Math.abs(Math.min(...finite) - rawFiniteMin) < 1e-12,
+            nanColEmpty: !oxs.some((x, i) => x >= 200 && x < 210),
+            bounded: finite.length <= 200,
+          };
+        }"""
+    )
+    check(
+        "views_014 NaN samples don't poison the rendered extent",
+        nan_dec
+        and not nan_dec["hasNaN"]
+        and nan_dec["max"] == 42
+        and nan_dec["minOk"]
+        and nan_dec["nanColEmpty"]
+        and nan_dec["bounded"],
+        nan_dec,
+    )
+
+    # cleanup: strip the probe signal so the final checks see a stable canvas
+    page.evaluate(
+        f"""() => {{
+          let target = null;
+          __cockpit.forEachWidget(w => {{ if (w.cfg.id === {dense_id!r}) target = w; }});
+          if (target) target.cfg.signals.slice().forEach(p => target.removeSignal(p));
+          __cockpit.removeWatch({dense_sig!r});
+        }}"""
+    )
+
+    # ═══ batch 8: WebGL renderer plumbing ═══
+
+    # ── GL context loss/restore: the widget rebuilds its programs and
+    #    redraws from the CPU-side tables; nothing else notices ──
+    survived = page.evaluate(
+        """() => new Promise((resolve) => {
+          let w0 = null;
+          __cockpit.forEachWidget(w => { if (!w0 && w.gl) w0 = w; });
+          if (!w0) { resolve({ ok: false, why: 'no gl widget' }); return; }
+          const glt = w0.gl;
+          const ext = glt.gl.getExtension('WEBGL_lose_context');
+          const before = glt.drawCount;
+          ext.loseContext();
+          setTimeout(() => {
+            ext.restoreContext();
+            setTimeout(() => resolve({
+              ok: glt.contextLosses === 1 && glt.drawCount > before,
+              losses: glt.contextLosses, before, after: glt.drawCount,
+            }), 300);
+          }, 100);
+        })"""
+    )
+    check("glrender context loss restores and redraws", survived["ok"], survived)
+
+    # ── a plot created while PAUSED must draw immediately (attach-time
+    #    refresh + paused self-heal), and hovering it must still move the
+    #    app-wide shared cursor ──
+    paused_add = page.evaluate(
+        """() => {
+          __cockpit.timeline.pause();
+          const p = [...__cockpit.store.watched.keys()][0];
+          const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+          w.addSignal(p);
+          const out = {
+            drew: Boolean(w.gl && w.gl.alive() && w.gl.drawCount > 0),
+            axes: w.el.querySelector('.y-axis--left').children.length > 0,
+            id: w.cfg.id,
+          };
+          // Shared cursor from a renderer-independent path: simulate a hover.
+          const canvas = w.el.querySelector('.plot-canvas');
+          const r = canvas.getBoundingClientRect();
+          canvas.dispatchEvent(new PointerEvent('pointermove',
+            { clientX: r.left + r.width / 2, clientY: r.top + 10, bubbles: true }));
+          out.cursorSet = __cockpit.cursor.tick !== null;
+          __cockpit.timeline.resume();
+          const path = w.cfg.signals[0];
+          w.removeSignal(path);
+          __cockpit.forEachWidget(x => { if (x.cfg.id === out.id) x.hooks.onRemove(out.id); });
+          return out;
+        }"""
+    )
+    check(
+        "views_004 plot added while paused draws at once, cursor unaffected",
+        paused_add["drew"] and paused_add["axes"] and paused_add["cursorSet"],
+        paused_add,
+    )
+
+    # ── non-finite samples break a dashed run instead of poisoning its arc:
+    #    geometry on both sides of a NaN, no NaN in any vertex buffer,
+    #    per-side arcs restarting at 0 ──
+    nan_geo = page.evaluate(
+        """async () => {
+          const { buildTraceGeometry } = await import('./js/workspace/glrender.js');
+          const xs = [], ys = [];
+          for (let t = 0; t <= 100; t++) { xs.push(t); ys.push(t === 50 ? NaN : Math.sin(t / 5)); }
+          const geo = buildTraceGeometry(xs, ys, x => x * 4, y => 50 - y * 20, 'linear', 1, true);
+          const arcsOk = geo.runs.every(r => r.verts[2] === 0);
+          let hasNaN = false;
+          for (const r of geo.runs) for (const v of r.verts) if (!Number.isFinite(v)) hasNaN = true;
+          for (const v of geo.dots) if (!Number.isFinite(v)) hasNaN = true;
+          return { runs: geo.runs.length,
+                   left: geo.runs[0]?.verts.length / 3, right: geo.runs[1]?.verts.length / 3,
+                   arcsOk, hasNaN, dots: geo.dots.length / 2 };
+        }"""
+    )
+    check(
+        "glrender NaN splits the run — geometry on both sides, clean arcs",
+        nan_geo["runs"] == 2 and nan_geo["left"] == 50 and nan_geo["right"] == 50
+        and nan_geo["arcsOk"] and not nan_geo["hasNaN"] and nan_geo["dots"] == 100,
+        nan_geo,
+    )
+
+    # ── context budget: 18 live plots exceed the browser's context cap; the
+    #    LRU release + on-demand re-creation must leave every widget able to
+    #    draw (no permanently blank plot) ──
+    eviction = page.evaluate(
+        """() => new Promise((resolve) => {
+          const p = [...__cockpit.store.watched.keys()][0];
+          const made = [];
+          for (let i = 0; i < 18; i++) {
+            const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+            w.addSignal(p);
+            made.push(w);
+          }
+          // Interact with each (a refresh — scrub/hover would do the same
+          // on the bench) and verify it drew during THIS interaction.
+          setTimeout(() => {
+            let allDrew = true;
+            for (const w of made) {
+              // refresh() replaces an evicted renderer wholesale, so judge
+              // the CURRENT instance: alive and drawn since (re-)creation.
+              w.refresh();
+              if (!(w.gl && w.gl.alive() && w.gl.drawCount > 0)) allDrew = false;
+            }
+            const ids = made.map(w => w.cfg.id);
+            for (const id of ids) {
+              __cockpit.forEachWidget(w => { if (w.cfg.id === id) w.cfg.signals.slice().forEach(s => w.removeSignal(s)); });
+            }
+            resolve({ allDrew, n: made.length });
+          }, 300);
+        })"""
+    )
+    check(
+        "glrender 18 plots: LRU context budget leaves no permanent blank",
+        eviction["allDrew"] and eviction["n"] == 18,
+        eviction,
+    )
+    # drop the 18 scratch widgets so the tail checks see a stable canvas
+    page.evaluate(
+        """() => { const gone = [];
+          __cockpit.forEachWidget(w => { if (!w.cfg.signals.length) gone.push(w.cfg.id); });
+          for (const id of gone) { let t = null;
+            __cockpit.forEachWidget(w => { if (w.cfg.id === id) t = w; });
+            if (t) t.hooks.onRemove(id); } }"""
+    )
+
+    # ═══ batch 9: widget titles (app~views_016) ═══════════════════════════
+
+    # ── [test->app~views_016~1] unset titles derive per the widget-state
+    #    table; removing the earliest-added signal moves the title ──
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.addWatch('serverRuns', 10)")
+    titles = page.evaluate(
+        """() => {
+          const read = (w) => w.el.querySelector('.widget-title').textContent;
+          const p = __cockpit.addWidget({ type: 'plot', signals: [] });
+          const t = __cockpit.addWidget({ type: 'table', signals: [] });
+          const out = { empty: read(p), table: read(t) };
+          p.addSignal('task1msRuns');
+          p.addSignal('serverRuns');
+          out.withSignals = read(p);
+          p.removeSignal('task1msRuns');       // the earliest-added leaves
+          out.afterRemove = read(p);
+          window.__titleWid = p.cfg.id;
+          t.hooks.onRemove(t.cfg.id);          // scratch table leaves
+          return out;
+        }"""
+    )
+    check(
+        "views_016 unset titles derive per the widget-state table",
+        titles["empty"] == "Plot"
+        and titles["table"] == "Live values"
+        and titles["withSignals"] == "task1msRuns",
+        titles,
+    )
+    check(
+        "views_016 removing the earliest-added signal moves the title",
+        titles["afterRemove"] == "serverRuns",
+        titles,
+    )
+
+    # ── [test->app~views_016~1] a committed name replaces the unset title
+    #    and survives restart ──
+    twid = page.evaluate("() => window.__titleWid")
+    title_span = page.locator(f"[data-widget-id='{twid}'] .widget-title")
+    title_span.evaluate("el => el.scrollIntoView({ block: 'center' })")
+    title_span.click()
+    page.locator(f"[data-widget-id='{twid}'] .widget-title-edit").fill("Motor speeds")
+    page.keyboard.press("Enter")
+    named = title_span.inner_text()
+    check("views_016 a committed name replaces the unset title", named == "Motor speeds", named)
+    page.wait_for_timeout(700)  # let the persist debounce settle
+    restart(page)
+    boot(page)
+    page.wait_for_selector(f"[data-widget-id='{twid}'] .widget-title")
+    restored = page.locator(f"[data-widget-id='{twid}'] .widget-title").inner_text()
+    check("views_016 a set title survives restart", restored == "Motor speeds", restored)
+
+    # ── [test->app~views_016~1] a committed empty name returns the unset title ──
+    title_span = page.locator(f"[data-widget-id='{twid}'] .widget-title")
+    title_span.evaluate("el => el.scrollIntoView({ block: 'center' })")
+    title_span.click()
+    page.locator(f"[data-widget-id='{twid}'] .widget-title-edit").fill("")
+    page.keyboard.press("Enter")
+    unset = title_span.inner_text()
+    check(
+        "views_016 a committed empty name returns the unset title",
+        unset == "serverRuns",
+        unset,
+    )
+
+    # ── [test->app~views_016~1] the header still drags the widget after an
+    #    edit session (the title's drag exclusion must not eat the head) ──
+    head_loc = page.locator(f"[data-widget-id='{twid}'] .widget-head")
+    head_loc.evaluate("el => el.scrollIntoView({ block: 'center' })")
+    geo0 = widget_eval(page, twid, "(w) => ({ x: w.cfg.x, y: w.cfg.y })")
+    head = head_loc.bounding_box()
+    page.mouse.move(head["x"] + head["width"] * 0.75, head["y"] + 8)
+    page.mouse.down()
+    page.mouse.move(head["x"] + head["width"] * 0.75 + 107, head["y"] + 8 + 63, steps=5)
+    page.mouse.up()
+    geo1 = widget_eval(page, twid, "(w) => ({ x: w.cfg.x, y: w.cfg.y })")
+    check(
+        "views_016 header drag still moves the widget after an edit",
+        geo1 == {"x": geo0["x"] + 100, "y": geo0["y"] + 50},
+        (geo0, geo1),
+    )
+
+    # ═══ batch 10: comparison cursor (views_017 anchor + views_018 deltas) ═══
+
+    VEL_M = "app_motorControl_data.channels[0].velocityMeasured_radPerSec"
+    VEL_S = "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec"
+    ENUM_S = "IO_AS5048_data.channels[0].status"
+    U32_S = "task1msRuns"
+    for p in (VEL_M, VEL_S, ENUM_S, U32_S):
+        page.evaluate(f"() => __cockpit.addWatch({p!r}, 1)")
+        wait_for_samples(page, p)
+    # The gap-gate check needs a mock gap window (every 5 s of ticks) inside
+    # the paused view: stream past one before pausing (~5 s of wall time).
+    page.wait_for_function(
+        f"() => (__cockpit.histories.get({VEL_S!r})?.ticks.length || 0) >= 5200",
+        timeout=15000,
+    )
+    cwid = page.evaluate(
+        """(paths) => {
+          const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+          for (const p of paths) w.addSignal(p);
+          w.setSide(paths[3], 'R');   // the u32 counter gets the right axis
+          return w.cfg.id;
+        }""",
+        [VEL_M, VEL_S, ENUM_S, U32_S],
+    )
+    page.evaluate("() => __cockpit.timeline.pause()")
+
+    def cwidget_eval(expr, arg=None):
+        """widget_eval against the comparison widget."""
+        return widget_eval(page, cwid, expr, arg)
+
+    def probe_target(path, frac):
+        """A real-mouse point 6 px under `path`'s trace at window fraction
+        `frac`, only where every other trace is at least 22 px away (the
+        pointed rule must resolve to `path`), or None."""
+        return cwidget_eval(
+            """(w, [path, frac]) => {
+              w.el.scrollIntoView({ block: 'center' });
+              w.refresh();
+              const canvas = w.el.querySelector('.plot-canvas');
+              const rect = canvas.getBoundingClientRect();
+              const px = rect.width * frac;
+              const t = w.tickAtPx(px, rect.width);
+              """ + NEAREST_Y_JS + """
+              const yOf = (p) => nearestY(w, p, t, rect);
+              const yT = yOf(path);
+              if (yT === null) return null;
+              for (const p of w.cfg.signals) {
+                if (p === path) continue;
+                const y = yOf(p);
+                if (y !== null && Math.abs(y - yT) < 22) return null;
+              }
+              const cy = Math.min(rect.height - 3, Math.max(3, yT + 6));
+              const at = [rect.left + px, rect.top + cy];
+              if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
+              // The exact resolver the click will run: only a target the
+              // pointed rule already resolves to `path` is a valid probe
+              // (nearest-sample y and interpolated y can diverge).
+              if (w.computePointed(at[0], at[1], canvas) !== path) return null;
+              return { at, clickTick: t };
+            }""",
+            [path, frac],
+        )
+
+    def find_target(path):
+        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
+            tgt = probe_target(path, frac)
+            if tgt:
+                return tgt
+        return None
+
+    def ctrl_click(at):
+        page.keyboard.down("Control")
+        page.mouse.click(*at)
+        page.keyboard.up("Control")
+
+    anchor_state = (
+        """(w) => w.anchor && {
+          path: w.anchor.path, tick: w.anchor.tick, value: w.anchor.value,
+          isSample: __cockpit.histories.get(w.anchor.path)?.valueAt(w.anchor.tick) === w.anchor.value,
+          lx: !w.el.querySelector('.anchor-line-x').hidden,
+          ly: !w.el.querySelector('.anchor-line-y').hidden,
+        }"""
+    )
+
+    # ── [test->app~views_017~1] Ctrl+click drops the anchor at the pointed
+    #    signal's nearest sample; both lines appear ──
+    tgt_a = find_target(VEL_M)
+    check("views_017 probe found a pointable spot on the anchor signal", tgt_a is not None, tgt_a)
+    ctrl_click(tgt_a["at"])
+    a0 = cwidget_eval(anchor_state)
+    check(
+        "views_017 ctrl+click anchors the pointed signal's nearest sample, lines shown",
+        bool(a0)
+        and a0["path"] == VEL_M
+        and a0["isSample"]
+        and abs(a0["tick"] - tgt_a["clickTick"]) <= 2
+        and a0["lx"]
+        and a0["ly"],
+        a0,
+    )
+
+    # ── [test->app~views_017~1] a second ctrl+click replaces the anchor ──
+    tgt_b = None
+    for frac in (0.2, 0.8, 0.3, 0.7, 0.6, 0.4):
+        cand = probe_target(VEL_M, frac)
+        if cand and abs(cand["clickTick"] - a0["tick"]) >= 500:
+            tgt_b = cand
+            break
+    check("views_017 probe found a second distinct spot", tgt_b is not None, tgt_b)
+    ctrl_click(tgt_b["at"])
+    a1 = cwidget_eval(anchor_state)
+    check(
+        "views_017 a second ctrl+click replaces the anchor in place",
+        bool(a1) and a1["isSample"] and a1["tick"] != a0["tick"],
+        (a0 and a0["tick"], a1 and a1["tick"]),
+    )
+
+    # ── [test->app~views_017~1] a sub-6 px click within 8 px of the vertical
+    #    line releases the anchor ──
+    line_click = cwidget_eval(
+        """(w) => {
+          const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
+          const [t0, t1] = w.window;
+          const ax = rect.left + ((w.anchor.tick - t0) / (t1 - t0)) * rect.width;
+          return [ax + 2, rect.top + rect.height - 12];
+        }"""
+    )
+    page.mouse.click(*line_click)
+    check(
+        "views_017 a click on the line releases the anchor (both lines hide)",
+        cwidget_eval(
+            "(w) => w.anchor === null"
+            " && w.el.querySelector('.anchor-line-x').hidden"
+            " && w.el.querySelector('.anchor-line-y').hidden"
+        ),
+    )
+
+    # ── [test->app~views_017~1] removing the anchor's signal releases ──
+    ctrl_click(tgt_a["at"])
+    check("views_017 re-drop for the removal check", cwidget_eval("(w) => !!w.anchor"))
+    released = cwidget_eval(
+        f"""(w) => {{
+          w.removeSignal({VEL_M!r});
+          const gone = w.anchor === null;
+          w.addSignal({VEL_M!r});   // restore for the delta checks
+          return gone;
+        }}"""
+    )
+    check("views_017 the anchor's signal leaving the widget releases it", released)
+
+    # ── [test->app~views_017~1] resume releases ──
+    tgt_a = find_target(VEL_M)
+    check("views_017 probe (post re-add)", tgt_a is not None, tgt_a)
+    ctrl_click(tgt_a["at"])
+    check("views_017 re-drop for the resume check", cwidget_eval("(w) => !!w.anchor"))
+    page.evaluate("() => __cockpit.timeline.resume()")
+    check("views_017 resume releases the anchor", cwidget_eval("(w) => w.anchor === null"))
+
+    # ── [test->app~views_017~1] independence: a second widget anchors its
+    #    own sample; each widget's lines mark itself alone ──
+    page.evaluate("() => __cockpit.timeline.pause()")
+    tgt_a = find_target(VEL_M)
+    check("views_017 probe (fresh pause)", tgt_a is not None, tgt_a)
+    ctrl_click(tgt_a["at"])
+    check(
+        "views_017 re-drop for the delta checks",
+        cwidget_eval("(w) => w.anchor?.path") == VEL_M,
+        cwidget_eval("(w) => w.anchor?.path"),
+    )
+    other = page.evaluate(
+        f"""([cwid, twid]) => {{
+          let wB = null;
+          __cockpit.forEachWidget(w => {{ if (w.cfg.id === twid) wB = w; }});
+          wB.el.scrollIntoView({{ block: 'center' }});
+          wB.refresh();
+          const canvas = wB.el.querySelector('.plot-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const p = wB.cfg.signals[0];
+          const [txs, tys] = wB.renderedTables().get(p);
+          const mid = Math.floor(txs.length / 2);
+          if (tys[mid] == null) return null;
+          const px = ((txs[mid] - wB.window[0]) / (wB.window[1] - wB.window[0])) * rect.width;
+          const py = Math.min(rect.height - 3, Math.max(3, wB.yPxOf(tys[mid], wB.sideOf(p), rect.height) + 6));
+          const at = [rect.left + px, rect.top + py];
+          if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
+          if (wB.computePointed(at[0], at[1], canvas) !== p) return null;
+          return {{ at, path: p }};
+        }}""",
+        [cwid, twid],
+    )
+    check("views_017 second-widget probe", other is not None, other)
+    ctrl_click(other["at"])
+    indep = page.evaluate(
+        f"""([cwid, twid]) => {{
+          const out = {{}};
+          __cockpit.forEachWidget(w => {{
+            if (w.cfg.id === cwid) out.a = {{ path: w.anchor?.path, lx: !w.el.querySelector('.anchor-line-x').hidden }};
+            if (w.cfg.id === twid) out.b = {{ path: w.anchor?.path, lx: !w.el.querySelector('.anchor-line-x').hidden }};
+          }});
+          return out;
+        }}""",
+        [cwid, twid],
+    )
+    check(
+        "views_017 two widgets hold independent anchors, lines on their own plots",
+        indep["a"]["path"] == VEL_M
+        and indep["b"]["path"] == other["path"]
+        and indep["a"]["lx"]
+        and indep["b"]["lx"],
+        indep,
+    )
+    widget_eval(page, twid, "(w) => w.releaseAnchor()")
+
+    # ── [test->app~views_018~1] the time delta shows on the anchoring widget
+    #    with the cursor set from ANOTHER plot ──
+    hover_b = page.evaluate(
+        f"""(twid) => {{
+          let wB = null;
+          __cockpit.forEachWidget(w => {{ if (w.cfg.id === twid) wB = w; }});
+          const r = wB.el.querySelector('.plot-canvas').getBoundingClientRect();
+          return [r.left + r.width / 2, r.top + 10];
+        }}""",
+        twid,
+    )
+    page.mouse.move(*hover_b)
+    page.wait_for_function("() => __cockpit.cursor.tick !== null")
+    dt_read = cwidget_eval(
+        """(w) => {
+          const el = w.el.querySelector('[data-delta-t]');
+          return el && { text: el.textContent, expect: __cockpit.cursor.tick - w.anchor.tick };
+        }"""
+    )
+    dt_num = None
+    if dt_read:
+        digits = "".join(ch for ch in dt_read["text"] if ch.isdigit())
+        dt_num = int(digits) * (-1 if "-" in dt_read["text"] else 1)
+    check(
+        "views_018 time delta shows on the anchoring widget from a foreign cursor",
+        dt_read is not None and dt_num == dt_read["expect"],
+        dt_read,
+    )
+
+    # ── [test->app~views_018~1] value delta on a same-axis numeric pointed
+    #    trace, with the anchor's arithmetic ──
+    tgt_s = find_target(VEL_S)
+    check("views_018 probe found a spot on the same-axis signal", tgt_s is not None, tgt_s)
+    page.mouse.move(*tgt_s["at"])
+    page.wait_for_function(
+        f"""() => {{ let p = null; __cockpit.forEachWidget(w => {{ if (w.cfg.id === {cwid!r}) p = w.pointed; }});
+          return p === {VEL_S!r}; }}""",
+        timeout=3000,
+    )
+    dv_read = cwidget_eval(
+        """(w, p) => {
+          const el = w.el.querySelector(`[data-path="${p}"] [data-delta-v]`);
+          const v = w.cursorValueFor(p);
+          return { text: el ? el.textContent : null,
+                   expect: v === null || !w.anchor ? null : v - w.anchor.value };
+        }""",
+        VEL_S,
+    )
+    dv_ok = False
+    if dv_read and dv_read["text"] and dv_read["expect"] is not None:
+        num = float(dv_read["text"].replace("Δ", "").replace("+", "").replace(" ", ""))
+        dv_ok = abs(num - dv_read["expect"]) < 2e-4
+    check("views_018 same-axis pointed row carries the value delta", dv_ok, dv_read)
+
+    # ── [test->app~views_018~1] no value delta: other axis, enum, or a
+    #    cursor time with no sample ──
+    gates = cwidget_eval(
+        f"""(w, [U32, ENUM, VELS]) => {{
+          const has = (p) => !!w.el.querySelector(`[data-path="${{p}}"] [data-delta-v]`);
+          w.applyPointed(U32);
+          const otherAxis = has(U32);
+          w.applyPointed(ENUM);
+          const enumRow = has(ENUM);
+          // A tick inside the mock's 5 s gap window (t % 5000 in
+          // [4880, 5000)), within the paused view.
+          const h = __cockpit.histories.get(VELS);
+          const newest = h.ticks[h.ticks.length - 1];
+          const gt = Math.floor(newest / 5000) * 5000 - 60;
+          if (gt < w.window[0]) return {{ gapUnreachable: true }};
+          w.applyPointed(VELS);
+          __cockpit.setCursorTick(gt);
+          const row = w.el.querySelector(`[data-path="${{VELS}}"]`);
+          return {{ otherAxis, enumRow,
+                    gapAbsent: row ? row.textContent.includes('no sample') : null,
+                    gapDelta: has(VELS) }};
+        }}""",
+        [U32_S, ENUM_S, VEL_S],
+    )
+    check(
+        "views_018 no value delta off-axis, for an enum, or in a gap",
+        gates
+        and not gates["otherAxis"]
+        and not gates["enumRow"]
+        and gates["gapAbsent"] is True
+        and not gates["gapDelta"],
+        gates,
+    )
+
+    # ── views_017/views_009 seam: a ctrl+drag neither zooms nor drops; a
+    #    plain drag-select still zooms and the anchor survives it ──
+    win0 = page.evaluate("() => __cockpit.timeline.currentWindow()")
+    tick_before = cwidget_eval("(w) => w.anchor && w.anchor.tick")
+    box = cwidget_eval(
+        "(w) => { const r = w.el.querySelector('.plot-canvas').getBoundingClientRect();"
+        " return { x: r.left, y: r.top, w: r.width, h: r.height }; }"
+    )
+    page.keyboard.down("Control")
+    page.mouse.move(box["x"] + box["w"] * 0.3, box["y"] + box["h"] - 20)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["w"] * 0.6, box["y"] + box["h"] - 20, steps=4)
+    page.mouse.up()
+    page.keyboard.up("Control")
+    win1 = page.evaluate("() => __cockpit.timeline.currentWindow()")
+    tick_mid = cwidget_eval("(w) => w.anchor && w.anchor.tick")
+    check(
+        "views_017 ctrl+drag neither zooms nor re-drops",
+        win1 == win0 and tick_mid == tick_before,
+        (win0, win1, tick_before, tick_mid),
+    )
+    page.mouse.move(box["x"] + box["w"] * 0.2, box["y"] + box["h"] - 20)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["w"] * 0.7, box["y"] + box["h"] - 20, steps=4)
+    page.mouse.up()
+    win2 = page.evaluate("() => __cockpit.timeline.currentWindow()")
+    tick_after = cwidget_eval("(w) => w.anchor && w.anchor.tick")
+    check(
+        "views_009 drag-select still zooms with an anchor held, anchor survives",
+        win2 != win1 and tick_after == tick_before,
+        (win1, win2, tick_before, tick_after),
+    )
+
+    # ── [test->app~views_017~1] hidden lines are not release targets: a line
+    #    whose coordinate left the window/range must not keep a phantom 8 px
+    #    click strip at its projected position ──
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.evaluate("() => __cockpit.timeline.pause()")
+    tgt_h = find_target(VEL_M)
+    check("views_017 probe (hidden-line block)", tgt_h is not None, tgt_h)
+    ctrl_click(tgt_h["at"])
+    check(
+        "views_017 drop for the hidden-line block",
+        cwidget_eval("(w) => w.anchor?.path") == VEL_M,
+    )
+
+    # (a) a manual scale projects the horizontal line 4 px above the canvas
+    #     top (hidden); the vertical stays visible.
+    seta = cwidget_eval(
+        """(w) => {
+          const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
+          const h = rect.height, v = w.anchor.value, D = 10;
+          const min = v - D * (1 + 4 / h);   // ay lands at exactly -4 px
+          w.setManualRange(w.sideOf(w.anchor.path), min, min + D);
+          const [t0, t1] = w.window;
+          return {
+            rect: { x: rect.left, y: rect.top, w: rect.width, h },
+            ax: ((w.anchor.tick - t0) / (t1 - t0)) * rect.width,
+            ay: (1 - (v - min) / D) * h,
+            lxHidden: w.el.querySelector('.anchor-line-x').hidden,
+            lyHidden: w.el.querySelector('.anchor-line-y').hidden,
+          };
+        }"""
+    )
+    check(
+        "views_017 manual scale hides only the horizontal line",
+        seta and not seta["lxHidden"] and seta["lyHidden"] and -8 <= seta["ay"] <= 0,
+        seta,
+    )
+    ra = seta["rect"]
+    px_off = ra["x"] + (seta["ax"] + 150 if seta["ax"] + 158 < ra["w"] else seta["ax"] - 150)
+    page.mouse.click(px_off, ra["y"] + 3)  # 7 px from the hidden line's projection
+    check(
+        "views_017 a hidden horizontal line is not a release target",
+        cwidget_eval("(w) => !!w.anchor"),
+    )
+    page.mouse.click(ra["x"] + seta["ax"] + 2, ra["y"] + ra["h"] - 12)
+    check(
+        "views_017 the still-visible vertical line releases (horizontal hidden)",
+        cwidget_eval("(w) => w.anchor === null"),
+    )
+    cwidget_eval("(w) => w.setScaleMode('L', 'auto')")
+
+    # (b) a paused zoom past the anchor time projects the vertical line 5 px
+    #     left of the canvas (hidden); a manual range keeps the horizontal
+    #     mid-canvas and visible.
+    tgt_h = find_target(VEL_M)
+    check("views_017 probe (zoom-hide block)", tgt_h is not None, tgt_h)
+    ctrl_click(tgt_h["at"])
+    setb = cwidget_eval(
+        """(w) => {
+          const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
+          const v = w.anchor.value;
+          w.setManualRange(w.sideOf(w.anchor.path), v - 5, v + 5); // ay = h/2, visible
+          const [t0, t1] = w.window;
+          const S = (t1 - t0) * 0.3;
+          __cockpit.timeline.selectRange(w.anchor.tick + (5 * S) / rect.width,
+                                         w.anchor.tick + (5 * S) / rect.width + S);
+          const [u0, u1] = w.window;
+          return {
+            rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+            ax: ((w.anchor.tick - u0) / (u1 - u0)) * rect.width,
+            ay: w.yPxOf(v, w.sideOf(w.anchor.path), rect.height),
+            lxHidden: w.el.querySelector('.anchor-line-x').hidden,
+            lyHidden: w.el.querySelector('.anchor-line-y').hidden,
+          };
+        }"""
+    )
+    check(
+        "views_017 zoom past the anchor hides only the vertical line",
+        setb and setb["lxHidden"] and not setb["lyHidden"] and -8 <= setb["ax"] <= 0,
+        setb,
+    )
+    rb = setb["rect"]
+    page.mouse.click(rb["x"] + 2, rb["y"] + rb["h"] - 12)  # 7 px from hidden lx
+    check(
+        "views_017 a hidden vertical line is not a release target",
+        cwidget_eval("(w) => !!w.anchor"),
+    )
+    page.mouse.click(rb["x"] + rb["w"] * 0.75, rb["y"] + setb["ay"] + 2)
+    check(
+        "views_017 the still-visible horizontal line releases (vertical hidden)",
+        cwidget_eval("(w) => w.anchor === null"),
+    )
+
+    # (c) both lines hidden: bare clicks release nothing anywhere; Resume
+    #     still releases.
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.evaluate("() => __cockpit.timeline.pause()")
+    cwidget_eval("(w) => w.setScaleMode('L', 'auto')")
+    tgt_h = find_target(VEL_M)
+    check("views_017 probe (both-hidden block)", tgt_h is not None, tgt_h)
+    ctrl_click(tgt_h["at"])
+    setc = cwidget_eval(
+        """(w) => {
+          const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
+          const h = rect.height, v = w.anchor.value, D = 10;
+          w.setManualRange(w.sideOf(w.anchor.path), v - D * (1 + 4 / h) , v - D * (1 + 4 / h) + D);
+          const [t0, t1] = w.window;
+          const S = (t1 - t0) * 0.3;
+          __cockpit.timeline.selectRange(w.anchor.tick + (5 * S) / rect.width,
+                                         w.anchor.tick + (5 * S) / rect.width + S);
+          return {
+            rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+            lxHidden: w.el.querySelector('.anchor-line-x').hidden,
+            lyHidden: w.el.querySelector('.anchor-line-y').hidden,
+          };
+        }"""
+    )
+    check(
+        "views_017 both lines hidden (zoom + manual scale)",
+        setc and setc["lxHidden"] and setc["lyHidden"],
+        setc,
+    )
+    rc = setc["rect"]
+    for cx, cy in [
+        (rc["x"] + 2, rc["y"] + rc["h"] / 2),
+        (rc["x"] + rc["w"] - 3, rc["y"] + rc["h"] / 2),
+        (rc["x"] + rc["w"] / 2, rc["y"] + 3),
+        (rc["x"] + rc["w"] / 2, rc["y"] + rc["h"] - 3),
+        (rc["x"] + rc["w"] / 2, rc["y"] + rc["h"] / 2),
+    ]:
+        page.mouse.click(cx, cy)
+    check(
+        "views_017 with both lines hidden no bare click releases",
+        cwidget_eval("(w) => !!w.anchor"),
+    )
+    page.evaluate("() => __cockpit.timeline.resume()")
+    check(
+        "views_017 resume releases a fully-hidden anchor",
+        cwidget_eval("(w) => w.anchor === null"),
+    )
+
+    # ── [test->app~views_017~1] ctrl+re-drop within 8 px of an anchor line
+    #    replaces (the set action wins over the release gesture) ──
+    page.evaluate("() => __cockpit.timeline.pause()")
+    cwidget_eval("(w) => w.setScaleMode('L', 'auto')")
+    tgt_h = find_target(VEL_M)
+    check("views_017 probe (precedence block)", tgt_h is not None, tgt_h)
+    ctrl_click(tgt_h["at"])
+    old_tick = cwidget_eval("(w) => w.anchor && w.anchor.tick")
+    near_line = cwidget_eval(
+        """(w, path) => {
+          const canvas = w.el.querySelector('.plot-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const [t0, t1] = w.window;
+          const ax = ((w.anchor.tick - t0) / (t1 - t0)) * rect.width;
+          // A spot ON the anchor's own trace, 4-8 px right of the vertical
+          // line — inside the release strip, but Ctrl must re-drop instead.
+          """ + NEAREST_Y_JS + """
+          for (const dx of [4, 6, 8]) {
+            const px = ax + dx;
+            if (px > rect.width - 3) continue;
+            const t = w.tickAtPx(px, rect.width);
+            const y = nearestY(w, path, t, rect);
+            if (y === null) continue;
+            const py = Math.min(rect.height - 3, Math.max(3, y + 3));
+            const at = [rect.left + px, rect.top + py];
+            if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) continue;
+            if (w.computePointed(at[0], at[1], canvas) !== path) continue;
+            return at;
+          }
+          return null;
+        }""",
+        VEL_M,
+    )
+    check("views_017 probe found an on-trace spot inside the release strip", near_line is not None, near_line)
+    ctrl_click(near_line)
+    redropped = cwidget_eval("(w) => w.anchor && w.anchor.tick")
+    check(
+        "views_017 ctrl+click inside the release strip re-drops, not releases",
+        redropped is not None and redropped != old_tick,
+        (old_tick, redropped),
+    )
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.mouse.move(10, 10)
+
+
+BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"
+
+
+def run_budget(pw):
+    """[test->app~views_015~1] the render budget, measured on the reference
+    shape: 8 watched signals @ 10 ms on 4 plots (2 each), 30 s span,
+    1920x1080 css px @ DPR 1. Headed (the real GPU renders; headless
+    SwiftShader is not the machine the app ships on), with the frame-rate
+    limiter OFF so the run measures render capability, not the display's
+    vsync — a sub-60 Hz monitor can't false-fail, and exceeding 60 means
+    real headroom. 60 s when PCS_RENDER_BUDGET=full, a 12 s smoke
+    otherwise — both assert the same budget rows: every 1 s window >= 60
+    rendered fps, every rendered frame within 33 ms, and the trace
+    renderer's draw counter advancing across the whole run (frames that
+    tick while draws stall cannot pass)."""
+    seconds = 60 if BUDGET_FULL else 12
+    browser = pw.chromium.launch(
+        headless=False,
+        args=[
+            "--force-device-scale-factor=1",
+            "--disable-frame-rate-limit",
+            "--disable-gpu-vsync",
+        ],
+    )
+    ctx = browser.new_context(viewport={"width": 1920, "height": 1080})
+    page = ctx.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    boot(page)
+    page.evaluate(
+        """() => {
+        const pool = __cockpit.store.signals.filter(s => s.kind === 'f32').map(s => s.path);
+        let k = 0;
+        for (let p = 0; p < 4; p++) {
+          const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+          for (let i = 0; i < 2; i++) { const s = pool[k++]; __cockpit.addWatch(s, 10); w.addSignal(s); }
+        }
+        __cockpit.timeline.setSpan(30000);
+      }"""
+    )
+    page.wait_for_function(
+        "() => __cockpit.store.traceStatus && __cockpit.store.traceStatus.link_rate_bytes_per_s > 0",
+        timeout=8000,
+    )
+    page.wait_for_timeout(3000)  # settle past the backfill
+    min_fps, max_frame = 1e9, 0.0
+    draws0 = page.evaluate("() => __cockpit.perf.snapshot().draws")
+    for _ in range(seconds):
+        page.wait_for_timeout(1000)
+        s = page.evaluate("() => __cockpit.perf.snapshot()")
+        min_fps = min(min_fps, s["fps"])
+        max_frame = max(max_frame, s["worst_ms"])
+    draws = page.evaluate("() => __cockpit.perf.snapshot().draws") - draws0
+    # 4 plots x ~20 batches/s; 15/s of slack covers batch coalescing.
+    min_draws = seconds * 15 * 4
+    check(
+        f"views_015 render budget holds over {seconds} s (min 1s fps, max frame ms, draws)",
+        min_fps >= 60 and max_frame <= 33.0 and draws >= min_draws,
+        (min_fps, max_frame, draws, min_draws),
+    )
+    check("views_015 run raised no page errors", not errors, errors[:3])
+    browser.close()
+
 
 def main():
     with sync_playwright() as pw:
@@ -1088,6 +2408,7 @@ def main():
         run(page)
         check("no page errors", not errors, errors[:3])
         browser.close()
+        run_budget(pw)
     if FAILURES:
         print(f"FAILED: {len(FAILURES)}: {FAILURES}")
         sys.exit(1)
