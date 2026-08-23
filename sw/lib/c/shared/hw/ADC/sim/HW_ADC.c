@@ -3,9 +3,20 @@
 #include "lib_types.h"
 
 #include "HW_ADC.h"
+#include "HW_TIM.h"
+#include "SIL_irq.h"
 #include "SIL_ports.h"
 
 /* Defines */
+
+// Completion dispatch rides the peripheral-ISR rung of the sim NVIC ladder
+// (docs/sil/sim-interrupts.md), alongside sim HW_USB.
+#define HW_ADC_IRQ_PRIORITY            (8U)
+// The completion service models the conversion-complete ISR as a periodic
+// drain: a 1 µs period means "every engine step" on any grid (the dispatcher
+// fires an entry at most once per step), so completions land in the same
+// step as their triggers — per-trigger on a fine grid, batch on a coarse one.
+#define HW_ADC_COMPLETION_PERIOD_US    (1U)
 
 /* Typedefs */
 
@@ -30,19 +41,44 @@ typedef struct
     // when unregistered). A driven port commands the input's pin voltage.
     int32_t portHandles[HW_ADC_CHANNEL_COUNT][HW_ADC_INPUTS_PER_CHANNEL];
 
+    // Timer-triggered injected engine. Triggers land during the TIM advance
+    // (platform-tick context); values are sampled there, and completions are
+    // deferred through a SIL_irq one-shot so the user callback runs in the
+    // firmware fiber's ISR bracket, as on hardware.
+    HW_ADC_conversionStatus_E injectedStatus[HW_ADC_CHANNEL_COUNT];
+    HW_ADC_injectedCallback_F injectedCallback[HW_ADC_CHANNEL_COUNT];
+    void *                    injectedCallbackContext[HW_ADC_CHANNEL_COUNT];
+    uint32_t                  pendingCompletions[HW_ADC_CHANNEL_COUNT];
+
     uint32_t tickCounter;
     bool initialized;
 } HW_ADC_data_S;
+
+/* Private Data Declarations */
+
+// Which sim timer peripheral each trigger source names.
+static const HW_TIM_peripheral_E HW_ADC_triggerPeripheralMapping[HW_ADC_TIMER_TRIGGER_COUNT] =
+{
+    [HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO] = HW_TIM_PERIPHERAL_1,
+};
 
 /* Private Function Declarations */
 
 static uint32_t HW_ADC_private_voltsToCounts(double volts,
                                              const HW_ADC_channelConfig_S * const channelConfig);
+static bool HW_ADC_private_isInjectedTriggered(const HW_ADC_channelConfig_S * const channelConfig);
+static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral,
+                                       HW_TIM_trgoCross_E cross, void * context);
+static void HW_ADC_private_completionDispatch(void);
 
 /* Private Data Definitions */
 
 static HW_ADC_data_S HW_ADC_data;
 static HW_ADC_data_S * const data = &HW_ADC_data;
+
+// The completion service's framework handle. Lives outside HW_ADC_data so the
+// re-entrant init's clean slate can still cancel the previous registration.
+static int32_t HW_ADC_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
 
 /* Private Function Definitions */
 
@@ -61,6 +97,100 @@ static uint32_t HW_ADC_private_voltsToCounts(double volts,
     return counts;
 }
 
+static bool HW_ADC_private_isInjectedTriggered(const HW_ADC_channelConfig_S * const channelConfig)
+{
+    return ((channelConfig->injectedTriggerMode == HW_ADC_TRIGGER_TIMER) &&
+            (channelConfig->injectedXferMode    == HW_ADC_XFER_INTERRUPT));
+}
+
+// [impl->fw~hal_adc_003~1]
+// TRGO sink: fires once per trigger event during HW_TIM_advanceTime. Samples
+// every triggered channel wired to this peripheral whose edge select accepts
+// the crossing, then defers completion to the one-shot below.
+static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral,
+                                       HW_TIM_trgoCross_E cross, void * context)
+{
+    (void)context;
+    if (data->initialized)
+    {
+        for (size_t ch = 0U; ch < data->config->numChannels; ch++)
+        {
+            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[ch];
+            if ((!HW_ADC_private_isInjectedTriggered(channelConfig)) ||
+                (HW_ADC_triggerPeripheralMapping[channelConfig->injectedTimerTrigger] != peripheral))
+            {
+                continue;
+            }
+
+            // Edge select, the JEXTEN twin: the board's trigger point is OC4
+            // in PWM2, whose OCREF rising edge is the up-count crossing.
+            const HW_TIM_trgoCross_E accepted =
+                (channelConfig->injectedTriggerEdge == HW_ADC_TRIGGER_EDGE_RISING)
+                    ? HW_TIM_TRGO_CROSS_UP
+                    : HW_TIM_TRGO_CROSS_DOWN;
+            if (cross != accepted)
+            {
+                continue;
+            }
+
+            // Sample at the trigger instant: each slot reads its pin's port
+            // (shared with the regular path, as on silicon); undriven pins
+            // keep the synthetic ramp.
+            bool sampled = false;
+            for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
+            {
+                if (channelConfig->injectedInputs[i].enabled)
+                {
+                    const uint8_t pin = channelConfig->injectedInputs[i].pinInput;
+                    double volts = 0.0;
+                    if (SIL_ports_read(data->portHandles[ch][pin], &volts))
+                    {
+                        data->channelData[ch].injectedCounts[i] =
+                            HW_ADC_private_voltsToCounts(volts, channelConfig);
+                    }
+                    else
+                    {
+                        const uint32_t modulo = (1UL << channelConfig->numBits);
+                        const uint32_t offset = ((uint32_t)ch * 256U) + 0x8000U + ((uint32_t)i * 16U);
+                        data->channelData[ch].injectedCounts[i] = (offset + data->tickCounter) % modulo;
+                    }
+                    sampled = true;
+                }
+            }
+            if (sampled)
+            {
+                data->pendingCompletions[ch]++;
+            }
+        }
+    }
+}
+
+// [impl->fw~hal_adc_008~1]
+// Completion service: runs in the firmware fiber once per engine step, after
+// the TIM advance that queued this step's triggers. Drains every pending
+// conversion — one status write + callback per trigger event, so the
+// completion count matches the trigger cadence on any grid.
+static void HW_ADC_private_completionDispatch(void)
+{
+    if (data->initialized)
+    {
+        for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
+        {
+            while (data->pendingCompletions[ch] > 0U)
+            {
+                data->pendingCompletions[ch]--;
+                data->injectedStatus[ch] = HW_ADC_CONVERSION_STATUS_OK;
+                if (data->injectedCallback[ch] != NULL)
+                {
+                    data->injectedCallback[ch]((HW_ADC_channels_E)ch,
+                                               data->injectedStatus[ch],
+                                               data->injectedCallbackContext[ch]);
+                }
+            }
+        }
+    }
+}
+
 /* Public Function Definitions */
 
 // [impl->fw~hal_adc_001~1]
@@ -71,6 +201,9 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
 
     // Re-entrant: every call, accepted or rejected, drops the driver back to
     // its uninitialized state, so a second init in one process is a clean slate.
+    // The previous completion service goes with it.
+    SIL_irq_cancel(HW_ADC_completionIrqHandle);
+    HW_ADC_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
     *data = (HW_ADC_data_S){ 0 };
     for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
     {
@@ -93,15 +226,38 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
         for (size_t ch = 0U; ch < config->numChannels; ch++)
         {
             const HW_ADC_channelConfig_S * const channelConfig = &config->channels[ch];
-            if ((channelConfig->triggerMode         != HW_ADC_TRIGGER_SOFTWARE) ||
-                (channelConfig->xferMode            != HW_ADC_XFER_POLLED)      ||
-                (channelConfig->injectedTriggerMode != HW_ADC_TRIGGER_SOFTWARE) ||
-                (channelConfig->injectedXferMode    != HW_ADC_XFER_POLLED)      ||
+            const bool injectedPolled =
+                ((channelConfig->injectedTriggerMode == HW_ADC_TRIGGER_SOFTWARE) &&
+                 (channelConfig->injectedXferMode    == HW_ADC_XFER_POLLED));
+            const bool injectedTriggered =
+                (HW_ADC_private_isInjectedTriggered(channelConfig) &&
+                 (channelConfig->injectedTimerTrigger < HW_ADC_TIMER_TRIGGER_COUNT));
+            if ((channelConfig->triggerMode != HW_ADC_TRIGGER_SOFTWARE) ||
+                (channelConfig->xferMode    != HW_ADC_XFER_POLLED)      ||
+                ((!injectedPolled) && (!injectedTriggered))             ||
                 (channelConfig->numBits == 0U) ||
                 (channelConfig->numBits > 31U))
             {
                 valid = false;
                 break;
+            }
+
+            // A triggered slot samples a pin's port; the pin index must be real.
+            if (injectedTriggered)
+            {
+                for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
+                {
+                    if ((channelConfig->injectedInputs[i].enabled) &&
+                        (channelConfig->injectedInputs[i].pinInput >= HW_ADC_INPUTS_PER_CHANNEL))
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (!valid)
+                {
+                    break;
+                }
             }
 
             // Injected must be contiguous from slot 0.
@@ -148,6 +304,33 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
                     {
                         data->portHandles[ch][input] =
                             SIL_ports_register("vsig", channelConfig->inputs[input].inputNameStr, "V");
+                    }
+                }
+
+                // [impl->fw~hal_adc_003~1]
+                // Arm the timer-triggered injected path: BUSY until the first
+                // completion, and one TRGO sink serves every triggered channel
+                // (the modeled trigger line fans out, as TRGO2 does).
+                if (HW_ADC_private_isInjectedTriggered(channelConfig))
+                {
+                    bool anyEnabled = false;
+                    for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
+                    {
+                        anyEnabled = anyEnabled || channelConfig->injectedInputs[i].enabled;
+                    }
+                    if (anyEnabled)
+                    {
+                        data->injectedStatus[ch] = HW_ADC_CONVERSION_STATUS_BUSY;
+                        (void)HW_TIM_registerTrgoCallback(
+                            HW_ADC_triggerPeripheralMapping[channelConfig->injectedTimerTrigger],
+                            HW_ADC_private_trgoHandler, NULL);
+                        if (HW_ADC_completionIrqHandle == SIL_IRQ_HANDLE_INVALID)
+                        {
+                            HW_ADC_completionIrqHandle = SIL_irq_registerPeriodic(
+                                HW_ADC_private_completionDispatch,
+                                HW_ADC_COMPLETION_PERIOD_US,
+                                HW_ADC_IRQ_PRIORITY);
+                        }
                     }
                 }
             }
@@ -207,15 +390,20 @@ void HW_ADC_run1ms(void)
                     sampled = true;
                 }
             }
-            for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
+            // Timer-triggered injected slots are owned by the TRGO path; only
+            // the polled flavor rides this pass.
+            if (!HW_ADC_private_isInjectedTriggered(channelConfig))
             {
-                if (channelConfig->injectedInputs[i].enabled)
+                for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
                 {
-                    // Distinct offset base from regular path so trace
-                    // logs can tell them apart.
-                    const uint32_t offset = ((uint32_t)ch * 256U) + 0x8000U + ((uint32_t)i * 16U);
-                    data->channelData[ch].injectedCounts[i] = (offset + data->tickCounter) % modulo;
-                    sampled = true;
+                    if (channelConfig->injectedInputs[i].enabled)
+                    {
+                        // Distinct offset base from regular path so trace
+                        // logs can tell them apart.
+                        const uint32_t offset = ((uint32_t)ch * 256U) + 0x8000U + ((uint32_t)i * 16U);
+                        data->channelData[ch].injectedCounts[i] = (offset + data->tickCounter) % modulo;
+                        sampled = true;
+                    }
                 }
             }
 
@@ -304,6 +492,38 @@ bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * con
         (channel < HW_ADC_CHANNEL_COUNT))
     {
         *out = data->status[channel];
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
+                                     HW_ADC_injectedCallback_F callback,
+                                     void * context)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT))
+    {
+        // may be NULL
+        data->injectedCallback[channel]        = callback;
+        data->injectedCallbackContext[channel] = context;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
+                              HW_ADC_conversionStatus_E * const out)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT) &&
+        (out != NULL))
+    {
+        *out = data->injectedStatus[channel];
         ret = true;
     }
     return ret;

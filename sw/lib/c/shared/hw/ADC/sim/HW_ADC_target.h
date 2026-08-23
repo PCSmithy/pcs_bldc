@@ -17,14 +17,18 @@ typedef struct
 // One input on the injected conversion sequence, indexed by sequence position.
 typedef struct
 {
-    bool   enabled;
-    char * inputNameStr;         // human-readable; aids sim trace logs
+    bool    enabled;
+    char *  inputNameStr;        // human-readable; aids sim trace logs
+    uint8_t pinInput;            // physical IN# this slot samples: injected and
+                                 // regular share the pin (and its SIL port),
+                                 // as on silicon
 } HW_ADC_injectedInputConfig_S;
 
 
 typedef enum
 {
     HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+    HW_ADC_TIMER_TRIGGER_COUNT,
 } HW_ADC_timerTrigger_E;
 
 // One ADC peripheral. Lacks HAL handles; carries explicit numBits (the stm32g4

@@ -167,8 +167,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .configureMultimode  = true,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
-        .injectedXferMode    = HW_ADC_XFER_POLLED,
+        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
+        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              =
@@ -177,7 +177,14 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
             // Hand-authored VOPAMP internal channel (see stm32g4 branch).
             [13] = { .enabled = true, .inputNameStr = "ADC1_VOPAMP1" },
         },
-        .injectedInputs      = { { 0 } },
+        .injectedInputs      =
+        {
+            // Phase U ISENSE: shares pin IN6 (and its SIL port) with the
+            // regular path, as on silicon.
+            [0] = { .enabled = true, .inputNameStr = "ADC1_INJ_U", .pinInput = 6U },
+        },
+        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+        .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
     [HW_ADC_CHANNEL_2] =
@@ -186,8 +193,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .configureMultimode  = false,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
         .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
-        .injectedXferMode    = HW_ADC_XFER_POLLED,
+        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
+        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              =
@@ -197,7 +204,13 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
             [16] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP2" },
             [18] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP3" },
         },
-        .injectedInputs      = { { 0 } },
+        .injectedInputs      =
+        {
+            // Phase V ISENSE: shares pin IN7 with the regular path.
+            [0] = { .enabled = true, .inputNameStr = "ADC2_INJ_V", .pinInput = 7U },
+        },
+        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+        .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,
     },
 #else
 #error "ERROR! HW_ADC_channelConfig not defined for build target!"

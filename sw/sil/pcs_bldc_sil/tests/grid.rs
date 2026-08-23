@@ -71,8 +71,9 @@ fn a_sub_millisecond_interrupt_runs_between_kernel_ticks() {
             "step {step}: the faster interrupt dispatches on its own cadence"
         );
     }
-    // 20 dispatches of the fast entry, 5 kernel ticks.
-    assert_eq!(member.borrow().isr_dispatch_count(), 25);
+    // 20 dispatches of the fast entry, 5 kernel ticks, and the ADC injected
+    // completion service once per step.
+    assert_eq!(member.borrow().isr_dispatch_count(), 25 + 5 * STEPS_PER_TICK);
 }
 
 #[test]
