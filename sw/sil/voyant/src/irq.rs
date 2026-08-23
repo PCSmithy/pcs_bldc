@@ -74,20 +74,26 @@ struct IrqEntry {
     /// Same-step dispatch order only; lower value first. No preemption.
     priority: u8,
     enabled: bool,
-    /// Registration index — the tiebreak within one priority.
-    index: usize,
+    /// Registration handle — the tiebreak within one priority (registration order).
+    handle: i32,
     /// Absolute sim time this entry is next due (exact, unquantized).
     due_us: u64,
-    /// False once cancelled or once a one-shot has fired. The slot stays so the
-    /// handle is never reused.
+    /// False once cancelled or once a one-shot has fired; the entry is pruned at
+    /// the end of the step. Handles are never reused (see `next_handle`), so a
+    /// stale handle simply stops resolving and its ops are inert.
     live: bool,
 }
 
 /// The framework-owned interrupt table for one firmware image.
 #[derive(Default)]
 pub(crate) struct IrqTable {
-    /// Entries indexed by handle (handles are dense, allocated by the rendezvous).
+    /// Live entries in registration order. Dead entries are pruned each dispatch,
+    /// so a long run of runtime one-shots does not grow the per-step scan.
     entries: Vec<IrqEntry>,
+    /// The next registration handle this table expects from the (single, monotonic)
+    /// rendezvous allocator — the wiring-bug check, and the bound below which an
+    /// unresolvable handle is stale-and-inert rather than malformed.
+    next_handle: i32,
     /// Reusable due-list scratch, so the per-step scan allocates nothing.
     due_scratch: Vec<usize>,
     /// Periodic firings folded away because an entry came due more than once
@@ -119,7 +125,7 @@ impl IrqTable {
         self.entries
             .iter()
             .find(|e| e.live && (e.handler == handler))
-            .map(|e| IrqHandle(e.index as i32))
+            .map(|e| IrqHandle(e.handle))
     }
 
     /// Apply one queued op, scheduling a registration relative to `now_us` (a
@@ -134,10 +140,10 @@ impl IrqTable {
                 rate_or_delay_us,
                 priority,
             } => {
-                let index = self.entries.len();
-                if handle != (index as i32) {
+                if handle != self.next_handle {
                     return Err(format!(
-                        "registration handle {handle} does not match table index {index}"
+                        "registration handle {handle} out of step with the allocator (expected {})",
+                        self.next_handle
                     ));
                 }
                 if (kind == IrqKind::Periodic) && (rate_or_delay_us == 0) {
@@ -149,18 +155,25 @@ impl IrqTable {
                     rate_or_delay_us,
                     priority,
                     enabled: true,
-                    index,
+                    handle,
                     due_us: now_us.saturating_add(rate_or_delay_us),
                     live: true,
                 });
+                self.next_handle += 1;
                 Ok(())
             }
             IrqOp::Cancel { handle } => {
-                self.entry_mut(handle)?.live = false;
+                match self.entry_mut(handle) {
+                    Some(entry) => entry.live = false,
+                    None => self.assert_stale(handle)?,
+                }
                 Ok(())
             }
             IrqOp::SetEnabled { handle, enabled } => {
-                self.entry_mut(handle)?.enabled = enabled;
+                match self.entry_mut(handle) {
+                    Some(entry) => entry.enabled = enabled,
+                    None => self.assert_stale(handle)?,
+                }
                 Ok(())
             }
         }
@@ -176,16 +189,18 @@ impl IrqTable {
         now_us: u64,
         mut dispatch: impl FnMut(usize) -> bool,
     ) -> u64 {
-        // Move the scratch out so the entry loop can mutate `self.entries`.
+        // Move the scratch out so the entry loop can mutate `self.entries`. The
+        // scratch holds Vec positions, valid until the retain below.
         let mut due = std::mem::take(&mut self.due_scratch);
         due.clear();
         due.extend(
             self.entries
                 .iter()
-                .filter(|e| e.live && e.enabled && (e.due_us <= now_us))
-                .map(|e| e.index),
+                .enumerate()
+                .filter(|(_, e)| e.live && e.enabled && (e.due_us <= now_us))
+                .map(|(i, _)| i),
         );
-        due.sort_unstable_by_key(|&i| (self.entries[i].priority, self.entries[i].index));
+        due.sort_unstable_by_key(|&i| (self.entries[i].priority, self.entries[i].handle));
 
         let mut ran = 0u64;
         for &i in &due {
@@ -209,22 +224,35 @@ impl IrqTable {
             }
         }
 
+        // Prune what died this step (fired one-shots, applied cancels): the next
+        // scan touches live entries only, however many one-shots a run registers.
+        self.entries.retain(|e| e.live);
+
         self.due_scratch = due;
         ran
     }
 
-    /// Clear the table — the reload path (a rebooted image re-registers from scratch).
+    /// Clear the table — the reload path (a rebooted image re-registers from scratch,
+    /// through a fresh allocator).
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.due_scratch.clear();
         self.coalesced = 0;
+        self.next_handle = 0;
     }
 
-    fn entry_mut(&mut self, handle: i32) -> Result<&mut IrqEntry, String> {
-        usize::try_from(handle)
-            .ok()
-            .and_then(|i| self.entries.get_mut(i))
-            .ok_or_else(|| format!("unknown interrupt handle {handle}"))
+    fn entry_mut(&mut self, handle: i32) -> Option<&mut IrqEntry> {
+        self.entries.iter_mut().find(|e| e.handle == handle)
+    }
+
+    /// A handle that resolves to no entry is inert when it was once allocated (a
+    /// pruned one-shot or cancellation) and a wiring bug when it never was.
+    fn assert_stale(&self, handle: i32) -> Result<(), String> {
+        if (handle >= 0) && (handle < self.next_handle) {
+            Ok(())
+        } else {
+            Err(format!("unknown interrupt handle {handle}"))
+        }
     }
 }
 
@@ -512,6 +540,28 @@ mod tests {
         h.rv.set_enabled(a.raw(), true);
         h.sync(1_000);
         assert_eq!(h.step(2_000), 2, "only the two live periodics");
+    }
+
+    #[test]
+    fn dead_entries_are_pruned_so_runtime_one_shots_do_not_grow_the_table() {
+        // The runtime one-shot path at a 20 kHz cadence would otherwise grow the
+        // per-step scan without bound. Handles stay monotonic across the pruning.
+        let mut h = Harness::new();
+        h.register(0x10, IrqKind::Periodic, 1_000, 0);
+        let mut last = 0;
+        for n in 1..=100u64 {
+            // Registered mid-run: due n*1000 + 1, so each fires on the NEXT step.
+            last = h.register(0x20, IrqKind::OneShot, 1, 0).raw();
+            h.step(n * 1_000);
+        }
+        h.step(101_000); // the last pending one-shot fires
+        assert_eq!(last, 100, "handles keep counting past pruned entries");
+        assert_eq!(h.table.entries.len(), 1, "only the periodic survives");
+        assert_eq!(
+            h.take_fired().len(),
+            200,
+            "100 periodic firings (first one period after apply) + every one-shot once"
+        );
     }
 
     #[test]
