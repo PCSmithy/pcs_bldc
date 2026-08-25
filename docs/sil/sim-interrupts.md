@@ -122,6 +122,23 @@ functions. We don't model memory protection, so this is a non-issue.
 - **Priority is ordering only.** When several are due at the same step, run them
   in priority order; **no nesting / no ISR-preempts-ISR** — each handler runs to
   completion. Document the limitation; revisit only if firmware needs it.
+- **Pended sources are edge notifications.** `SIL_irq_pend` models the NVIC
+  ISPR bit: acceptance clears it (hardware behavior), and the *peripheral*
+  flag lives in the driver's own state (its JEOS/SR twin), re-pended by the
+  source when new work arrives. Convention: a handler that can legitimately
+  leave work behind re-pends itself before returning — the framework will not
+  re-dispatch an edge on its own.
+- **Future upgrade — interrupt lines (level-triggered sources).** Give an
+  entry a `line_asserted` level beside the pend pulse (`setLine(handle, bool)`),
+  and include it in the due predicate: an asserted line simply *stays due*,
+  dispatching once per step until the driver deasserts it — level sensitivity
+  with no re-pend logic, and the "unserviced flag" bug becomes a visible
+  bounded re-dispatch instead of being unmodelable. Removes the re-pend
+  convention above for drivers that adopt it (drain ⇒ deassert). Target
+  consumer and likely prerequisite: **nFAULT/BKIN modeling** — the gate
+  driver's open-drain fault line is held asserted for as long as the fault
+  stands, which an edge pend models wrongly. A claim/complete-style re-arm
+  gate (the PLIC flavor) stays out until something needs it.
 
 ## 7. Per-tick ordering (data timing)
 
