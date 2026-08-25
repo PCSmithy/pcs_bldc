@@ -40,6 +40,9 @@ pub enum IrqKind {
     Periodic,
     /// Fires once, `rate_or_delay_us` after registration, then goes dead.
     OneShot,
+    /// No time schedule: fires only when pended (the NVIC software-pending
+    /// twin), then stays live for the next pend. `rate_or_delay_us` is unused.
+    Pended,
 }
 
 /// One mutation of the interrupt table, queued by the C upcalls (or the config-time
@@ -60,6 +63,9 @@ pub(crate) enum IrqOp {
         handle: i32,
         enabled: bool,
     },
+    Pend {
+        handle: i32,
+    },
 }
 
 /// One table entry — the design's entry structure plus the scheduling state the
@@ -76,8 +82,12 @@ struct IrqEntry {
     enabled: bool,
     /// Registration handle — the tiebreak within one priority (registration order).
     handle: i32,
-    /// Absolute sim time this entry is next due (exact, unquantized).
+    /// Absolute sim time this entry is next due (exact, unquantized;
+    /// `u64::MAX` for a pend-driven entry, which is never time-due).
     due_us: u64,
+    /// Software-pending flag (NVIC ISPR twin): forces a dispatch regardless of
+    /// the schedule, holds through a mask, clears when the handler runs.
+    pended: bool,
     /// False once cancelled or once a one-shot has fired; the entry is pruned at
     /// the end of the step. Handles are never reused (see `next_handle`), so a
     /// stale handle simply stops resolving and its ops are inert.
@@ -112,11 +122,11 @@ impl IrqTable {
         self.coalesced
     }
 
-    /// Whether any live, enabled entry is due at or before `now_us`.
+    /// Whether any live, enabled entry is due at or before `now_us` (or pended).
     pub(crate) fn any_due(&self, now_us: u64) -> bool {
         self.entries
             .iter()
-            .any(|e| e.live && e.enabled && (e.due_us <= now_us))
+            .any(|e| e.live && e.enabled && ((e.due_us <= now_us) || e.pended))
     }
 
     /// The handle of the first live entry whose handler is at `handler` — how the
@@ -156,7 +166,12 @@ impl IrqTable {
                     priority,
                     enabled: true,
                     handle,
-                    due_us: now_us.saturating_add(rate_or_delay_us),
+                    due_us: if kind == IrqKind::Pended {
+                        u64::MAX
+                    } else {
+                        now_us.saturating_add(rate_or_delay_us)
+                    },
+                    pended: false,
                     live: true,
                 });
                 self.next_handle += 1;
@@ -172,6 +187,13 @@ impl IrqTable {
             IrqOp::SetEnabled { handle, enabled } => {
                 match self.entry_mut(handle) {
                     Some(entry) => entry.enabled = enabled,
+                    None => self.assert_stale(handle)?,
+                }
+                Ok(())
+            }
+            IrqOp::Pend { handle } => {
+                match self.entry_mut(handle) {
+                    Some(entry) => entry.pended = true,
                     None => self.assert_stale(handle)?,
                 }
                 Ok(())
@@ -197,7 +219,7 @@ impl IrqTable {
             self.entries
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| e.live && e.enabled && (e.due_us <= now_us))
+                .filter(|(_, e)| e.live && e.enabled && ((e.due_us <= now_us) || e.pended))
                 .map(|(i, _)| i),
         );
         due.sort_unstable_by_key(|&i| (self.entries[i].priority, self.entries[i].handle));
@@ -209,16 +231,22 @@ impl IrqTable {
             }
             ran += 1;
             let entry = &mut self.entries[i];
+            entry.pended = false;
             match entry.kind {
                 IrqKind::OneShot => entry.live = false,
+                IrqKind::Pended => {} // stays live, armed for the next pend
                 IrqKind::Periodic => {
-                    // Drift-free re-arm. Firings the grid (or a mask) swallowed are
-                    // folded into one and counted — the grid is meant to be at least
-                    // as fine as the fastest interrupt.
-                    entry.due_us += entry.rate_or_delay_us;
-                    while entry.due_us <= now_us {
+                    // Drift-free re-arm — only when the schedule itself came due
+                    // (a pend fires a timed entry early without moving its clock).
+                    // Firings the grid (or a mask) swallowed are folded into one
+                    // and counted — the grid is meant to be at least as fine as
+                    // the fastest interrupt.
+                    if entry.due_us <= now_us {
                         entry.due_us += entry.rate_or_delay_us;
-                        self.coalesced += 1;
+                        while entry.due_us <= now_us {
+                            entry.due_us += entry.rate_or_delay_us;
+                            self.coalesced += 1;
+                        }
                     }
                 }
             }
@@ -305,6 +333,10 @@ impl IrqRendezvous {
             .borrow_mut()
             .ops
             .push(IrqOp::SetEnabled { handle, enabled });
+    }
+
+    pub(crate) fn pend(&self, handle: i32) {
+        self.inner.borrow_mut().ops.push(IrqOp::Pend { handle });
     }
 
     /// Ops queued from index `from` onward. The log is append-only, so a consumer
@@ -540,6 +572,62 @@ mod tests {
         h.rv.set_enabled(a.raw(), true);
         h.sync(1_000);
         assert_eq!(h.step(2_000), 2, "only the two live periodics");
+    }
+
+    #[test]
+    fn a_pended_entry_fires_only_when_pended_and_rearms() {
+        let mut h = Harness::new();
+        let p = h.register(0xA0, IrqKind::Pended, 0, 0);
+        h.sync(0);
+
+        // No schedule: steps alone never dispatch it.
+        assert_eq!(h.step(1_000), 0);
+        assert_eq!(h.step(2_000), 0);
+
+        // Pend → one dispatch, then the flag is clear again.
+        h.rv.pend(p.raw());
+        assert_eq!(h.step(3_000), 1);
+        assert_eq!(h.step(4_000), 0, "the pend cleared on dispatch");
+
+        // Re-pending before dispatch holds ONE pending state, as on hardware.
+        h.rv.pend(p.raw());
+        h.rv.pend(p.raw());
+        assert_eq!(h.step(5_000), 1, "two pends before dispatch fold to one");
+        assert_eq!(h.take_fired(), vec![0xA0, 0xA0]);
+    }
+
+    #[test]
+    fn a_pend_survives_a_mask_and_a_stale_pend_is_inert() {
+        let mut h = Harness::new();
+        let p = h.register(0xA1, IrqKind::Pended, 0, 0);
+        let shot = h.register(0xA2, IrqKind::OneShot, 500, 0);
+        h.sync(0);
+
+        // Masked: the pend holds its state, never dropped.
+        h.rv.pend(p.raw());
+        h.masked = true;
+        assert_eq!(h.step(1_000), 0);
+        h.masked = false;
+        assert_eq!(h.step(2_000), 2, "held pend + the held one-shot both land");
+
+        // The one-shot is dead and pruned; pending its stale handle is inert,
+        // while a never-allocated handle is still a wiring bug.
+        h.rv.pend(shot.raw());
+        h.sync(2_000);
+        assert_eq!(h.step(3_000), 0);
+        assert!(h.table.apply(IrqOp::Pend { handle: 99 }, 3_000).is_err());
+    }
+
+    #[test]
+    fn pending_a_periodic_fires_it_early_without_moving_its_clock() {
+        let mut h = Harness::new();
+        let p = h.register(0xB0, IrqKind::Periodic, 10_000, 0);
+        h.sync(0);
+
+        h.rv.pend(p.raw());
+        assert_eq!(h.step(1_000), 1, "pend forces the timed entry early");
+        assert_eq!(h.step(9_000), 0, "not due yet — the schedule did not slip");
+        assert_eq!(h.step(10_000), 1, "the original schedule holds");
     }
 
     #[test]

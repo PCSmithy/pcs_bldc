@@ -6,7 +6,8 @@ EXTI, …) fire in sim time. Generalizes the D1 tick source into a framework-
 owned **interrupt controller**.
 
 **Decision:** the framework owns an **interrupt table** of handler entries.
-Sources are **periodic or one-shot**, registered either **at config time**
+Sources are **periodic, one-shot, or pended** (no schedule; a driver raises it
+with `SIL_irq_pend`, the NVIC ISPR twin), registered either **at config time**
 (framework-side, by handler name) or **at runtime** (by the sim HW-layer code,
 by handler pointer, via a C→Rust upcall). The framework schedules; the firmware-
 side **port dispatches** each due handler in the firmware fiber context so FreeRTOS
@@ -39,6 +40,7 @@ or masks it (a periodic timer the firmware stops must be removable).
 | **Config, periodic** | framework / scenario | handler **name** → resolved to a pointer via DWARF/dlsym | systick, control-loop timer |
 | **Runtime, periodic** | sim HW-layer driver | handler **pointer** | a timer the firmware starts at runtime |
 | **Runtime, one-shot** | sim HW-layer driver | handler **pointer** | SPI/UART/DMA-complete after a transfer |
+| **Runtime, pended** | sim HW-layer driver | handler **pointer** | ADC injected completion: queue result, pend the IRQ |
 | (Config one-shot) | framework / scenario | name | rare; e.g. a scripted fault at T |
 
 - **Handlers are plain function pointers** — *not* restricted to CMSIS vector

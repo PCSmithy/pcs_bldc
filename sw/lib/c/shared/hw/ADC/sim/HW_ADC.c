@@ -12,11 +12,6 @@
 // Completion dispatch rides the peripheral-ISR rung of the sim NVIC ladder
 // (docs/sil/sim-interrupts.md), alongside sim HW_USB.
 #define HW_ADC_IRQ_PRIORITY            (8U)
-// The completion service models the conversion-complete ISR as a periodic
-// drain: a 1 µs period means "every engine step" on any grid (the dispatcher
-// fires an entry at most once per step), so completions land in the same
-// step as their triggers — per-trigger on a fine grid, batch on a coarse one.
-#define HW_ADC_COMPLETION_PERIOD_US    (1U)
 
 /* Typedefs */
 
@@ -42,9 +37,9 @@ typedef struct
     int32_t portHandles[HW_ADC_CHANNEL_COUNT][HW_ADC_INPUTS_PER_CHANNEL];
 
     // Timer-triggered injected engine. Triggers land during the TIM advance
-    // (platform-tick context); values are sampled there, and completions are
-    // deferred through a SIL_irq one-shot so the user callback runs in the
-    // firmware fiber's ISR bracket, as on hardware.
+    // (platform-tick context); values are sampled there, and the pended
+    // completion interrupt drains them in the firmware fiber's ISR bracket,
+    // as on hardware.
     HW_ADC_conversionStatus_E injectedStatus[HW_ADC_CHANNEL_COUNT];
     HW_ADC_injectedCallback_F injectedCallback[HW_ADC_CHANNEL_COUNT];
     void *                    injectedCallbackContext[HW_ADC_CHANNEL_COUNT];
@@ -160,14 +155,17 @@ static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral,
             if (sampled)
             {
                 data->pendingCompletions[ch]++;
+                // The NVIC twin of JEOS raising ADC1_2: queue the result,
+                // pend the completion interrupt.
+                SIL_irq_pend(HW_ADC_completionIrqHandle);
             }
         }
     }
 }
 
 // [impl->fw~hal_adc_008~1]
-// Completion service: runs in the firmware fiber once per engine step, after
-// the TIM advance that queued this step's triggers. Drains every pending
+// Completion interrupt: pended by the trigger handler, dispatched in the
+// firmware fiber during the same step's ISR phase. Drains every pending
 // conversion — one status write + callback per trigger event, so the
 // completion count matches the trigger cadence on any grid.
 static void HW_ADC_private_completionDispatch(void)
@@ -326,9 +324,8 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
                             HW_ADC_private_trgoHandler, NULL);
                         if (HW_ADC_completionIrqHandle == SIL_IRQ_HANDLE_INVALID)
                         {
-                            HW_ADC_completionIrqHandle = SIL_irq_registerPeriodic(
+                            HW_ADC_completionIrqHandle = SIL_irq_registerPended(
                                 HW_ADC_private_completionDispatch,
-                                HW_ADC_COMPLETION_PERIOD_US,
                                 HW_ADC_IRQ_PRIORITY);
                         }
                     }

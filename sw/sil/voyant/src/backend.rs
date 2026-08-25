@@ -391,6 +391,8 @@ struct SilIrqHooks {
     register_oneshot: unsafe extern "C" fn(*mut c_void, Option<IsrFn>, u32, u8) -> i32,
     cancel: unsafe extern "C" fn(*mut c_void, i32),
     set_enabled: unsafe extern "C" fn(*mut c_void, i32, bool),
+    register_pended: unsafe extern "C" fn(*mut c_void, Option<IsrFn>, u8) -> i32,
+    pend: unsafe extern "C" fn(*mut c_void, i32),
 }
 
 /// C signature of the firmware's interrupt-hook installation export.
@@ -439,6 +441,15 @@ unsafe fn irq_register(
 }
 
 /// See the SAFETY note on [`irq_register_periodic`].
+unsafe extern "C" fn irq_register_pended(
+    ctx: *mut c_void,
+    handler: Option<IsrFn>,
+    priority: u8,
+) -> i32 {
+    irq_register(ctx, handler, IrqKind::Pended, 0, priority)
+}
+
+/// See the SAFETY note on [`irq_register_periodic`].
 unsafe extern "C" fn irq_cancel(ctx: *mut c_void, handle: i32) {
     (*(ctx as *const IrqRendezvous)).cancel(handle);
 }
@@ -446,6 +457,11 @@ unsafe extern "C" fn irq_cancel(ctx: *mut c_void, handle: i32) {
 /// See the SAFETY note on [`irq_register_periodic`].
 unsafe extern "C" fn irq_set_enabled(ctx: *mut c_void, handle: i32, enabled: bool) {
     (*(ctx as *const IrqRendezvous)).set_enabled(handle, enabled);
+}
+
+/// See the SAFETY note on [`irq_register_periodic`].
+unsafe extern "C" fn irq_pend(ctx: *mut c_void, handle: i32) {
+    (*(ctx as *const IrqRendezvous)).pend(handle);
 }
 
 /// SAFETY (all three trampolines): `ctx` is the address of the `PortState`
@@ -643,6 +659,8 @@ impl Firmware {
                     register_oneshot: irq_register_oneshot,
                     cancel: irq_cancel,
                     set_enabled: irq_set_enabled,
+                    register_pended: irq_register_pended,
+                    pend: irq_pend,
                 };
                 set_irq_hooks(&hooks);
             }
