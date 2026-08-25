@@ -18,6 +18,10 @@ typedef struct
     int32_t  lastEnableHandle;
     bool     lastEnabled;
     uint32_t enableCalls;
+
+    uint32_t pendedRegisterCalls;
+    int32_t  lastPendHandle;
+    uint32_t pendCalls;
 } fakeHooksLog_S;
 
 static fakeHooksLog_S fakeLog;
@@ -69,6 +73,22 @@ static void fakeSetEnabled(void * context, int32_t handle, bool enabled)
     fakeLog.enableCalls++;
 }
 
+static int32_t fakeRegisterPended(void * context, SIL_irq_handler_F handler, uint8_t priority)
+{
+    fakeLog.lastContext  = context;
+    fakeLog.lastHandler  = handler;
+    fakeLog.lastPriority = priority;
+    fakeLog.pendedRegisterCalls++;
+    return fakeLog.registerReturn;
+}
+
+static void fakePend(void * context, int32_t handle)
+{
+    fakeLog.lastContext    = context;
+    fakeLog.lastPendHandle = handle;
+    fakeLog.pendCalls++;
+}
+
 static void installFakeHooks(void)
 {
     const SIL_irq_hooks_S hooks = {
@@ -77,6 +97,8 @@ static void installFakeHooks(void)
         .registerOneShot  = fakeOneShot,
         .cancel           = fakeCancel,
         .setEnabled       = fakeSetEnabled,
+        .registerPended   = fakeRegisterPended,
+        .pend             = fakePend,
     };
     SIL_irq_setHooks(&hooks);
 }
@@ -98,14 +120,17 @@ static void test_no_hooks_register_returns_invalid(void)
 {
     TEST_ASSERT_EQUAL_INT32(SIL_IRQ_HANDLE_INVALID, SIL_irq_registerPeriodic(handlerA, 50U, 0U));
     TEST_ASSERT_EQUAL_INT32(SIL_IRQ_HANDLE_INVALID, SIL_irq_registerOneShot(handlerA, 2U, 0U));
+    TEST_ASSERT_EQUAL_INT32(SIL_IRQ_HANDLE_INVALID, SIL_irq_registerPended(handlerA, 0U));
 }
 
 static void test_no_hooks_cancel_and_enable_are_noops(void)
 {
     SIL_irq_cancel(0);              // must not crash
     SIL_irq_setEnabled(0, true);
+    SIL_irq_pend(0);
     TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.cancelCalls);
     TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.enableCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fakeLog.pendCalls);
 }
 
 /* ---- hooks installed: arguments pass straight through ---- */
@@ -142,6 +167,25 @@ static void test_one_shot_accepts_zero_delay(void)
     fakeLog.registerReturn = 1;
     TEST_ASSERT_EQUAL_INT32(1, SIL_irq_registerOneShot(handlerA, 0U, 0U));
     TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.oneShotCalls);
+}
+
+static void test_register_pended_and_pend_pass_through(void)
+{
+    installFakeHooks();
+    fakeLog.registerReturn = 6;
+
+    TEST_ASSERT_EQUAL_INT32(6, SIL_irq_registerPended(handlerB, 8U));
+    TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_PTR(handlerB, fakeLog.lastHandler);
+    TEST_ASSERT_EQUAL_UINT8(8U, fakeLog.lastPriority);
+    TEST_ASSERT_EQUAL_INT32(SIL_IRQ_HANDLE_INVALID, SIL_irq_registerPended(NULL, 0U));
+    TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.pendedRegisterCalls);
+
+    SIL_irq_pend(6);
+    TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.pendCalls);
+    TEST_ASSERT_EQUAL_INT32(6, fakeLog.lastPendHandle);
+    SIL_irq_pend(SIL_IRQ_HANDLE_INVALID);   // guarded locally
+    TEST_ASSERT_EQUAL_UINT32(1U, fakeLog.pendCalls);
 }
 
 static void test_register_rejects_null_handler_and_zero_period_locally(void)
@@ -207,6 +251,7 @@ int main(void)
     RUN_TEST(test_register_periodic_passes_through);
     RUN_TEST(test_register_one_shot_passes_through);
     RUN_TEST(test_one_shot_accepts_zero_delay);
+    RUN_TEST(test_register_pended_and_pend_pass_through);
     RUN_TEST(test_register_rejects_null_handler_and_zero_period_locally);
     RUN_TEST(test_cancel_and_set_enabled_pass_through);
     RUN_TEST(test_cancel_and_enable_guard_invalid_handle);

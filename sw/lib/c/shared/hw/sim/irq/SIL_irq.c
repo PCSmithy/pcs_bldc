@@ -81,3 +81,25 @@ void SIL_irq_setEnabled(int32_t handle, bool enabled)
         data->hooks.setEnabled(data->hooks.context, handle, enabled);
     }
 }
+
+int32_t SIL_irq_registerPended(SIL_irq_handler_F handler, uint8_t priority)
+{
+    int32_t handle = SIL_IRQ_HANDLE_INVALID;
+    if ((data->installed) &&
+        (data->hooks.registerPended != NULL) &&
+        (handler != NULL))
+    {
+        handle = data->hooks.registerPended(data->hooks.context, handler, priority);
+    }
+    return handle;
+}
+
+void SIL_irq_pend(int32_t handle)
+{
+    if ((handle >= 0) &&
+        (data->installed) &&
+        (data->hooks.pend != NULL))
+    {
+        data->hooks.pend(data->hooks.context, handle);
+    }
+}

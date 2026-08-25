@@ -50,6 +50,15 @@ typedef struct
     // Mask/unmask one entry, modelling per-IRQ NVIC enable. A disabled entry
     // keeps its schedule; it simply does not dispatch.
     void (*setEnabled)(void * context, int32_t handle, bool enabled);
+
+    // Register a handler with no time schedule: it dispatches only when pended.
+    int32_t (*registerPended)(void * context, SIL_irq_handler_F handler, uint8_t priority);
+
+    // Set an entry pending — the NVIC ISPR twin. It dispatches in the current
+    // step's ISR phase and the flag clears on dispatch; pending while masked
+    // (or re-pending before dispatch) holds a single pending state, as on
+    // hardware.
+    void (*pend)(void * context, int32_t handle);
 } SIL_irq_hooks_S;
 
 /* Public Function Declarations */
@@ -68,5 +77,12 @@ int32_t SIL_irq_registerOneShot(SIL_irq_handler_F handler, uint32_t delay_us, ui
 
 void SIL_irq_cancel(int32_t handle);
 void SIL_irq_setEnabled(int32_t handle, bool enabled);
+
+// Register a pend-driven interrupt (no schedule). A NULL handler is rejected
+// locally.
+int32_t SIL_irq_registerPended(SIL_irq_handler_F handler, uint8_t priority);
+
+// Set an entry pending; a negative handle is a safe no-op.
+void SIL_irq_pend(int32_t handle);
 
 #endif // SIL_IRQ_H
