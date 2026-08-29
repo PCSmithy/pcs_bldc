@@ -1,14 +1,88 @@
 #include "HW_ADC.h"
+#include "HW_TIM.h"
+#include "SIL_irq.h"
 #include "unity.h"
 
 #define VREF        (3.3f)
 #define NUM_BITS    (12U)
 #define MAX_COUNTS  (4095.0f)   // 2^NUM_BITS - 1
 
+// Local TIM fixture for the triggered path: center counter, 2000 µs cycle,
+// OC-match trigger on unit 0 — up-cross lands at 400 µs, down-cross at 1600.
+#define TIM_PERIOD     (1000U)
+#define TIM_COMPARE    (400U)
+#define UP_CROSS_US    (400U)
+#define DOWN_CROSS_US  (1200U)   // from the up-cross: 400 -> 1600
+
 // File-scope config the tests build and tweak; HW_ADC_init stores a pointer
 // to it, so it must outlive each test.
 static HW_ADC_channelConfig_S adcChannels[HW_ADC_CHANNEL_COUNT];
 static HW_ADC_config_S        adcConfig;
+
+static HW_TIM_peripheralConfig_S timPeripherals[HW_TIM_PERIPHERAL_COUNT];
+static HW_TIM_channelConfig_S    timChannels[HW_TIM_CHANNEL_COUNT];
+static HW_TIM_config_S           timConfig;
+
+// Fake SIL_irq hooks: record the pended registration (capturing the handler
+// so tests can run the completion themselves), pends, and cancels.
+static SIL_irq_handler_F pendedHandler;
+static uint32_t          pendedRegisterCalls;
+static int32_t           pendedRegisterReturn;
+static int32_t           lastPendHandle;
+static uint32_t          pendCalls;
+static int32_t           lastCancelHandle;
+static uint32_t          cancelCalls;
+
+static int32_t fakeRegisterPended(void * context, SIL_irq_handler_F handler, uint8_t priority)
+{
+    (void)context; (void)priority;
+    pendedHandler = handler;
+    pendedRegisterCalls++;
+    return pendedRegisterReturn;
+}
+
+static void fakePend(void * context, int32_t handle)
+{
+    (void)context;
+    lastPendHandle = handle;
+    pendCalls++;
+}
+
+static void fakeCancel(void * context, int32_t handle)
+{
+    (void)context;
+    lastCancelHandle = handle;
+    cancelCalls++;
+}
+
+static void installIrqDouble(void)
+{
+    const SIL_irq_hooks_S hooks = {
+        .registerPended = fakeRegisterPended,
+        .pend           = fakePend,
+        .cancel         = fakeCancel,
+    };
+    SIL_irq_setHooks(&hooks);
+}
+
+// Counting injected callbacks + the status each was handed.
+static uint32_t cbACalls;
+static uint32_t cbBCalls;
+static HW_ADC_conversionStatus_E cbLastStatus;
+
+static void injectedCbA(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E status, void * context)
+{
+    (void)channel; (void)context;
+    cbACalls++;
+    cbLastStatus = status;
+}
+
+static void injectedCbB(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E status, void * context)
+{
+    (void)channel; (void)context;
+    cbBCalls++;
+    cbLastStatus = status;
+}
 
 // Good baseline: two channels, software + polled on both sequences. Channel 1
 // has regular inputs 3 and 7 and injected slots 0 and 1 enabled; channel 2 has
@@ -36,15 +110,89 @@ static void buildGoodConfig(void)
         .channels = adcChannels, .numChannels = HW_ADC_CHANNEL_COUNT };
 }
 
+// Channel 1 rewired to the timer-triggered interrupt path: one injected slot
+// sampling pin 3 (shared with the enabled regular input), rising edge.
+static void makeChannel1Triggered(void)
+{
+    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode         = HW_ADC_TRIGGER_TIMER;
+    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode            = HW_ADC_XFER_INTERRUPT;
+    adcChannels[HW_ADC_CHANNEL_1].injectedTimerTrigger        = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO;
+    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerEdge         = HW_ADC_TRIGGER_EDGE_RISING;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].pinInput  = 3U;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled   = false;
+}
+
+static void buildTimConfig(void)
+{
+    for (size_t p = 0U; p < HW_TIM_PERIPHERAL_COUNT; p++)
+    {
+        timPeripherals[p] = (HW_TIM_peripheralConfig_S){ 0 };
+    }
+    timPeripherals[HW_TIM_PERIPHERAL_1] = (HW_TIM_peripheralConfig_S){
+        .nameStr          = "TIM1",
+        .period           = TIM_PERIOD,
+        .counterWidthBits = 16U,
+        .countDir         = HW_TIM_COUNT_CENTER,
+        .countsPerUs      = 1U,
+        .configureTrgo    = true,
+        .trgoSource       = HW_TIM_TRGO_OC_MATCH,
+        .trgoOcUnit       = 0U };
+    timPeripherals[HW_TIM_PERIPHERAL_2] = (HW_TIM_peripheralConfig_S){
+        .nameStr          = "TIM2",
+        .period           = 0xFFFFFFFFU,
+        .counterWidthBits = 32U,
+        .countDir         = HW_TIM_COUNT_UP };
+
+    for (size_t ch = 0U; ch < HW_TIM_CHANNEL_COUNT; ch++)
+    {
+        timChannels[ch] = (HW_TIM_channelConfig_S){
+            .peripheral = HW_TIM_PERIPHERAL_1,
+            .role       = HW_TIM_ROLE_OUTPUT_COMPARE,
+            .ocUnit     = (uint8_t)ch,
+            .compare    = ((ch == 0U) ? TIM_COMPARE : 0U) };
+    }
+
+    timConfig = (HW_TIM_config_S){
+        .peripherals    = timPeripherals,
+        .numPeripherals = HW_TIM_PERIPHERAL_COUNT,
+        .channels       = timChannels,
+        .numChannels    = HW_TIM_CHANNEL_COUNT };
+}
+
+// Arm the triggered engine end to end: irq double installed before init (the
+// completion registers there), TIM re-seeded after (the trgo sink survives).
+static void armTriggeredEngine(void)
+{
+    installIrqDouble();
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+    buildTimConfig();
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+}
+
 void setUp(void)
 {
     // A rejected init is the clean slate: init drops the driver to its
     // uninitialized state before it looks at the config.
+    SIL_irq_setHooks(NULL);
     (void)HW_ADC_init(NULL);
     buildGoodConfig();
+
+    pendedHandler        = NULL;
+    pendedRegisterCalls  = 0U;
+    pendedRegisterReturn = 11;
+    lastPendHandle       = SIL_IRQ_HANDLE_INVALID;
+    pendCalls            = 0U;
+    lastCancelHandle     = SIL_IRQ_HANDLE_INVALID;
+    cancelCalls          = 0U;
+    cbACalls             = 0U;
+    cbBCalls             = 0U;
+    cbLastStatus         = HW_ADC_CONVERSION_STATUS_IDLE;
 }
 
-void tearDown(void) {}
+void tearDown(void)
+{
+    SIL_irq_setHooks(NULL);
+}
 
 /* ---- fw~hal_adc_001: init + config validation ---- */
 // [test->fw~hal_adc_001~1]
@@ -199,6 +347,119 @@ static void test_injected_sampling_and_readout(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, expected, volts);
 }
 
+/* ---- fw~hal_adc_003: timer-triggered injected — config validation ---- */
+// [test->fw~hal_adc_001~1]
+static void test_init_rejects_unbuilt_injected_mode_combos(void)
+{
+    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode = HW_ADC_TRIGGER_TIMER;
+    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode    = HW_ADC_XFER_POLLED;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+
+    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE;
+    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode    = HW_ADC_XFER_INTERRUPT;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+}
+
+// [test->fw~hal_adc_001~1]
+static void test_init_rejects_out_of_range_injected_pin(void)
+{
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].pinInput = HW_ADC_INPUTS_PER_CHANNEL;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+}
+
+/* ---- fw~hal_adc_003 / _008: timer-triggered injected — engine behavior ---- */
+// [test->fw~hal_adc_008~1]
+static void test_injected_status_walk_and_guards(void)
+{
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_FAULT;
+
+    // Before init: fails.
+    TEST_ASSERT_FALSE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
+
+    makeChannel1Triggered();
+    armTriggeredEngine();
+
+    // Armed channel is BUSY until the first completion; the polled neighbor
+    // stays IDLE. Out-of-range channel and NULL destination fail.
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_BUSY, status);
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_2, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_IDLE, status);
+    TEST_ASSERT_FALSE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_COUNT, &status));
+    TEST_ASSERT_FALSE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, NULL));
+}
+
+// [test->fw~hal_adc_003~1]
+static void test_falling_edge_selects_the_down_crossing(void)
+{
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_FALLING;
+    armTriggeredEngine();
+    TEST_ASSERT_EQUAL_UINT32(1U, pendedRegisterCalls);
+
+    // The up-count crossing is the rejected edge: nothing pends.
+    HW_TIM_advanceTime(UP_CROSS_US);
+    TEST_ASSERT_EQUAL_UINT32(0U, pendCalls);
+
+    // The down-count crossing pends the completion; running it lands OK.
+    HW_TIM_advanceTime(DOWN_CROSS_US);
+    TEST_ASSERT_EQUAL_UINT32(1U, pendCalls);
+    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastPendHandle);
+    pendedHandler();
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
+}
+
+// [test->fw~hal_adc_008~1]
+static void test_injected_callback_last_wins_and_null_unregisters(void)
+{
+    makeChannel1Triggered();
+    armTriggeredEngine();
+
+    // Both registered: the later registration owns the slot.
+    TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbA, NULL));
+    TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbB, NULL));
+    HW_TIM_advanceTime(UP_CROSS_US);
+    pendedHandler();
+    TEST_ASSERT_EQUAL_UINT32(0U, cbACalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, cbBCalls);
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, cbLastStatus);
+
+    // NULL unregisters: the next completion invokes nobody, status still walks.
+    TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, NULL, NULL));
+    HW_TIM_advanceTime(2U * TIM_PERIOD);
+    pendedHandler();
+    TEST_ASSERT_EQUAL_UINT32(1U, cbBCalls);
+}
+
+// [test->fw~hal_adc_008~1]
+static void test_reinit_rewires_completion_and_clears_callback(void)
+{
+    makeChannel1Triggered();
+    armTriggeredEngine();
+    TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbA, NULL));
+    TEST_ASSERT_EQUAL_UINT32(1U, pendedRegisterCalls);
+
+    // Re-init: the old completion IRQ is cancelled, a fresh one registered,
+    // and the callback slot is cleared (G4 contract parity).
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+    TEST_ASSERT_EQUAL_UINT32(1U, cancelCalls);
+    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastCancelHandle);
+    TEST_ASSERT_EQUAL_UINT32(2U, pendedRegisterCalls);
+
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    HW_TIM_advanceTime(UP_CROSS_US);
+    TEST_ASSERT_EQUAL_UINT32(1U, pendCalls);
+    pendedHandler();
+    TEST_ASSERT_EQUAL_UINT32(0U, cbACalls);
+
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -220,6 +481,13 @@ int main(void)
     RUN_TEST(test_readout_failure_modes);
 
     RUN_TEST(test_injected_sampling_and_readout);
+
+    RUN_TEST(test_init_rejects_unbuilt_injected_mode_combos);
+    RUN_TEST(test_init_rejects_out_of_range_injected_pin);
+    RUN_TEST(test_injected_status_walk_and_guards);
+    RUN_TEST(test_falling_edge_selects_the_down_crossing);
+    RUN_TEST(test_injected_callback_last_wins_and_null_unregisters);
+    RUN_TEST(test_reinit_rewires_completion_and_clears_callback);
 
     return UNITY_END();
 }
