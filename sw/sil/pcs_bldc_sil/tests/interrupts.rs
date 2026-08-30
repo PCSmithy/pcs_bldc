@@ -33,8 +33,6 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
 
     // One USB dispatch per 1 ms step, and the task it wakes runs INSIDE that step: the
     // counter read back from the historian has already advanced when step() returns.
-    // Each step also dispatches the kernel tick and the ADC injected-completion
-    // service, hence three per step in the count.
     for n in 1..=10u64 {
         sim.step().expect("engine step");
         assert_eq!(
@@ -43,7 +41,7 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
             "step {n}: the woken task must run before the step returns to quiescence"
         );
     }
-    assert_eq!(member.borrow().isr_dispatch_count(), 30);
+    assert_eq!(member.borrow().isr_dispatch_count_of(usb_irq), 10);
 
     // Per-IRQ enable: masking the entry stops the wakeups dead — and only those; the
     // kernel tick beside it keeps dispatching.
@@ -56,7 +54,7 @@ fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
         boot + 10,
         "a disabled interrupt dispatches nothing, so the task never wakes"
     );
-    assert_eq!(member.borrow().isr_dispatch_count(), 40);
+    assert_eq!(member.borrow().isr_dispatch_count_of(usb_irq), 10);
 
     // Re-enabling resumes the cadence — nothing was lost but the masked window.
     member.borrow_mut().set_isr_enabled(usb_irq, true);
@@ -103,10 +101,13 @@ fn a_config_time_one_shot_resolves_by_name_and_fires_on_its_grid_step() {
             step * 1_000
         );
     }
+    // THE traffic canary: the one world-total assert in the suite, kept blunt on
+    // purpose. Any new interrupt source in a full-firmware world moves this
+    // number, and that is the point — update it consciously, with the accounting.
     assert_eq!(
         member.borrow().isr_dispatch_count(),
         13,
-        "6 kernel ticks + 6 ADC completion services + the one-shot"
+        "6 kernel ticks + 6 ADC completion interrupts + the one-shot"
     );
 }
 

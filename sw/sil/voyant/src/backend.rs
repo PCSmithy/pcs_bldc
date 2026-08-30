@@ -1392,9 +1392,18 @@ impl FirmwareMember {
         self.backend.irq_set_enabled(handle.raw(), enabled);
     }
 
-    /// How many interrupt handlers this member has dispatched, over its whole life.
+    /// How many interrupt handlers this member has dispatched, over its whole
+    /// life — every entry summed. Deliberately blunt: assert it only as a
+    /// traffic change-detector; per-claim tests use [`Self::isr_dispatch_count_of`].
     pub fn isr_dispatch_count(&self) -> u64 {
         self.irq_dispatches
+    }
+
+    /// Times one entry's handler has dispatched. Reads 0 once the handle stops
+    /// resolving (a fired one-shot or a cancellation is pruned with its count),
+    /// so assert it on periodic/pended entries.
+    pub fn isr_dispatch_count_of(&self, handle: IrqHandle) -> u64 {
+        self.irq.dispatch_count_of(handle.raw())
     }
 
     /// Skip State-Table registration of every cvar leaf whose path starts with

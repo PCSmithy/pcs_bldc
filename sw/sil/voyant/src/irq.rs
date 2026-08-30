@@ -88,6 +88,9 @@ struct IrqEntry {
     /// Software-pending flag (NVIC ISPR twin): forces a dispatch regardless of
     /// the schedule, holds through a mask, clears when the handler runs.
     pended: bool,
+    /// Times this entry's handler has run — the per-entry counterpart of the
+    /// member's lifetime total.
+    dispatches: u64,
     /// False once cancelled or once a one-shot has fired; the entry is pruned at
     /// the end of the step. Handles are never reused (see `next_handle`), so a
     /// stale handle simply stops resolving and its ops are inert.
@@ -172,6 +175,7 @@ impl IrqTable {
                         now_us.saturating_add(rate_or_delay_us)
                     },
                     pended: false,
+                    dispatches: 0,
                     live: true,
                 });
                 self.next_handle += 1;
@@ -231,6 +235,7 @@ impl IrqTable {
             }
             ran += 1;
             let entry = &mut self.entries[i];
+            entry.dispatches += 1;
             entry.pended = false;
             match entry.kind {
                 IrqKind::OneShot => entry.live = false,
@@ -267,6 +272,15 @@ impl IrqTable {
         self.due_scratch.clear();
         self.coalesced = 0;
         self.next_handle = 0;
+    }
+
+    /// Times one entry's handler has run; 0 for a handle that no longer
+    /// resolves (a pruned one-shot or cancellation takes its count with it).
+    pub(crate) fn dispatch_count_of(&self, handle: i32) -> u64 {
+        self.entries
+            .iter()
+            .find(|e| e.handle == handle)
+            .map_or(0, |e| e.dispatches)
     }
 
     fn entry_mut(&mut self, handle: i32) -> Option<&mut IrqEntry> {
@@ -572,6 +586,24 @@ mod tests {
         h.rv.set_enabled(a.raw(), true);
         h.sync(1_000);
         assert_eq!(h.step(2_000), 2, "only the two live periodics");
+    }
+
+    #[test]
+    fn per_entry_dispatch_counts_survive_neighbors_and_die_with_the_entry() {
+        let mut h = Harness::new();
+        let periodic = h.register(0xC0, IrqKind::Periodic, 1_000, 0);
+        let shot = h.register(0xC1, IrqKind::OneShot, 500, 0);
+        h.sync(0);
+
+        for n in 1..=3u64 {
+            h.step(n * 1_000);
+        }
+        assert_eq!(h.table.dispatch_count_of(periodic.raw()), 3);
+        assert_eq!(
+            h.table.dispatch_count_of(shot.raw()),
+            0,
+            "the fired one-shot was pruned with its count"
+        );
     }
 
     #[test]
