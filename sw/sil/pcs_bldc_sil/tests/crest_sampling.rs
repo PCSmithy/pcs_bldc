@@ -122,17 +122,11 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
     );
 }
 
-// [test->fw~hal_adc_003~1]
-// [test->fw~hal_adc_008~1]
-#[test]
-fn north_star_injected_matches_the_plant_every_period_while_spinning() {
-    let params = CurrentSenseParams::default();
-    let Board { mut sim, fw_member, .. } = board_with(Sil::options().grid_us(GRID_US), 0.8);
-
-    // Boot, arm, let the alignment dwell finish, then ramp the dial to half
-    // command and let the speed settle under closed-loop commutation.
+/// Boot, arm, let the alignment dwell finish, ramp the dial to half command,
+/// and settle into closed-loop commutation.
+fn spin_up(sim: &mut Sil) {
     sim.run_for_ms(GATE_BRINGUP_MS);
-    tap_button(&mut sim);
+    tap_button(sim);
     sim.run_for_ms(ALIGN_DWELL_MS + 100);
     assert!(
         sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned")),
@@ -145,9 +139,18 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
         sim.run_for_ms(20);
     }
     sim.run_for_ms(300);
-    let velocity = plant(&sim, "velocity");
+    let velocity = plant(sim, "velocity");
     assert!(velocity.abs() > 2.0, "the shaft is spinning, got {velocity:.2} rad/s");
-    assert!(!fault_latched(&sim), "no fault through the spin-up");
+    assert!(!fault_latched(sim), "no fault through the spin-up");
+}
+
+// [test->fw~hal_adc_003~1]
+// [test->fw~hal_adc_008~1]
+#[test]
+fn north_star_injected_matches_the_plant_every_period_while_spinning() {
+    let params = CurrentSenseParams::default();
+    let Board { mut sim, fw_member, .. } = board_with(Sil::options().grid_us(GRID_US), 0.8);
+    spin_up(&mut sim);
 
     // Measurement window: every PWM period for 40 ms (~several electrical
     // cycles). Each step's injected slots are compared against the plant's
@@ -205,4 +208,19 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
             "regular path healthy beside the injected stream: {path} = {got}"
         );
     }
+}
+
+/// Trace-generation variant: the same spin with the cvar mirror ungated, so
+/// firmware statics land in the historian at every dispatching step instead of
+/// the 1 ms sweep cadence. Not an assert suite — run it explicitly to dump a
+/// dense MDF:
+///   PCS_SIL_TRACE_DIR=build/traces cargo test --release --test crest_sampling \
+///     -- --ignored north_star_trace
+#[test]
+#[ignore = "trace generation: set PCS_SIL_TRACE_DIR and run with --ignored"]
+fn north_star_trace_ungated_mirror() {
+    let Board { mut sim, .. } =
+        board_with(Sil::options().grid_us(GRID_US).sweep_period_us(0), 0.8);
+    spin_up(&mut sim);
+    sim.run_for_ms(40); // the observation window the assert suite measures
 }
