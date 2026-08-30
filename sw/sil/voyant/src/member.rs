@@ -53,11 +53,22 @@ pub struct MemberCtx<'a> {
     /// The shared duplex router (initiate a transfer; the firmware member also
     /// declares + installs its C endpoints here).
     pub(crate) duplex: &'a DuplexRouter,
+    /// Whether a route or scenario write changed one of this member's inputs
+    /// since its last advance. `true` outside the engine's step loop (peer /
+    /// mirror / test contexts) — the conservative "sync everything" default.
+    pub(crate) inputs_dirty: bool,
 }
 
 impl<'a> MemberCtx<'a> {
     pub(crate) fn new(st: &'a mut StateTable, duplex: &'a DuplexRouter) -> Self {
-        Self { st, duplex }
+        Self { st, duplex, inputs_dirty: true }
+    }
+
+    /// Whether a route or scenario write changed one of this member's inputs since
+    /// its last advance — the gate for input-driven sync work (`true` outside the
+    /// engine's step loop).
+    pub fn inputs_dirty(&self) -> bool {
+        self.inputs_dirty
     }
 
     /// Run a synchronous duplex transfer on `handle`: `tx` in, the linked peer's `rx`
@@ -65,7 +76,8 @@ impl<'a> MemberCtx<'a> {
     /// `handle` once at wiring time (from
     /// [`Engine::link_duplex`](crate::engine::Engine::link_duplex)).
     pub fn duplex_transfer(&mut self, handle: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
-        self.duplex.transfer(handle, tx)
+        let router = self.duplex.clone();
+        router.transfer(handle, tx, self.st)
     }
 }
 
@@ -84,6 +96,25 @@ pub(crate) fn mirror_unwired(m: &mut dyn Member, st: &mut StateTable) {
     m.mirror(&mut MemberCtx::new(st, &router));
 }
 
+/// How a member advances — its declaration of what its time behavior *is*; the
+/// engine grid is an implementation detail, never part of a device's identity
+/// (`docs/sil/member-cadence.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cadence {
+    /// Advance every engine step (the default — for continuous integrators).
+    EveryStep,
+    /// Advance when `period_us` of sim time has elapsed since the last advance —
+    /// drift-free absolute due times (the IRQ-table discipline).
+    Periodic { period_us: u64 },
+    /// Advance only on a step where a route or scenario write changed one of this
+    /// member's inputs (for pure transforms).
+    OnInputChange,
+    /// Never scheduled — the bus drives it: all behavior lives in
+    /// [`DuplexPeer::transfer`](crate::duplex::DuplexPeer::transfer), which samples
+    /// the member's routed inputs at the transaction instant.
+    OnDemand,
+}
+
 /// An executable participant in the sim. The engine drives every member through
 /// this trait and nothing else (see the module docs for the member model and the
 /// discipline convention).
@@ -94,10 +125,20 @@ pub trait Member {
     /// same firmware DLL) yet must have distinct names.
     fn name(&self) -> &str;
 
-    /// Advance one deterministic step of `dt_us` microseconds of sim time. The
-    /// member reads its routed inputs from `ctx.st` ([`StateTable::current_value`]),
-    /// integrates, and pushes its outputs back ([`StateTable::record`]); it may
-    /// also register new signals here, and initiate a serial bus via
+    /// This member's declared [`Cadence`] — how the engine schedules its
+    /// [`advance`](Member::advance). Default [`Cadence::EveryStep`] (today's
+    /// behavior for every existing member).
+    fn cadence(&self) -> Cadence {
+        Cadence::EveryStep
+    }
+
+    /// Advance `dt_us` microseconds of sim time — the elapsed time since this
+    /// member's *previous* advance (exactly the grid step for
+    /// [`Cadence::EveryStep`]; a re-enable resets the baseline, so a disabled gap
+    /// is frozen time, never integrated through). The member reads its routed
+    /// inputs from `ctx.st` ([`StateTable::current_value`]), integrates, and pushes
+    /// its outputs back ([`StateTable::record`]); it may also register new signals
+    /// here, and initiate a serial bus via
     /// [`ctx.duplex_transfer`](MemberCtx::duplex_transfer). Must be deterministic:
     /// no wall-clock, no un-seeded RNG.
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx);

@@ -47,7 +47,7 @@ pub use duplex::{DuplexHandle, DuplexPeer};
 pub use engine::{Engine, EngineError};
 pub use irq::{IrqHandle, IrqKind};
 pub use log::{LogEntry, LogLevel, LogRing};
-pub use member::{vsig_id, Member, MemberCtx, RampModel};
+pub use member::{vsig_id, Cadence, Member, MemberCtx, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};
 pub use state_table::{AccessError, SigHandle, StateTable, StateTableConfig, TableError};

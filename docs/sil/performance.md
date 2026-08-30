@@ -374,3 +374,29 @@ from the perf binary's `-- board-world report --` section (new):
   this (0.3–0.4 µs/model total).
 - Next lever: member-declared cadence / event-driven advance —
   [`member-cadence.md`](member-cadence.md).
+
+## 17. Stage-7 perf pass, phase 2b: member-declared cadence (2026-08-30)
+
+[`member-cadence.md`](member-cadence.md) landed: `Cadence` on the `Member`
+trait (`EveryStep` default), encoders `OnDemand` (bus-driven — `transfer`
+samples the table at the transaction instant, no scheduled advance, no
+propagation pass), sense `OnInputChange` (post-epsilon input-dirty bits fed
+by route propagation + scenario writes), and the firmware member's per-step
+port-cache fill gated on its input-dirty bit. Same board-world row:
+
+| change                                     | µs/step | ×realtime |
+|--------------------------------------------|--------:|----------:|
+| phase 2a exit (§16)                        |     6.8 |      7.3× |
+| member-declared cadence (phase 2b)         |     5.7 |      8.8× |
+
+- Post-pass shares (bridge dark): firmware member 2.64 (was 3.0 — the port
+  fill gates off on quiet steps), motor 2.43 (unchanged — `EveryStep`, the
+  real ODE), sense 0.23 (was 0.38), both encoders at measurement-noise level
+  (was 0.67 combined; their two zero-latency propagation passes vanished with
+  them).
+- Measured-identical, as the design requires: north-star residuals exactly
+  13.6 / 16.8 mA over 800 periods; full suites green in both cargo profiles.
+- Cost now tracks events, not the grid: a spinning plant keeps sense + fw
+  fill hot (currents change every step); idle worlds pay ~only motor + tick.
+- Next lever: the engine-side next-event queue (skip empty grid steps
+  outright) — `sim-interrupts.md` §5; cadence made "next event" well-defined.

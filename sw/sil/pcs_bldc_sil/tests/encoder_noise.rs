@@ -3,8 +3,10 @@
 //! seed independence, and symmetric wrap at zero.
 
 use pcs_bldc_sil::board::{COUNTS_PER_REV as TICKS_PER_REV, ENCODER_NOISE_LSB as SIGMA_LSB};
-use pcs_bldc_sil::{decode_frame, As5048Model};
-use voyant::DuplexPeer;
+use pcs_bldc_sil::{decode_frame, As5048Model, Sil};
+use std::cell::RefCell;
+use std::rc::Rc;
+use voyant::DuplexHandle;
 
 const READ_ANGLE: [u8; 2] = [0xFF, 0xFF]; // parity 1, read 1, addr 0x3FFF
 /// Quantizer variance the model's `round()` adds on top of the injected noise.
@@ -19,12 +21,22 @@ fn decode_angle(frame: &[u8]) -> u16 {
     raw
 }
 
+/// Wire the model to a bus endpoint in its own world — transfers are the only
+/// door into a peer (never a member here, so no signals: pure wire behavior).
+fn rig(model: As5048Model) -> (Sil, DuplexHandle) {
+    let mut sim = Sil::new();
+    let h = sim
+        .link_duplex("spi:test:cs", Rc::new(RefCell::new(model)))
+        .expect("link the encoder peer");
+    (sim, h)
+}
+
 /// Pump `n` READ-ANGLE polls. The one-frame pipeline means command N is answered in
 /// transfer N+1, so a priming transfer absorbs the power-on sentinel.
-fn poll_ticks(model: &mut As5048Model, n: usize) -> Vec<u16> {
-    let _ = model.transfer(&READ_ANGLE);
+fn poll_ticks(sim: &mut Sil, h: DuplexHandle, n: usize) -> Vec<u16> {
+    let _ = sim.duplex_transfer(h, &READ_ANGLE);
     (0..n)
-        .map(|_| decode_angle(&model.transfer(&READ_ANGLE)))
+        .map(|_| decode_angle(&sim.duplex_transfer(h, &READ_ANGLE).expect("linked bus")))
         .collect()
 }
 
@@ -62,8 +74,8 @@ fn noiseless_default_is_exact() {
     const POLLS: usize = 100;
     const MID_SCALE_TICKS: u16 = 8192; // pi rad, 16384 counts/rev
 
-    let mut model = As5048Model::new("as5048_quiet", std::f32::consts::PI);
-    let ticks = poll_ticks(&mut model, POLLS);
+    let (mut sim, h) = rig(As5048Model::new("as5048_quiet", std::f32::consts::PI));
+    let ticks = poll_ticks(&mut sim, h, POLLS);
 
     let off: Vec<u16> = ticks
         .iter()
@@ -83,10 +95,10 @@ fn same_seed_reproduces_exactly() {
     const POLLS: usize = 1_000;
     const SEED: u64 = 0x5EED_0001;
 
-    let mut a = As5048Model::new("as5048_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
-    let mut b = As5048Model::new("as5048_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
+    let (mut a, ha) = rig(As5048Model::new("as5048_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED));
+    let (mut b, hb) = rig(As5048Model::new("as5048_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED));
 
-    let (ta, tb) = (poll_ticks(&mut a, POLLS), poll_ticks(&mut b, POLLS));
+    let (ta, tb) = (poll_ticks(&mut a, ha, POLLS), poll_ticks(&mut b, hb, POLLS));
     let first_diff = ta.iter().zip(tb.iter()).position(|(x, y)| x != y);
     assert!(
         first_diff.is_none(),
@@ -105,9 +117,9 @@ fn statistics_match_configured_sigma() {
     const SEED: u64 = 0x5EED_0003;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut model =
-        As5048Model::new("as5048_stats", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
-    let res = residuals(&poll_ticks(&mut model, POLLS), ANGLE_LSB);
+    let (mut sim, h) =
+        rig(As5048Model::new("as5048_stats", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED));
+    let res = residuals(&poll_ticks(&mut sim, h, POLLS), ANGLE_LSB);
 
     let (m, sd) = (mean(&res), std_dev(&res));
     let expected_sd = (f64::from(SIGMA_LSB) * f64::from(SIGMA_LSB) + QUANTIZER_VAR_LSB2).sqrt();
@@ -130,9 +142,9 @@ fn whiteness_lag1() {
     const SEED: u64 = 0x5EED_0004;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut model =
-        As5048Model::new("as5048_white", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED);
-    let res = residuals(&poll_ticks(&mut model, POLLS), ANGLE_LSB);
+    let (mut sim, h) =
+        rig(As5048Model::new("as5048_white", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED));
+    let res = residuals(&poll_ticks(&mut sim, h, POLLS), ANGLE_LSB);
 
     let ac1 = pearson(&res[..POLLS - 1], &res[1..]);
     println!("whiteness_lag1: ac1 = {ac1:.6}");
@@ -149,12 +161,12 @@ fn distinct_seeds_decorrelate() {
     const SEED_B: u64 = 0xA11C_E005;
     const ANGLE_LSB: f64 = 8192.0;
 
-    let mut a =
-        As5048Model::new("as5048_seed_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_A);
-    let mut b =
-        As5048Model::new("as5048_seed_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_B);
+    let (mut a, ha) =
+        rig(As5048Model::new("as5048_seed_a", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_A));
+    let (mut b, hb) =
+        rig(As5048Model::new("as5048_seed_b", std::f32::consts::PI).with_noise(SIGMA_LSB, SEED_B));
 
-    let (ta, tb) = (poll_ticks(&mut a, POLLS), poll_ticks(&mut b, POLLS));
+    let (ta, tb) = (poll_ticks(&mut a, ha, POLLS), poll_ticks(&mut b, hb, POLLS));
     assert_ne!(ta, tb, "distinct seeds produce distinct streams");
 
     let r = pearson(&residuals(&ta, ANGLE_LSB), &residuals(&tb, ANGLE_LSB));
@@ -172,8 +184,8 @@ fn wraparound_at_zero() {
     const LOW_MAX: u16 = 100;
     const HIGH_MIN: u16 = 16_284;
 
-    let mut model = As5048Model::new("as5048_wrap", 0.0).with_noise(SIGMA_LSB, SEED);
-    let ticks = poll_ticks(&mut model, POLLS);
+    let (mut sim, h) = rig(As5048Model::new("as5048_wrap", 0.0).with_noise(SIGMA_LSB, SEED));
+    let ticks = poll_ticks(&mut sim, h, POLLS);
 
     let mid: Vec<u16> = ticks
         .iter()

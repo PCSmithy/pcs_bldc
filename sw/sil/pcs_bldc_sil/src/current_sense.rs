@@ -8,7 +8,7 @@
 //! the amplifier rails, so fault-level currents saturate at full scale and negative
 //! bus current (regen) reads 0 V, matching the board's ground-referenced INA180.
 
-use voyant::{vsig_id, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
+use voyant::{vsig_id, Cadence, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
 
 const N_PHASES: usize = 3;
 
@@ -86,6 +86,11 @@ impl CurrentSenseModel {
 impl Member for CurrentSenseModel {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// A pure transform: re-evaluate only when a routed current actually changed.
+    fn cadence(&self) -> Cadence {
+        Cadence::OnInputChange
     }
 
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {

@@ -754,6 +754,20 @@ impl StateTable {
         self.record_inner(idx, value, true)
     }
 
+    /// [`record_at`](Self::record_at), reporting whether the value actually
+    /// **changed** (post-epsilon; a first sample counts). Route propagation turns
+    /// this into the engine's per-member input-dirty bit — an unchanged redelivery
+    /// is not an input event.
+    pub(crate) fn record_at_changed(&mut self, idx: usize, value: Value) -> Result<bool, TableError> {
+        self.dirty.insert(idx);
+        if let Some(cur) = &self.current[idx] {
+            if cur.approx_eq(&value, self.epsilon[idx]) {
+                return Ok(false);
+            }
+        }
+        self.append(idx, value).map(|()| true)
+    }
+
     /// Resolve a registered signal to its [`SigHandle`] (`None`: unregistered).
     pub fn handle(&self, id: &SignalId) -> Option<SigHandle> {
         self.resolve_index(id).map(SigHandle)

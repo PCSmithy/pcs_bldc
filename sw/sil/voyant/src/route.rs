@@ -247,19 +247,35 @@ impl RouteTable {
     /// this runs before any member advances), then record all destinations. Both
     /// endpoints must be registered; a never-recorded source is skipped.
     pub fn propagate_delayed(&self, st: &mut StateTable) -> Result<(), RouteError> {
-        let mut pending: Vec<(usize, Value)> = Vec::new();
-        for route in self.routes.iter().filter(|r| r.enabled && (r.latency > 0)) {
+        self.propagate_delayed_observed(st, &mut |_| {})
+    }
+
+    /// [`propagate_delayed`](Self::propagate_delayed), calling `on_change` with each
+    /// destination whose value actually changed (post-epsilon) — the engine's
+    /// input-dirty feed.
+    pub fn propagate_delayed_observed(
+        &self,
+        st: &mut StateTable,
+        on_change: &mut dyn FnMut(&SignalId),
+    ) -> Result<(), RouteError> {
+        let mut pending: Vec<(usize, usize, Value)> = Vec::new();
+        for (ri, route) in self.routes.iter().enumerate() {
+            if !(route.enabled && (route.latency > 0)) {
+                continue;
+            }
             let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
             let didx = resolve_endpoint(&route.dst_idx, st, &route.dst)?; // destination registered?
             if let Some(v) = st.current_value_at(sidx) {
-                pending.push((didx, v));
+                pending.push((ri, didx, v));
             }
         }
-        for (didx, value) in pending {
+        for (ri, didx, value) in pending {
             // A record that mismatches the destination column's established type is a
             // wiring bug (a route delivering the wrong Value type); it bubbles through
             // RouteError::Table so the step fails loud instead of corrupting the column.
-            st.record_at(didx, value)?;
+            if st.record_at_changed(didx, value)? {
+                on_change(&self.routes[ri].dst);
+            }
         }
         Ok(())
     }
@@ -275,6 +291,18 @@ impl RouteTable {
         st: &mut StateTable,
         order: &[usize],
     ) -> Result<(), RouteError> {
+        self.propagate_zero_latency_observed(st, order, &mut |_| {})
+    }
+
+    /// [`propagate_zero_latency`](Self::propagate_zero_latency), calling `on_change`
+    /// with each destination whose value actually changed (post-epsilon) — the
+    /// engine's input-dirty feed.
+    pub fn propagate_zero_latency_observed(
+        &self,
+        st: &mut StateTable,
+        order: &[usize],
+        on_change: &mut dyn FnMut(&SignalId),
+    ) -> Result<(), RouteError> {
         for &ri in order {
             let route = &self.routes[ri];
             let sidx = resolve_endpoint(&route.src_idx, st, &route.src)?; // source registered?
@@ -282,7 +310,9 @@ impl RouteTable {
             if let Some(v) = st.current_value_at(sidx) {
                 // A mismatched destination type is a wiring bug — fail the step loud
                 // (RouteError::Table) rather than corrupt the destination column.
-                st.record_at(didx, v)?;
+                if st.record_at_changed(didx, v)? {
+                    on_change(&route.dst);
+                }
             }
         }
         Ok(())
