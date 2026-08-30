@@ -848,9 +848,24 @@ impl StateTable {
         }
     }
 
+    /// Remove and return the dirty **indices** `keep` selects, sorted (a
+    /// deterministic flush order); unselected dirt stays for its own consumer.
+    /// The index twin of [`take_dirty`](Self::take_dirty) — the per-step flush
+    /// lane, with no id clones or string compares on the scan.
+    pub fn take_dirty_indices(&mut self, keep: impl Fn(usize) -> bool) -> Vec<usize> {
+        let mut mine: Vec<usize> = self.dirty.iter().copied().filter(|&i| keep(i)).collect();
+        for i in &mine {
+            self.dirty.remove(i);
+        }
+        mine.sort_unstable();
+        mine
+    }
+
     /// Remove and return the dirty ids whose `<source>` segment equals `source`
     /// (a member drains its **own** namespace; other members' dirt is left in
     /// place for their own drain). Deterministic order (sorted by id string).
+    /// The string-keyed convenience twin of
+    /// [`take_dirty_indices`](Self::take_dirty_indices) — scenario/cold paths.
     pub fn take_dirty(&mut self, source: &str) -> Vec<SignalId> {
         // Dirty indices belonging to `source`, removed then materialized as ids
         // (deterministic, sorted). The dirty set is small, so this stays cheap.

@@ -400,3 +400,35 @@ port-cache fill gated on its input-dirty bit. Same board-world row:
   fill hot (currents change every step); idle worlds pay ~only motor + tick.
 - Next lever: the engine-side next-event queue (skip empty grid steps
   outright) — `sim-interrupts.md` §5; cadence made "next event" well-defined.
+
+## 18. Stage-7 perf pass, phase 2c: hot-path string purge (2026-08-30)
+
+A scratch phase split of the firmware member's advance (per-step ns,
+board world) named the real remainder: `in_sync_cvars` ≈ **1100** dominated —
+dispatch ≈ 450, out-sync ≈ 400, `advance_time` ≈ 260, gated port fill ≈ 120,
+duplex ≈ 30. `take_dirty` walked the table's whole dirty set every step doing
+a **string** source-compare per entry, then cloned and string-sorted the
+matches — and the set accumulates every ever-commanded signal (route
+re-marks, the 4 `:tx`/`:rx` event records, scenario writes), so the cost
+grew over a run. Two owner-directed fixes (no string-keying on any hot path):
+
+| change                                     | µs/step | ×realtime |
+|--------------------------------------------|--------:|----------:|
+| phase 2b exit (§17)                        |     5.7 |      8.8× |
+| duplex `:tx`/`:rx` interned                |    ~5.6 |     ~9.0× |
+| index-keyed cvar flush drain               |     4.8 |     10.4× |
+
+- **Duplex interning**: `drain()` hands back `DuplexHandle`s; the engine
+  resolves each endpoint's `(tx, rx)` dense indices once (pre-seeded at
+  `link_duplex`, lazy for firmware-declared endpoints) and force-records by
+  index. Small alone (~0.1–0.2 µs) but removes the per-transaction parse +
+  hash + String clone.
+- **Flush drain**: the firmware member interns `table idx → DWARF path` for
+  its cvar leaves at `build_shadow`; `StateTable::take_dirty_indices` filters
+  the dirty set by integer membership — no id clones, no string compares, no
+  string sort. `take_dirty` (string-keyed) stays as the scenario/cold twin.
+- **The ≥10× realtime bar is met on the fine-grid board world.** Residuals
+  exactly 13.6 / 16.8 mA; suites green both profiles. Remaining shares are
+  ~real work: motor ODE ~2.4 (5 µs sub-step, owner constant — §16 measured
+  identical at 10 µs if ever wanted), fw ~1.9 (mostly genuine ISR execution
+  + timebase), engine residual < 0.5.

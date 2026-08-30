@@ -1162,6 +1162,10 @@ pub struct FirmwareMember {
     /// Leaves read via the **string path** (a backend that yields no fast-read
     /// handles, e.g. a test mock) — swept one-by-one, outside the shadow machinery.
     path_leaves: Vec<PathLeaf>,
+    /// Table index → DWARF path for every registered cvar leaf — the flush lane's
+    /// membership test + write path, so the per-step dirty drain never touches an
+    /// id string ([`in_sync_cvars`](Self::in_sync_cvars)).
+    flush_paths: HashMap<usize, String>,
     /// Whether [`cvar_leaves`](Self::cvar_leaves) has been enumerated (guards the
     /// one-time enumeration across re-enables — re-enable only re-registers).
     leaves_cached: bool,
@@ -1309,6 +1313,7 @@ impl FirmwareMember {
             sweep_gen: 0,
             shadow_cold: true,
             path_leaves: Vec::new(),
+            flush_paths: HashMap::new(),
             leaves_cached: false,
             array_threshold: DEFAULT_ARRAY_THRESHOLD,
             excludes: Vec::new(),
@@ -1550,31 +1555,17 @@ impl FirmwareMember {
         }
     }
 
-    /// Cvar in-sync (flush): write the **fresh** `cvar`s in this member's namespace
-    /// into firmware memory — command-dirtied ([`take_dirty`](StateTable::take_dirty)).
+    /// Cvar in-sync (flush): write the **fresh** `cvar`s among this member's leaves
+    /// into firmware memory — command-dirtied, drained by table index against the
+    /// interned [`flush_paths`](Self::flush_paths) map
+    /// ([`StateTable::take_dirty_indices`] — no id strings on the per-step scan).
     /// The production path a route takes to reach memory. Single-threaded ⇒ flushing
-    /// fresh ≡ flushing all, done sparsely; an `Err` is a wiring bug, logged.
+    /// fresh ≡ flushing all, done sparsely.
     fn in_sync_cvars(&mut self, st: &mut StateTable) {
-        // Fresh (command-dirtied) cvars in my namespace.
-        let flush: Vec<SignalId> = st
-            .take_dirty(&self.name)
-            .into_iter()
-            .filter(|id| id.sig_type() == "cvar")
-            .collect();
-        for id in flush {
-            // The flush set is sparse (command-dirtied), so resolving each id's index
-            // here is cheap; `current_value_at` then avoids re-hashing.
-            match st.resolve_index(&id) {
-                Some(idx) => {
-                    if let Some(v) = st.current_value_at(idx) {
-                        self.backend.write_cvar(id.name(), &v);
-                    }
-                }
-                None => st.log(
-                    LogLevel::Warning,
-                    &self.name,
-                    format!("cvar flush {id} failed: unknown signal"),
-                ),
+        let leaves = &self.flush_paths;
+        for idx in st.take_dirty_indices(|i| leaves.contains_key(&i)) {
+            if let Some(v) = st.current_value_at(idx) {
+                self.backend.write_cvar(&self.flush_paths[&idx], &v);
             }
         }
     }
@@ -1999,6 +1990,7 @@ impl FirmwareMember {
         self.scratch.clear();
         self.visit_stamp.clear();
         self.path_leaves.clear();
+        self.flush_paths.clear();
         self.ports.clear();
         self.duplex.clear();
         self.port_cursor = 0;
@@ -2023,8 +2015,11 @@ impl FirmwareMember {
         let backend = Rc::clone(&self.backend);
         let mut resolved: Vec<SweptLeaf> = Vec::new();
         let mut path: Vec<PathLeaf> = Vec::new();
+        let mut flush_paths = std::mem::take(&mut self.flush_paths);
+        flush_paths.clear();
         for (id, read) in &self.cvar_leaves {
             let table_idx = st.resolve_index(id).expect("leaf just registered");
+            flush_paths.insert(table_idx, id.name().to_string());
             match read {
                 CvarRead::Resolved(h) => {
                     let (addr, size) = backend.cvar_layout(*h);
@@ -2049,6 +2044,7 @@ impl FirmwareMember {
         self.resolved = resolved;
         self.ranges = ranges;
         self.path_leaves = path;
+        self.flush_paths = flush_paths;
         self.shadow_cold = true;
     }
 }
