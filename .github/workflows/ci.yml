@@ -45,6 +45,20 @@ jobs:
           C:/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
           echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
 
+      # The firmware build generates its protocol bindings with the project
+      # venv's nanopb generator (sw/fw/src/lib/protobuf gates the configure
+      # on .venv existing). CI creates a lean venv with just nanopb —
+      # requirements.txt's other packages serve tooling the build never runs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create the project venv (nanopb generator)
+        run: |
+          python -m venv .venv
+          if [ -f .venv/Scripts/pip.exe ]; then VPIP=.venv/Scripts/pip.exe; else VPIP=.venv/bin/pip; fi
+          "$VPIP" install nanopb
+
       # --- board firmware (.elf/.bin/.hex) --------------------------------
       - name: Build firmware (embedded ARM)
         run: bash tools/build_arm.sh
