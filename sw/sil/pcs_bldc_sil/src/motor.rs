@@ -18,7 +18,7 @@ use std::f64::consts::{PI, TAU};
 
 use voyant::{vsig_id, Member, MemberCtx, SignalId, StateTable, Value};
 
-pub const MOTOR_INTEGRATOR_STEP_PERIOD_US: u16 = 1;
+pub const MOTOR_INTEGRATOR_STEP_PERIOD_US: u16 = 5;
 
 const DIODE_ENGAGE_MARGIN_V: f64 = 0.005;
 
