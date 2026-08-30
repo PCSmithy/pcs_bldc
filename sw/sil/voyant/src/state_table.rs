@@ -800,6 +800,12 @@ impl StateTable {
     /// (marks the signal dirty).
     pub fn force_record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
+        self.force_record_at(idx, value)
+    }
+
+    /// **Index-keyed force record** — the duplex transaction-drain hot path (event
+    /// entries are never deduped).
+    pub(crate) fn force_record_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         self.dirty.insert(idx);
         self.append(idx, value)
     }
