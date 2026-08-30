@@ -1940,6 +1940,21 @@ def run(page):
             page.wait_for_timeout(500)
         return None
 
+    def require_target(path, label):
+        # check() + never-None: exhausting the retry sweep fails the probe
+        # check but returns a harmless fallback (a workspace-center click
+        # that points no trace), so dependent checks fail on their own
+        # terms instead of a NoneType subscript aborting the whole suite.
+        tgt = find_target(path)
+        check(label, tgt is not None, tgt)
+        if tgt is None:
+            ws = page.evaluate(
+                "() => { const r = document.querySelector('.workspace').getBoundingClientRect();"
+                " return [r.x + r.width / 2, r.y + r.height / 2]; }"
+            )
+            return {"at": tuple(ws), "clickTick": -(10**9)}
+        return tgt
+
     def ctrl_click(at):
         page.keyboard.down("Control")
         page.mouse.click(*at)
@@ -1956,8 +1971,7 @@ def run(page):
 
     # ── [test->app~views_017~1] Ctrl+click drops the anchor at the pointed
     #    signal's nearest sample; both lines appear ──
-    tgt_a = find_target(VEL_M)
-    check("views_017 probe found a pointable spot on the anchor signal", tgt_a is not None, tgt_a)
+    tgt_a = require_target(VEL_M, "views_017 probe found a pointable spot on the anchor signal")
     ctrl_click(tgt_a["at"])
     a0 = cwidget_eval(anchor_state)
     check(
@@ -1973,12 +1987,15 @@ def run(page):
 
     # ── [test->app~views_017~1] a second ctrl+click replaces the anchor ──
     tgt_b = None
+    a0_tick = a0["tick"] if a0 else 0
     for frac in (0.2, 0.8, 0.3, 0.7, 0.6, 0.4):
         cand = probe_target(VEL_M, frac)
-        if cand and abs(cand["clickTick"] - a0["tick"]) >= 500:
+        if cand and abs(cand["clickTick"] - a0_tick) >= 500:
             tgt_b = cand
             break
     check("views_017 probe found a second distinct spot", tgt_b is not None, tgt_b)
+    if tgt_b is None:
+        tgt_b = tgt_a  # same-spot fallback: dependent checks fail honestly
     ctrl_click(tgt_b["at"])
     a1 = cwidget_eval(anchor_state)
     check(
@@ -2021,8 +2038,7 @@ def run(page):
     check("views_017 the anchor's signal leaving the widget releases it", released)
 
     # ── [test->app~views_017~1] resume releases ──
-    tgt_a = find_target(VEL_M)
-    check("views_017 probe (post re-add)", tgt_a is not None, tgt_a)
+    tgt_a = require_target(VEL_M, "views_017 probe (post re-add)")
     ctrl_click(tgt_a["at"])
     check("views_017 re-drop for the resume check", cwidget_eval("(w) => !!w.anchor"))
     page.evaluate("() => __cockpit.timeline.resume()")
@@ -2031,8 +2047,7 @@ def run(page):
     # ── [test->app~views_017~1] independence: a second widget anchors its
     #    own sample; each widget's lines mark itself alone ──
     page.evaluate("() => __cockpit.timeline.pause()")
-    tgt_a = find_target(VEL_M)
-    check("views_017 probe (fresh pause)", tgt_a is not None, tgt_a)
+    tgt_a = require_target(VEL_M, "views_017 probe (fresh pause)")
     ctrl_click(tgt_a["at"])
     check(
         "views_017 re-drop for the delta checks",
@@ -2114,8 +2129,7 @@ def run(page):
 
     # ── [test->app~views_018~1] value delta on a same-axis numeric pointed
     #    trace, with the anchor's arithmetic ──
-    tgt_s = find_target(VEL_S)
-    check("views_018 probe found a spot on the same-axis signal", tgt_s is not None, tgt_s)
+    tgt_s = require_target(VEL_S, "views_018 probe found a spot on the same-axis signal")
     page.mouse.move(*tgt_s["at"])
     page.wait_for_function(
         f"""() => {{ let p = null; __cockpit.forEachWidget(w => {{ if (w.cfg.id === {cwid!r}) p = w.pointed; }});
@@ -2209,8 +2223,7 @@ def run(page):
     #    click strip at its projected position ──
     page.evaluate("() => __cockpit.timeline.resume()")
     page.evaluate("() => __cockpit.timeline.pause()")
-    tgt_h = find_target(VEL_M)
-    check("views_017 probe (hidden-line block)", tgt_h is not None, tgt_h)
+    tgt_h = require_target(VEL_M, "views_017 probe (hidden-line block)")
     ctrl_click(tgt_h["at"])
     check(
         "views_017 drop for the hidden-line block",
@@ -2257,8 +2270,7 @@ def run(page):
     # (b) a paused zoom past the anchor time projects the vertical line 5 px
     #     left of the canvas (hidden); a manual range keeps the horizontal
     #     mid-canvas and visible.
-    tgt_h = find_target(VEL_M)
-    check("views_017 probe (zoom-hide block)", tgt_h is not None, tgt_h)
+    tgt_h = require_target(VEL_M, "views_017 probe (zoom-hide block)")
     ctrl_click(tgt_h["at"])
     setb = cwidget_eval(
         """(w) => {
@@ -2301,8 +2313,7 @@ def run(page):
     page.evaluate("() => __cockpit.timeline.resume()")
     page.evaluate("() => __cockpit.timeline.pause()")
     cwidget_eval("(w) => w.setScaleMode('L', 'auto')")
-    tgt_h = find_target(VEL_M)
-    check("views_017 probe (both-hidden block)", tgt_h is not None, tgt_h)
+    tgt_h = require_target(VEL_M, "views_017 probe (both-hidden block)")
     ctrl_click(tgt_h["at"])
     setc = cwidget_eval(
         """(w) => {
@@ -2348,8 +2359,7 @@ def run(page):
     #    replaces (the set action wins over the release gesture) ──
     page.evaluate("() => __cockpit.timeline.pause()")
     cwidget_eval("(w) => w.setScaleMode('L', 'auto')")
-    tgt_h = find_target(VEL_M)
-    check("views_017 probe (precedence block)", tgt_h is not None, tgt_h)
+    tgt_h = require_target(VEL_M, "views_017 probe (precedence block)")
     ctrl_click(tgt_h["at"])
     old_tick = cwidget_eval("(w) => w.anchor && w.anchor.tick")
     near_line = cwidget_eval(
@@ -2781,8 +2791,7 @@ def run(page):
     # ── [test->app~views_019~1] Ctrl held with a pointed trace shows the
     #    candidate mark at the nearest sample's value (the key-only path:
     #    the pointer parked first, Ctrl pressed with the mouse still) ──
-    tgt = find_target(VEL_M)
-    check("views_019 probe found a pointable spot", tgt is not None, tgt)
+    tgt = require_target(VEL_M, "views_019 probe found a pointable spot")
     page.mouse.move(*tgt["at"])
     page.wait_for_timeout(80)
     page.keyboard.down("Control")
@@ -2820,6 +2829,8 @@ def run(page):
             tgt2 = c
             break
     check("views_019 second probe spot found", tgt2 is not None, tgt2)
+    if tgt2 is None:
+        tgt2 = tgt  # same-spot fallback: dependent checks fail honestly
     page.mouse.move(*tgt2["at"])
     page.wait_for_timeout(80)
     moved = cwidget_eval("(w) => w.preview && { path: w.preview.path, tick: w.preview.tick }")
@@ -2832,8 +2843,7 @@ def run(page):
     )
 
     # ── [test->app~views_019~1] the mark transfers with the pointed trace ──
-    tgt_s = find_target(VEL_S)
-    check("views_019 probe spot on the second signal found", tgt_s is not None, tgt_s)
+    tgt_s = require_target(VEL_S, "views_019 probe spot on the second signal found")
     page.mouse.move(*tgt_s["at"])
     page.wait_for_timeout(80)
     transferred = cwidget_eval("(w) => w.preview && w.preview.path")
