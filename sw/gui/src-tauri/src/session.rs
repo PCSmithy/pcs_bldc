@@ -97,12 +97,28 @@ pub struct SessionStatus {
     device_build_id: Option<String>,
 }
 
+/// macOS lists every serial device twice: a `/dev/tty.*` call-in node and
+/// its `/dev/cu.*` call-out twin. The app dials out, so a tty entry whose
+/// cu twin sits in the same listing is pure noise; a tty with no twin
+/// passes through. The `/dev/tty.` prefix (dot included) only occurs on
+/// macOS, so the rule is a no-op elsewhere and stays testable on any host.
+fn is_shadowed_tty_twin(name: &str, all: &[String]) -> bool {
+    match name.strip_prefix("/dev/tty.") {
+        Some(suffix) => all
+            .iter()
+            .any(|n| n.strip_prefix("/dev/cu.") == Some(suffix)),
+        None => false,
+    }
+}
+
 // [impl->app~conn_001~1]
 #[tauri::command]
 pub fn list_ports() -> Vec<PortInfo> {
-    serialport::available_ports()
-        .unwrap_or_default()
+    let ports = serialport::available_ports().unwrap_or_default();
+    let names: Vec<String> = ports.iter().map(|p| p.port_name.clone()).collect();
+    ports
         .into_iter()
+        .filter(|p| !is_shadowed_tty_twin(&p.port_name, &names))
         .map(|p| PortInfo {
             name: p.port_name,
             kind: match p.port_type {
@@ -276,6 +292,48 @@ pub fn get_status(state: State<SessionState>) -> SessionStatus {
             port: None,
             device_build_id: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_shadowed_tty_twin;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tty_twin_is_dropped_when_its_cu_sibling_is_listed() {
+        let all = names(&[
+            "/dev/cu.usbmodem1101",
+            "/dev/tty.usbmodem1101",
+            "/dev/cu.Bluetooth-Incoming-Port",
+            "/dev/tty.Bluetooth-Incoming-Port",
+        ]);
+        let kept: Vec<&String> = all
+            .iter()
+            .filter(|n| !is_shadowed_tty_twin(n, &all))
+            .collect();
+        assert_eq!(
+            kept,
+            [&all[0], &all[2]],
+            "only the cu.* call-out nodes survive"
+        );
+    }
+
+    #[test]
+    fn tty_without_a_twin_passes_through() {
+        let all = names(&["/dev/tty.orphanmodem", "/dev/cu.other"]);
+        assert!(!is_shadowed_tty_twin(&all[0], &all));
+    }
+
+    #[test]
+    fn non_mac_names_never_match() {
+        let all = names(&["COM8", "/dev/ttyUSB0", "/dev/ttyACM0"]);
+        for n in &all {
+            assert!(!is_shadowed_tty_twin(n, &all), "{n} must pass through");
+        }
     }
 }
 

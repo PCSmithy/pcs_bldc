@@ -19,6 +19,7 @@ import { cursor, setCursorTick, clearCursor } from "./cursor.js";
 import { currentWindow, displayWindow, zoomAt, panBy, selectRange } from "./timeline.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor, updateTitle } from "./titlebar.js";
+import { isAnchorModifier, ANCHOR_KEY } from "../platform.js";
 
 // Wheel-zoom feel (app~views_009 pins 1.0015 per wheel-delta unit): wheel-up
 // zooms in (~×0.86 per notch). A taste constant — invert the exponent's sign
@@ -52,14 +53,17 @@ export class PlotWidget {
     this.pointed = null;    // transient pointed-trace path (app~views_012)
     this.pointedRaf = null;
     this.anchor = null;     // comparison anchor { path, tick, value } (app~views_017)
-    this.preview = null;    // Ctrl-held anchor candidate { path, tick, value } (app~views_019)
+    this.preview = null;    // modifier-held anchor candidate { path, tick, value } (app~views_019)
     this._ptr = null;       // last pointer position over the canvas
-    this._ctrl = false;     // Ctrl state, tracked so a keypress with a still pointer previews too
+    this._ctrl = false;     // anchor-modifier state (Ctrl; Command on macOS), tracked so a
+    //                         keypress with a still pointer previews too
     this.render();
-    // Ctrl can change without a pointer event (press/release with the mouse
-    // still, or released outside the window entirely — blur).
+    // The modifier can change without a pointer event (press/release with
+    // the mouse still, or released outside the window entirely — blur; on
+    // macOS a Cmd-driven app switch never fires the keyup, so blur is the
+    // release path there).
     this._onKey = (ev) => {
-      if (ev.key !== "Control") return;
+      if (ev.key !== ANCHOR_KEY) return;
       this._ctrl = ev.type === "keydown";
       this.refreshPreview();
     };
@@ -136,7 +140,7 @@ export class PlotWidget {
       const tick = Math.round(this.tickAtPx(ev.clientX - rect.left, rect.width));
       setCursorTick(tick);
       this._ptr = { x: ev.clientX, y: ev.clientY };
-      this._ctrl = ev.ctrlKey;
+      this._ctrl = isAnchorModifier(ev);
       this.trackSelect(canvas, ev);
       this.trackPointed(ev.clientX, ev.clientY, canvas);
     });
@@ -146,6 +150,10 @@ export class PlotWidget {
       this.applyPointed(null);
       this.refreshPreview();
     });
+    // Plots own their pointer gestures: macOS synthesizes a secondary
+    // click from Ctrl+click and WKWebView pops its context menu over it —
+    // scoped here so the rest of the app keeps the default menu.
+    canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
     this.wireTimelineActions(canvas);
 
     wireTitleEditor(this);
@@ -179,11 +187,12 @@ export class PlotWidget {
 
     canvas.addEventListener("pointerdown", (ev) => {
       if (store.timeline.mode !== "paused" || ev.button !== 0) return;
-      this.click = { x0: ev.clientX, y0: ev.clientY, ctrl: ev.ctrlKey };
-      // Ctrl scopes the press to the comparison anchor (app~views_017): no
-      // range select can start, so a Ctrl+drag is inert and a Ctrl+click
-      // drops without ever fighting the views_009 gesture.
-      if (!ev.ctrlKey) this.sel = { x0: ev.clientX, active: false, el: null };
+      this.click = { x0: ev.clientX, y0: ev.clientY, ctrl: isAnchorModifier(ev) };
+      // The anchor modifier scopes the press to the comparison anchor
+      // (app~views_017): no range select can start, so a modifier+drag is
+      // inert and a modifier+click drops without ever fighting the
+      // views_009 gesture.
+      if (!isAnchorModifier(ev)) this.sel = { x0: ev.clientX, active: false, el: null };
       canvas.setPointerCapture?.(ev.pointerId);
     });
     const end = (ev) => {
@@ -200,8 +209,8 @@ export class PlotWidget {
         return;
       }
       // A press and release moving under 6 px is a click (the select gesture
-      // above claims larger movements): with Ctrl it drops the comparison
-      // anchor, bare it releases one when it lands near a line.
+      // above claims larger movements): with the anchor modifier it drops
+      // the comparison anchor, bare it releases one when it lands near a line.
       // [impl->app~views_017~1]
       if (!click) return;
       if (Math.hypot(ev.clientX - click.x0, ev.clientY - click.y0) >= 6) return;

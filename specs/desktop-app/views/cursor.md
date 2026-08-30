@@ -69,11 +69,17 @@ A plot widget shall hold at most one comparison anchor — a sample of
 one of its signals, marked on that widget alone by a vertical line
 at the anchor's time and a horizontal line at the anchor's value,
 placed against the anchor signal's axis (`app~views_007~1`) — set
-and released per:
+and released per the actions below, whose anchor modifier is the
+platform's:
+
+| Platform | Anchor modifier |
+|----------|-----------------|
+| Windows | Ctrl |
+| macOS | Command |
 
 | Action | Behavior |
 |--------|----------|
-| Ctrl + primary-button click, paused (`app~views_008~1`), with a pointed trace (`app~views_012~1`) | The pointed signal's sample nearest in time to the click, the earlier of two equidistant, becomes the anchor, replacing any prior one |
+| Anchor modifier + primary-button click, paused (`app~views_008~1`), with a pointed trace (`app~views_012~1`) | The pointed signal's sample nearest in time to the click, the earlier of two equidistant, becomes the anchor, replacing any prior one |
 | Primary-button press and release moving under 6 px, within 8 px of either anchor line | The anchor releases |
 | Resume (`app~views_009~1`) | The anchor releases |
 | The anchor's signal leaves the widget (`app~views_004~1`) | The anchor releases |
@@ -118,20 +124,20 @@ Needs: impl, test
 ### Anchor preview
 `app~views_019~1`
 
-While the timeline is paused (`app~views_008~1`) and Ctrl is held
-with a pointed trace (`app~views_012~1`), a plot widget shall show a
-candidate mark — a horizontal line at the value of the pointed
+While the timeline is paused (`app~views_008~1`) and the anchor
+modifier (`app~views_017~1`) is held with a pointed trace
+(`app~views_012~1`), a plot widget shall show a candidate mark — a horizontal line at the value of the pointed
 signal's sample nearest the pointer in time, the earlier of two
 equidistant — the mark following the pointer and the pointed trace,
 and shown only while that condition holds.
 
 Acceptance:
 
-- With Ctrl held over a paused plot, the candidate mark sits at the
-  nearest sample's value, moves with the pointer, and transfers with
-  the pointed-trace emphasis.
-- Releasing Ctrl removes the candidate mark and leaves the anchor
-  state (`app~views_017~1`) as it was.
+- With the anchor modifier held over a paused plot, the candidate
+  mark sits at the nearest sample's value, moves with the pointer,
+  and transfers with the pointed-trace emphasis.
+- Releasing the anchor modifier removes the candidate mark and
+  leaves the anchor state (`app~views_017~1`) as it was.
 
 Covers:
 - sys~arch_002~1

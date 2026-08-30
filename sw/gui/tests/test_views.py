@@ -1955,10 +1955,53 @@ def run(page):
             return {"at": tuple(ws), "clickTick": -(10**9)}
         return tgt
 
+    # The anchor gesture's modifier is platform-mapped (views_017's table:
+    # Ctrl; Command on macOS) — the suite must send whichever key the app
+    # expects on THIS host (the darwin CI leg runs Chromium on macOS, where
+    # the app listens for Meta). Zoom hotkeys stay literal Ctrl everywhere.
+    ANCHOR_MOD = page.evaluate("() => __cockpit.platform.ANCHOR_KEY")
+
+    # [test->app~views_017~1] the spec's platform-modifier table, pinned
+    # both ways regardless of the host the suite runs on.
+    mod_map = page.evaluate(
+        "() => [__cockpit.platform.anchorModifierKeyFor('macOS'),"
+        " __cockpit.platform.anchorModifierKeyFor('MacIntel'),"
+        " __cockpit.platform.anchorModifierKeyFor('Windows'),"
+        " __cockpit.platform.anchorModifierKeyFor('Win32'),"
+        " __cockpit.platform.anchorModifierKeyFor('')]"
+    )
+    check(
+        "views_017 anchor modifier maps Mac families to Meta, others to Control",
+        mod_map[0] == "Meta" and mod_map[1] == "Meta"
+        and mod_map[2] == "Control" and mod_map[3] == "Control"
+        and mod_map[4] == "Control" and ANCHOR_MOD in ("Meta", "Control"),
+        (mod_map, ANCHOR_MOD),
+    )
+
+    # Context-menu suppression is scoped to plot canvases (macOS synthesizes
+    # a secondary click from Ctrl+click; no menu may eat a plot gesture) —
+    # the rest of the app keeps the default menu.
+    cm = page.evaluate(
+        """() => {
+          const fire = (el) => {
+            const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+            el.dispatchEvent(ev);
+            return ev.defaultPrevented;
+          };
+          return { canvas: fire(document.querySelector('.plot-canvas')),
+                   elsewhere: fire(document.body) };
+        }"""
+    )
+    check(
+        "context menu suppressed over plot canvases only",
+        cm["canvas"] and not cm["elsewhere"],
+        cm,
+    )
+
     def ctrl_click(at):
-        page.keyboard.down("Control")
+        page.keyboard.down(ANCHOR_MOD)
         page.mouse.click(*at)
-        page.keyboard.up("Control")
+        page.keyboard.up(ANCHOR_MOD)
 
     anchor_state = (
         """(w) => w.anchor && {
@@ -2193,12 +2236,12 @@ def run(page):
         "(w) => { const r = w.el.querySelector('.plot-canvas').getBoundingClientRect();"
         " return { x: r.left, y: r.top, w: r.width, h: r.height }; }"
     )
-    page.keyboard.down("Control")
+    page.keyboard.down(ANCHOR_MOD)
     page.mouse.move(box["x"] + box["w"] * 0.3, box["y"] + box["h"] - 20)
     page.mouse.down()
     page.mouse.move(box["x"] + box["w"] * 0.6, box["y"] + box["h"] - 20, steps=4)
     page.mouse.up()
-    page.keyboard.up("Control")
+    page.keyboard.up(ANCHOR_MOD)
     win1 = page.evaluate("() => __cockpit.timeline.currentWindow()")
     tick_mid = cwidget_eval("(w) => w.anchor && w.anchor.tick")
     check(
@@ -2794,7 +2837,7 @@ def run(page):
     tgt = require_target(VEL_M, "views_019 probe found a pointable spot")
     page.mouse.move(*tgt["at"])
     page.wait_for_timeout(80)
-    page.keyboard.down("Control")
+    page.keyboard.down(ANCHOR_MOD)
     page.wait_for_timeout(80)
     p0 = cwidget_eval(
         """(w) => {
@@ -2849,9 +2892,9 @@ def run(page):
     transferred = cwidget_eval("(w) => w.preview && w.preview.path")
     check("views_019 the candidate transfers with the emphasis", transferred == VEL_S, transferred)
 
-    # ── [test->app~views_019~1] releasing Ctrl removes the mark and leaves
-    #    the anchor state as it was — in both directions ──
-    page.keyboard.up("Control")
+    # ── [test->app~views_019~1] releasing the anchor modifier removes the
+    #    mark and leaves the anchor state as it was — in both directions ──
+    page.keyboard.up(ANCHOR_MOD)
     page.wait_for_timeout(80)
     p1 = cwidget_eval(
         "(w) => ({ shown: !w.el.querySelector('.anchor-preview-y').hidden, anchor: w.anchor })"
@@ -2862,7 +2905,7 @@ def run(page):
         p1,
     )
     ctrl_click(tgt2["at"])  # drop a real anchor (views_017 path)
-    page.keyboard.down("Control")
+    page.keyboard.down(ANCHOR_MOD)
     page.mouse.move(*tgt["at"])
     page.wait_for_timeout(80)
     both = cwidget_eval(
@@ -2875,7 +2918,7 @@ def run(page):
         both["pv"] and both["ax"] and both["anchored"],
         both,
     )
-    page.keyboard.up("Control")
+    page.keyboard.up(ANCHOR_MOD)
     page.wait_for_timeout(80)
     kept = cwidget_eval(
         "(w) => ({ shown: !w.el.querySelector('.anchor-preview-y').hidden, anchored: !!w.anchor })"
@@ -2887,13 +2930,13 @@ def run(page):
     )
 
     # ── [test->app~views_019~1] resume clears the mark (the condition ends) ──
-    page.keyboard.down("Control")
+    page.keyboard.down(ANCHOR_MOD)
     page.mouse.move(*tgt["at"])
     page.wait_for_timeout(80)
     page.evaluate("() => __cockpit.timeline.resume()")
     page.wait_for_timeout(80)
     gone = cwidget_eval("(w) => !w.el.querySelector('.anchor-preview-y').hidden")
-    page.keyboard.up("Control")
+    page.keyboard.up(ANCHOR_MOD)
     check("views_019 resume clears the candidate mark", gone is False, gone)
 
     # ── [test->app~views_004~1] the widget launcher adds an empty plot and
