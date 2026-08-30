@@ -1929,10 +1929,15 @@ def run(page):
         )
 
     def find_target(path):
-        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
-            tgt = probe_target(path, frac)
-            if tgt:
-                return tgt
+        # Bounded retry: on a starved host the fraction sweep can run
+        # before the paused plot's geometry settles (run-5 CI returned
+        # None once); healthy hosts resolve on the first round.
+        for _ in range(10):
+            for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
+                tgt = probe_target(path, frac)
+                if tgt:
+                    return tgt
+            page.wait_for_timeout(500)
         return None
 
     def ctrl_click(at):
