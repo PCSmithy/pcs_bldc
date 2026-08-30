@@ -6,7 +6,9 @@ name: desktop app
 # green. Path-filtered so firmware-only pushes don't burn macOS minutes.
 on:
   push:
-    branches: [main]
+    # usb_serial_protocol is listed so the matrix proves itself pre-PR;
+    # workflow_dispatch can't target a branch until the file reaches main.
+    branches: [main, usb_serial_protocol]
     paths:
       - "sw/gui/**"
       - "sw/lib/rust/**"
