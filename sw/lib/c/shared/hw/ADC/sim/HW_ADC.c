@@ -64,7 +64,9 @@ static uint32_t HW_ADC_private_voltsToCounts(double volts,
 static bool HW_ADC_private_isInjectedTriggered(const HW_ADC_channelConfig_S * const channelConfig);
 static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral,
                                        HW_TIM_trgoCross_E cross, void * context);
-static void HW_ADC_private_completionDispatch(void);
+// External linkage (the HW_USB_sim_irqHandler pattern): SIL scenarios resolve
+// the completion ISR by name, which -O2 strips from a static.
+void HW_ADC_sim_completionDispatch(void);
 
 /* Private Data Definitions */
 
@@ -168,7 +170,7 @@ static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral,
 // firmware fiber during the same step's ISR phase. Drains every pending
 // conversion — one status write + callback per trigger event, so the
 // completion count matches the trigger cadence on any grid.
-static void HW_ADC_private_completionDispatch(void)
+void HW_ADC_sim_completionDispatch(void)
 {
     if (data->initialized)
     {
@@ -325,7 +327,7 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
                         if (HW_ADC_completionIrqHandle == SIL_IRQ_HANDLE_INVALID)
                         {
                             HW_ADC_completionIrqHandle = SIL_irq_registerPended(
-                                HW_ADC_private_completionDispatch,
+                                HW_ADC_sim_completionDispatch,
                                 HW_ADC_IRQ_PRIORITY);
                         }
                     }
