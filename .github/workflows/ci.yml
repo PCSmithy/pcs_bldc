@@ -57,7 +57,9 @@ jobs:
         run: |
           python -m venv .venv
           if [ -f .venv/Scripts/pip.exe ]; then VPIP=.venv/Scripts/pip.exe; else VPIP=.venv/bin/pip; fi
-          "$VPIP" install nanopb
+          # grpcio-tools bundles the protoc the nanopb generator invokes;
+          # without it the generator wants a system protoc the runners lack.
+          "$VPIP" install nanopb grpcio-tools
 
       # --- board firmware (.elf/.bin/.hex) --------------------------------
       - name: Build firmware (embedded ARM)
