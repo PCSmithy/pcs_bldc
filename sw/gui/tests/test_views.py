@@ -2477,34 +2477,45 @@ def run(page):
         """async () => {
           const ends = [];
           const t0 = performance.now();
+          let newest0 = 0;
+          for (const h of __cockpit.histories.values()) {
+            const t = h.newestTick(); if (t != null && t > newest0) newest0 = t;
+          }
           for (let i = 0; i < 15; i++) {
             ends.push(__cockpit.timeline.displayWindow()[1]);
             await new Promise((r) => setTimeout(r, 100));
           }
           let mono = true;
           for (let i = 1; i < ends.length; i++) if (ends[i] < ends[i - 1]) mono = false;
-          return { mono, advance: ends[ends.length - 1] - ends[0], wall: performance.now() - t0 };
+          let newest1 = 0;
+          for (const h of __cockpit.histories.values()) {
+            const t = h.newestTick(); if (t != null && t > newest1) newest1 = t;
+          }
+          return { mono, advance: ends[ends.length - 1] - ends[0],
+                   wall: performance.now() - t0, dataAdv: newest1 - newest0 };
         }"""
     )
-    # The advance band assumes the 15x100 ms loop ran near-nominal; on a
-    # starved host the timers land late (measured `wall` blows out) and
-    # the lead clamp legitimately freezes stretches — the band means
-    # nothing there. Monotonicity is load-independent honesty and is
-    # asserted in EVERY condition. Gate at the band's own upper edge: for
-    # wall <= 2600 the band holds whenever the clock is honest (advance <=
-    # wall + lead, and an overrun wall with zero clamp-freeze — the only
-    # way past the edge — cannot happen on the same host that ran late).
-    if walk["wall"] <= 2600:
+    # The display clock may only track DELIVERED data plus the lead clamp:
+    # on a starved host the devmock's own batch emitter gaps (run-4 CI:
+    # advance 750 over 2360 ms wall — the clamp honestly froze through the
+    # gaps), so the advance floor is bounded by the data's advance, never
+    # by wall time. Monotonicity is load-independent honesty and is
+    # asserted in EVERY condition. With healthy data flow (dataAdv >= 900)
+    # the display must track it (>= 75% covers clamp-freeze tails); with a
+    # starved emitter the floor is unmeasurable — skip with the numbers.
+    # The upper bound stays: advance can never exceed wall + lead.
+    upper_ok = walk["advance"] <= walk["wall"] + 200
+    if walk["dataAdv"] >= 900:
         check(
             "smooth scroll: display window end is monotonic and tracks wall time",
-            walk["mono"] and 900 <= walk["advance"] <= 2600,
+            walk["mono"] and walk["advance"] >= min(900, walk["dataAdv"] * 0.75) and upper_ok,
             walk,
         )
     else:
-        print(f"  [skip] smooth-scroll advance band: loop took {walk['wall']:.0f} ms on a loaded host — {walk}")
+        print(f"  [skip] smooth-scroll advance floor: emitter starved (dataAdv={walk['dataAdv']}) — {walk}")
         check(
             "smooth scroll: display window end is monotonic and tracks wall time",
-            walk["mono"],
+            walk["mono"] and upper_ok,
             walk,
         )
 
