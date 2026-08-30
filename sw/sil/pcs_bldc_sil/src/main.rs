@@ -49,6 +49,7 @@ fn main() -> ExitCode {
 
     report_performance(&fw);
     report_fine_grid();
+    report_board_world();
 
     fw.shutdown();
     ExitCode::SUCCESS
@@ -273,6 +274,52 @@ fn report_fine_grid() {
         "         gate saves                         {:>7.2}   (no gate - gated)",
         ungated - gated
     );
+}
+
+/// Board-world member isolation on the control-rate grid: the full step cost,
+/// then the same world re-timed with one member disabled at a time — each row's
+/// delta approximates that member's per-step share (routes, table, and mirror
+/// stay live throughout; interactions are ignored). Measured bridge-dark after
+/// gate bring-up; a spinning world adds commutation work on kernel-tick steps.
+fn report_board_world() {
+    use pcs_bldc_sil::board::{board_with, DIAL, ENCODER, GATE_BRINGUP_MS, MOTOR, SENSE};
+    const WARMUP: u64 = 2_000;
+    const N: u64 = 20_000;
+
+    let time_without = |disabled: Option<&str>| -> f64 {
+        let pcs_bldc_sil::Board { mut sim, .. } =
+            board_with(Sil::options().grid_us(FINE_GRID_US), 0.8);
+        sim.run_for_ms(GATE_BRINGUP_MS);
+        if let Some(name) = disabled {
+            assert!(sim.set_member_enabled(name, false), "member {name} exists");
+        }
+        time_avg_us(WARMUP, N, || {
+            sim.step().expect("engine step");
+        })
+    };
+
+    let full = time_without(None);
+    let xrt = |us: f64| (FINE_GRID_US as f64) / us;
+    println!("\n-- board-world report (informational) --");
+    println!("         sim grid = {FINE_GRID_US} µs, bridge dark, avg over {N} steps");
+    println!("         phase                              µs/step   ×realtime");
+    println!(
+        "         full board world                   {full:>7.2}   {:>6.1}×",
+        xrt(full)
+    );
+    for (name, label) in [
+        (MOTOR, "motor model         "),
+        (SENSE, "current-sense model "),
+        (ENCODER, "commutation encoder "),
+        (DIAL, "dial encoder        "),
+        (SOURCE, "firmware member     "),
+    ] {
+        let without = time_without(Some(name));
+        println!(
+            "           of which {label}     {:>7.2}   (full - world without it)",
+            full - without
+        );
+    }
 }
 
 /// Build a fine-grid world of the same shape as the coarse full-step row (a model
