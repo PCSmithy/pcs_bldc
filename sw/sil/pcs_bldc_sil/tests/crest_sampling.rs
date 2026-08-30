@@ -14,7 +14,7 @@ use pcs_bldc_sil::{cid, vid, Board, CurrentSenseParams, MotorParams, Sil};
 const GRID_US: u64 = 50;
 
 /// The sim ADC's completion interrupt, resolved by name off the image's DWARF.
-const COMPLETION_ISR: &str = "HW_ADC_private_completionDispatch";
+const COMPLETION_ISR: &str = "HW_ADC_sim_completionDispatch";
 
 /// One injected slot's raw counts, straight from firmware memory.
 fn injected_count(sim: &Sil, ch: usize) -> u64 {
