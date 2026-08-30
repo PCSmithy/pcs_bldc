@@ -2805,12 +2805,13 @@ mod tests {
         assert_eq!(small_len, 2);
         assert_eq!(&small, &[0x12, 0x34]);
 
-        // The router buffered both exchanges under the endpoint id, each with the
+        // The router buffered both exchanges under the endpoint handle, each with the
         // full peer frame (truncation is the firmware's own buffer concern).
         let drained = router.drain();
         assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0], (ep.to_string(), vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
-        assert_eq!(drained[1], (ep.to_string(), vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
+        assert_eq!(drained[0], (handle, vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
+        assert_eq!(drained[1], (handle, vec![0xFF, 0xFF], vec![0x12, 0x34, 0x56]));
+        assert_eq!(router.id_of(handle).as_deref(), Some(ep));
 
         // Guards: null rx, null out_len -> false.
         assert!(!unsafe {

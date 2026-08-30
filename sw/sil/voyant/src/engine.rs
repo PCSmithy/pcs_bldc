@@ -115,6 +115,11 @@ pub struct Engine {
     /// Member name (= signal `<source>` namespace) → `members` index, for the
     /// input-dirty mapping. The table stays dumb — the engine owns this.
     member_idx: HashMap<String, usize>,
+    /// Per-endpoint interned `(tx, rx)` dense table indices, keyed by
+    /// [`DuplexHandle`] index — resolved once, so the per-step transaction drain
+    /// never parses an id (`None` = not yet resolved; indices are append-only in
+    /// the engine's one table, so a `Some` never goes stale).
+    duplex_txrx: Vec<Option<(usize, usize)>>,
 }
 
 impl Engine {
@@ -134,6 +139,7 @@ impl Engine {
             zl_order: Vec::new(),
             inputs_dirty: Vec::new(),
             member_idx: HashMap::new(),
+            duplex_txrx: Vec::new(),
         }
     }
 
@@ -281,12 +287,62 @@ impl Engine {
         }
         let handle = self.duplex.declare(endpoint_id);
         self.duplex.link(endpoint_id, peer);
-        // Register the `:tx` / `:rx` event entries (idempotent with a firmware declare).
+        // Register the `:tx` / `:rx` event entries (idempotent with a firmware
+        // declare) and intern their dense indices while the ids are in hand.
         let (tx_id, rx_id) =
             tx_rx_ids(sid.sig_type(), sid.source(), sid.name()).map_err(|e| bad(&e.to_string()))?;
-        let _ = self.state.register(tx_id, None);
-        let _ = self.state.register(rx_id, None);
+        let _ = self.state.register(tx_id.clone(), None);
+        let _ = self.state.register(rx_id.clone(), None);
+        if let (Some(ti), Some(ri)) =
+            (self.state.resolve_index(&tx_id), self.state.resolve_index(&rx_id))
+        {
+            self.intern_txrx(handle, (ti, ri));
+        }
         Ok(handle)
+    }
+
+    /// Store an endpoint's interned `(tx, rx)` indices under its handle.
+    fn intern_txrx(&mut self, handle: DuplexHandle, txrx: (usize, usize)) {
+        let i = handle.idx();
+        if self.duplex_txrx.len() <= i {
+            self.duplex_txrx.resize(i + 1, None);
+        }
+        self.duplex_txrx[i] = Some(txrx);
+    }
+
+    /// An endpoint's `(tx, rx)` dense indices, resolving + interning on first sight
+    /// (a firmware-declared endpoint registers its entries at the member's first
+    /// in-sync, before any transaction can drain). `None` — with a logged Warning —
+    /// for an endpoint whose entries never registered.
+    fn resolve_txrx(&mut self, handle: DuplexHandle) -> Option<(usize, usize)> {
+        if let Some(&Some(p)) = self.duplex_txrx.get(handle.idx()) {
+            return Some(p);
+        }
+        let fail = |state: &mut StateTable, why: String| {
+            state.log(LogLevel::Warning, "duplex", why);
+            None
+        };
+        let Some(id) = self.duplex.id_of(handle) else {
+            return fail(&mut self.state, format!("duplex handle {handle:?} is unknown"));
+        };
+        let sid = match SignalId::parse(&id) {
+            Ok(s) => s,
+            Err(e) => {
+                return fail(&mut self.state, format!("duplex endpoint {id:?} is not a valid id: {e}"))
+            }
+        };
+        let (tx_id, rx_id) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name())
+            .expect("a valid bus id yields valid tx/rx ids");
+        match (self.state.resolve_index(&tx_id), self.state.resolve_index(&rx_id)) {
+            (Some(ti), Some(ri)) => {
+                self.intern_txrx(handle, (ti, ri));
+                Some((ti, ri))
+            }
+            _ => fail(
+                &mut self.state,
+                format!("duplex endpoint {id:?}: :tx/:rx entries never registered"),
+            ),
+        }
     }
 
     /// Advance the whole system one tick (the canonical order — see the module
@@ -405,30 +461,21 @@ impl Engine {
     }
 
     /// Drain the duplex router and force-record each `(endpoint, tx, rx)` exchange
-    /// into the endpoint's `:tx` / `:rx` event entries. Events are never deduped
-    /// (consecutive identical polls are distinct transactions).
+    /// into the endpoint's interned `:tx` / `:rx` event entries — no id parsing or
+    /// hashing per transaction. Events are never deduped (consecutive identical
+    /// polls are distinct transactions).
     fn record_duplex_transactions(&mut self) {
-        for (endpoint, tx, rx) in self.duplex.drain() {
-            let sid = match SignalId::parse(&endpoint) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.state.log(
-                        LogLevel::Warning,
-                        "duplex",
-                        format!("duplex endpoint {endpoint:?} is not a valid id: {e}"),
-                    );
-                    continue;
-                }
+        for (handle, tx, rx) in self.duplex.drain() {
+            let Some((ti, ri)) = self.resolve_txrx(handle) else {
+                continue; // resolve_txrx logged the wiring bug
             };
-            let (tx_id, rx_id) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name())
-                .expect("a valid bus id yields valid tx/rx ids");
-            if let Err(e) = self.state.force_record(&tx_id, Value::Bytes(tx)) {
+            if let Err(e) = self.state.force_record_at(ti, Value::Bytes(tx)) {
                 self.state
-                    .log(LogLevel::Warning, "duplex", format!("duplex tx record {tx_id} failed: {e}"));
+                    .log(LogLevel::Warning, "duplex", format!("duplex tx record failed: {e}"));
             }
-            if let Err(e) = self.state.force_record(&rx_id, Value::Bytes(rx)) {
+            if let Err(e) = self.state.force_record_at(ri, Value::Bytes(rx)) {
                 self.state
-                    .log(LogLevel::Warning, "duplex", format!("duplex rx record {rx_id} failed: {e}"));
+                    .log(LogLevel::Warning, "duplex", format!("duplex rx record failed: {e}"));
             }
         }
     }

@@ -53,6 +53,13 @@ pub trait DuplexPeer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DuplexHandle(usize);
 
+impl DuplexHandle {
+    /// The dense index (the engine's `:tx`/`:rx` intern cache is keyed by it).
+    pub(crate) fn idx(self) -> usize {
+        self.0
+    }
+}
+
 /// The shared endpoint registry coupling initiators to peers. Cloneable (an `Rc`
 /// handle over the shared inner): the [`Engine`](crate::engine::Engine) keeps one, and
 /// each firmware rendezvous holds a clone so its C upcall forwards here.
@@ -180,13 +187,17 @@ impl DuplexRouter {
         self.transfer(handle, tx, st)
     }
 
-    /// Drain the completed transactions as `(endpoint_id, tx, rx)`, in transfer order.
-    pub(crate) fn drain(&self) -> Vec<(String, Vec<u8>, Vec<u8>)> {
-        let mut inner = self.inner.borrow_mut();
-        let txns = std::mem::take(&mut inner.transactions);
-        txns.into_iter()
-            .map(|(h, tx, rx)| (inner.ids[h.0].clone(), tx, rx))
-            .collect()
+    /// Drain the completed transactions as `(handle, tx, rx)`, in transfer order —
+    /// handles, not id strings, so the engine's per-step record pass stays off the
+    /// string path (resolve via [`id_of`](Self::id_of) on the cold path only).
+    pub(crate) fn drain(&self) -> Vec<(DuplexHandle, Vec<u8>, Vec<u8>)> {
+        std::mem::take(&mut self.inner.borrow_mut().transactions)
+    }
+
+    /// A declared endpoint's id string (`None` for an unknown handle). Cold path:
+    /// the engine calls this once per endpoint to intern its `:tx`/`:rx` entries.
+    pub(crate) fn id_of(&self, handle: DuplexHandle) -> Option<String> {
+        self.inner.borrow().ids.get(handle.0).cloned()
     }
 
     /// Endpoint ids with a peer still waiting on a never-declared endpoint (a dangling
@@ -258,7 +269,8 @@ mod tests {
         assert_eq!(p.borrow().seen, vec![vec![0xFF, 0xFF]]); // peer saw the tx
 
         let drained = r.drain();
-        assert_eq!(drained, vec![("spi:enc:cs".to_string(), vec![0xFF, 0xFF], vec![0x90, 0x00])]);
+        assert_eq!(drained, vec![(h, vec![0xFF, 0xFF], vec![0x90, 0x00])]);
+        assert_eq!(r.id_of(h).as_deref(), Some("spi:enc:cs")); // cold-path resolution
         assert!(r.drain().is_empty()); // drained once
     }
 
