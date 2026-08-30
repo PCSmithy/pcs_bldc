@@ -13,9 +13,15 @@
 //! bit15 even parity, bit14 error flag, bits[13:0] angle (16384 counts/rev).
 //! The response to command N arrives in transfer N+1 (one-frame pipeline);
 //! the firmware polls READ-ANGLE `0xFFFF`, two pipelined transfers per tick.
+//!
+//! The model is [`Cadence::OnDemand`] — never scheduled; each transfer samples
+//! the commanded angle at the transaction instant, as the silicon does
+//! (`docs/sil/member-cadence.md`).
 
 use prng::Prng;
-use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
+use voyant::{
+    vsig_id, Cadence, DuplexPeer, Member, MemberCtx, SigHandle, SignalId, StateTable, Value,
+};
 
 const ANGLE_RESOLUTION_TICKS_PER_REV: u64 = 16384;
 const ANGLE_RESOLUTION_TICKS_PER_REV_F32: f32 = ANGLE_RESOLUTION_TICKS_PER_REV as f32;
@@ -94,21 +100,15 @@ impl As5048Model {
     fn raw_id(&self) -> SignalId {
         vsig_id(&self.name, "raw_encoder_ticks").expect("valid vsig id")
     }
-}
 
-impl Member for As5048Model {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
-        // Commanded input
+    /// Sample the commanded angle at the transaction instant: fold into [0, 2π),
+    /// quantize, publish the folded angle + noise-free `raw_encoder_ticks`.
+    fn sample(&mut self, ctx: &mut MemberCtx) {
         if let Some(angle_rad) = self.h_angle.and_then(|h| ctx.st.current_f64(h)) {
             self.current_angle_rad = angle_rad as f32;
-            self.current_angle_lsb = get_lsb(self.current_angle_rad);
         }
-
         self.current_angle_rad = self.current_angle_rad.rem_euclid(TWO_PI);
+        self.current_angle_lsb = get_lsb(self.current_angle_rad);
         self.current_angle_raw = (self.current_angle_rad * (ANGLE_RESOLUTION_TICKS_PER_REV as f32)
             / TWO_PI)
             .round() as u16;
@@ -120,6 +120,20 @@ impl Member for As5048Model {
                 .st
                 .record_by(h, Value::F64(f64::from(self.current_angle_rad)));
         }
+    }
+}
+
+impl Member for As5048Model {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn cadence(&self) -> Cadence {
+        Cadence::OnDemand
+    }
+
+    fn advance(&mut self, _dt_us: u64, _ctx: &mut MemberCtx) {
+        // OnDemand: never scheduled — the bus drives everything (transfer).
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
@@ -133,7 +147,9 @@ impl Member for As5048Model {
 }
 
 impl DuplexPeer for As5048Model {
-    fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
+    fn transfer(&mut self, tx: &[u8], ctx: &mut MemberCtx) -> Vec<u8> {
+        self.sample(ctx);
+
         // Emit the response armed by the PREVIOUS command (one-frame pipeline).
         let mut resp_frame: u16 = match self.spi_error {
             true => {

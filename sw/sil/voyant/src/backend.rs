@@ -543,9 +543,9 @@ unsafe extern "C" fn port_duplex_transfer(
     } else {
         std::slice::from_raw_parts(tx_ptr, tx_len).to_vec()
     };
-    let rx = match router.transfer(endpoint, &tx) {
+    let rx = match router.transfer_from_dispatch(endpoint, &tx) {
         Some(rx) => rx,
-        None => return false, // unlinked endpoint -> floating bus
+        None => return false, // unlinked endpoint (or no dispatch window) -> floating bus
     };
     let n = rx.len().min(rx_max);
     std::ptr::copy_nonoverlapping(rx.as_ptr(), rx_ptr, n);
@@ -1457,9 +1457,10 @@ impl FirmwareMember {
     /// Registration is idempotent on the table, so re-applying across a
     /// reboot/re-enable preserves the entry's history. A def with an invalid
     /// id or a conflicting unit is logged as a Warning and skipped.
-    fn apply_pending_ports(&mut self, st: &mut StateTable) {
+    fn apply_pending_ports(&mut self, st: &mut StateTable) -> bool {
         let defs = self.backend.port_defs_since(self.port_cursor);
         self.port_cursor += defs.len();
+        let fresh = !defs.is_empty();
         let name = self.name.clone();
         for def in defs {
             match def.kind {
@@ -1467,6 +1468,7 @@ impl FirmwareMember {
                 PortKind::Duplex => self.apply_duplex_endpoint(st, &name, &def),
             }
         }
+        fresh
     }
 
     /// Apply one scalar port: register `{sig_type}:{member}:{local}` and bind its
@@ -1533,9 +1535,15 @@ impl FirmwareMember {
     /// input cache from its entry's current table value (never driven / a
     /// non-numeric value → `None`, which the firmware's `readSignal` reports as
     /// false → the driver falls back). Registrations MUST apply before the cache
-    /// fill, so both live in this one half.
-    fn in_sync_ports(&mut self, st: &mut StateTable) {
-        self.apply_pending_ports(st);
+    /// fill, so both live in this one half. The fill gates on `inputs_dirty`
+    /// (or fresh registrations): when no route or write changed this member's
+    /// entries since the last fill, every cache already matches its entry.
+    fn in_sync_ports(&mut self, st: &mut StateTable, inputs_dirty: bool) {
+        let fresh_ports = self.apply_pending_ports(st);
+        // Quiet step, no new ports: every cache already holds its entry's value.
+        if !(inputs_dirty || fresh_ports) {
+            return;
+        }
         for port in &self.ports {
             let v = st.current_value_at(port.table_idx).as_ref().and_then(value_to_f64);
             self.backend.set_port_input(port.handle, v);
@@ -1751,7 +1759,10 @@ impl Binding {
     /// Run this binding's in-sync half (table → firmware), if any.
     fn in_sync(self, fm: &mut FirmwareMember, ctx: &mut MemberCtx) {
         match self {
-            Binding::Ports => fm.in_sync_ports(ctx.st),
+            Binding::Ports => {
+                let dirty = ctx.inputs_dirty;
+                fm.in_sync_ports(ctx.st, dirty);
+            }
             Binding::Cvars => fm.in_sync_cvars(ctx.st),
             Binding::Duplex => fm.in_sync_duplex(ctx),
         }
@@ -1792,7 +1803,7 @@ impl Member for FirmwareMember {
         if !self.irq.any_due(now) {
             return;
         }
-        self.dispatch_due_irqs(ctx.st);
+        self.dispatch_due_irqs(ctx);
         for binding in Binding::ALL {
             binding.out_sync(self, ctx);
         }
@@ -1843,12 +1854,19 @@ impl FirmwareMember {
     /// it woke) wrote reaches the table now. A handler that registers a one-shot
     /// mid-dispatch (a driver arming its transfer-complete interrupt) is drained
     /// straight after, so it schedules relative to THIS step's time.
-    fn dispatch_due_irqs(&mut self, st: &mut StateTable) {
-        let now = st.now_us();
+    fn dispatch_due_irqs(&mut self, ctx: &mut MemberCtx) {
+        let now = ctx.st.now_us();
         let backend = Rc::clone(&self.backend);
+        // A firmware SPI upcall crosses the C frame, which carries no Rust borrow:
+        // stash the table for the dispatch window so the router can build the
+        // peer's ctx ([`DuplexRouter::transfer_from_dispatch`]).
+        let st_ptr: *mut StateTable = ctx.st;
+        ctx.duplex.set_dispatch_table(st_ptr);
         self.irq_dispatches += self
             .irq
             .dispatch_due(now, |handler| backend.dispatch_isr(handler));
+        ctx.duplex.clear_dispatch_table();
+        let st = &mut *ctx.st;
         self.apply_pending_irq_ops(st, now);
 
         // The grid is meant to be at least as fine as the fastest interrupt;
@@ -2730,7 +2748,7 @@ mod tests {
     struct FixedPeer(Vec<u8>);
 
     impl DuplexPeer for FixedPeer {
-        fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+        fn transfer(&mut self, _tx: &[u8], _ctx: &mut MemberCtx) -> Vec<u8> {
             self.0.clone()
         }
     }
@@ -2751,6 +2769,10 @@ mod tests {
         let mut out = [0u8; 4];
         let mut out_len = 99usize;
 
+        // The dispatch-window stash a real member sets around `dispatch_isr`.
+        let mut st = StateTable::new();
+        router.set_dispatch_table(&mut st);
+
         // Declared but unlinked endpoint -> false (floating bus).
         assert!(!unsafe {
             port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
@@ -2760,8 +2782,14 @@ mod tests {
             port_duplex_transfer(ctx, 99, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
         });
 
-        // Link a peer returning three bytes; a full-width transfer copies all three.
+        // Link a peer returning three bytes. Outside a dispatch window (no stashed
+        // table) the bus floats -> false; re-stash and the exchange runs.
         router.link(ep, Rc::new(RefCell::new(FixedPeer(vec![0x12, 0x34, 0x56]))));
+        router.clear_dispatch_table();
+        assert!(!unsafe {
+            port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
+        });
+        router.set_dispatch_table(&mut st);
         assert!(unsafe {
             port_duplex_transfer(ctx, 0, tx.as_ptr(), tx.len(), out.as_mut_ptr(), out.len(), &mut out_len)
         });
