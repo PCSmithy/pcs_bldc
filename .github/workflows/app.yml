@@ -60,6 +60,13 @@ jobs:
       # bench-side gate, not CI.
       - name: Run the UI suite
         timeout-minutes: 20
+        # PCS_RENDER_BUDGET=off: runners rasterize with SwiftShader, far
+        # under the views_015 capability floor (first-run evidence: both
+        # legs failed only that check). The scenario still runs for error
+        # coverage and draw-advance; the spec's budget gates on the bench
+        # and the laptop, where a real GPU renders.
+        env:
+          PCS_RENDER_BUDGET: "off"
         run: python sw/gui/tests/test_views.py 2>&1 | tee ui-suite.log
 
       - name: Upload UI suite log
