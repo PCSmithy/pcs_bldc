@@ -5,8 +5,8 @@
 //! per period with it.
 
 use pcs_bldc_sil::board::{
-    board_with, fault_latched, gate_operational, port, ALIGN_DUTY, GATE_BRINGUP_MS,
-    GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW, INPUT_LEVEL_PB10, MOTOR, VBUS_V,
+    board_with, fault_latched, gate_operational, port, ALIGN_DUTY, ALIGN_DWELL_MS, DIAL,
+    GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW, INPUT_LEVEL_PB10, MOTOR, VBUS_V,
 };
 use pcs_bldc_sil::{cid, vid, Board, CurrentSenseParams, MotorParams, Sil};
 
@@ -120,4 +120,89 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
         sim.now_us() as f64 / 1e6,
         wall.elapsed().as_secs_f64()
     );
+}
+
+// [test->fw~hal_adc_003~1]
+// [test->fw~hal_adc_008~1]
+#[test]
+fn north_star_injected_matches_the_plant_every_period_while_spinning() {
+    let params = CurrentSenseParams::default();
+    let Board { mut sim, fw_member, .. } = board_with(Sil::options().grid_us(GRID_US), 0.8);
+
+    // Boot, arm, let the alignment dwell finish, then ramp the dial to half
+    // command and let the speed settle under closed-loop commutation.
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    tap_button(&mut sim);
+    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    assert!(
+        sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned")),
+        "alignment latched before the spin"
+    );
+    let mut deg = 0.0;
+    while deg < 90.0 {
+        deg += 10.0;
+        sim.write(&vid(DIAL, "angle[deg]"), deg).expect("turn the dial");
+        sim.run_for_ms(20);
+    }
+    sim.run_for_ms(300);
+    let velocity = plant(&sim, "velocity");
+    assert!(velocity.abs() > 2.0, "the shaft is spinning, got {velocity:.2} rad/s");
+    assert!(!fault_latched(&sim), "no fault through the spin-up");
+
+    // Measurement window: every PWM period for 40 ms (~several electrical
+    // cycles). Each step's injected slots are compared against the plant's
+    // winding currents at that step and at the previous one — the residual
+    // pins down where in the step the sample instant lives.
+    let completion = fw_member
+        .borrow()
+        .find_isr(COMPLETION_ISR)
+        .expect("completion interrupt registered");
+    let c0 = fw_member.borrow().isr_dispatch_count_of(completion);
+
+    // The routed sense chain carries one grid step of latency (plant step N
+    // reaches the pins at step N+1 — the sim's rendering of real sensor
+    // propagation), so each sample is compared against the previous step's
+    // plant state. Residual floor is the 12-bit quantization (~8 mA).
+    let steps = 800u64;
+    let mut prev = [
+        plant(&sim, "phase_current_u"),
+        plant(&sim, "phase_current_v"),
+        plant(&sim, "phase_current_w"),
+    ];
+    let (mut max_uv, mut max_w) = (0.0f64, 0.0f64);
+    for _ in 0..steps {
+        sim.step().expect("engine step");
+        for ch in 0..2usize {
+            max_uv = max_uv.max((injected_amps(&sim, ch, &params) - prev[ch]).abs());
+        }
+        // Two-shunt derivation: the third phase reconstructed from the two
+        // sampled ones, against the plant's own i_w.
+        let w = -(injected_amps(&sim, 0, &params) + injected_amps(&sim, 1, &params));
+        max_w = max_w.max((w - prev[2]).abs());
+        prev = [
+            plant(&sim, "phase_current_u"),
+            plant(&sim, "phase_current_v"),
+            plant(&sim, "phase_current_w"),
+        ];
+    }
+    let cadence = fw_member.borrow().isr_dispatch_count_of(completion) - c0;
+    eprintln!("residuals over {steps} periods: U/V {max_uv:.4} A, derived-W {max_w:.4} A");
+
+    assert_eq!(cadence, steps, "one completion per PWM period through commutation");
+    assert!(max_uv < 0.025, "injected tracks the plant per period ({max_uv:.4} A)");
+    assert!(max_w < 0.040, "derived W tracks the plant ({max_w:.4} A)");
+
+    // Coexistence: the regular 1 ms sequencer keeps running on the shared
+    // pins throughout — its per-pass status is still OK on both ADCs.
+    for ch in 0..2 {
+        let path = format!("HW_ADC_data.status[{ch}]");
+        let got = match sim.fw().read_cvar(&path) {
+            voyant::Value::Enum(name) => name,
+            other => panic!("{path} reads as an enum, got {other:?}"),
+        };
+        assert!(
+            got == "HW_ADC_CONVERSION_STATUS_OK" || got == "<2>",
+            "regular path healthy beside the injected stream: {path} = {got}"
+        );
+    }
 }
