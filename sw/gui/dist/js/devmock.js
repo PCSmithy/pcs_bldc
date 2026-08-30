@@ -211,6 +211,9 @@ function emitBatchRange(t0, t1) {
       }
     }
   }
+  // Test surface (like __devmockInstalls): lets the suite scale timing
+  // floors to the batches a loaded host ACTUALLY delivered.
+  window.__devmockBatches = (window.__devmockBatches || 0) + 1;
   emit("samples", { signals: sigs.filter((s) => s.points.length), dropped_ticks: dropped });
 }
 
