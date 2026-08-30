@@ -56,6 +56,8 @@ pub struct Board {
     pub sim: Sil,
     pub bridge: BridgeRoutes,
     pub sense: CurrentSenseRoutes,
+    /// The firmware member — ISR handles (`find_isr`), per-entry dispatch counts.
+    pub fw_member: std::rc::Rc<std::cell::RefCell<voyant::FirmwareMember>>,
 }
 
 /// Build the board world on the default grid — [`board_with`] with default options.
@@ -82,7 +84,7 @@ pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
     let mut fwm = sim.load_firmware(SOURCE);
     fwm.register_cvar_in_state_table(INPUT_LEVEL_PB10);
     fwm.register_cvar_in_state_table(I2C_STATUS_REG);
-    sim.add_member(fwm);
+    let fw_member = sim.add_member(fwm);
 
     // The plant's shaft angle is the encoder's input — no check ever writes it.
     sim.add_route(
@@ -105,7 +107,7 @@ pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
     sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH)
         .expect("button idle high");
 
-    Board { sim, bridge, sense }
+    Board { sim, bridge, sense, fw_member }
 }
 
 /// One firmware observation port (`vsig:pcs_bldc:<name>`) as an `f64`.
