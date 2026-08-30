@@ -50,5 +50,5 @@ pub use log::{LogEntry, LogLevel, LogRing};
 pub use member::{vsig_id, Member, MemberCtx, RampModel};
 pub use route::{RouteError, RouteTable};
 pub use signal::{ParseError, SignalId, Value};
-pub use state_table::{AccessError, StateTable, StateTableConfig, TableError};
+pub use state_table::{AccessError, SigHandle, StateTable, StateTableConfig, TableError};
 pub use unit::{UnitError, UnitRegistry};

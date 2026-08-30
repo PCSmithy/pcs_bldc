@@ -118,6 +118,13 @@ enum Column {
     Boxed(VecDeque<(u64, Value)>),
 }
 
+/// A resolved signal's dense index in one table — the model-side twin of the
+/// route table's cached indices. Resolve once where the signal is registered;
+/// the handle-keyed reads/writes skip the per-call id construction and hashing
+/// the string-keyed API pays on every access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SigHandle(usize);
+
 /// A zero-order-hold lookup outcome (see [`Column::zoh`]).
 enum Zoh {
     /// Nothing recorded yet.
@@ -745,6 +752,22 @@ impl StateTable {
     /// [`resolve_index`](Self::resolve_index)).
     pub(crate) fn record_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
         self.record_inner(idx, value, true)
+    }
+
+    /// Resolve a registered signal to its [`SigHandle`] (`None`: unregistered).
+    pub fn handle(&self, id: &SignalId) -> Option<SigHandle> {
+        self.resolve_index(id).map(SigHandle)
+    }
+
+    /// Current value by handle, decoded to `f64` (`None`: never recorded or
+    /// non-numeric).
+    pub fn current_f64(&self, h: SigHandle) -> Option<f64> {
+        self.current_value_at(h.0).and_then(|v| v.as_f64())
+    }
+
+    /// Command-record by handle — [`record`](Self::record)'s pre-resolved lane.
+    pub fn record_by(&mut self, h: SigHandle, value: Value) -> Result<(), TableError> {
+        self.record_at(h.0, value)
     }
 
     fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {

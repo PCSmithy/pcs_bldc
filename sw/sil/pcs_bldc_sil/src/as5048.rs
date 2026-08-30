@@ -15,7 +15,7 @@
 //! the firmware polls READ-ANGLE `0xFFFF`, two pipelined transfers per tick.
 
 use prng::Prng;
-use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SignalId, StateTable, Value};
+use voyant::{vsig_id, DuplexPeer, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
 
 const ANGLE_RESOLUTION_TICKS_PER_REV: u64 = 16384;
 const ANGLE_RESOLUTION_TICKS_PER_REV_F32: f32 = ANGLE_RESOLUTION_TICKS_PER_REV as f32;
@@ -47,6 +47,10 @@ pub fn decode_frame(frame: &[u8]) -> Option<(bool, bool, u16)> {
 pub struct As5048Model {
     name: String,
 
+    // Pre-resolved handles (resolve-once), filled at enable.
+    h_angle: Option<SigHandle>,
+    h_raw: Option<SigHandle>,
+
     current_angle_lsb: f32,
     current_angle_rad: f32,
     current_angle_raw: u16,
@@ -65,6 +69,8 @@ impl As5048Model {
     pub fn new(name: &str, current_angle_rad: f32) -> Self {
         Self {
             name: name.to_string(),
+            h_angle: None,
+            h_raw: None,
             current_angle_lsb: get_lsb(current_angle_rad),
             current_angle_rad,
             current_angle_raw: 0,
@@ -97,34 +103,31 @@ impl Member for As5048Model {
 
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         // Commanded input
-        if let Some(angle_rad) = ctx
-            .st
-            .current_value(&self.angle_id())
-            .ok()
-            .flatten()
-            .and_then(|v| v.as_f32())
-        {
-            self.current_angle_rad = angle_rad;
-            self.current_angle_lsb = get_lsb(angle_rad);
+        if let Some(angle_rad) = self.h_angle.and_then(|h| ctx.st.current_f64(h)) {
+            self.current_angle_rad = angle_rad as f32;
+            self.current_angle_lsb = get_lsb(self.current_angle_rad);
         }
 
         self.current_angle_rad = self.current_angle_rad.rem_euclid(TWO_PI);
         self.current_angle_raw = (self.current_angle_rad * (ANGLE_RESOLUTION_TICKS_PER_REV as f32)
             / TWO_PI)
             .round() as u16;
-        let _ = ctx
-            .st
-            .record(&self.raw_id(), Value::U32(self.current_angle_raw as u32));
-        let _ = ctx.st.record(
-            &self.angle_id(),
-            Value::F64(f64::from(self.current_angle_rad)),
-        );
+        if let Some(h) = self.h_raw {
+            let _ = ctx.st.record_by(h, Value::U32(self.current_angle_raw as u32));
+        }
+        if let Some(h) = self.h_angle {
+            let _ = ctx
+                .st
+                .record_by(h, Value::F64(f64::from(self.current_angle_rad)));
+        }
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
             let _ = st.register(self.angle_id(), Some("rad"));
             let _ = st.register(self.raw_id(), Some("counts"));
+            self.h_angle = st.handle(&self.angle_id());
+            self.h_raw = st.handle(&self.raw_id());
         }
     }
 }
