@@ -135,6 +135,9 @@ export function set(patch) {
   deriveGate();
 }
 
+// Monotonic connect-attempt counter (see api.connect's failure guard).
+let connectEpoch = 0;
+
 export const api = {
   async listPorts() {
     const ports = await invoke("list_ports");
@@ -142,6 +145,16 @@ export const api = {
     return ports;
   },
   async connect(port) {
+    // A failed attempt from the lost state returns TO the lost state: the
+    // reconnect poll keys on it, and a replugged port routinely rejects the
+    // first open while the OS finishes enumeration — that must read as
+    // "still waiting", never as a user-facing disconnect. The epoch guards
+    // the failure path: a STALE attempt's failure (a newer attempt has
+    // since started or landed) must never clobber the newer outcome —
+    // without it, a raced reconnect could paint "disconnected" over a
+    // healthy session.
+    const epoch = ++connectEpoch;
+    const wasLost = store.connection.state === "lost";
     set({ connection: { ...store.connection, state: "connecting" }, connectError: null });
     try {
       const buildId = await invoke("connect", { port });
@@ -149,7 +162,14 @@ export const api = {
       prefs.set("cockpit.session.port", port);
       return buildId;
     } catch (e) {
-      set({ connection: { state: "disconnected", port: null, buildId: null }, connectError: String(e) });
+      if (epoch === connectEpoch) {
+        set({
+          connection: { state: wasLost ? "lost" : "disconnected", port: null, buildId: null },
+          connectError: String(e),
+        });
+      } else {
+        set({ connectError: String(e) }); // stale failure: surface the reason only
+      }
       throw e;
     }
   },

@@ -7,7 +7,7 @@ tags: [app, views]
 
 The plot widgets' pointing model: one cursor time for every plot
 widget, the pointed-trace emphasis while paused, and the paused
-comparison anchor with its deltas.
+comparison anchor with its preview and deltas.
 
 ## Cursor time
 
@@ -109,6 +109,29 @@ Acceptance:
   the pointed row's value delta; a pointed trace on the other axis,
   a boolean or enumeration signal, and a cursor time where the
   pointed signal has no sample each show none.
+
+Covers:
+- sys~arch_002~1
+
+Needs: impl, test
+
+### Anchor preview
+`app~views_019~1`
+
+While the timeline is paused (`app~views_008~1`) and Ctrl is held
+with a pointed trace (`app~views_012~1`), a plot widget shall show a
+candidate mark — a horizontal line at the value of the pointed
+signal's sample nearest the pointer in time, the earlier of two
+equidistant — the mark following the pointer and the pointed trace,
+and shown only while that condition holds.
+
+Acceptance:
+
+- With Ctrl held over a paused plot, the candidate mark sits at the
+  nearest sample's value, moves with the pointer, and transfers with
+  the pointed-trace emphasis.
+- Releasing Ctrl removes the candidate mark and leaves the anchor
+  state (`app~views_017~1`) as it was.
 
 Covers:
 - sys~arch_002~1

@@ -51,7 +51,7 @@ Needs: impl, test
 
 While the timeline (`app~views_008~1`) is paused, the app shall adjust
 every plot widget's shared X range per the actions below, the range
-bounded between 50 ms and the paused span:
+bounded between 10 ms and the paused span:
 
 | Action | Behavior |
 |--------|----------|
@@ -66,8 +66,9 @@ Acceptance:
 - A wheel step over one plot widget rescales the range on every plot
   widget, about the held cursor time or, with none held, the range
   center.
-- Panning stops at the paused span's edges; zooming out stops at the
-  span; zooming in stops at 50 ms.
+- Panning stops at the paused span's edges, zooming out at the span,
+  and zooming in at 10 ms; a step into any bound leaves the range
+  unchanged.
 - A horizontal drag on one plot widget sets every plot widget's range
   to the dragged extent.
 

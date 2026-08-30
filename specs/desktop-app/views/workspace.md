@@ -15,7 +15,8 @@ table ([[table]]) widgets per:
 |--------|----------|
 | Drop a signal on empty canvas | A plot widget holding the signal appears at the drop position |
 | Drop a signal on an existing widget | The signal joins that widget |
-| Add-table action | An empty table widget appears |
+| Add a plot via the workspace's widget launcher | A plot widget holding no signals appears at an unoccupied canvas position on the 50 px layout grid |
+| Add a table via the workspace's widget launcher | A table widget holding no signals appears at an unoccupied canvas position on the 50 px layout grid |
 | Drag a widget's header | The widget moves to any canvas position, snapped to the 50 px layout grid |
 | Drag a widget's corner handle | The widget resizes, both extents snapped to the 50 px layout grid |
 | Remove a signal via the widget's configuration menu | The signal leaves the widget's signal set |

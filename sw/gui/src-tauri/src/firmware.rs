@@ -4,7 +4,7 @@
 //! device's reported one. Self-contained: no `crate::` references, so the
 //! module also compiles under the integration-test harness.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use object::{Object, ObjectSection};
@@ -21,7 +21,6 @@ const IDENTITY_READ_CAP: usize = 64;
 pub struct LoadedFirmware {
     map: dwarf_map::DwarfMap,
     pub build_id: String,
-    pub path: PathBuf,
     signal_paths: Vec<String>,
     /// Section ranges of the image with their writability, for the
     /// read-only distinction.
@@ -145,7 +144,6 @@ impl LoadedFirmware {
         Ok(Self {
             map,
             build_id,
-            path: path.to_path_buf(),
             signal_paths: enumeration.paths,
             section_ranges: sections,
         })
@@ -153,6 +151,9 @@ impl LoadedFirmware {
 
     /// Full link address of a resolvable path (no watch-size constraint, no
     /// device-width cast — the readonly lookup needs the whole address).
+    /// Consumed only by the firmware_backend integration harness, which
+    /// compiles this module via #[path]; the app binary sees it as dead.
+    #[allow(dead_code)]
     pub fn resolve_addr(&self, path: &str) -> Option<u64> {
         self.map.resolve(path).map(|(addr, _)| addr)
     }
@@ -167,6 +168,9 @@ impl LoadedFirmware {
             .is_some_and(|&(_, _, writable)| !writable)
     }
 
+    /// Consumed only by the firmware_backend integration harness, which
+    /// compiles this module via #[path]; the app binary sees it as dead.
+    #[allow(dead_code)]
     pub fn signal_paths(&self) -> &[String] {
         &self.signal_paths
     }

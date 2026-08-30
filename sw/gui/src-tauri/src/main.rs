@@ -10,6 +10,15 @@ use firmware::FirmwareState;
 use session::SessionState;
 use trace::TraceState;
 
+/// UI zoom (chrome ergonomics): the native webview zoom factor — WebView2's
+/// ZoomFactor on Windows, WKWebView page zoom on macOS — driven by the
+/// frontend's Ctrl+'+'/'-'/'0' bindings, which also own clamping and
+/// persistence.
+#[tauri::command]
+fn set_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {
+    window.set_zoom(factor).map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -27,7 +36,8 @@ fn main() {
             trace::clear_watches,
             trace::trace_status,
             config::load_config,
-            config::save_config
+            config::save_config,
+            set_zoom
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

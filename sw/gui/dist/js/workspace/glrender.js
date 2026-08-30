@@ -11,10 +11,10 @@
 // [impl->app~views_015~1]
 
 import { monotoneTangents } from "./interp.js";
-import { markDraw } from "../perf.js";
+import { markDraw, markScroll } from "../perf.js";
 
 const FEATHER_PX = 1.0; // AA falloff half-width
-export const DOT_SIZE_PX = 5; // sample-dot diameter (css px)
+export const DOT_SIZE_PX = 7; // sample-dot diameter (css px) — bench-tuned up from 5: dots read clearly even on a narrow plot at the 10 ms zoom floor
 
 // Browsers cap live WebGL contexts (~16 per page) and EVICT the oldest —
 // with no restore event for the evicted canvas. We stay under the cap with
@@ -32,6 +32,7 @@ layout(location=1) in vec3 aB;
 uniform vec2 uView;              // css px
 uniform float uWidth;            // stroke width, css px
 uniform float uFeather;
+uniform float uOffsetX;          // live-scroll translation, css px
 out vec2 vPos;
 flat out vec2 vA;
 flat out vec2 vB;
@@ -46,8 +47,10 @@ void main() {
   float across = float((gl_VertexID & 1) * 2 - 1);  // -1 | 1
   float pad = uWidth * 0.5 + uFeather + 0.5;
   vec2 pos = a + dir * (along * len + (along * 2.0 - 1.0) * pad) + nrm * across * pad;
+  // SDF space (vPos/vA/vB) stays un-offset — the capsule distance and dash
+  // arc are translation-invariant; only the clip position shifts.
   vPos = pos; vA = a; vB = b; vArcA = aA.z;
-  gl_Position = vec4(pos.x / uView.x * 2.0 - 1.0, 1.0 - pos.y / uView.y * 2.0, 0.0, 1.0);
+  gl_Position = vec4((pos.x + uOffsetX) / uView.x * 2.0 - 1.0, 1.0 - pos.y / uView.y * 2.0, 0.0, 1.0);
 }`;
 
 const LINE_FS = `#version 300 es
@@ -87,9 +90,10 @@ layout(location=0) in vec2 aP;   // css px
 uniform vec2 uView;
 uniform float uSizePx;           // dot diameter, css px
 uniform float uDpr;
+uniform float uOffsetX;          // live-scroll translation, css px
 void main() {
   gl_PointSize = (uSizePx + 2.0) * uDpr;
-  gl_Position = vec4(aP.x / uView.x * 2.0 - 1.0, 1.0 - aP.y / uView.y * 2.0, 0.0, 1.0);
+  gl_Position = vec4((aP.x + uOffsetX) / uView.x * 2.0 - 1.0, 1.0 - aP.y / uView.y * 2.0, 0.0, 1.0);
 }`;
 
 const DOT_FS = `#version 300 es
@@ -160,6 +164,7 @@ export class GlTraces {
     this.h = 0;
     this.dpr = 1;
     this._traces = [];
+    this._offsetX = 0;
     this.lastDrawSeq = 0;
     this.canvas.addEventListener("webglcontextlost", (ev) => {
       ev.preventDefault();
@@ -170,7 +175,7 @@ export class GlTraces {
       this.contextLosses++;
       this._init();
       this._size();
-      if (this.gl) this.draw(this._traces);
+      if (this.gl) this.draw(this._traces, this._offsetX);
     });
     this._init();
   }
@@ -223,12 +228,14 @@ export class GlTraces {
       feather: gl.getUniformLocation(this.lineProg, "uFeather"),
       color: gl.getUniformLocation(this.lineProg, "uColor"),
       dash: gl.getUniformLocation(this.lineProg, "uDash"),
+      offx: gl.getUniformLocation(this.lineProg, "uOffsetX"),
     };
     this.dotU = {
       view: gl.getUniformLocation(this.dotProg, "uView"),
       size: gl.getUniformLocation(this.dotProg, "uSizePx"),
       dpr: gl.getUniformLocation(this.dotProg, "uDpr"),
       color: gl.getUniformLocation(this.dotProg, "uColor"),
+      offx: gl.getUniformLocation(this.dotProg, "uOffsetX"),
     };
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // premultiplied over
@@ -250,18 +257,35 @@ export class GlTraces {
 
   /** traces: [{ runs: [{ verts: Float32Array (x,y,arc)* }], dots: Float32Array|null,
    *             color: [r,g,b,a], widthPx, dash: [on,off]|null, dotSizePx }].
-   *  Geometry is cached for uniform-only redraws (drawCached). */
-  draw(traces) {
+   *  Geometry is cached for uniform-only redraws (drawCached / scroll).
+   *  offsetX (css px) is the live-scroll translation the frame draws at. */
+  draw(traces, offsetX = 0) {
     this._traces = traces;
+    this._offsetX = offsetX;
     this.drawCached();
   }
 
+  /** Geometry-rate redraw: counts toward the draws honesty metric. */
   drawCached() {
+    this.drawCount++;
+    markDraw();
+    this._render();
+  }
+
+  /** Display-rate redraw at a new translation (live smooth scroll): cached
+   *  geometry, uniforms + draw calls only. Accounted as a scroll, not a
+   *  draw — the views_015 draws-per-batch check must keep meaning
+   *  "geometry actually rebuilt and drew". */
+  scroll(offsetX) {
+    this._offsetX = offsetX;
+    markScroll();
+    this._render();
+  }
+
+  _render() {
     const gl = this.gl;
     if (!gl || gl.isContextLost() || this.w < 1) return;
-    this.drawCount++;
     this.lastDrawSeq = ++drawSeq;
-    markDraw();
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -269,6 +293,7 @@ export class GlTraces {
     gl.useProgram(this.lineProg);
     gl.uniform2f(this.lineU.view, this.w, this.h);
     gl.uniform1f(this.lineU.feather, FEATHER_PX);
+    gl.uniform1f(this.lineU.offx, this._offsetX || 0);
     for (const tr of this._traces) {
       gl.uniform4fv(this.lineU.color, tr.color);
       gl.uniform1f(this.lineU.width, tr.widthPx);
@@ -295,6 +320,7 @@ export class GlTraces {
     gl.useProgram(this.dotProg);
     gl.uniform2f(this.dotU.view, this.w, this.h);
     gl.uniform1f(this.dotU.dpr, this.dpr);
+    gl.uniform1f(this.dotU.offx, this._offsetX || 0);
     for (const tr of this._traces) {
       if (!tr.dots || tr.dots.length < 2) continue;
       gl.uniform4fv(this.dotU.color, tr.color);
@@ -318,8 +344,13 @@ export class GlTraces {
 /** Build one trace's geometry from its decimated window table.
  *  xs/ys: data-space table (null = gap break); mapX/mapY: data -> css px;
  *  interp: 'linear' | 'zoh' | 'cubic'; pxPerMs for the cubic tessellation
- *  density (~1 vertex per px). Returns { runs, dots }. */
-export function buildTraceGeometry(xs, ys, mapX, mapY, interp, pxPerMs, wantDots) {
+ *  density (~1 vertex per px). firstRunArcStart seeds the FIRST run's
+ *  cumulative arc: the live window clips that run's left edge, so its
+ *  first vertex is a different sample every rebuild — the caller carries
+ *  the dropped prefix's arc across rebuilds (plotwidget's dash datum) so a
+ *  fixed sample's dash phase holds. Later runs are gap-anchored (their
+ *  start is a fixed sample) and stay at 0. Returns { runs, dots }. */
+export function buildTraceGeometry(xs, ys, mapX, mapY, interp, pxPerMs, wantDots, firstRunArcStart = 0) {
   const runs = [];
   const dotPts = wantDots ? [] : null;
   let i = 0;
@@ -338,13 +369,33 @@ export function buildTraceGeometry(xs, ys, mapX, mapY, interp, pxPerMs, wantDots
       runY.push(ys[k]);
       if (dotPts) dotPts.push(mapX(xs[k]), mapY(ys[k]));
     }
-    runs.push(buildRun(runX, runY, mapX, mapY, interp, pxPerMs));
+    runs.push(buildRun(runX, runY, mapX, mapY, interp, pxPerMs, runs.length ? 0 : firstRunArcStart));
     i = j;
   }
   return { runs, dots: dotPts ? new Float32Array(dotPts) : null };
 }
 
-function buildRun(runX, runY, mapX, mapY, interp, pxPerMs) {
+/** Arc value at pixel x along a run's (x, y, arc) vertex strip, or null
+ *  when x falls outside the run (the caller re-anchors). Vertex x ascends
+ *  (a ZOH riser repeats one x); within a straight segment arc is exactly
+ *  linear in distance, so the bracketing segment interpolates it. */
+export function arcAtX(verts, x) {
+  if (!verts || verts.length < 3 || x < verts[0] - 1e-6) return null;
+  for (let k = 0; k + 3 < verts.length; k += 3) {
+    if (verts[k + 3] >= x) {
+      const xA = verts[k], yA = verts[k + 1], aA = verts[k + 2];
+      const dx = verts[k + 3] - xA;
+      if (dx <= 1e-9) return verts[k + 5]; // riser: the far vertex's arc
+      const t = (x - xA) / dx;
+      const y = yA + t * (verts[k + 4] - yA);
+      return aA + Math.hypot(x - xA, y - yA);
+    }
+  }
+  const lastX = verts[verts.length - 3];
+  return Math.abs(x - lastX) <= 1e-6 ? verts[verts.length - 1] : null;
+}
+
+function buildRun(runX, runY, mapX, mapY, interp, pxPerMs, arcStart = 0) {
   let px = [], py = [];
   if (interp === "zoh") {
     for (let k = 0; k < runX.length; k++) {
@@ -380,7 +431,7 @@ function buildRun(runX, runY, mapX, mapY, interp, pxPerMs) {
     }
   }
   const verts = new Float32Array(px.length * 3);
-  let arc = 0;
+  let arc = arcStart;
   for (let k = 0; k < px.length; k++) {
     if (k > 0) arc += Math.hypot(px[k] - px[k - 1], py[k] - py[k - 1]);
     verts[k * 3] = px[k];

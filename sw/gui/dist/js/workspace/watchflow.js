@@ -82,16 +82,27 @@ function afterEdit() {
 }
 
 /** Send the full list; the stream restarts from tick 0 on acceptance. */
+let pausedDeferral = false;
 export async function commit() {
   clearTimeout(debounceTimer);
   if (store.gate !== "matched") return;
+  // A paused workspace is a frozen inspection (views_008's sacred span):
+  // an accepted install clears every history, so any commit that lands
+  // while paused — a reconnect's recommit included — defers to resume.
+  // Connection and gate re-establish meanwhile; the frozen traces,
+  // readouts, and anchors stay consistent with the frozen histories.
+  if (store.timeline.mode === "paused") {
+    pausedDeferral = true;
+    return;
+  }
+  pausedDeferral = false;
   const list = entries().map(({ path, period_ms }) => ({ path, period_ms }));
   const key = JSON.stringify(list);
   if (key === committed) return;
   try {
     await api.installWatches(list);
     committed = key;
-    for (const h of histories.values()) { h.ticks.length = 0; h.values.length = 0; h.gaps.length = 0; }
+    for (const h of histories.values()) h.clear();
     notify("stream-restart");
   } catch (cause) {
     set({ budgetVerdict: String(cause) });
@@ -103,6 +114,17 @@ export async function commit() {
 export function initWatchflow() {
   subscribe("gate", (gate) => {
     if (gate === "matched" && store.watched.size) commit();
+  });
+  // [impl->app~conn_001~1] The board's watch list lives on the CDC session
+  // (a dropped DTR clears it device-side), so any departure from
+  // "connected" invalidates the committed-list cache — the next gate open
+  // recommits in full even though the list itself never changed.
+  subscribe("connection", (c) => {
+    if (c.state !== "connected") committed = "";
+  });
+  // A commit deferred by a pause (see commit()) fires on resume.
+  subscribe("timeline", () => {
+    if (store.timeline.mode === "live" && pausedDeferral) commit();
   });
   subscribe("trace-status", renderPreview);
   // Snapshot-restored meta is only as fresh as the last session (an old

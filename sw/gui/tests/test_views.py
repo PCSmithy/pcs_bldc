@@ -441,13 +441,31 @@ def run(page):
         (win3, win4),
     )
 
-    # zoom-in floor: the spec's 50 ms bound
+    # zoom-in floor: the spec's 10 ms bound
     page.evaluate(
         "() => { const w = __cockpit.timeline.get().window;"
         " __cockpit.timeline.zoomAt((w[0] + w[1]) / 2, 1e-9); }"
     )
     floor_w = page.evaluate("() => { const w = __cockpit.timeline.get().window; return w[1] - w[0]; }")
-    check("views_009 zoom-in stops at 50 ms", abs(floor_w - 50) < 1, floor_w)
+    check("views_009 zoom-in stops at 10 ms", abs(floor_w - 10) < 1, floor_w)
+
+    # ── [test->app~views_009~1] a step into the bound leaves the range
+    #    unchanged: with the width pinned, the old re-centering slid the
+    #    window toward the wheel's anchor — zoom must never read as pan.
+    #    The cursor sits OFF-center (25%), the drift repro's shape. ──
+    page.evaluate(
+        "() => { const w = __cockpit.timeline.get().window;"
+        " __cockpit.setCursorTick(Math.round(w[0] + (w[1] - w[0]) * 0.25)); }"
+    )
+    at_floor = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    for _ in range(3):
+        canvas.dispatch_event("wheel", {"deltaY": -300, "bubbles": True, "cancelable": True})
+    still = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    check(
+        "views_009 zoom-in at the floor is a dead stop, both edges pinned",
+        still == at_floor,
+        (at_floor, still),
+    )
 
     # a sub-6 px drag is a click, not a selection
     wf0 = page.evaluate("() => [...__cockpit.timeline.get().window]")
@@ -1478,11 +1496,12 @@ def run(page):
             .reduce((n, h) => Math.max(n, h.newestTick() ?? 0), 0);
           const base = Math.ceil(newest) + 1;
           const h = __cockpit.histories.get({dense_sig!r});
-          h.ticks.length = 0; h.values.length = 0; h.gaps.length = 0;
+          h.clear();
+          const pts = [];
           for (let t = 0; t <= 9999; t++) {{
-            h.ticks.push(base + t);
-            h.values.push(t === 6000 ? 99 : Math.sin(t / 37));
+            pts.push([base + t, t === 6000 ? 99 : Math.sin(t / 37)]);
           }}
+          h.append(pts);
           __cockpit.timeline.setSpan(10000);
           __cockpit.forEachWidget(w => w.refresh());
           return base;
@@ -2333,6 +2352,758 @@ def run(page):
     )
     page.evaluate("() => __cockpit.timeline.resume()")
     page.mouse.move(10, 10)
+
+    # ── history ring: a single oversized append() stays consistent — the
+    #    ring force-drops its oldest chunk instead of writing past capacity
+    #    (regression for the silent-overflow QA finding; only the test/seed
+    #    surface can produce an append this large) ──
+    ring = page.evaluate(
+        """() => {
+          const proto = [...__cockpit.histories.values()][0].constructor;
+          const h = new proto(1000); // slow period -> small capacity
+          const cap = h._cap;
+          const pts = [];
+          let t = 0;
+          for (let i = 0; i < cap + 5; i++) { t += 1000; pts.push([t, i]); }
+          h.append(pts);
+          const [xs, ys] = h.windowTable(t - 5000, t);
+          let ascending = true;
+          for (let i = 1; i < xs.length; i++) if (!(xs[i] > xs[i - 1])) ascending = false;
+          return {
+            cap, len: h.size, newest: h.newestTick(), expected: t,
+            tail_ok: ascending && xs.length === 6 && ys.every(v => Number.isFinite(v)),
+            at_newest: h.valueAt(t),
+          };
+        }"""
+    )
+    check(
+        "history ring survives an oversized single append",
+        ring["len"] <= ring["cap"]
+        and ring["newest"] == ring["expected"]
+        and ring["tail_ok"]
+        and ring["at_newest"] == ring["cap"] + 4,
+        ring,
+    )
+
+    # ═══ batch 11: live smooth scroll — the window glides at display rate
+    #     while geometry stays at batch rate (presentation cadence,
+    #     unspecced; the FPS-cell precedent) ═══
+
+    # (a) cached-geometry scroll redraws track the page's REAL frame rate
+    #     (measured in-page — an absolute fps floor would just re-test the
+    #     host machine's load) and land well above batch-rate draws
+    page.evaluate("() => __cockpit.timeline.resume()")
+    rates = page.evaluate(
+        """async () => {
+          let n = 0;
+          __cockpit.forEachWidget((w) => {
+            if (w.scrollTick && w.cfg.signals?.length && w.gl) n++;
+          });
+          const s0 = __cockpit.perf.snapshot();
+          let rafs = 0;
+          const t0 = performance.now();
+          await new Promise((done) => {
+            const tick = (now) => {
+              rafs++;
+              if (now - t0 < 2000) requestAnimationFrame(tick); else done();
+            };
+            requestAnimationFrame(tick);
+          });
+          const s1 = __cockpit.perf.snapshot();
+          return { n, rafs, scrolls: s1.scrolls - s0.scrolls, draws: s1.draws - s0.draws };
+        }"""
+    )
+    # Per plot, at least half the page's frames scrolled (the lead clamp
+    # legitimately freezes the tail of a slow batch gap), and scroll
+    # updates outnumber geometry draws — the feature's whole point.
+    check(
+        "smooth scroll: per-plot scroll redraws track the frame rate, beat draws",
+        rates["n"] > 0
+        and rates["scrolls"] >= rates["n"] * rates["rafs"] * 0.5
+        and rates["scrolls"] > rates["draws"] * 1.5,
+        rates,
+    )
+    walk = page.evaluate(
+        """async () => {
+          const ends = [];
+          for (let i = 0; i < 15; i++) {
+            ends.push(__cockpit.timeline.displayWindow()[1]);
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          let mono = true;
+          for (let i = 1; i < ends.length; i++) if (ends[i] < ends[i - 1]) mono = false;
+          return { mono, advance: ends[ends.length - 1] - ends[0] };
+        }"""
+    )
+    check(
+        "smooth scroll: display window end is monotonic and tracks wall time",
+        walk["mono"] and 900 <= walk["advance"] <= 2600,
+        walk,
+    )
+
+    # (b) honesty: the displayed now never leads the newest data past the
+    #     lead clamp (a stalled stream freezes instead of scrolling on)
+    lead = page.evaluate(
+        """async () => {
+          let worst = -1e9;
+          for (let i = 0; i < 20; i++) {
+            let newest = 0;
+            for (const h of __cockpit.histories.values()) {
+              const t = h.newestTick();
+              if (t != null && t > newest) newest = t;
+            }
+            const d = __cockpit.timeline.displayWindow()[1] - newest;
+            if (d > worst) worst = d;
+            await new Promise((r) => setTimeout(r, 60));
+          }
+          return worst;
+        }"""
+    )
+    check("smooth scroll: display lead stays within the clamp", lead <= 80, lead)
+
+    # (c) cursor mapping under a scrolling window: a pointermove lands on
+    #     the tick the displayed window puts under the pointer (same-task
+    #     read — the window cannot advance mid-evaluate). The expectation is
+    #     derived INDEPENDENTLY from displayWindow + rect math, never from
+    #     the widget's own mapping (which is the code under test).
+    cur = page.evaluate(
+        """() => {
+          let out = null;
+          __cockpit.forEachWidget((w) => {
+            if (out || !w.scrollTick || !w.cfg.signals?.length) return;
+            const canvas = w.el.querySelector('.plot-canvas');
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width < 50) return;
+            const px = rect.width * 0.6;
+            canvas.dispatchEvent(new PointerEvent('pointermove', {
+              clientX: rect.left + px, clientY: rect.top + rect.height / 2, bubbles: true,
+            }));
+            const [d0, d1] = __cockpit.timeline.displayWindow();
+            const expected = d0 + (px / rect.width) * (d1 - d0);
+            out = { tick: __cockpit.cursor.tick, expected, err: Math.abs(__cockpit.cursor.tick - expected) };
+          });
+          return out;
+        }"""
+    )
+    check(
+        "smooth scroll: cursor tick matches the displayed window's mapping",
+        cur is not None and cur["err"] <= 1,
+        cur,
+    )
+    page.mouse.move(10, 10)
+
+    # (d) paused parks the scroll loop: the scroll counter goes flat
+    page.evaluate("() => __cockpit.timeline.pause()")
+    page.wait_for_timeout(400)  # drain any queued frame
+    p0 = page.evaluate("() => __cockpit.perf.snapshot().scrolls")
+    page.wait_for_timeout(700)
+    p1 = page.evaluate("() => __cockpit.perf.snapshot().scrolls")
+    check("smooth scroll: paused stops scroll redraws", p1 == p0, (p0, p1))
+    page.evaluate("() => __cockpit.timeline.resume()")
+
+    # (e) dash-phase continuity: a fixed sample's dash phase holds across
+    #     geometry rebuilds while the live window clips the run's left edge
+    #     (regression: the clipped run re-anchored its arc datum per batch,
+    #     popping the phase 3.6-6.3 px per rebuild at a 13 px period)
+    DASH_SIG = "IO_AS5048_data.channels[0].angle_deg"
+    prev_span = page.evaluate("() => __cockpit.timeline.get().span_ms")
+    page.evaluate(
+        """(sig) => {
+          __cockpit.addWatch(sig, 10);
+          const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+          w.addSignal(sig);
+          window.__dashWid = w.cfg.id;
+          const a = __cockpit.appearance.of(sig) || {};
+          __cockpit.appearance.set(sig, { ...a, style: 'dashed' });
+          __cockpit.timeline.setSpan(5000);
+        }""",
+        DASH_SIG,
+    )
+    page.wait_for_function(
+        f"() => (__cockpit.histories.get({DASH_SIG!r})?.size || 0) > 300", timeout=8000
+    )
+    page.wait_for_timeout(400)
+    dash = page.evaluate(
+        """async (sig) => {
+          let w = null;
+          __cockpit.forEachWidget((x) => { if (x.cfg.id === window.__dashWid) w = x; });
+          if (!w || !w._built?.length || !w._built[0].runs?.length) {
+            return { n: 0, worst: -1 };
+          }
+          const PERIOD = 8 + 5; // the dashed style's on+off, css px
+          const arcAtX = (v, x) => {
+            if (!v || v.length < 3 || x < v[0] - 1e-6) return null;
+            for (let k = 0; k + 3 < v.length; k += 3) {
+              if (v[k + 3] >= x) {
+                const xA = v[k], yA = v[k + 1], aA = v[k + 2];
+                const dx = v[k + 3] - xA;
+                if (dx <= 1e-9) return v[k + 5];
+                const t = (x - xA) / dx;
+                const y = yA + t * (v[k + 4] - yA);
+                return aA + Math.hypot(x - xA, y - yA);
+              }
+            }
+            return null;
+          };
+          // A fixed sample INSIDE the window-clipped first run (75% along
+          // it, so it outlives ~20 rebuilds of left-clip churn); the arc
+          // lookup scans every run — the sample's run index drifts as
+          // earlier runs scroll out.
+          const v0 = w._built[0].runs[0].verts;
+          const xPick = v0[0] + (v0[v0.length - 3] - v0[0]) * 0.75;
+          const T = w.window[0] + xPick / w._pxPerMs;
+          const phases = [];
+          let last = w.gl.drawCount;
+          const t0 = performance.now();
+          while (phases.length < 20 && performance.now() - t0 < 4000) {
+            await new Promise((r) => setTimeout(r, 30));
+            if (w.gl.drawCount === last) continue;
+            last = w.gl.drawCount;
+            const x = (T - w.window[0]) * w._pxPerMs;
+            let arc = null;
+            for (const run of w._built[0]?.runs || []) {
+              arc = arcAtX(run.verts, x);
+              if (arc !== null) break;
+            }
+            if (arc !== null) phases.push(((arc % PERIOD) + PERIOD) % PERIOD);
+          }
+          let worst = 0;
+          for (const ph of phases) {
+            let d = Math.abs(ph - phases[0]);
+            d = Math.min(d, PERIOD - d);
+            if (d > worst) worst = d;
+          }
+          return { n: phases.length, worst };
+        }""",
+        DASH_SIG,
+    )
+    check(
+        "smooth scroll: dash phase of a fixed sample holds across rebuilds",
+        dash["n"] >= 12 and 0 <= dash["worst"] <= 0.25,
+        dash,
+    )
+    page.evaluate(
+        """([sig, span]) => {
+          const a = __cockpit.appearance.of(sig) || {};
+          __cockpit.appearance.set(sig, { ...a, style: null });
+          __cockpit.timeline.setSpan(span);
+        }""",
+        [DASH_SIG, prev_span],
+    )
+
+    # ═══ batch 12 (bench): cable-pull reconnect + watch reinstall ═══
+    # The real-hardware failure pair: a replugged port's first open fails
+    # while the OS finishes device setup (killing the old poll), and the
+    # board clears its watch list with the CDC line state (the committed-
+    # list cache then swallowed the reinstall).
+
+    fresh_boot(page)
+    add_plot_with(page, ["task1msRuns"], period=10)
+    wait_for_samples(page, "task1msRuns")
+    installs0 = page.evaluate("() => (window.__devmockInstalls || []).length")
+
+    # ── [test->app~conn_001~1] pull: lost state, port out of enumeration ──
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    check(
+        "conn_001 cable pull lands in the lost state with the lost pill",
+        page.evaluate("() => document.querySelector('.conn-port--lost') !== null"),
+        page.evaluate("() => __cockpit.store.connection.state"),
+    )
+    ports = page.evaluate("async () => (await __cockpit.api.listPorts()).map((p) => p.name)")
+    check("conn_001 pulled port leaves enumeration", "COM8" not in ports, ports)
+
+    # ── [test->app~conn_001~1] replug with ONE failing open: the poll must
+    #    ride through the failure and reconnect without user action ──
+    page.evaluate("() => window.__devmockConn.replug({ failConnects: 1 })")
+    reconnected = True
+    try:
+        page.wait_for_function(
+            "() => __cockpit.store.connection.state === 'connected'", timeout=10000
+        )
+    except Exception:
+        reconnected = False
+    check(
+        "conn_001 replug auto-reconnects without user action, surviving a failed first open",
+        reconnected,
+        page.evaluate("() => [__cockpit.store.connection.state, __cockpit.store.connectError]"),
+    )
+
+    # ── [test->app~conn_001~1] the unchanged watch list recommits in full,
+    #    exactly once, and the stream comes back to life ──
+    page.wait_for_function(
+        f"() => (window.__devmockInstalls || []).length > {installs0}", timeout=5000
+    )
+    page.wait_for_timeout(900)  # settle: room for any duplicate install to land
+    installs = page.evaluate(f"() => window.__devmockInstalls.slice({installs0})")
+    check(
+        "conn_001 reconnect recommits the unchanged watch list exactly once",
+        len(installs) == 1 and [w["path"] for w in installs[0]] == ["task1msRuns"],
+        installs,
+    )
+    page.wait_for_function(
+        "() => (__cockpit.histories.get('task1msRuns')?.size || 0) > 100", timeout=8000
+    )
+    h0 = page.evaluate("() => __cockpit.histories.get('task1msRuns').size")
+    page.wait_for_timeout(300)
+    h1 = page.evaluate("() => __cockpit.histories.get('task1msRuns').size")
+    check("conn_001 stream restarts and histories repopulate after reconnect", h1 > h0, (h0, h1))
+    val = page.locator(".watch-row .watch-value").first.inner_text()
+    check("conn_001 watch panel shows a live value after reconnect", val not in ("", "no sample"), val)
+
+    # ── [test->app~conn_001~1] manual-connect variant reinstalls too (the
+    #    invalidation is connection-driven, not poll-driven) ──
+    installs1 = page.evaluate("() => (window.__devmockInstalls || []).length")
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    page.evaluate(
+        "() => { window.__devmockConn.replug(); return __cockpit.api.connect('COM8'); }"
+    )
+    page.wait_for_function("() => __cockpit.store.connection.state === 'connected'")
+    page.wait_for_function(
+        f"() => (window.__devmockInstalls || []).length > {installs1}", timeout=5000
+    )
+    manual = page.evaluate(f"() => window.__devmockInstalls.length - {installs1}")
+    check("conn_001 manual reconnect also reinstalls the watch list", manual == 1, manual)
+
+    # ═══ batch 13 (bench round 3): anchor preview, widget launcher, watch
+    # drag sources, UI zoom (the views_009 dead-stop lives with its batch) ═══
+
+    fresh_boot(page)
+    for p in (VEL_M, VEL_S):
+        page.evaluate(f"() => __cockpit.addWatch({p!r}, 1)")
+    cwid = page.evaluate(
+        """(paths) => { const w = __cockpit.addWidget({ type: 'plot', signals: [] });
+          for (const p of paths) w.addSignal(p); return w.cfg.id; }""",
+        [VEL_M, VEL_S],
+    )
+    page.wait_for_function(
+        "() => __cockpit.store.traceStatus && __cockpit.store.traceStatus.link_rate_bytes_per_s > 0",
+        timeout=5000,
+    )
+    for p in (VEL_M, VEL_S):
+        wait_for_samples(page, p)
+    page.evaluate("() => __cockpit.timeline.pause()")
+
+    # ── [test->app~views_019~1] Ctrl held with a pointed trace shows the
+    #    candidate mark at the nearest sample's value (the key-only path:
+    #    the pointer parked first, Ctrl pressed with the mouse still) ──
+    tgt = find_target(VEL_M)
+    check("views_019 probe found a pointable spot", tgt is not None, tgt)
+    page.mouse.move(*tgt["at"])
+    page.wait_for_timeout(80)
+    page.keyboard.down("Control")
+    page.wait_for_timeout(80)
+    p0 = cwidget_eval(
+        """(w) => {
+          const el = w.el.querySelector('.anchor-preview-y');
+          const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
+          const pv = w.preview;
+          return {
+            shown: !el.hidden,
+            path: pv?.path ?? null,
+            tick: pv?.tick ?? null,
+            isSample: pv ? __cockpit.histories.get(pv.path)?.valueAt(pv.tick) === pv.value : false,
+            yErr: pv && !el.hidden
+              ? Math.abs((parseFloat(el.style.top) / 100) * rect.height
+                         - w.yPxOf(pv.value, w.sideOf(pv.path), rect.height))
+              : null,
+            anchor: w.anchor,
+          }; }"""
+    )
+    check(
+        "views_019 ctrl-held candidate mark sits at the pointed signal's nearest sample",
+        p0["shown"] and p0["path"] == VEL_M and p0["isSample"]
+        and abs(p0["tick"] - tgt["clickTick"]) <= 2
+        and p0["yErr"] is not None and p0["yErr"] < 1.5,
+        p0,
+    )
+
+    # ── [test->app~views_019~1] the mark follows the pointer ──
+    tgt2 = None
+    for frac in (0.65, 0.3, 0.75, 0.2):
+        c = probe_target(VEL_M, frac)
+        if c and abs(c["clickTick"] - tgt["clickTick"]) > 4:
+            tgt2 = c
+            break
+    check("views_019 second probe spot found", tgt2 is not None, tgt2)
+    page.mouse.move(*tgt2["at"])
+    page.wait_for_timeout(80)
+    moved = cwidget_eval("(w) => w.preview && { path: w.preview.path, tick: w.preview.tick }")
+    check(
+        "views_019 the candidate follows the pointer",
+        bool(moved) and moved["path"] == VEL_M
+        and moved["tick"] != p0["tick"]
+        and abs(moved["tick"] - tgt2["clickTick"]) <= 2,
+        (p0["tick"], moved, tgt2["clickTick"]),
+    )
+
+    # ── [test->app~views_019~1] the mark transfers with the pointed trace ──
+    tgt_s = find_target(VEL_S)
+    check("views_019 probe spot on the second signal found", tgt_s is not None, tgt_s)
+    page.mouse.move(*tgt_s["at"])
+    page.wait_for_timeout(80)
+    transferred = cwidget_eval("(w) => w.preview && w.preview.path")
+    check("views_019 the candidate transfers with the emphasis", transferred == VEL_S, transferred)
+
+    # ── [test->app~views_019~1] releasing Ctrl removes the mark and leaves
+    #    the anchor state as it was — in both directions ──
+    page.keyboard.up("Control")
+    page.wait_for_timeout(80)
+    p1 = cwidget_eval(
+        "(w) => ({ shown: !w.el.querySelector('.anchor-preview-y').hidden, anchor: w.anchor })"
+    )
+    check(
+        "views_019 Ctrl release removes the mark without dropping an anchor",
+        (not p1["shown"]) and p1["anchor"] is None,
+        p1,
+    )
+    ctrl_click(tgt2["at"])  # drop a real anchor (views_017 path)
+    page.keyboard.down("Control")
+    page.mouse.move(*tgt["at"])
+    page.wait_for_timeout(80)
+    both = cwidget_eval(
+        """(w) => ({ pv: !w.el.querySelector('.anchor-preview-y').hidden,
+                     ax: !w.el.querySelector('.anchor-line-x').hidden,
+                     anchored: !!w.anchor })"""
+    )
+    check(
+        "views_019 the candidate mark coexists with a dropped anchor",
+        both["pv"] and both["ax"] and both["anchored"],
+        both,
+    )
+    page.keyboard.up("Control")
+    page.wait_for_timeout(80)
+    kept = cwidget_eval(
+        "(w) => ({ shown: !w.el.querySelector('.anchor-preview-y').hidden, anchored: !!w.anchor })"
+    )
+    check(
+        "views_019 Ctrl release leaves the dropped anchor in place",
+        (not kept["shown"]) and kept["anchored"],
+        kept,
+    )
+
+    # ── [test->app~views_019~1] resume clears the mark (the condition ends) ──
+    page.keyboard.down("Control")
+    page.mouse.move(*tgt["at"])
+    page.wait_for_timeout(80)
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.wait_for_timeout(80)
+    gone = cwidget_eval("(w) => !w.el.querySelector('.anchor-preview-y').hidden")
+    page.keyboard.up("Control")
+    check("views_019 resume clears the candidate mark", gone is False, gone)
+
+    # ── [test->app~views_004~1] the widget launcher adds an empty plot and
+    #    an empty table at unoccupied lattice positions ──
+    n0 = page.evaluate("() => { let n = 0; __cockpit.forEachWidget(() => n++); return n; }")
+    page.click(".launcher-fab")
+    page.click(".launcher-menu [data-workspace='new-plot']")
+    page.click(".launcher-fab")
+    page.click(".launcher-menu [data-workspace='new-table']")
+    geo = page.evaluate(
+        """(n0) => {
+          const all = [];
+          __cockpit.forEachWidget(w => all.push({ id: w.cfg.id, type: w.toJSON().type,
+            x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h,
+            empty: w.cfg.signals.length === 0,
+            hint: w.el.querySelector('.plot-empty-hint')
+              ? !w.el.querySelector('.plot-empty-hint').hidden : null }));
+          const added = all.slice(n0);
+          const overlap = (a, b) =>
+            a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+          const overlaps = added.some(a => all.some(b => b.id !== a.id && overlap(a, b)));
+          return { added, overlaps,
+                   menuHidden: document.querySelector('.launcher-menu').hidden }; }""",
+        n0,
+    )
+    added = geo["added"]
+    check(
+        "views_004 launcher adds an empty plot + table on the lattice, unoccupied",
+        len(added) == 2
+        and added[0]["type"] == "plot" and added[1]["type"] == "table"
+        and all(a["empty"] for a in added)
+        and all(a[k] % 50 == 0 for a in added for k in ("x", "y", "w", "h"))
+        and not geo["overlaps"]
+        and added[0]["hint"] is True
+        and geo["menuHidden"],
+        geo,
+    )
+
+    # ── [test->app~views_004~1] a drop onto the launcher-added plot traces it ──
+    new_plot_id = added[0]["id"]
+    page.evaluate(
+        """([id, path]) => {
+          let el = null; __cockpit.forEachWidget(w => { if (w.cfg.id === id) el = w.el; });
+          const canvas = el.querySelector('.plot-canvas');
+          const dt = new DataTransfer();
+          dt.setData('text/x-signal', path);
+          canvas.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          canvas.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true })); }""",
+        [new_plot_id, U32_S],
+    )
+    joined = widget_eval(
+        page, new_plot_id,
+        "(w) => ({ sigs: [...w.cfg.signals], hintHidden: w.el.querySelector('.plot-empty-hint').hidden })",
+    )
+    check(
+        "views_004 a drop onto the launcher-added plot traces it",
+        joined["sigs"] == [U32_S] and joined["hintHidden"],
+        joined,
+    )
+
+    # ── watch panel rows are drag sources (chrome affordance — the drop
+    #    behaviors they feed are views_004's) ──
+    drag = page.evaluate(
+        """(path) => {
+          const row = [...document.querySelectorAll('.watch-row')]
+            .find(r => r.dataset.path === path);
+          const handle = row?.querySelector('.watch-drag');
+          if (!handle || handle.draggable !== true) return { ok: false };
+          const dt = new DataTransfer();
+          handle.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
+          return { ok: true, payload: dt.getData('text/x-signal') }; }""",
+        VEL_S,
+    )
+    check(
+        "watch row drags with the signal payload from its name region",
+        drag["ok"] and drag["payload"] == VEL_S,
+        drag,
+    )
+    page.evaluate(
+        """([id, path]) => {
+          let el = null; __cockpit.forEachWidget(w => { if (w.cfg.id === id) el = w.el; });
+          const canvas = el.querySelector('.plot-canvas');
+          const dt = new DataTransfer();
+          dt.setData('text/x-signal', path);
+          canvas.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          canvas.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true })); }""",
+        [new_plot_id, VEL_S],
+    )
+    sigs2 = widget_eval(page, new_plot_id, "(w) => [...w.cfg.signals]")
+    check("watch-row drag joins an existing plot on drop", sigs2 == [U32_S, VEL_S], sigs2)
+    nw0 = page.evaluate("() => { let n = 0; __cockpit.forEachWidget(() => n++); return n; }")
+    page.evaluate(
+        """(path) => {
+          const dt = new DataTransfer();
+          dt.setData('text/x-signal', path);
+          const ws = document.querySelector('.workspace');
+          ws.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          ws.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true,
+            clientX: ws.getBoundingClientRect().left + 300,
+            clientY: ws.getBoundingClientRect().top + 90 })); }""",
+        VEL_M,
+    )
+    nw1 = page.evaluate("() => { let n = 0; __cockpit.forEachWidget(() => n++); return n; }")
+    check("watch-row drag onto empty canvas creates a plot", nw1 == nw0 + 1, (nw0, nw1))
+
+    # ── UI zoom hotkeys (chrome ergonomics, unspecced like the render
+    #    cell): devmock path = body CSS zoom, persisted. LAST in the batch —
+    #    a zoomed body would skew every later real-mouse coordinate. ──
+    page.keyboard.down("Control")
+    page.keyboard.press("=")
+    page.keyboard.up("Control")
+    z1 = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom in: Ctrl+'=' scales the UI", z1 == "1.1", z1)
+    restart(page, wait_js="() => window.__cockpit !== undefined")
+    z2 = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom persists across a restart", z2 == "1.1", z2)
+    page.keyboard.down("Control")
+    page.keyboard.press("-")
+    page.keyboard.up("Control")
+    z3 = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom out: Ctrl+'-' steps back to exactly 1", z3 == "", z3)
+    page.keyboard.down("Control")
+    page.keyboard.press("-")
+    page.keyboard.up("Control")
+    z4 = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom out below 1 applies the fractional factor", z4 == "0.91", z4)
+    page.keyboard.down("Control")
+    page.keyboard.press("0")
+    page.keyboard.up("Control")
+    z5 = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom resets with Ctrl+'0'", z5 == "", z5)
+
+    # ═══ batch 14 (QA): reconnect races, paused-reconnect deferral, zoom
+    #     hotkeys vs focused editors ═══
+
+    # ── [test->app~conn_001~1] the P1 race: "Reconnect now" lands while a
+    #    poll tick is parked inside its listPorts await; the stale tick must
+    #    NOT fire a second connect (its teardown would kill the fresh
+    #    session), and its aftermath must not clobber "connected" ──
+    fresh_boot(page)
+    add_plot_with(page, ["task1msRuns"], period=10)
+    wait_for_samples(page, "task1msRuns")
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    page.evaluate(
+        """() => {
+          const orig = __cockpit.api.listPorts.bind(__cockpit.api);
+          window.__portsGate = { entries: 0 };
+          window.__portsGate.promise = new Promise((res) => (window.__portsGate.release = res));
+          let armed = true;
+          __cockpit.api.listPorts = async () => {
+            window.__portsGate.entries++;
+            if (armed) {
+              armed = false;
+              window.__portsGate.entered = true;
+              await window.__portsGate.promise;
+              __cockpit.api.listPorts = orig;
+            }
+            return orig();
+          };
+        }"""
+    )
+    page.wait_for_function("() => window.__portsGate.entered === true", timeout=4000)
+    # Mid-await: replug and click "Reconnect now" IN THE SAME TASK — the
+    # manual attempt must win before any poll tick can observe the port.
+    connects0 = page.evaluate(
+        """() => {
+          const c0 = window.__devmockConnects || 0;
+          window.__devmockConn.replug();
+          document.querySelector('[data-act=reconnect]')?.click();
+          return c0;
+        }"""
+    )
+    page.wait_for_function(
+        "() => __cockpit.store.connection.state === 'connected'", timeout=6000
+    )
+    # Release the parked tick; a stale-firing connect would hit a transient
+    # failure (the Windows first-open shape) and clobber the session.
+    page.evaluate(
+        "() => { window.__devmockConn.replug({ failConnects: 1 }); window.__portsGate.release(); }"
+    )
+    page.wait_for_timeout(1200)
+    after = page.evaluate(
+        f"""() => ({{
+          state: __cockpit.store.connection.state,
+          gate: __cockpit.store.gate,
+          connects: (window.__devmockConnects || 0) - {connects0},
+        }})"""
+    )
+    check(
+        "conn_001 stale poll tick never fires a second connect over the fresh session",
+        after["state"] == "connected" and after["gate"] == "matched" and after["connects"] == 1,
+        after,
+    )
+    h0 = page.evaluate("() => __cockpit.histories.get('task1msRuns')?.size || 0")
+    page.wait_for_timeout(400)
+    h1 = page.evaluate("() => __cockpit.histories.get('task1msRuns')?.size || 0")
+    check("conn_001 stream keeps flowing through the raced reconnect", h1 > h0, (h0, h1))
+
+    # ── [test->app~conn_001~1] + views_008: reconnect while PAUSED defers
+    #    the recommit — the frozen inspection stays honest until resume ──
+    fresh_boot(page)
+    VEL = "app_motorControl_data.channels[0].velocityMeasured_radPerSec"
+    add_plot_with(page, [VEL], period=1)
+    page.wait_for_function(
+        f"() => (__cockpit.histories.get({VEL!r})?.size || 0) > 400", timeout=8000
+    )
+    page.evaluate("() => __cockpit.timeline.pause()")
+    frozen = page.evaluate(
+        f"""() => {{
+          const h = __cockpit.histories.get({VEL!r});
+          const win = __cockpit.timeline.get().window;
+          const tick = h.tickAtOrBefore((win[0] + win[1]) / 2);
+          let w = null; __cockpit.forEachWidget(x => {{ w = w || x; }});
+          w.anchor = {{ path: {VEL!r}, tick, value: h.valueAt(tick) }};
+          w.renderAnchor();
+          return {{ tick, value: h.valueAt(tick), size: h.size, newest: h.newestTick() }};
+        }}"""
+    )
+    installs_b = page.evaluate("() => (window.__devmockInstalls || []).length")
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    # Baseline AFTER the pull: paused catch-up appends legitimately grow the
+    # history until the stream dies; frozen-ness is asserted from here on.
+    at_pull = page.evaluate(
+        f"""() => {{
+          const h = __cockpit.histories.get({VEL!r});
+          return {{ size: h.size, newest: h.newestTick() }};
+        }}"""
+    )
+    page.evaluate("() => window.__devmockConn.replug()")
+    page.wait_for_function(
+        "() => __cockpit.store.connection.state === 'connected'", timeout=8000
+    )
+    page.wait_for_timeout(1200)  # room for a (wrong) eager recommit to land
+    paused_state = page.evaluate(
+        f"""() => {{
+          const h = __cockpit.histories.get({VEL!r});
+          let w = null; __cockpit.forEachWidget(x => {{ w = w || x; }});
+          return {{
+            installs: (window.__devmockInstalls || []).length,
+            size: h.size, newest: h.newestTick(),
+            anchorHeld: !!w.anchor,
+            readout: h.valueAt({frozen['tick']}),
+          }};
+        }}"""
+    )
+    check(
+        "conn_001 paused reconnect defers the recommit (no install, histories frozen)",
+        paused_state["installs"] == installs_b
+        and paused_state["size"] == at_pull["size"]
+        and paused_state["newest"] == at_pull["newest"],
+        (installs_b, at_pull, paused_state),
+    )
+    check(
+        "views_008 frozen readout still matches the frozen history after reconnect",
+        paused_state["readout"] == frozen["value"] and paused_state["anchorHeld"],
+        (frozen["value"], paused_state["readout"]),
+    )
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.wait_for_function(
+        f"() => (window.__devmockInstalls || []).length > {installs_b}", timeout=6000
+    )
+    page.wait_for_timeout(900)  # settle: room for any duplicate install
+    resumed = page.evaluate(
+        f"""() => {{
+          let w = null; __cockpit.forEachWidget(x => {{ w = w || x; }});
+          return {{
+            installs: (window.__devmockInstalls || []).length - {installs_b},
+            anchorHeld: !!w.anchor,
+          }};
+        }}"""
+    )
+    check(
+        "conn_001 resume fires the deferred recommit exactly once and releases the anchor",
+        resumed["installs"] == 1 and not resumed["anchorHeld"],
+        resumed,
+    )
+    page.wait_for_function(
+        f"() => (__cockpit.histories.get({VEL!r})?.size || 0) > 100", timeout=8000
+    )
+
+    # ── zoom hotkeys vs a focused title editor (capture-phase handler):
+    #    Ctrl+'-' zooms while typing still reaches the editor ──
+    wid14 = page.evaluate(
+        "() => { const w = __cockpit.addWidget({ type: 'plot', signals: [] }); return w.cfg.id; }"
+    )
+    page.evaluate(
+        """(wid) => {
+          let w = null; __cockpit.forEachWidget(x => { if (x.cfg.id === wid) w = x; });
+          w.el.querySelector('.widget-title').click();
+        }""",
+        wid14,
+    )
+    page.wait_for_selector(".widget-title-edit")
+    page.keyboard.type("My plot")
+    page.keyboard.down("Control")
+    page.keyboard.press("-")
+    page.keyboard.up("Control")
+    zoom_in_editor = page.evaluate("() => document.body.style.zoom")
+    typed = page.evaluate("() => document.querySelector('.widget-title-edit')?.value")
+    check(
+        "ui zoom works while the title editor is focused",
+        zoom_in_editor == "0.91" and typed == "My plot",
+        (zoom_in_editor, typed),
+    )
+    page.keyboard.type("!")
+    typed2 = page.evaluate("() => document.querySelector('.widget-title-edit')?.value")
+    check("typing still reaches the title editor after a zoom combo", typed2 == "My plot!", typed2)
+    page.keyboard.press("Escape")
+    page.keyboard.down("Control")
+    page.keyboard.press("0")
+    page.keyboard.up("Control")
 
 
 BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"

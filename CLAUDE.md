@@ -12,14 +12,26 @@ and an AS5048 magnetic rotor encoder, with on-device user controls (knob +
 mode button + RGB status LEDs) for standalone operation. Hardware is designed
 in **KiCad 10**, currently frozen pending firmware work.
 
-Two software components are planned. The firmware **foundation platform is
-complete** — a full, spec'd + traced hw/io/dev/app driver stack (clocks,
-GPIO, ADC, DMA, SPI, timers, USB CDC, op-amps, encoder, LED ring, button,
-serial) with all 10 board analog inputs bench-verified in engineering units.
-No motor-drive or control-application code exists yet (that is the next
-sprint); the desktop app is not started. Build system is fully stood up
-(CMake + Ninja, dual-target embedded + native for SIL — see **Build System**
-below).
+Both software components exist and run on the bench. The **firmware**
+carries the full spec'd + traced hw/io/dev/app driver stack (clocks,
+GPIO, ADC, DMA, SPI, I2C, timers, USB CDC, op-amps, encoder, LED ring,
+button, serial — all 10 board analog inputs bench-verified in
+engineering units), first motor drive (app_motorControl six-step
+trapezoidal through the STSPIN32G4 gate driver; V/f sinusoidal specced
+but not yet implemented), USB-PD sink monitoring, overcurrent +
+encoder-fault protection, and a protobuf-over-USB-CDC protocol
+(telemetry, signal trace engine, log stream, firmware identity). The
+**desktop app** (`sw/gui`, Tauri 2) ships the observability slice:
+connect + build-identity gate, DWARF signal picker, watch panel,
+WebGL-rendered live plots with honest min/max decimation, shared cursor
++ comparison cursor, value table, free-position widget canvas, session
+restore — 29 blind-audited `app~` specs, all impl+test covered, with a
+170-check playwright suite (`sw/gui/tests/test_views.py`). An SIL
+harness (`sw/sil`) exercises the native firmware build (protocol, trace
+engine, server). Build system is fully stood up (CMake + Ninja,
+dual-target embedded + native for SIL — see **Build System** below);
+`.github/workflows/` carries `ci.yml` (firmware + SIL, 3 OS) and
+`app.yml` (desktop app, Windows + macOS).
 
 - **Firmware** — C/C++ on FreeRTOS, on the STM32G431. Owns the device
   experience — control loops, estimator, mode FSM, on-device UI, persistence.
@@ -55,6 +67,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │   ├── CMSIS/                ARM Cortex-M std headers (vendor)
 │   │   │   ├── STM32G4xx_HAL_Driver/ ST HAL driver (vendor, embedded only)
 │   │   │   ├── Unity/                Test framework (vendor, native only)
+│   │   │   ├── FreeRTOS/  nanopb/  tinyusb/   (vendor: kernel, protobuf, USB)
 │   │   │   └── shared/               OUR library code, layered app/dev/io/hw/lib
 │   │   │       ├── lib/build/        BUILD_TARGET_* constants
 │   │   │       ├── lib/types/        lib_types.h (uint8_t, bool, size_t, ...)
@@ -62,18 +75,22 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── lib/ringbuf/      Demo library + Unity tests
 │   │   │       ├── hw/               Channelized HW modules:
 │   │   │       │   ├── systemClock/  systemClock_init (single-instance)
-│   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  TIM/  USB/  OPAMP/  (hw-layer drivers)
+│   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  I2C/  TIM/  USB/  OPAMP/  (hw-layer drivers)
 │   │   │       │   └── stm32g4/      Family glue (system_, syscalls, sysmem)
-│   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial, ...)
-│   │   │       ├── dev/              Device drivers (switch, ...)
-│   │   │       └── app/              App-layer modules (rgbLedRing, ...)
+│   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial,
+│   │   │       │                     bridge, i2c, COBSFrame, ...)
+│   │   │       ├── dev/              Device drivers (switch, gateDriver, CYPD3177)
+│   │   │       └── app/              App-layer modules (rgbLedRing, motorControl,
+│   │   │                             server)
 │   │   └── rust/         Rust libraries, workspace-less path deps:
 │   │       ├── prng/         Deterministic PRNG (SIL models)
 │   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
 │   │       ├── pcs_wire/     Protocol wire codec (COBS+CRC frames, deframers)
 │   │       └── pcs_proto/    prost schema bindings (protox — no protoc needed)
+│   ├── proto/            board.proto — board-specific protobuf schema
 │   ├── gui/              Desktop operator app (Tauri 2: Rust core `src-tauri/`
-│   │                     + static webview frontend `dist/`; own workspace)
+│   │                     + static webview frontend `dist/`, no build step;
+│   │                     playwright suite in `tests/`; own workspace)
 │   ├── sil/              SIL harness workspace (voyant + pcs_bldc_sil)
 │   └── fw/               Firmware project (pcs_bldc-specific integration)
 │       ├── stm32cube/g4/ STM32CubeMX-generated reference (not built directly)
@@ -83,23 +100,27 @@ The project uses **spec-driven development with end-to-end traceability** via
 │           │   ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
 │           │   ├── sim/          STATIC fw_hw placeholder for native build
 │           │   ├── systemClock/  HW_systemClock_config.{h,c}
-│           │   └── GPIO/ ADC/ DMA/ SPI/ TIM/ OPAMP/  HW_<Module>_channels.{h,c}
-│           ├── io/       pcs_bldc IO-layer configs (AS5048, SK6805, serial)
-│           ├── dev/      pcs_bldc device configs (switch)
-│           └── app/      pcs_bldc app-layer configs (rgbLedRing)
+│           │   └── GPIO/ ADC/ DMA/ SPI/ I2C/ TIM/ OPAMP/  HW_<Module>_channels.{h,c}
+│           ├── io/       pcs_bldc IO-layer configs (AS5048, SK6805, serial,
+│           │             bridge, i2c, COBSFrame)
+│           ├── dev/      pcs_bldc device configs (switch, gateDriver, CYPD3177)
+│           └── app/      pcs_bldc app-layer configs (rgbLedRing, motorControl,
+│                         server, userControls)
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC
 │   ├── system/            sys~ requirements (system-level)
-│   │   ├── overview.md    System overview + arch/ops/persist anchor specs
-│   │   └── mc/            sys~mc_001 (BLDC drive: sensored + sensorless)
-│   ├── firmware/          fw~ requirements (STM32G4 firmware) — hal/est/obs/ui/conn
-│   └── desktop-app/       app~ requirements (Rust GUI) — empty so far
+│   │   ├── overview.md    System overview + arch/persist anchor specs
+│   │   └── conn/ mc/ obs/ ops/ pd/ safety/   (sys~ topic folders)
+│   ├── firmware/          fw~ requirements — hal/io/est/obs/ui/conn/mc/pd/safety
+│   └── desktop-app/       app~ requirements — arch/conn/obs/views (29 specs)
 │
 ├── docs/                 Project documentation
 │   ├── setup.md           Full first-time-setup guide (Win + macOS)
 │   ├── spec-system.md     Spec convention + OFT integration (source of truth)
+│   ├── spec-style.md      Spec wording rules (companion to spec-system.md)
 │   ├── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
+│   ├── backlog.md         Firmware/tooling backlog
 │   └── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
 │
 └── tools/                Project tooling
@@ -115,8 +136,8 @@ The project uses **spec-driven development with end-to-end traceability** via
                           top of sw/lib/c/, board-specific files at
                           sw/fw/src/hw/stm32g4/)
 
-(Build outputs: build/<target>-<source-basename>/, gitignored. Real fw
-source code, sim/, notebooks/ — created when that work begins.)
+(Build outputs: build/<target>-<source-basename>/, gitignored.
+notebooks/ — created when that work begins.)
 ```
 
 The schematic hierarchy under `hw/` is:
@@ -169,8 +190,8 @@ file organization, OFT integration, and anti-bloat rules all live there.
 
 - `type` ∈ `{sys, fw, app}`.
 - `topic` is from the canonical table in `docs/spec-system.md` (current
-  topics: `arch`, `hal`, `mc`, `est`, `obs`, `ui`, `ops`, `safety`, `pd`,
-  `persist`, `conn`, `views`).
+  topics: `arch`, `hal`, `io`, `mc`, `est`, `obs`, `ui`, `ops`, `safety`,
+  `pd`, `persist`, `conn`, `views`).
 - `subtopic` is an optional per-area number space under a topic. Used by
   `hal` (one per peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, ...); most
   topics omit it.
@@ -197,40 +218,47 @@ sufficient to make the tooling aware of a new topic.
 
 ### Current spec state
 
-- `specs/system/overview.md` — drafted, with 6 anchor `sys~` specs:
-  `sys~arch_001..005` (standalone device, app-as-auxiliary, USB CDC,
-  multi-device stretch, ...), `sys~mc_001` (`mc/motor-control.md` — drive a
-  BLDC via sensored + sensorless control), `sys~ops_001` (operating-mode
-  FSM), `sys~persist_001` (NVRAM in flash). These `sys~` anchors are
-  intentionally uncovered.
+- `specs/system/` — 29 `sys~` specs: anchors in `overview.md`
+  (`sys~arch_001..005`, `sys~persist_001`) plus topic folders (`conn`,
+  `mc`, `obs`, `ops`, `pd`, `safety`). 22 are intentionally uncovered
+  (system-level tests deferred to the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
     file per peripheral, per-peripheral sub-topic IDs).
   - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
-    `conn/serial.md` (IO_serial over USB CDC), `io/i2c.md` (IO_i2c) +
+    `conn/serial.md` (IO_serial over USB CDC) + the `conn/` trace-engine
+    set (`fw~conn_trace_*`), `io/i2c.md` (IO_i2c) +
     `io/bridge.md` (IO_bridge three-phase actuation + current sense),
     `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
     + `mc/six-step.md` + `mc/vf-sinusoidal.md` (app_motorControl),
     `safety/overcurrent.md` + `safety/encoder-fault.md`.
-- 105 spec defs across 31 files; `tools/validate-specs.py` clean. Trace with
-  `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not scanned
-  without the source dirs). The intentional (ahead-of-impl) defect baseline
-  is 22: the 15 `sys~` anchors, `fw~hal_adc_003`/`fw~hal_adc_008`
-  (timer-triggered injected + async completion) + `fw~hal_tim_006` (TRGO)
-  — reserved for the interrupt-driven-control sprint, `fw~mc_007` (gesture
-  map) + `fw~mc_010` (V/f) — future app methods, and `fw~hal_tim_005`/`_007`
-  (dead-time, break input — sim modeling pending). Both `[test->]` and
+- **Desktop-app specs** (`specs/desktop-app/`) — 29 `app~` specs across
+  `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,
+  signal picker + identity gate + trace client, plots with decimation +
+  render budget, cursor + comparison anchor/deltas, table + value
+  rendering, timeline, watch panel, workspace + widget titles). All
+  impl+test covered; `[impl->]`/`[test->]` tags live in `.js` and `.py`
+  files too, and the UI verification surface is the playwright suite
+  `sw/gui/tests/test_views.py` (170 checks over the devmock).
+- 172 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
+  with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
+  scanned without the source dirs). The intentional defect baseline is
+  **31**: the 22 `sys~` anchors; 7 reserved `fw~` specs —
+  `fw~hal_adc_003`/`fw~hal_adc_008` (timer-triggered injected + async
+  completion) + `fw~hal_tim_006` (TRGO) for the interrupt-driven-control
+  sprint, `fw~mc_007` (gesture map) + `fw~mc_010` (V/f) future app
+  methods, `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
+  pending); and `app~arch_001` + `app~conn_001` (implemented; their tests
+  need live hardware). Anything else = investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
-- `specs/desktop-app/` — empty until the app work begins.
 
 ### Decisions explicitly deferred (will become specs when made)
 
-- USB CDC framing protocol — custom binary vs schema-driven (gRPC+protobuf
-  over stream). Currently TBD in `specs/system/overview.md`.
-- NVRAM implementation — littlefs vs emulated EEPROM middleware. Currently
-  TBD in `specs/system/overview.md`.
+- NVRAM implementation — littlefs vs emulated EEPROM middleware. Still an
+  open implementation choice; see the Persistence section of
+  `specs/system/overview.md`.
 
 ## Build System (firmware)
 
@@ -483,9 +511,10 @@ Lives at the top of `sw/lib/c/` (one directory per project), each with
 its own hand-written `CMakeLists.txt` defining the consumable target:
 `Unity/` (test framework), `CMSIS/` (ARM Cortex-M standard headers, target
 `cmsis`), `STM32G4xx_HAL_Driver/` (ST HAL driver, target `stm32g4_hal`),
-`FreeRTOS/` (when added), `littlefs/` (when added). The conversion
-script's surgical wipe pattern preserves these `CMakeLists.txt` files
-across CubeMX regenerations.
+`FreeRTOS/` (kernel), `nanopb/` (protobuf runtime), `tinyusb/` (USB
+device stack), `littlefs/` (when added). The conversion script's
+surgical wipe pattern preserves these `CMakeLists.txt` files across
+CubeMX regenerations.
 
 A few small vendor-shipped support files (`system_stm32g4xx.c`,
 `syscalls.c`, `sysmem.c`) live at `sw/lib/c/shared/hw/stm32g4/` rather
@@ -572,10 +601,12 @@ them:
 .venv/bin/python <script>       # on macOS
 ```
 
-Installed packages (from `requirements.txt`): `requests`, `playwright`.
-After install, run `.venv/Scripts/playwright install chromium` (Windows)
-or `.venv/bin/playwright install chromium` (macOS) for the Playwright
-browser fallback used by some datasheet sites.
+Installed packages (from `requirements.txt`): `requests`, `playwright`,
+`nanopb`, `grpcio-tools`, `numpy`, `asammdf`, `matplotlib`, `ipykernel`,
+`pyserial`. After install, run `.venv/Scripts/playwright install
+chromium` (Windows) or `.venv/bin/playwright install chromium` (macOS) —
+Playwright drives the app's UI test suite and is the browser fallback
+used by some datasheet sites.
 
 ## Key Components
 
@@ -606,6 +637,12 @@ of this file is the orientation; `tools/build_native.sh` and
 `tools/build_arm.sh` are the entry points; the demo at
 `sw/lib/c/shared/lib/ringbuf/` is the canonical example of the module/test layout
 to copy.
+
+For desktop-app work, `specs/desktop-app/README.md` is the spec
+orientation, the frontend modules under `sw/gui/dist/js/` and the Rust
+core under `sw/gui/src-tauri/src/` are the code, and the playwright
+suite `sw/gui/tests/test_views.py` (run with the project venv; serves
+`dist/` on localhost over the devmock) is the verification surface.
 
 For writing or reviewing C code, [`docs/c-coding-conventions.md`](docs/c-coding-conventions.md)
 is required reading — it's the source of truth for naming,

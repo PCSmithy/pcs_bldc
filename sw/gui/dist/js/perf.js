@@ -14,6 +14,7 @@ const DISCONTINUITY_MS = 1000;
 const frames = [];  // rAF timestamps (ms, performance.now domain)
 const batches = []; // [t, durMs] per samples batch
 let draws = 0;      // cumulative renderer draws (glrender reports each one)
+let scrolls = 0;    // cumulative live-scroll redraws (cached geometry)
 let rafId = null;
 
 function loop(now) {
@@ -38,6 +39,14 @@ export function initPerf() {
  *  tell "frames ticked" apart from "traces actually drew"). */
 export function markDraw() {
   draws++;
+}
+
+/** Record one live-scroll redraw (cached geometry at a new translation).
+ *  Counted apart from `draws` so the views_015 draws-per-batch check keeps
+ *  meaning "geometry rebuilt and drew" — a scroll is a visual update, not
+ *  fresh data. */
+export function markScroll() {
+  scrolls++;
 }
 
 /** Record one samples-batch handler run of `ms` main-thread milliseconds. */
@@ -73,7 +82,7 @@ export function perfSnapshot() {
     }
     batchAvg /= batches.length;
   }
-  return { fps, worst_ms: worst, slow_frames: slow, batch_avg_ms: batchAvg, batch_max_ms: batchMax, draws };
+  return { fps, worst_ms: worst, slow_frames: slow, batch_avg_ms: batchAvg, batch_max_ms: batchMax, draws, scrolls };
 }
 
 /** The strip cell's machine half (chrome.js owns the cell markup; this

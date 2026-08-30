@@ -261,6 +261,18 @@
     to right, var(--color-accent-2-400) 0 5px, transparent 5px 9px);
   pointer-events: none;
 }
+/* the Ctrl-held anchor candidate (app~views_019): the anchor family's voice
+   at a whisper — shorter dashes, half strength — so candidate vs dropped
+   read apart instantly. Never a release hit target. */
+.anchor-preview-y {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right, rgba(var(--ok-rgb), 0.5) 0 3px, transparent 3px 9px);
+  pointer-events: none;
+}
 
 /* the readout's delta figures (app~views_018) share the anchor's voice */
 .readout-delta {
@@ -358,6 +370,69 @@
   font-size: 12.5px;
   color: var(--color-accent-2-300);
   padding: 3px 0;
+}
+
+/* ── widget launcher (app~views_004's add-plot/add-table affordance): a
+   floating "+" over the canvas corner, whisper-quiet until hovered. Above
+   widgets (the canvas is its own z-index:0 stacking context), below the
+   gate (30) and scrim (40). ── */
+.widget-launcher {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.launcher-fab {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--hair-rgb), 0.18);
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  color: var(--color-neutral-300);
+  font: 300 24px "Figtree", system-ui, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.32);
+  opacity: 0.3;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.launcher-fab:hover,
+.launcher-fab[aria-expanded="true"] {
+  opacity: 1;
+  transform: scale(1.06);
+  color: var(--color-accent-300);
+}
+.launcher-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-card);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  padding: 5px;
+  gap: 2px;
+}
+.launcher-menu[hidden] { display: none !important; }
+.launcher-menu button {
+  background: none;
+  border: 0;
+  border-radius: var(--r-row);
+  color: var(--color-neutral-300);
+  font: 500 12px "Figtree", system-ui, sans-serif;
+  text-align: left;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.launcher-menu button:hover {
+  background: var(--ink-raised);
+  color: var(--color-neutral-200);
 }
 
 /* ── timeline bar (app~views_008): span pills + pause/resume ─────────────── */
@@ -572,6 +647,16 @@
   border-bottom: 1px solid rgba(var(--hair-rgb), 0.06);
 }
 .watch-row:last-child { border-bottom: none; }
+/* the row's drag handle: color + name only — the seg and remove controls
+   stay plain buttons, so a press there never starts a drag */
+.watch-drag {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: grab;
+}
 .watch-name {
   flex: 1;
   min-width: 0;

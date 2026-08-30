@@ -12,13 +12,25 @@ like end-to-end.
 - **Hardware:** design finalized, layout complete. The board is frozen pending
   firmware work and will only be revised if firmware exposes a project-blocking
   issue.
-- **Firmware:** foundation platform complete — a spec'd and traced driver
-  stack (clocks, GPIO, ADC, DMA, SPI, timers, USB CDC, op-amps, encoder, LED
-  ring, button, serial) with all board sensing bench-verified in engineering
-  units and streamed over USB telemetry. Next up is the motor-control sprint
-  (see [`docs/motor-sprint.md`](docs/motor-sprint.md)); the gate driver has
-  not yet been driven.
-- **Simulation and analysis tooling:** not yet started.
+- **Firmware:** foundation platform plus first motor drive — a spec'd and
+  traced driver stack (clocks, GPIO, ADC, DMA, SPI, I2C, timers, USB CDC,
+  op-amps, encoder, LED ring, button, serial) with all board sensing
+  bench-verified in engineering units; six-step trapezoidal drive spinning
+  the motor through the STSPIN32G4 gate driver, with USB-PD sink
+  monitoring and overcurrent / encoder-fault protection; and a
+  protobuf-over-USB protocol carrying telemetry, a signal trace engine,
+  and the log stream. FOC and estimation are ahead (see
+  [`docs/motor-sprint.md`](docs/motor-sprint.md)).
+- **Desktop app:** observability slice working on the bench — connect with
+  a firmware-identity gate, DWARF-driven signal picker, live WebGL plots
+  with honest min/max decimation, pause/zoom timeline with a comparison
+  cursor, value table, and session restore. Spec-driven like the firmware
+  ([`specs/desktop-app/`](specs/desktop-app/)), verified by a 170-check
+  UI suite.
+- **Simulation and analysis tooling:** an SIL harness (`sw/sil`) exercises
+  the native firmware build (protocol, trace engine, server); the
+  high-fidelity motor-model SIL and the analysis notebooks are not yet
+  started.
 
 The hardware is a USB-PD-powered BLDC controller built around an STM32G431 MCU,
 an STSPIN32G4 integrated gate driver, and an AS5048 magnetic rotor encoder. It
@@ -160,12 +172,11 @@ Explicitly out of scope, to keep the project tractable:
 |----------------|-----------------------------------------------------------|
 | `hw/`          | KiCad 10 schematic and PCB design                         |
 | `datasheets/`  | Reference PDFs for major ICs                              |
-| `docs/`        | Project-level documentation (spec system, etc.)           |
-| `specs/`       | Spec files (created as firmware work begins)              |
-| `fw/`          | Firmware source (created as firmware work begins)         |
-| `sim/`         | SIL model and benchmark scenarios (TBD)                   |
-| `notebooks/`   | Jupyter analysis notebooks (TBD)                          |
-| `tools/`       | Desktop visualizer / control app and other tooling (TBD)  |
+| `docs/`        | Project-level documentation (spec system, setup, backlog) |
+| `specs/`       | OFT spec tree: `sys~` / `fw~` / `app~` requirements       |
+| `sw/`          | All software: `fw/` firmware, `gui/` desktop app, `sil/` SIL harness, `lib/` shared C + Rust libraries, `proto/` board schema, `cmake/` toolchains |
+| `tools/`       | Project tooling: OFT wrapper, spec scripts, build scripts |
+| `notebooks/`   | Jupyter analysis notebooks (planned)                      |
 
 `CLAUDE.md` contains working notes used by the AI assistant on this project.
 

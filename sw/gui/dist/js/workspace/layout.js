@@ -44,6 +44,7 @@ export function initLayout() {
   wireDrops(workspace);
   wireMove();
   wireResize();
+  wireLauncher(workspace);
 
   subscribe("workspace-create", (kind) => {
     if (kind === "new-plot") addWidget({ type: "plot", signals: [] });
@@ -63,6 +64,43 @@ function syncEmptyState() {
   const empty = document.querySelector(".workspace-empty");
   canvas.hidden = widgets.length === 0;
   empty.hidden = widgets.length > 0;
+}
+
+/** The workspace's widget launcher (app~views_004's add-plot/add-table
+ *  rows): a floating "+" that opens a one-line-per-widget-type menu. The
+ *  menu items carry data-workspace, so main.js's workspace-create routing
+ *  fires them exactly like the empty-state buttons; selection lands through
+ *  the positionless addWidget default — an unoccupied lattice spot below
+ *  the furthest widget. */
+function wireLauncher(workspace) {
+  const launcher = document.createElement("div");
+  launcher.className = "widget-launcher";
+  launcher.innerHTML = `
+    <div class="launcher-menu" role="menu" hidden>
+      <button role="menuitem" data-workspace="new-plot">Add plot</button>
+      <button role="menuitem" data-workspace="new-table">Add table</button>
+    </div>
+    <button class="launcher-fab" aria-label="Add a widget" aria-haspopup="menu"
+      aria-expanded="false">+</button>`;
+  workspace.appendChild(launcher);
+  const menu = launcher.querySelector(".launcher-menu");
+  const fab = launcher.querySelector(".launcher-fab");
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    fab.setAttribute("aria-expanded", String(open));
+  };
+  fab.addEventListener("click", () => setOpen(menu.hidden));
+  // A selection bubbles to the workspace-create router; the menu closes on
+  // it, on any outside press, and on Escape.
+  menu.addEventListener("click", (ev) => {
+    if (ev.target.closest("[data-workspace]")) setOpen(false);
+  });
+  document.addEventListener("pointerdown", (ev) => {
+    if (!menu.hidden && !ev.target.closest(".widget-launcher")) setOpen(false);
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !menu.hidden) setOpen(false);
+  });
 }
 
 const hooks = {

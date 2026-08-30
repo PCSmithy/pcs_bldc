@@ -72,6 +72,9 @@ function emit(event, payload) {
 }
 
 let connected = false;
+// Cable-pull simulation state (test surface, see __devmockConn below).
+let portPresent = true;
+let failConnects = 0;
 
 export const mock = {
   async invoke(cmd, args) {
@@ -80,10 +83,19 @@ export const mock = {
         if (FORCED === "lost") return [];
         if (FORCED === "coldboot-noport") return [{ name: "COM3", kind: "other" }];
         return [
-          { name: "COM8", kind: "USB Serial Device [cafe:4001]" },
+          ...(portPresent ? [{ name: "COM8", kind: "USB Serial Device [cafe:4001]" }] : []),
           { name: "COM3", kind: "other" },
         ];
       case "connect":
+        // Test surface: every connect attempt, for doubled-connect assertions.
+        window.__devmockConnects = (window.__devmockConnects || 0) + 1;
+        if (args.port === "COM8" && !portPresent) throw `open ${args.port}: not found`;
+        if (failConnects > 0) {
+          // A replugged port rejects opens while the OS finishes device
+          // setup — the real Windows behavior the reconnect poll must ride.
+          failConnects--;
+          throw `open ${args.port}: access denied`;
+        }
         connected = true;
         emit("connection", { state: "connected", port: args.port, build_id: DEVICE_BUILD });
         return DEVICE_BUILD;
@@ -240,3 +252,19 @@ setTimeout(() => {
     emit("connection", { state: "lost", port: null, build_id: null });
   }
 }, 400);
+
+// Test surface: a scripted cable pull/replug cycle, mirroring the Tauri
+// side's behavior — the reader thread emits "lost", the port drops out of
+// enumeration, and the board (DTR gone) clears its own watch list.
+window.__devmockConn = {
+  pull() {
+    connected = false;
+    portPresent = false;
+    watchList = []; // the board's list dies with the CDC line state
+    emit("connection", { state: "lost", port: null, build_id: null });
+  },
+  replug({ failConnects: n = 0 } = {}) {
+    portPresent = true;
+    failConnects = n;
+  },
+};

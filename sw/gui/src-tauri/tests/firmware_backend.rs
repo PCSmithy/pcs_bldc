@@ -2,6 +2,9 @@
 //! message when the DLL hasn't been built). The module is pulled in by path
 //! because the app is a binary crate; main.rs declares the same file.
 
+// The harness exercises a subset of the module; items the app binary
+// consumes (commands, serde types) count as dead in THIS compilation.
+#[allow(dead_code)]
 #[path = "../src/firmware.rs"]
 mod firmware;
 

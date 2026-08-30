@@ -35,8 +35,10 @@ function renderRows() {
       const m = meta.get(path);
       return `
       <div class="watch-row" data-path="${esc(path)}" title="${esc(path)}">
-        <span class="legend-bar" style="background:${w.color}"></span>
-        <span class="watch-name mono">${esc(path)}</span>
+        <span class="watch-drag" draggable="true">
+          <span class="legend-bar" style="background:${w.color}"></span>
+          <span class="watch-name mono">${esc(path)}</span>
+        </span>
         <span class="watch-seg" role="group" aria-label="Sample period">
           ${PERIODS.map((p) => `<button class="watch-seg-opt ${p === w.period_ms ? "watch-seg-opt--on" : ""}"
               data-period="${p}">${p}</button>`).join("")}
@@ -78,6 +80,18 @@ export function initWatchPanel() {
     const path = row.dataset.path;
     if (ev.target.closest(".watch-remove")) removeEverywhere(path);
     else if (ev.target.dataset.period) setPeriod(path, +ev.target.dataset.period);
+  });
+
+  // Watch rows are drag sources like picker rows — the same "text/x-signal"
+  // payload the workspace drop targets consume — so plots and tables can be
+  // rearranged from the persistent list without re-searching. The handle is
+  // the color+name region only; the period seg and remove control stay
+  // plain buttons.
+  host.addEventListener("dragstart", (ev) => {
+    const row = ev.target.closest(".watch-row");
+    if (!row || !ev.target.closest(".watch-drag")) return;
+    ev.dataTransfer.setData("text/x-signal", row.dataset.path);
+    ev.dataTransfer.effectAllowed = "copy";
   });
 
   subscribe("watched", renderRows);

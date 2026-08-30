@@ -13,6 +13,7 @@ import { appearanceOf, setAppearance, resolvedColor } from "./appearance.js";
 import { evalMonotoneRun, monotoneTangents } from "./interp.js";
 import {
   initTimeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow,
+  displayWindow, noteLiveEdge, advanceDisplayClock, resetDisplayClock,
 } from "./timeline.js";
 import { markBatch, perfSnapshot } from "../perf.js";
 
@@ -32,6 +33,9 @@ export function initWorkspace() {
   const refreshAll = () => {
     refreshQueued = false;
     const t0 = performance.now();
+    // Read pass before write pass: measuring every host first means the
+    // cycle forces one layout flush, not one per widget.
+    forEachWidget((w) => w.measureHost?.());
     forEachWidget((w) => (w.refreshBatch ?? w.refresh).call(w));
     markBatch(pendingAppendMs + (performance.now() - t0));
     pendingAppendMs = 0;
@@ -45,12 +49,47 @@ export function initWorkspace() {
       const h = historyFor(sig.path, w.period_ms);
       h.append(sig.points);
     }
+    noteLiveEdge();
     pendingAppendMs += performance.now() - t0;
     if (!refreshQueued) {
       refreshQueued = true;
       requestAnimationFrame(refreshAll);
     }
+    armScroll();
   });
+
+  // ── live smooth scroll ────────────────────────────────────────────────
+  // Geometry rebuilds at batch rate (refreshAll above), but the window
+  // GLIDES at display rate: each frame advances the display clock and
+  // redraws every plot's cached geometry at the new X translation —
+  // uniforms + draw calls, no rebuild. The loop parks itself when the
+  // clock stops moving (paused, stalled stream, disconnect — the lead
+  // clamp freezes the estimate) and any samples batch or timeline change
+  // re-arms it.
+  let scrollRaf = null;
+  let idleFrames = 0;
+  const scrollPass = (now) => {
+    scrollRaf = null;
+    if (store.timeline.mode === "paused") return; // parked; notify re-arms
+    if (advanceDisplayClock(now)) {
+      idleFrames = 0;
+      forEachWidget((w) => w.scrollTick?.());
+    } else if (++idleFrames > 30) {
+      return; // frozen: park until the next batch
+    }
+    scrollRaf = requestAnimationFrame(scrollPass);
+  };
+  const armScroll = () => {
+    if (scrollRaf === null && store.timeline.mode !== "paused") {
+      idleFrames = 0;
+      scrollRaf = requestAnimationFrame(scrollPass);
+    }
+  };
+  subscribe("timeline", armScroll);
+  // A stream restart resets the device tick domain to zero: the display
+  // clock resets with it (the defensive reset in noteLiveEdge would also
+  // catch it, one batch later).
+  subscribe("stream-restart", resetDisplayClock);
 
   subscribe("watched", () => forEachWidget((w) => w.renderLegend?.() || w.refresh()));
   window.addEventListener("resize", () => forEachWidget((w) => w.refresh()));
@@ -87,7 +126,7 @@ export function initWorkspace() {
   window.__cockpit = {
     store, api, notify, addWatch, setPeriod, removeWatch, commit,
     addWidget, forEachWidget, setCursorTick, clearCursor, cursor, histories,
-    timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow },
+    timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow, displayWindow },
     appearance: { of: appearanceOf, set: setAppearance, resolvedColor },
     interp: { evalMonotoneRun, monotoneTangents },
     perf: { snapshot: perfSnapshot },

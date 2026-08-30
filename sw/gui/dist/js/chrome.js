@@ -3,7 +3,7 @@
 
 import { icon } from "./icons.js";
 import { api, store, subscribe, prefs } from "./state.js";
-import { pickFile } from "./bridge.js";
+import { pickFile, invoke, isTauri } from "./bridge.js";
 import { perfCellText } from "./perf.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -28,15 +28,19 @@ function connPortChip() {
         <button class="btn btn-secondary" data-act="disconnect">Disconnect</button>
       </span>`;
   }
-  if (c.state === "lost") {
+  if (c.state === "lost" || (c.state === "connecting" && reconnectInFlight)) {
     // Designed here (state missing from the handoff): warn surface, no
-    // animation, the reconnect story in words.
+    // animation, the reconnect story in words. A reconnect ATTEMPT keeps
+    // this pill (with a progress note) — flipping to the picker once a
+    // second read as a strobe on the bench.
+    const attempting = c.state === "connecting";
     return `
       <span class="conn-port conn-port--lost">
         <span class="conn-port-dot"></span>
         <span class="conn-port-path">${esc(store.lastPort ?? "—")}</span>
-        <span class="conn-identity-meta">port lost — reconnecting when it returns</span>
-        <button class="btn btn-secondary" data-act="reconnect">Reconnect now</button>
+        <span class="conn-identity-meta">${attempting ? "reconnecting…" : "port lost — reconnecting when it returns"}</span>
+        ${!attempting && store.connectError ? `<span class="conn-error">${esc(store.connectError)}</span>` : ""}
+        <button class="btn btn-secondary" data-act="reconnect" ${attempting ? "disabled" : ""}>Reconnect now</button>
       </span>`;
   }
   // pre-connection: the pill becomes the picker
@@ -206,29 +210,111 @@ async function chooseElf() {
 }
 
 let reconnectTimer = null;
+// One in-flight guard shared by the poll and the "Reconnect now" button:
+// the core's connect() begins with a session teardown, so a second attempt
+// racing a first would tear down whatever the first just established.
+let reconnectInFlight = false;
+
+/** One guarded reconnect attempt at the last port (poll tick + button).
+ *  The claim is taken SYNCHRONOUSLY (no await before it), so two callers
+ *  can never both reach connect — the core's connect() begins with a
+ *  teardown, and a doubled attempt would kill the session the first one
+ *  just established. Only acts from the lost state: a stale button click
+ *  must never tear down a healthy session either. */
+async function attemptReconnect() {
+  if (reconnectInFlight || !store.lastPort) return;
+  if (store.connection.state !== "lost") return;
+  reconnectInFlight = true;
+  renderConnBar(); // the lost pill's "reconnecting…" note keys on the flag
+  try {
+    await api.connect(store.lastPort);
+  } catch {
+    /* port present but not ready yet — the poll retries */
+  } finally {
+    reconnectInFlight = false;
+    renderConnBar();
+  }
+}
+
+// [impl->app~conn_001~1] the retry loop behind "re-opens without user
+// action": poll while lost, reconnect when the port returns.
 function startReconnectPoll() {
-  // The port takes ~2 s to re-enumerate after a reset; poll until it is
-  // back, then reconnect without user action (app~conn_001's session spec —
-  // implemented core-side; this drives the retry loop).
+  // The port takes ~2 s to re-enumerate after a reset, and the first open
+  // after re-enumeration routinely fails while the OS finishes device
+  // setup — api.connect returns a failed lost-state attempt to "lost", so
+  // the poll survives it and retries. Race discipline: the lost state is
+  // re-checked after the list_ports await (which can outlive a 1 s tick on
+  // real Windows re-enumeration) — a manual reconnect landing mid-await
+  // must not be followed by a stale connect — and attemptReconnect's
+  // synchronous claim excludes doubled connects when ticks overlap. The
+  // claim deliberately does NOT span the list_ports await: that would
+  // deadlock the "Reconnect now" button behind a slow enumeration, and a
+  // doubled list_ports is harmless.
   if (reconnectTimer) return;
   reconnectTimer = setInterval(async () => {
+    if (reconnectInFlight || store.connection.state === "connecting") return;
     if (store.connection.state !== "lost") {
       clearInterval(reconnectTimer);
       reconnectTimer = null;
       return;
     }
     const ports = await api.listPorts();
+    if (store.connection.state !== "lost") return; // changed mid-await: stale tick
     if (store.lastPort && ports.some((p) => p.name === store.lastPort)) {
-      try {
-        await api.connect(store.lastPort);
-      } catch {
-        /* port present but not ready yet — next poll retries */
-      }
+      await attemptReconnect();
     }
   }, 1000);
 }
 
+// ── UI zoom (chrome ergonomics, unspecced like the render cell): Ctrl+'+'
+// / Ctrl+'-' / Ctrl+'0', Chrome/VS Code-style, persisted across launches.
+// Under Tauri the native webview zoom rescales everything crisply (a Rust
+// set_zoom command — WebView2 zoom factor / WKWebView page zoom); the
+// browser/devmock path falls back to body CSS zoom so the binding logic is
+// testable in the suite.
+
+const ZOOM_KEY = "cockpit.ui.zoom.v1";
+const ZOOM_STEP = 1.1;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.0;
+let uiZoom = 1;
+
+function applyUiZoom(factor) {
+  uiZoom = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, factor)) * 100) / 100;
+  if (isTauri) invoke("set_zoom", { factor: uiZoom }).catch(() => {});
+  else document.body.style.zoom = uiZoom === 1 ? "" : String(uiZoom);
+  prefs.set(ZOOM_KEY, uiZoom);
+}
+
+function initUiZoom() {
+  const saved = Number(prefs.get(ZOOM_KEY));
+  if (Number.isFinite(saved) && saved > 0 && saved !== 1) applyUiZoom(saved);
+  // Capture phase: focused editors (the widget title input) stopPropagation
+  // on bubble-phase keydown, which would starve this handler and let the
+  // webview's NATIVE Ctrl+±/0 accelerator fire unclamped, desyncing uiZoom.
+  // Capture runs before any bubble-phase stop; preventDefault still keeps
+  // the native accelerator from double-firing.
+  window.addEventListener(
+    "keydown",
+    (ev) => {
+      if (!ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      if (ev.key === "+" || ev.key === "=") {
+        ev.preventDefault();
+        applyUiZoom(uiZoom * ZOOM_STEP);
+      } else if (ev.key === "-" || ev.key === "_") {
+        ev.preventDefault();
+        applyUiZoom(uiZoom / ZOOM_STEP);
+      } else if (ev.key === "0") {
+        ev.preventDefault();
+        applyUiZoom(1);
+      }
+    },
+    true,
+  );
+}
+
 export function initChrome() {
+  initUiZoom();
   document.body.addEventListener("click", async (ev) => {
     const themePick = ev.target.closest("[data-theme-pick]");
     if (themePick) {
@@ -252,7 +338,7 @@ export function initChrome() {
         break;
       }
       case "reconnect":
-        if (store.lastPort) await api.connect(store.lastPort).catch(() => {});
+        await attemptReconnect();
         break;
       case "disconnect":
         await api.disconnect();
@@ -270,7 +356,10 @@ export function initChrome() {
     subscribe(topic, () => {
       renderConnBar();
       renderGate();
-      document.querySelector(".app-shell").classList.toggle("app-stale", store.connection.state === "lost");
+      const lostish =
+        store.connection.state === "lost" ||
+        (store.connection.state === "connecting" && reconnectInFlight);
+      document.querySelector(".app-shell").classList.toggle("app-stale", lostish);
       if (store.connection.state === "lost") startReconnectPoll();
     });
   }

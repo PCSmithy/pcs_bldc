@@ -13,10 +13,10 @@ import { histories, lowerBound } from "./history.js";
 import { meta } from "./watchflow.js";
 import { traceDashed } from "./colors.js";
 import { appearanceOf, resolvedColor } from "./appearance.js";
-import { GlTraces, buildTraceGeometry, parseColor, DOT_SIZE_PX } from "./glrender.js";
-import { decimateTable } from "./decimate.js";
+import { GlTraces, buildTraceGeometry, arcAtX, parseColor, DOT_SIZE_PX } from "./glrender.js";
+import { envelopeTable } from "./decimate.js";
 import { cursor, setCursorTick, clearCursor } from "./cursor.js";
-import { currentWindow, zoomAt, panBy, selectRange } from "./timeline.js";
+import { currentWindow, displayWindow, zoomAt, panBy, selectRange } from "./timeline.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor, updateTitle } from "./titlebar.js";
 
@@ -52,7 +52,24 @@ export class PlotWidget {
     this.pointed = null;    // transient pointed-trace path (app~views_012)
     this.pointedRaf = null;
     this.anchor = null;     // comparison anchor { path, tick, value } (app~views_017)
+    this.preview = null;    // Ctrl-held anchor candidate { path, tick, value } (app~views_019)
+    this._ptr = null;       // last pointer position over the canvas
+    this._ctrl = false;     // Ctrl state, tracked so a keypress with a still pointer previews too
     this.render();
+    // Ctrl can change without a pointer event (press/release with the mouse
+    // still, or released outside the window entirely — blur).
+    this._onKey = (ev) => {
+      if (ev.key !== "Control") return;
+      this._ctrl = ev.type === "keydown";
+      this.refreshPreview();
+    };
+    this._onBlur = () => {
+      this._ctrl = false;
+      this.refreshPreview();
+    };
+    window.addEventListener("keydown", this._onKey);
+    window.addEventListener("keyup", this._onKey);
+    window.addEventListener("blur", this._onBlur);
     this.unsubs = [
       subscribe("cursor", () => this.renderCursor()),
       subscribe("timeline", () => {
@@ -94,6 +111,7 @@ export class PlotWidget {
           <div class="cursor-line" hidden></div>
           <div class="anchor-line-x" hidden></div>
           <div class="anchor-line-y" hidden></div>
+          <div class="anchor-preview-y" hidden></div>
           <div class="cursor-readout" hidden></div>
         </div>
         <div class="y-axis y-axis--right" ${split ? "" : "hidden"}></div>
@@ -117,12 +135,16 @@ export class PlotWidget {
       const rect = canvas.getBoundingClientRect();
       const tick = Math.round(this.tickAtPx(ev.clientX - rect.left, rect.width));
       setCursorTick(tick);
+      this._ptr = { x: ev.clientX, y: ev.clientY };
+      this._ctrl = ev.ctrlKey;
       this.trackSelect(canvas, ev);
       this.trackPointed(ev.clientX, ev.clientY, canvas);
     });
     canvas.addEventListener("pointerleave", () => {
       clearCursor();
+      this._ptr = null;
       this.applyPointed(null);
+      this.refreshPreview();
     });
     this.wireTimelineActions(canvas);
 
@@ -200,9 +222,18 @@ export class PlotWidget {
 
   // ── pixel <-> data mapping (the renderer, cursor, and hit-tests share it) ──
 
+  /** The window on SCREEN this frame. Live, the display clock's smoothly
+   *  scrolled window (what the translated geometry shows — up to a lead
+   *  ahead of this.window, the batch-time geometry window); paused, the
+   *  frozen range. Every interaction mapping routes through this so the
+   *  cursor and hit-tests agree with the drawn translation. */
+  viewWindow() {
+    return store.timeline.mode === "paused" ? this.window : displayWindow();
+  }
+
   /** Tick at a canvas-relative x (css px). */
   tickAtPx(px, width) {
-    const [t0, t1] = this.window;
+    const [t0, t1] = this.viewWindow();
     return t0 + (px / Math.max(1, width)) * (t1 - t0);
   }
 
@@ -212,15 +243,37 @@ export class PlotWidget {
     return (1 - (v - min) / (max - min || 1)) * height;
   }
 
-  /** Window fraction of a tick (tickAtPx's inverse, width-free). */
+  /** Window fraction of a tick (tickAtPx's inverse, width-free), against
+   *  the on-screen window. */
   xFracOf(t) {
-    const [t0, t1] = this.window;
+    const [t0, t1] = this.viewWindow();
     return (t - t0) / (t1 - t0 || 1);
   }
 
   /** views_012 emphasis: the pointed trace renders at twice the base width. */
   strokeWidthFor(path) {
     return path === this.pointed ? BASE_STROKE_W * 2 : BASE_STROKE_W;
+  }
+
+  /** The translation (css px) that maps the batch-window geometry onto the
+   *  display window. Negative while the display now leads the newest data:
+   *  the honest trailing strip at the right edge, at most a batch wide. */
+  scrollOffsetPx() {
+    if (store.timeline.mode === "paused") return 0;
+    return (this.window[1] - displayWindow()[1]) * (this._pxPerMs || 0);
+  }
+
+  /** Display-rate live scroll: redraw cached geometry at the new
+   *  translation and glide the cursor overlays with it. No allocation, no
+   *  layout read — geometry, ranges, labels, and ribbons stay at batch
+   *  rate (refresh). */
+  scrollTick() {
+    if (!this.gl?.alive() || !this._built?.length) return;
+    const off = this.scrollOffsetPx();
+    if (off === this._scrollOff) return;
+    this._scrollOff = off;
+    this.gl.scroll(off);
+    if (cursor.tick !== null) this.positionCursor();
   }
 
   // ── pointed-trace emphasis (paused only, app~views_012) ──────────────────
@@ -237,6 +290,7 @@ export class PlotWidget {
     this.pointedRaf = requestAnimationFrame(() => {
       this.pointedRaf = null;
       this.applyPointed(this.computePointed(clientX, clientY, canvas));
+      this.refreshPreview(); // the candidate rides the same resolve (app~views_019)
     });
   }
 
@@ -325,24 +379,65 @@ export class PlotWidget {
   // needs a pointed trace; Resume releases) and never persisted.
   // [impl->app~views_017~1]
 
-  dropAnchor(clientX, clientY, canvas) {
-    // Recompute the pointed trace synchronously: the rAF-tracked this.pointed
-    // may trail the pointer by a frame at click time.
-    const path = this.computePointed(clientX, clientY, canvas);
-    if (!path) return; // the set action requires a pointed trace
+  /** The sample a Ctrl+click at this pointer x anchors: the pointed
+   *  signal's sample nearest in time, the earlier of two equidistant.
+   *  Shared by the drop (app~views_017) and its preview (app~views_019). */
+  snapSample(path, clientX, canvas) {
     const h = histories.get(path);
-    if (!h || !h.ticks.length) return;
+    if (!h || !h.size) return null;
     const rect = canvas.getBoundingClientRect();
     const t = this.tickAtPx(clientX - rect.left, rect.width);
     const iR = h.indexAtOrAfter(t);
     const iL = iR - 1;
     let i;
     if (iL < 0) i = iR;
-    else if (iR >= h.ticks.length) i = iL;
-    else i = t - h.ticks[iL] <= h.ticks[iR] - t ? iL : iR; // earlier wins a tie
-    this.anchor = { path, tick: h.ticks[i], value: h.values[i] };
+    else if (iR >= h.size) i = iL;
+    else i = t - h.tickAtIndex(iL) <= h.tickAtIndex(iR) - t ? iL : iR; // earlier wins a tie
+    return { path, tick: h.tickAtIndex(i), value: h.valueAtIndex(i) };
+  }
+
+  dropAnchor(clientX, clientY, canvas) {
+    // Recompute the pointed trace synchronously: the rAF-tracked this.pointed
+    // may trail the pointer by a frame at click time.
+    const path = this.computePointed(clientX, clientY, canvas);
+    if (!path) return; // the set action requires a pointed trace
+    const snapped = this.snapSample(path, clientX, canvas);
+    if (!snapped) return;
+    this.anchor = snapped;
     this.renderAnchor();
     this.renderCursor();
+  }
+
+  // ── anchor preview (app~views_019): while paused with Ctrl held and a
+  // pointed trace, a horizontal candidate mark sits at the value of the
+  // sample a Ctrl+click would anchor, following the pointer and the
+  // pointed-trace transfer. It is not an anchor line: the release hit-test
+  // never sees it, and dropping/releasing anchors ignores it entirely.
+  // [impl->app~views_019~1]
+
+  refreshPreview() {
+    const canvas = this.el.querySelector(".plot-canvas");
+    let next = null;
+    if (
+      this._ctrl && this._ptr && canvas &&
+      store.timeline.mode === "paused"
+    ) {
+      // The candidate follows the pointed trace; resolve at the stored
+      // pointer so a Ctrl press with a still mouse previews immediately.
+      const path = this.computePointed(this._ptr.x, this._ptr.y, canvas);
+      if (path) next = this.snapSample(path, this._ptr.x, canvas);
+    }
+    this.preview = next;
+    const ly = this.el.querySelector(".anchor-preview-y");
+    if (!ly) return;
+    if (!next) {
+      ly.hidden = true;
+      return;
+    }
+    const [min, max] = this._ranges[this.sideOf(next.path)] || [0, 1];
+    const inY = next.value >= min && next.value <= max;
+    ly.hidden = !inY;
+    if (inY) ly.style.top = `${this.yPxOf(next.value, this.sideOf(next.path), 100).toFixed(2)}%`;
   }
 
   releaseAnchor() {
@@ -360,7 +455,6 @@ export class PlotWidget {
   releaseAnchorNear(px, py, rect) {
     const a = this.anchor;
     if (!a) return;
-    const [t0, t1] = this.window;
     const hitX =
       !this.el.querySelector(".anchor-line-x").hidden &&
       Math.abs(px - this.xFracOf(a.tick) * rect.width) <= 8;
@@ -535,14 +629,15 @@ export class PlotWidget {
   /** One decimated window table per signal, computed once per refresh and
    *  shared by the plot data and the auto scale ranges. The decimation
    *  (app~views_014) keeps every pixel column's extent, so ranges computed
-   *  from the decimated table equal the raw window's. */
+   *  from the decimated table equal the raw window's. Queries the history
+   *  ring directly (no materialized window): O(pixel columns) per trace,
+   *  span- and density-independent. */
   computeTables(widthPx) {
     const cols = Math.max(1, Math.round(widthPx * (window.devicePixelRatio || 1)));
     this._tables = new Map(
       this.cfg.signals.map((p) => {
         const h = histories.get(p);
-        const raw = h ? h.windowTable(this.window[0], this.window[1]) : [[], []];
-        return [p, decimateTable(raw[0], raw[1], this.window[0], this.window[1], cols)];
+        return [p, h ? envelopeTable(h, this.window[0], this.window[1], cols) : [[], []]];
       }),
     );
   }
@@ -600,8 +695,23 @@ export class PlotWidget {
    *  whose renderer never initialized (created detached / context evicted)
    *  self-heals here even while paused. */
   refreshBatch() {
-    if (store.timeline.mode === "paused" && this.gl?.alive()) return;
+    if (store.timeline.mode === "paused" && this.gl?.alive()) {
+      this._hostSize = null; // never let a skipped cycle's measure go stale
+      return;
+    }
     this.refresh();
+  }
+
+  /** Batch-cycle read pass: cache the host size so refreshAll can measure
+   *  every widget BEFORE any widget writes DOM — one layout flush per
+   *  cycle instead of one per widget (interleaved reads and writes force
+   *  a flush each). One-shot: refresh() consumes and clears it, so direct
+   *  refresh() callers (resize, timeline edits, widget moves) still
+   *  measure live. */
+  measureHost() {
+    const host = this.el.querySelector(".trace-host");
+    const { width, height } = host.getBoundingClientRect();
+    this._hostSize = { width, height };
   }
 
   /** Full re-render: re-window, rebuild trace geometry, re-label, re-ribbon.
@@ -609,8 +719,10 @@ export class PlotWidget {
   refresh() {
     this.window = currentWindow();
 
-    const host = this.el.querySelector(".trace-host");
-    const { width, height } = host.getBoundingClientRect();
+    const { width, height } = this._hostSize ?? this.el
+      .querySelector(".trace-host")
+      .getBoundingClientRect();
+    this._hostSize = null;
     if (width < 20 || height < 20) return;
     this.computeTables(width);
     this.ensureGl(width, height);
@@ -625,12 +737,52 @@ export class PlotWidget {
 
     const [t0, t1] = this.window;
     const pxPerMs = width / Math.max(1, t1 - t0);
-    const mapX = (t) => this.xFracOf(t) * width;
+    this._pxPerMs = pxPerMs;
+    // Geometry maps the BATCH window (this.window) to pixels; the live
+    // scroll pass translates it to the display window per frame.
+    const mapX = (t) => ((t - t0) / (t1 - t0 || 1)) * width;
+    // Dash-phase continuity: the live window clips a run's left edge, so
+    // its first vertex is a different sample every rebuild — re-anchoring
+    // the cumulative arc there would jump every fixed sample's dash phase
+    // per batch. Carry a per-signal arc datum across rebuilds, advanced
+    // along the PREVIOUS build's own polyline to the new first sample (arc
+    // is translation-invariant, so an unchanged mapping makes that exact).
+    // Any mapping change (span/zoom/resize/y-range/interp/dash) re-anchors
+    // once; the datum wraps modulo the dash period, so it never grows.
+    const prevDatum = this._dashDatum || new Map();
+    this._dashDatum = new Map();
     this._built = this.cfg.signals.map((p) => {
       const st = this.traceStyle(p);
       const mapY = (v) => this.yPxOf(v, this.sideOf(p), height);
       const [xs, ys] = this.tableFor(p);
-      const geo = buildTraceGeometry(xs, ys, mapX, mapY, st.interp, pxPerMs, st.dots);
+      let arcStart = 0;
+      if (st.dash) {
+        const period = st.dash[0] + st.dash[1];
+        let f = 0;
+        while (f < xs.length && (ys[f] === null || !Number.isFinite(ys[f]))) f++;
+        if (f < xs.length) {
+          const tFirst = xs[f];
+          // The y-range is deliberately NOT in the fingerprint: live auto
+          // ranges breathe every few batches as peaks slide through the
+          // window, and re-anchoring on each breath would echo the pop
+          // this datum exists to kill. Carrying through a y change costs
+          // only the dropped PREFIX's arc-stretch — sub-pixel per event —
+          // while the X mapping (span/zoom/resize) and the pattern itself
+          // still re-anchor.
+          const fp = `${pxPerMs}|${width}|${height}|${st.interp}|${st.dash[0]}:${st.dash[1]}`;
+          const prev = prevDatum.get(p);
+          if (prev && prev.fp === fp && tFirst >= prev.tick) {
+            const arc = tFirst === prev.tick
+              ? prev.arc
+              : arcAtX(prev.run0, (tFirst - prev.t0) * pxPerMs);
+            arcStart = arc === null ? 0 : ((arc % period) + period) % period;
+          }
+          this._dashDatum.set(p, { tick: tFirst, arc: arcStart, fp, t0, run0: null });
+        }
+      }
+      const geo = buildTraceGeometry(xs, ys, mapX, mapY, st.interp, pxPerMs, st.dots, arcStart);
+      const datum = this._dashDatum.get(p);
+      if (datum) datum.run0 = geo.runs[0]?.verts || null;
       // Sample dots auto-hide when denser than they are wide (the Canvas2D
       // renderer did the same) — a paused zoom brings them back.
       const dotCount = geo.dots ? geo.dots.length / 2 : 0;
@@ -644,7 +796,8 @@ export class PlotWidget {
         dotSizePx: DOT_SIZE_PX,
       };
     });
-    this.gl.draw(this._built);
+    this._scrollOff = this.scrollOffsetPx();
+    this.gl.draw(this._built, this._scrollOff);
 
     // An axis with no assigned signals shows nothing, not stale labels.
     const live = new Set(groups.map((g) => g.key));
@@ -654,6 +807,7 @@ export class PlotWidget {
     this.renderXAxis();
     this.renderGapRibbon();
     this.renderAnchor();
+    this.refreshPreview(); // ranges may have moved the candidate's y
     this.renderCursor();
   }
 
@@ -694,18 +848,37 @@ export class PlotWidget {
     return histories.get(path)?.valueNear(cursor.tick) ?? null;
   }
 
-  renderCursor() {
+  /** Position-only pass for the cursor overlays against the on-screen
+   *  window — the scroll pass calls this per frame so the line and readout
+   *  glide with the translated traces (their CONTENT is a fixed tick's
+   *  values: only positions move between content re-renders). Returns
+   *  false when the tick left the window (overlays hidden). */
+  positionCursor() {
     const line = this.el.querySelector(".cursor-line");
     const readout = this.el.querySelector(".cursor-readout");
-    const [t0, t1] = this.window;
+    const [t0, t1] = this.viewWindow();
     if (cursor.tick === null || cursor.tick < t0 || cursor.tick > t1) {
       line.hidden = true;
       readout.hidden = true;
-      return;
+      return false;
     }
-    const frac = this.xFracOf(cursor.tick);
+    const frac = (cursor.tick - t0) / (t1 - t0 || 1);
     line.hidden = false;
     line.style.left = `${(frac * 100).toFixed(2)}%`;
+    // A tick that re-enters the window mid-scroll restores the readout too
+    // (a signal-less plot has none to restore — renderCursor keeps it
+    // hidden, and signals imply scale groups).
+    if (readout.hidden && this.cfg.signals.length) readout.hidden = false;
+    const flipped = frac > 0.5;
+    readout.classList.toggle("cursor-readout--flipped", flipped);
+    readout.style.left = flipped ? "" : `calc(${(frac * 100).toFixed(2)}% + 10px)`;
+    readout.style.right = flipped ? `calc(${((1 - frac) * 100).toFixed(2)}% + 10px)` : "";
+    return true;
+  }
+
+  renderCursor() {
+    const readout = this.el.querySelector(".cursor-readout");
+    if (!this.positionCursor()) return;
 
     const groups = this.scaleGroups();
     // A signal-less plot has no scale groups — and no readout to render
@@ -714,11 +887,7 @@ export class PlotWidget {
       readout.hidden = true;
       return;
     }
-    const flipped = frac > 0.5;
     readout.hidden = false;
-    readout.classList.toggle("cursor-readout--flipped", flipped);
-    readout.style.left = flipped ? "" : `calc(${(frac * 100).toFixed(2)}% + 10px)`;
-    readout.style.right = flipped ? `calc(${((1 - frac) * 100).toFixed(2)}% + 10px)` : "";
     // Comparison deltas (app~views_018): with an anchor held, the readout
     // head carries the time delta at every held cursor time; the pointed
     // row carries the value delta only on the anchor's axis, both signals
@@ -765,6 +934,9 @@ export class PlotWidget {
   destroy() {
     closeAxesConfigFor(this);
     if (this.pointedRaf) cancelAnimationFrame(this.pointedRaf);
+    window.removeEventListener("keydown", this._onKey);
+    window.removeEventListener("keyup", this._onKey);
+    window.removeEventListener("blur", this._onBlur);
     this.unsubs.forEach((u) => u());
     this.gl?.destroy();
     this.gl = null;
