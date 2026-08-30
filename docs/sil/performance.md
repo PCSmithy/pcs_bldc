@@ -348,3 +348,29 @@ on any grid and its physics cost is ~220 µs per millisecond of sim time
 regardless of step size. A full fine-grid board world therefore lands near
 ~11 µs/step at 50 µs (≈4.5× realtime) — the plant is the floor, not the
 framework; the fine-grid numbers above isolate the framework's own cost.
+
+## 16. Stage-7 perf pass, phase 2a (2026-08-30)
+
+Board world on the 50 µs grid, release, bridge dark, member-isolation rows
+from the perf binary's `-- board-world report --` section (new):
+
+| change                                     | µs/step | ×realtime |
+|--------------------------------------------|--------:|----------:|
+| baseline (1 µs integrator, string-key IO)  |    25.0 |      2.0× |
+| motor integrator sub-step 1 → 5 µs         |    18.3 |      2.7× |
+| `SigHandle` resolve-once port IO           |     6.8 |      7.3× |
+
+- The §15 "plant is the floor" estimate is superseded: the plant's cost was
+  ~85% avoidable (per-access `SignalId` construction + hashing — ~450k/sim-s
+  — and 4/5 of the integrator iterations). Post-pass shares: firmware member
+  3.0 (per-step Binding sync + fiber ISR), motor 2.4 (the ODE itself),
+  encoders 0.67, sense 0.38, engine residual ~0.3.
+- Integrator 5 µs is owner-decided, measured-identical: all physics tests and
+  the north-star residuals hold at 5 and 10 µs (average-value bridge; L/R in
+  the hundreds of µs).
+- Models resolve `SigHandle`s at enable (`StateTable::handle` /
+  `current_f64` / `record_by` — the public face of the index lanes routes
+  already used). Member-side write short-circuiting was measured moot after
+  this (0.3–0.4 µs/model total).
+- Next lever: member-declared cadence / event-driven advance —
+  [`member-cadence.md`](member-cadence.md).
