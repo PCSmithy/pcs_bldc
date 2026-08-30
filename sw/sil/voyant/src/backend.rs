@@ -1773,21 +1773,24 @@ impl Member for FirmwareMember {
     }
 
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
+        // Inputs land BEFORE the timebase moves: sampling that happens at the
+        // advance itself (the ADC's trigger-instant port reads) must see this
+        // step's routed values — the zero-latency delivery the wiring promises.
+        for binding in Binding::ALL {
+            binding.in_sync(self, ctx);
+        }
+
         // The timebase moves every step, and BEFORE anything is dispatched: a handler
         // must read the hardware time of the step it runs in (the crossing detection a
         // trigger output needs lives at this resolution too).
         self.backend.advance_time(dt_us);
 
         // Everything the firmware executes is an interrupt — the kernel tick included
-        // (docs/sil/sim-interrupts.md). A step with nothing due runs no firmware and
-        // no sync at all.
+        // (docs/sil/sim-interrupts.md). A step with nothing due runs no firmware.
         let now = ctx.st.now_us();
         self.apply_pending_irq_ops(ctx.st, now);
         if !self.irq.any_due(now) {
             return;
-        }
-        for binding in Binding::ALL {
-            binding.in_sync(self, ctx);
         }
         self.dispatch_due_irqs(ctx.st);
         for binding in Binding::ALL {

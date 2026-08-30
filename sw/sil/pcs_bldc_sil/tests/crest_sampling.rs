@@ -162,31 +162,27 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
         .expect("completion interrupt registered");
     let c0 = fw_member.borrow().isr_dispatch_count_of(completion);
 
-    // The routed sense chain carries one grid step of latency (plant step N
-    // reaches the pins at step N+1 — the sim's rendering of real sensor
-    // propagation), so each sample is compared against the previous step's
-    // plant state. Residual floor is the 12-bit quantization (~8 mA).
+    // Same-step comparison: the zero-latency sense chain delivers the plant's
+    // state into the pins before the member's timebase advances, so the crest
+    // sample reads THIS period's currents. Residual floor is the 12-bit
+    // quantization (~8 mA); the real chain's ~2-3 µs (INA240 + RC) rounds to
+    // zero at this grid.
     let steps = 800u64;
-    let mut prev = [
-        plant(&sim, "phase_current_u"),
-        plant(&sim, "phase_current_v"),
-        plant(&sim, "phase_current_w"),
-    ];
     let (mut max_uv, mut max_w) = (0.0f64, 0.0f64);
     for _ in 0..steps {
         sim.step().expect("engine step");
-        for ch in 0..2usize {
-            max_uv = max_uv.max((injected_amps(&sim, ch, &params) - prev[ch]).abs());
-        }
-        // Two-shunt derivation: the third phase reconstructed from the two
-        // sampled ones, against the plant's own i_w.
-        let w = -(injected_amps(&sim, 0, &params) + injected_amps(&sim, 1, &params));
-        max_w = max_w.max((w - prev[2]).abs());
-        prev = [
+        let now = [
             plant(&sim, "phase_current_u"),
             plant(&sim, "phase_current_v"),
             plant(&sim, "phase_current_w"),
         ];
+        for ch in 0..2usize {
+            max_uv = max_uv.max((injected_amps(&sim, ch, &params) - now[ch]).abs());
+        }
+        // Two-shunt derivation: the third phase reconstructed from the two
+        // sampled ones, against the plant's own i_w.
+        let w = -(injected_amps(&sim, 0, &params) + injected_amps(&sim, 1, &params));
+        max_w = max_w.max((w - now[2]).abs());
     }
     let cadence = fw_member.borrow().isr_dispatch_count_of(completion) - c0;
     eprintln!("residuals over {steps} periods: U/V {max_uv:.4} A, derived-W {max_w:.4} A");

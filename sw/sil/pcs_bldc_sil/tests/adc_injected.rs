@@ -97,27 +97,16 @@ fn one_conversion_per_pwm_period_on_the_fine_grid() {
     sim.add_member(fwm);
     sim.run_for_ms(1);
 
-    // Prime: a write reaches the C-side port on the step after it lands in the
-    // signal table, so the second step's trigger samples it.
-    let mut prev = 0.5;
-    sim.write(&vid(SOURCE, U_PIN_PORT), prev).expect("drive U pin");
-    sim.run_for_ms(1);
-    assert_eq!(injected_count(&sim, 0), counts_of(prev), "primed");
-
-    for (i, volts) in [1.1, 2.2, 3.0].iter().enumerate() {
+    // Inputs sync into the C-side ports before the timebase advances, so the
+    // very next step's trigger samples a fresh table write — zero-latency
+    // delivery, per period.
+    for (i, volts) in [0.5, 1.1, 2.2, 3.0].iter().enumerate() {
         sim.write(&vid(SOURCE, U_PIN_PORT), *volts).expect("drive U pin");
         sim.step().expect("engine step");
         assert_eq!(
             injected_count(&sim, 0),
-            counts_of(prev),
-            "period {i}: this period's trigger still reads the pre-write pin"
-        );
-        sim.step().expect("engine step");
-        assert_eq!(
-            injected_count(&sim, 0),
             counts_of(*volts),
-            "period {i}: the next period's trigger captures the new pin voltage"
+            "period {i}: this period's trigger captures the new pin voltage"
         );
-        prev = *volts;
     }
 }
