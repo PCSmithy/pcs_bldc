@@ -10,7 +10,7 @@ use pcs_bldc_sil::board::{board_with, fault_latched, gate_operational, GATE_BRIN
 use pcs_bldc_sil::{cid, cvar, Board, Sil, SilOptions, SOURCE};
 use std::cell::RefCell;
 use std::rc::Rc;
-use voyant::FirmwareMember;
+use voyant::{FirmwareMember, IrqHandle};
 
 /// The PWM period at 20 kHz — the grid a center-aligned control interrupt needs.
 const FINE_GRID_US: u64 = 50;
@@ -33,8 +33,8 @@ fn mem(sim: &Sil, path: &str) -> u64 {
 
 /// A fine-grid world with a `FAST_PERIOD_US` interrupt registered on the USB handler
 /// and the driver's own 1 ms entry masked, so that handler runs on exactly one cadence.
-/// Returns the world and its firmware member.
-fn fine_world(options: SilOptions) -> (Sil, Rc<RefCell<FirmwareMember>>) {
+/// Returns the world, its firmware member, and the fast entry's handle.
+fn fine_world(options: SilOptions) -> (Sil, Rc<RefCell<FirmwareMember>>, IrqHandle) {
     let mut sim = options.grid_us(FINE_GRID_US).build();
     let mut fwm = sim.load_firmware(SOURCE);
     let fast = fwm
@@ -47,7 +47,7 @@ fn fine_world(options: SilOptions) -> (Sil, Rc<RefCell<FirmwareMember>>) {
         .expect("HW_USB_init registered its own entry on this handler");
     assert_ne!(driver, fast, "two entries share this handler address");
     member.borrow_mut().set_isr_enabled(driver, false);
-    (sim, member)
+    (sim, member, fast)
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn a_sub_millisecond_interrupt_runs_between_kernel_ticks() {
     // The kernel tick is scheduled in sim time, so refining the grid leaves its
     // millisecond alone and only adds steps in between — which is where the faster
     // interrupt lands.
-    let (mut sim, member) = fine_world(Sil::options());
+    let (mut sim, member, fast) = fine_world(Sil::options());
     let boot = mem(&sim, "taskUsbRuns");
 
     for step in 1..=(5 * STEPS_PER_TICK) {
@@ -71,9 +71,9 @@ fn a_sub_millisecond_interrupt_runs_between_kernel_ticks() {
             "step {step}: the faster interrupt dispatches on its own cadence"
         );
     }
-    // 20 dispatches of the fast entry, 5 kernel ticks, and the ADC injected
-    // completion service once per step.
-    assert_eq!(member.borrow().isr_dispatch_count(), 25 + 5 * STEPS_PER_TICK);
+    // 20 dispatches of the fast entry — per-handler, so unrelated interrupt
+    // sources (kernel tick, ADC completion) cannot move this number.
+    assert_eq!(member.borrow().isr_dispatch_count_of(fast), 20);
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn the_gated_mirror_delays_a_cvar_change_by_at_most_the_cadence() {
     // The kernel tick counter advances once per millisecond of sim time, so under a
     // 1 ms mirror cadence the historian may trail firmware memory by one count — and
     // by no more, and without ever skipping one.
-    let (mut sim, _member) = fine_world(Sil::options());
+    let (mut sim, _member, _fast) = fine_world(Sil::options());
     assert_eq!(sim.tick_period_us(), FINE_GRID_US);
 
     let mut lagged = 0u64;
@@ -116,7 +116,7 @@ fn the_gated_mirror_delays_a_cvar_change_by_at_most_the_cadence() {
 fn an_ungated_mirror_keeps_the_historian_current_every_step() {
     // The gate is the whole difference: with the cadence off, the same run mirrors on
     // every dispatching step and the historian never trails.
-    let (mut sim, _member) = fine_world(Sil::options().sweep_period_us(0));
+    let (mut sim, _member, _fast) = fine_world(Sil::options().sweep_period_us(0));
     for step in 1..=(2 * STEPS_PER_TICK) {
         sim.step().expect("engine step");
         assert_eq!(
@@ -131,7 +131,7 @@ fn an_ungated_mirror_keeps_the_historian_current_every_step() {
 fn a_forced_mirror_makes_the_historian_current_for_an_assert() {
     // The assert path: a scenario that needs the value now asks for a sweep instead of
     // waiting for the cadence.
-    let (mut sim, _member) = fine_world(Sil::options());
+    let (mut sim, _member, _fast) = fine_world(Sil::options());
     for _ in 0..STEPS_PER_TICK {
         sim.step().expect("engine step");
     }
