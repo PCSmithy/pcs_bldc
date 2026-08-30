@@ -88,6 +88,9 @@ bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, u
 
 bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, float32_t * const out);
 
+// The callback runs in the injected-completion ISR, which sits ABOVE the
+// kernel's syscall ceiling (hard-real-time FOC slot): it must not call any
+// FreeRTOS API, FromISR variants included.
 bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
                                      HW_ADC_injectedCallback_F callback,
                                      void * context);
