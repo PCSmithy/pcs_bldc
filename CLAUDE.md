@@ -293,6 +293,7 @@ tools/build_native.sh                # native firmware build (default: sw/fw) + 
 tools/build_native.sh --clean        # wipe build dir first
 tools/build_arm.sh                   # cross-compile firmware (.elf/.bin/.hex)
 tools/build_native.sh sw/lib/c       # standalone lib-only native build (cross-cutting libs + tests)
+tools/run_sil.sh                     # SIL: release firmware DLL + Rust workspace tests + perf report
 ```
 
 Default source dir for both scripts is `sw/fw` (the firmware project,
