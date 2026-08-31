@@ -1,16 +1,16 @@
 # Unit tests for IO_serial. Compiles IO_serial.c directly against the test-local
-# channel seam and runs it over the real HW_USB sim loopback (driven via the
-# HW_USB_sim hooks). Native target only.
+# channel seam and a boundary mock of the HW_USB API — no sim driver, no kernel.
 add_executable(test_io_serial
   test_IO_serial.c
+  mock_HW_USB.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../IO_serial.c
 )
-# Test dir first so its channel seam wins; .. for IO_serial.h.
+# Test dir first so its channel seam wins; .. for IO_serial.h; the sim dir for
+# the HW_USB.h API the mock implements.
 target_include_directories(test_io_serial PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/..
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../hw/USB/sim
 )
-# freertos_host_hooks: hw_USB pulls the kernel (HW_USB_run's vTaskDelay); the
-# test never starts the scheduler, so it needs the vApplication* hook stubs.
-target_link_libraries(test_io_serial PRIVATE lib_types hw_USB unity freertos_host_hooks)
+target_link_libraries(test_io_serial PRIVATE lib_types unity)
 add_test(NAME io_serial COMMAND test_io_serial)

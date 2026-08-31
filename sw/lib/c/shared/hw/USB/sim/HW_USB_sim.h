@@ -5,10 +5,6 @@
 
 /* SIL inspection / control API — native sim target only. */
 
-// The simulated USB device interrupt. HW_USB_init registers it with the
-// framework by pointer; exposed so a scenario can resolve it by name.
-void HW_USB_sim_irqHandler(void);
-
 // Reset all loopback state (disconnected, TX accepting, buffers empty).
 void HW_USB_sim_reset(void);
 
