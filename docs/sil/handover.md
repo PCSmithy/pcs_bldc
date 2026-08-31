@@ -1,17 +1,27 @@
 # SIL bring-up — handover
 
-Last updated: 2026-08-10. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-08-30. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
 `roadmap.md` in this folder. (`docs/handoff.md`, untracked, carries the
 current session-to-session state.)
 
 ## TL;DR
 
-**The commutation sprint is complete and up for merge: PR #4 (sil -> main),
-CI green on all three platforms.** The firmware's six-step drive commutates a
-simulated motor end to end — button tap -> alignment physically swings the
-rotor -> offset captured from the plant -> dial demand -> closed-loop spin —
-driven and asserted purely through the State Table (`tests/north_star.rs`).
+**The injected-ADC / current-sense sprint is complete and up for merge
+(sil -> main).** The sim now runs the timer-triggered injected ADC engine
+against the fine-grid (50 µs) board world: one crest sample set per PWM
+period at the CCR4 instant, injected U/V within 13.6 mA of the plant and
+derived W within 16.8 mA (the 8 mA quantization floor), 800 consecutive
+periods exact (`tests/crest_sampling.rs`). Members declare their own
+**cadence** (`EveryStep`/`Periodic`/`OnInputChange`/`OnDemand` — encoders are
+bus-driven: `DuplexPeer::transfer` carries a `MemberCtx` and samples the table
+at the transaction instant), and after the perf pass the board world runs at
+**4.8 µs/step, 10.4× realtime** (`performance.md` §16–§18).
+
+The previous sprint's six-step commutation loop stands: button tap ->
+alignment physically swings the rotor -> offset captured from the plant ->
+dial demand -> closed-loop spin, driven and asserted purely through the State
+Table (`tests/north_star.rs`).
 
 The plant is bench-parameterized (iPower GM6208-150T, measured with the board
 as the only instrument — see `tools/trace_analysis/*`): sinusoidal BEMF (it's
@@ -68,7 +78,8 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (59 tests).
+Rust unit tests run with the suite (`run_sil.sh` tests the whole workspace);
+standalone: `cd sw/sil && cargo test -p voyant` (162 tests).
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
@@ -116,8 +127,15 @@ sw/sil/
                             StateTable stamps with sim time (st.log/take_logs).
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
                             (Scalar | Enum), incl. enum value->name
-  pcs_bldc_sil/           THE INSTANTIATION (board-specific driver/demo)
-    src/main.rs             loads the DLL, builds a StateTable, runs the demo
+  pcs_bldc_sil/           THE INSTANTIATION (board-specific)
+    src/main.rs             the perf report binary (phase-isolated + board rows)
+    src/sil.rs              Sil harness: owns an Engine (Deref), loads firmware
+    src/board.rs            the board world: fw + plant + encoders + sense, wired
+    src/motor.rs            plant (owner physics: PMSM + ideal-diode legs + Coulomb)
+    src/as5048.rs           AS5048 model (OnDemand duplex peer, measured noise)
+    src/current_sense.rs    sense front end (OnInputChange affine chain)
+    src/wiring.rs           route bundles (bridge, sense) = fault-injection seams
+    tests/                  the behavioral suite (north_star, crest_sampling, ...)
   spike/d1-tick/          standalone D1 spike: cooperative fiber FreeRTOS port
                             determinism + throughput test (throwaway scaffolding)
 
@@ -313,14 +331,45 @@ docs/sil/*.md            the design (see "Design docs" below)
   command-dirtied only). voyant unit tests 89 → 85 (owner ruling — the mechanic
   earned no keep).
 
+- **Commutation sprint (merged as PR #4, 2026-08-10):** duplex SPI seam +
+  AS5048/motor/current-sense models + `wiring.rs` bundles + the six-step
+  closed-loop north star (`tests/north_star.rs`); plant bench-parameterized
+  (see TL;DR ¶2–3).
+
+- **Injected-ADC / current-sense sprint (2026-08-10 → 2026-08-30, this
+  merge):** in stage order —
+  - Sim TIM trigger seam carries crossing direction; TIM1 on TRGO2/OC4; the
+    **timer-triggered injected ADC engine** (closes `fw~hal_adc_003/_008`):
+    one TRGO sink fans out per channel, slots sample their pin's port at the
+    trigger instant, completion is a **NVIC-style pended interrupt** drained
+    in the firmware fiber. Per-entry dispatch counts
+    (`isr_dispatch_count_of`); one world-total canary assert stays deliberate.
+  - **Fine-grid board world north star** (50 µs grid): crest sampling
+    U/V/derived-W against the plant, 800 periods exact, regular path intact
+    beside it. Bench matrix A/B/C1–C3 + JEOS re-check all verified on
+    hardware; ADC IRQ at priority 4 with an RTOS-free callback contract.
+  - **Zero-latency delivery**: port `in_sync` runs before `advance_time`, so
+    trigger-instant sampling reads the same step's routed values; the north
+    star is retightened to same-step.
+  - **Perf pass** (25.0 → 4.8 µs/step, 2.0× → **10.4× realtime**): motor
+    integrator sub-step 1 → 5 µs (owner constant, measured-identical);
+    `SigHandle` resolve-once model IO; **member-declared cadence**
+    (`member-cadence.md`: `Cadence` on the `Member` trait, encoders
+    `OnDemand`/bus-driven with `MemberCtx` in `DuplexPeer::transfer` — a
+    dispatch-window table stash carries it across the C frame — sense
+    `OnInputChange` on post-epsilon input-dirty bits, fw port-fill gated,
+    dirty-at-birth rule); duplex `:tx`/`:rx` interning + the index-keyed
+    cvar flush drain (`take_dirty_indices`). Ledger: `performance.md`
+    §16–§18. Engine `tick_period_us` → `grid_us`; `run_sil.sh` tests the
+    whole workspace in release by default.
+
 ## What's next (prioritized)
 
-> **Current sprint (2026-07-12): full-loop motor commutation** — see
-> `roadmap.md` § "Current sprint" for the staged plan (string-keyed table
-> write API → SPI comms seam → encoder model → PWM ports → motor/inverter →
-> harness → closed-loop scenario). D8 is deferred to the following
-> (interrupt-driven-control) sprint; `usb_cdc`/`teleplot` telemetry capture
-> is filed near the top of `backlog.md`.
+> **Next sprint (likely): the stage-6 consumer** — IO_bridge owns the fast
+> (injected) phase currents with counter-equalization pairing (owner leaning
+> yes, decision pending; see the stage-6 §C brief). The engine-side
+> next-event queue (`sim-interrupts.md` §5) and the deferred/backlog items
+> remain parked in `backlog.md`.
 
 1. ~~**`Model` trait + `vsig` backing**~~ — **DONE (2026-07-04).** `voyant::model`
    adds the minimal `Model` trait (`name`/`signals`/`advance(dt_us)`/`read`), the
