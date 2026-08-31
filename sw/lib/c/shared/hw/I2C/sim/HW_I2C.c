@@ -1,6 +1,5 @@
 /* Includes */
 #include "HW_I2C.h"
-#include "HW_I2C_sim.h"
 
 /* Defines */
 
@@ -38,6 +37,9 @@ typedef struct
 typedef struct
 {
     HW_I2C_simDevice_S devices[HW_I2C_SIM_MAX_DEVICES_PER_BUS];
+
+    // Fault knobs: while set, every transfer on the bus reports a timeout
+    // (stall) or a bus error (forceError). SIL writes them by DWARF.
     bool stall;
     bool forceError;
 } HW_I2C_busData_S;
@@ -53,7 +55,6 @@ typedef struct
 /* Private Function Declarations */
 
 static bool HW_I2C_private_busConfigValid(const HW_I2C_busConfig_S * const busConfig);
-static void HW_I2C_private_clearBus(HW_I2C_bus_E bus);
 static HW_I2C_simDevice_S * HW_I2C_private_getDevice(HW_I2C_bus_E bus, uint8_t addr7);
 static bool HW_I2C_private_transfer(HW_I2C_bus_E bus, uint8_t devAddr7, HW_I2C_op_E op,
                                     uint16_t memAddr, uint8_t * data_, size_t length);
@@ -75,25 +76,6 @@ static bool HW_I2C_private_busConfigValid(const HW_I2C_busConfig_S * const busCo
         valid = (busConfig->transferMode == HW_I2C_TRANSFERMODE_INTERRUPT);
     }
     return valid;
-}
-
-static void HW_I2C_private_clearBus(HW_I2C_bus_E bus)
-{
-    HW_I2C_busData_S * const busData = &data->buses[bus];
-    busData->stall      = false;
-    busData->forceError = false;
-    for (size_t i = 0U; i < HW_I2C_SIM_MAX_DEVICES_PER_BUS; i++)
-    {
-        HW_I2C_simDevice_S * const dev = &busData->devices[i];
-        dev->used          = false;
-        dev->addr7         = 0U;
-        dev->lastTxLen     = 0U;
-        dev->injectedRxLen = 0U;
-        for (size_t r = 0U; r < HW_I2C_SIM_REG_SPACE; r++)
-        {
-            dev->regMem[r] = 0U;
-        }
-    }
 }
 
 // Find the device slot for `addr7`, allocating a free one on first contact.
@@ -208,6 +190,12 @@ static bool HW_I2C_private_transfer(HW_I2C_bus_E bus, uint8_t devAddr7, HW_I2C_o
 bool HW_I2C_init(const HW_I2C_config_S * const config)
 {
     bool ret = false;
+
+    // Re-entrant: every call, accepted or rejected, drops the driver back to
+    // its uninitialized state — register memory, captures, injection, and
+    // fault knobs all clear.
+    *data = (HW_I2C_data_S){ 0 };
+
     if (config != NULL)
     {
         bool success = true;
@@ -218,11 +206,7 @@ bool HW_I2C_init(const HW_I2C_config_S * const config)
 
         if (success)
         {
-            data->config = config;
-            for (HW_I2C_bus_E bus = 0U; bus < HW_I2C_BUS_COUNT; bus++)
-            {
-                HW_I2C_private_clearBus(bus);
-            }
+            data->config      = config;
             data->initialized = true;
             ret = true;
         }
@@ -260,102 +244,4 @@ bool HW_I2C_memWrite(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
 {
     (void)memAddrSize;
     return HW_I2C_private_transfer(bus, devAddr7, HW_I2C_OP_MEM_WRITE, memAddr, data_, length);
-}
-
-/* SIL control + inspection (HW_I2C_sim.h) */
-
-void HW_I2C_sim_reset(void)
-{
-    for (HW_I2C_bus_E bus = 0U; bus < HW_I2C_BUS_COUNT; bus++)
-    {
-        HW_I2C_private_clearBus(bus);
-    }
-}
-
-void HW_I2C_sim_setInjectedRx(HW_I2C_bus_E bus, uint8_t devAddr7, const uint8_t * bytes, size_t length)
-{
-    if ((bus < HW_I2C_BUS_COUNT) && (bytes != NULL))
-    {
-        HW_I2C_simDevice_S * const dev = HW_I2C_private_getDevice(bus, devAddr7);
-        if (dev != NULL)
-        {
-            const size_t copyLen = (length < HW_I2C_SIM_MAX_XFER) ? length : HW_I2C_SIM_MAX_XFER;
-            for (size_t i = 0U; i < copyLen; i++)
-            {
-                dev->injectedRx[i] = bytes[i];
-            }
-            dev->injectedRxLen = copyLen;
-        }
-    }
-}
-
-size_t HW_I2C_sim_getLastTx(HW_I2C_bus_E bus, uint8_t devAddr7, uint8_t * out, size_t maxLength)
-{
-    size_t txLen = 0U;
-    if ((bus < HW_I2C_BUS_COUNT) && (out != NULL))
-    {
-        const HW_I2C_simDevice_S * const dev = HW_I2C_private_getDevice(bus, devAddr7);
-        if (dev != NULL)
-        {
-            txLen = dev->lastTxLen;
-            const size_t captured = (dev->lastTxLen < HW_I2C_SIM_MAX_XFER) ? dev->lastTxLen : HW_I2C_SIM_MAX_XFER;
-            const size_t copyLen  = (captured < maxLength) ? captured : maxLength;
-            for (size_t i = 0U; i < copyLen; i++)
-            {
-                out[i] = dev->lastTx[i];
-            }
-        }
-    }
-    return txLen;
-}
-
-void HW_I2C_sim_setRegBytes(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
-                            const uint8_t * bytes, size_t length)
-{
-    if ((bus < HW_I2C_BUS_COUNT) && (bytes != NULL) && (((size_t)memAddr + length) <= HW_I2C_SIM_REG_SPACE))
-    {
-        HW_I2C_simDevice_S * const dev = HW_I2C_private_getDevice(bus, devAddr7);
-        if (dev != NULL)
-        {
-            for (size_t i = 0U; i < length; i++)
-            {
-                dev->regMem[(size_t)memAddr + i] = bytes[i];
-            }
-        }
-    }
-}
-
-size_t HW_I2C_sim_getRegBytes(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
-                              uint8_t * out, size_t length)
-{
-    size_t copied = 0U;
-    if ((bus < HW_I2C_BUS_COUNT) && (out != NULL) && (((size_t)memAddr + length) <= HW_I2C_SIM_REG_SPACE))
-    {
-        const HW_I2C_simDevice_S * const dev = HW_I2C_private_getDevice(bus, devAddr7);
-        if (dev != NULL)
-        {
-            for (size_t i = 0U; i < length; i++)
-            {
-                out[i] = dev->regMem[(size_t)memAddr + i];
-            }
-            copied = length;
-        }
-    }
-    return copied;
-}
-
-void HW_I2C_sim_setStall(HW_I2C_bus_E bus, bool stall)
-{
-    if (bus < HW_I2C_BUS_COUNT)
-    {
-        data->buses[bus].stall = stall;
-    }
-}
-
-void HW_I2C_sim_setForceError(HW_I2C_bus_E bus, bool forceError)
-{
-    if (bus < HW_I2C_BUS_COUNT)
-    {
-        data->buses[bus].forceError = forceError;
-    }
 }
