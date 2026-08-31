@@ -1,10 +1,13 @@
 #include "HW_GPIO.h"
-#include "HW_GPIO_sim.h"
 #include "SIL_ports.h"
 #include "unity.h"
 
 #include <stdio.h>
 #include <string.h>
+
+// Behavioral input/EXTI coverage (level injection, edge dispatch) lives in SIL
+// (sw/sil/pcs_bldc_sil/tests/gpio_behavior.rs); here Unity covers init, config
+// validation, and the seams reachable through the framework hook doubles.
 
 // Single-bit HAL-style pin masks for the pins used by the baseline config.
 #define OUT_PIN   (0x0010U)   // line 4  -> output
@@ -86,20 +89,6 @@ static void clearPortWrites(void)
 static HW_GPIO_pinConfig_S portCPins[3];
 static HW_GPIO_config_S    gpioConfig;
 
-// EXTI callback observation.
-static uint32_t          cbCount;
-static HW_GPIO_port_E    cbPort;
-static uint32_t          cbPin;
-static void *            cbContext;
-
-static void testExtiCallback(HW_GPIO_port_E port, uint32_t pin, void * context)
-{
-    cbCount++;
-    cbPort    = port;
-    cbPin     = pin;
-    cbContext = context;
-}
-
 // Good baseline: one output, one input, one interrupt pin on port C; all
 // other ports left with no pins declared.
 static void buildGoodConfig(void)
@@ -116,6 +105,11 @@ static void buildGoodConfig(void)
     gpioConfig.ports[HW_GPIO_PORT_C].numPins = sizeof(portCPins) / sizeof(portCPins[0]);
 }
 
+static void testExtiCallback(HW_GPIO_port_E port, uint32_t pin, void * context)
+{
+    (void)port; (void)pin; (void)context;
+}
+
 void setUp(void)
 {
     SIL_ports_setHooks(NULL); // unlinked by default; port tests opt in
@@ -127,11 +121,9 @@ void setUp(void)
     }
     portCount = 0;
 
-    HW_GPIO_sim_reset();
-    cbCount   = 0U;
-    cbPort    = HW_GPIO_PORT_COUNT;
-    cbPin     = 0U;
-    cbContext = NULL;
+    // A rejected init is the clean slate: init drops the driver to its
+    // uninitialized state before it looks at the config.
+    (void)HW_GPIO_init(NULL);
     buildGoodConfig();
 }
 
@@ -165,6 +157,29 @@ static void test_init_out_of_range_mode(void)
 {
     portCPins[0].mode = (HW_GPIO_mode_E)99;
     TEST_ASSERT_FALSE(HW_GPIO_init(&gpioConfig));
+}
+
+// [test->fw~hal_gpio_001~1]
+static void test_reinit_is_a_clean_slate(void)
+{
+    installPortsDouble();
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_EQUAL_INT32(1, portCount);
+
+    // A second init registers afresh and publishes the boot state on the new
+    // handle; writes land there, not on the first registration.
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_EQUAL_INT32(2, portCount);
+    clearPortWrites();
+    HW_GPIO_writePin(HW_GPIO_PORT_C, OUT_PIN, HW_GPIO_LEVEL_HIGH);
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[0]);
+    TEST_ASSERT_EQUAL_UINT32(1U, portWrites[1]);
+
+    // A rejected init drops the driver back to uninitialized: writes no-op.
+    TEST_ASSERT_FALSE(HW_GPIO_init(NULL));
+    clearPortWrites();
+    HW_GPIO_writePin(HW_GPIO_PORT_C, OUT_PIN, HW_GPIO_LEVEL_HIGH);
+    TEST_ASSERT_EQUAL_UINT32(0U, portWrites[1]);
 }
 
 /* ---- fw~hal_gpio_002: pin configuration validity (via init) ---- */
@@ -225,26 +240,10 @@ static void test_output_write_before_init_is_noop(void)
 
 /* ---- fw~hal_gpio_004: cached input snapshot ---- */
 // [test->fw~hal_gpio_004~1]
-static void test_cached_read_reflects_sampled_level(void)
-{
-    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
-
-    HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_HIGH);
-    HW_GPIO_run1ms();
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_HIGH, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
-
-    HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_LOW);
-    HW_GPIO_run1ms();
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
-}
-
-// [test->fw~hal_gpio_004~1]
 static void test_cached_read_before_first_pass_low(void)
 {
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
-
-    // Inject HIGH but never sample: the cache holds nothing yet -> low.
-    HW_GPIO_sim_setInputLevel(HW_GPIO_PORT_C, IN_PIN, HW_GPIO_LEVEL_HIGH);
+    // The cache holds nothing until a sampling pass -> low.
     TEST_ASSERT_EQUAL_INT(HW_GPIO_LEVEL_LOW, HW_GPIO_readCached(HW_GPIO_PORT_C, IN_PIN));
 }
 
@@ -267,28 +266,11 @@ static void test_cached_read_out_of_range_port_low(void)
 
 /* ---- fw~hal_gpio_005: pin-change interrupt callbacks ---- */
 // [test->fw~hal_gpio_005~1]
-static void test_exti_callback_fires_once(void)
+static void test_exti_register_valid_port(void)
 {
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
-
     int ctx = 0;
     TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, &ctx));
-
-    HW_GPIO_sim_triggerExti(HW_GPIO_PORT_C, IRQ_PIN);
-    TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
-    TEST_ASSERT_EQUAL_INT(HW_GPIO_PORT_C, cbPort);
-    TEST_ASSERT_EQUAL_UINT32(IRQ_PIN, cbPin);
-    TEST_ASSERT_EQUAL_PTR(&ctx, cbContext);
-}
-
-// [test->fw~hal_gpio_005~1]
-static void test_exti_no_callback_invokes_nothing(void)
-{
-    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
-
-    // No callback registered on this edge -> nothing fires.
-    HW_GPIO_sim_triggerExti(HW_GPIO_PORT_C, IRQ_PIN);
-    TEST_ASSERT_EQUAL_UINT32(0U, cbCount);
 }
 
 // [test->fw~hal_gpio_005~1]
@@ -344,6 +326,7 @@ int main(void)
     RUN_TEST(test_init_null_config);
     RUN_TEST(test_init_empty_pin_mask);
     RUN_TEST(test_init_out_of_range_mode);
+    RUN_TEST(test_reinit_is_a_clean_slate);
 
     RUN_TEST(test_pin_validity_undefined_line);
     RUN_TEST(test_pin_validity_good_config);
@@ -352,13 +335,11 @@ int main(void)
     RUN_TEST(test_output_write_out_of_range_port_is_noop);
     RUN_TEST(test_output_write_before_init_is_noop);
 
-    RUN_TEST(test_cached_read_reflects_sampled_level);
     RUN_TEST(test_cached_read_before_first_pass_low);
     RUN_TEST(test_cached_read_non_input_pin_low);
     RUN_TEST(test_cached_read_out_of_range_port_low);
 
-    RUN_TEST(test_exti_callback_fires_once);
-    RUN_TEST(test_exti_no_callback_invokes_nothing);
+    RUN_TEST(test_exti_register_valid_port);
     RUN_TEST(test_exti_register_out_of_range_port);
 
     RUN_TEST(test_ports_registered);

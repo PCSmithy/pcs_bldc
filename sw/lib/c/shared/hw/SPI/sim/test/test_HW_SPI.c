@@ -1,7 +1,6 @@
 #include "HW_SPI.h"
 #include "HW_SPI_timeout.h"
 #include "HW_GPIO.h"
-#include "HW_GPIO_sim.h"
 #include "SIL_irq.h"
 #include "SIL_ports.h"
 #include "unity.h"
@@ -251,7 +250,7 @@ void setUp(void)
     cancelCalls          = 0U;
     installIrqDouble();
 
-    HW_GPIO_sim_reset();
+    // Re-entrant GPIO init is the clean slate (no _sim reset).
     buildGpioConfig();
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
 
