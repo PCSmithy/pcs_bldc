@@ -261,11 +261,11 @@ A driver's box is checked ONLY when its `HW_<Module>_sim.h` is deleted. Each
 conversion = replacement seam on the production path + Unity suite rewritten
 against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
 
-- ◐ **SPI** — `setInjectedRx` + loopback replaced by DuplexTransfer (sprint
-  stage 2, suite rewritten against a test-owned hooks double), but
-  `HW_SPI_sim.h` still exists: `getLastTx` / CS inspection / tick remain in
-  Unity use. Final sweep: assert TX via the hooks double's own capture, find
-  the CS-observation replacement, then delete the header.
+- ☑ **SPI** — DONE 2026-08-30: non-blocking completion rides the pended-IRQ
+  seam (`HW_SPI_sim_completionDispatch`, the ADC pattern); `stall`/`forceError`
+  are DWARF-written data-struct knobs (`tests/spi_faults.rs`); Unity keeps
+  structural/seam coverage via SIL_irq + ports hooks doubles; `HW_SPI_sim.h`
+  deleted.
 - ☑ **TIM** — sprint stage 4 (PWM/bridge observation ports): duty/enable/MOE
   output ports replace the `_sim_` waveform inspection; break injection is a
   table write to the DWARF-visible MOE static. `HW_TIM_sim.h` and the whole
@@ -277,9 +277,11 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   `SIL_ports_hooks_S` double (registration + duty/enable/MOE publication); the
   waveform/complementary/dead-time/TRGO/`assertBreak`/counter-direction tests
   are retired (the stage-7 closed loop is their replacement coverage).
-- ☐ **GPIO** — sprint stage 6 (button gestures): drive the DWARF-visible input
-  statics via `st.write` (policy already forbids `setInputLevel`); decide the
-  EXTI-trigger seam; delete `HW_GPIO_sim.h`.
+- ☑ **GPIO** — DONE 2026-08-30: inputs are DWARF writes to
+  `HW_GPIO_data.inputLevel` (the board world's existing path); EXTI edges are
+  detected by `HW_GPIO_run1ms` from injected-level transitions (per-port
+  `extiEdgeCount` is the observable; `tests/gpio_behavior.rs`); re-entrant
+  init is the clean slate; `HW_GPIO_sim.h` deleted.
 - ☑ **USB** — DONE 2026-08-13: `io/serial` tests run on a boundary
   `mock_HW_USB`, the sim-driver suite is retired (sim drivers are
   framework-covered via SIL), `HW_USB_sim.h` deleted. `fw~hal_usb_004`
@@ -291,13 +293,22 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   `HW_ADC_init` is re-entrant, so the Unity suite's clean slate is a rejected
   init and the config-rejection / readout-guard tests stay there;
   `HW_ADC_sim.h` deleted.
-- ☐ **DMA**, **OPAMP** — final sweep after sprint stage 7: pick
-  per-capability replacements (test-owned hooks double or DWARF write),
-  rewrite/retire the suites, delete the headers.
-- ☐ **Exit criterion / enforcement:** no `*_sim.h` files remain under
-  `sw/lib/c/shared/hw/`, and a grep for `_sim_` there comes back empty —
-  worth a CI lint line once the last header falls, so the crutch can't grow
-  back.
+- ☑ **DMA** — DONE 2026-08-30: completion rides the pended-IRQ seam
+  (`HW_DMA_sim_completionDispatch`); fault/injection/capture state are plain
+  DWARF-visible `HW_DMA_data` fields (`tests/dma_behavior.rs`); re-entrant
+  init; `HW_DMA_sim.h` deleted.
+- ☑ **OPAMP** — DONE 2026-08-30: `inputVolts`/`outputVolts` are DWARF-visible
+  data-struct fields computed at init (`tests/opamp_behavior.rs`); re-entrant
+  init; `HW_OPAMP_sim.h` deleted.
+- ☑ **I2C** — DONE 2026-08-30 (post-dated the 2026-07-04 list): register
+  file/captures/injection/fault knobs are DWARF-visible `HW_I2C_data` fields
+  (`tests/i2c_behavior.rs`; the board world already drove `regMem` by DWARF);
+  re-entrant init; `HW_I2C_sim.h` deleted.
+- ☑ **Exit criterion — met 2026-08-30:** no `*_sim.h` files remain under
+  `sw/lib/c/shared/hw/`. The surviving `_sim_` symbols are the sim drivers'
+  own pended completion ISR entries (`HW_<M>_sim_completionDispatch` —
+  external linkage so the fiber dispatch can name them), not inject/inspect
+  APIs; a CI lint should assert "no `*_sim.h` files" rather than grep `_sim_`.
 
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the
