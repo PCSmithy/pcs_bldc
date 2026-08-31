@@ -412,11 +412,15 @@ matches — and the set accumulates every ever-commanded signal (route
 re-marks, the 4 `:tx`/`:rx` event records, scenario writes), so the cost
 grew over a run. Two owner-directed fixes (no string-keying on any hot path):
 
-| change                                     | µs/step | ×realtime |
-|--------------------------------------------|--------:|----------:|
-| phase 2b exit (§17)                        |     5.7 |      8.8× |
-| duplex `:tx`/`:rx` interned                |    ~5.6 |     ~9.0× |
-| index-keyed cvar flush drain               |     4.8 |     10.4× |
+| change                                     |     µs/step | ×realtime |
+|--------------------------------------------|------------:|----------:|
+| phase 2b exit (§17)                        |         5.7 |      8.8× |
+| duplex `:tx`/`:rx` interned                |        ~5.6 |     ~9.0× |
+| index-keyed cvar flush drain               | 4.8–5.3     | 9.4–10.4× |
+
+(Range over repeat idle-machine runs — the row straddles 10× run-to-run;
+best runs 4.8 µs / 10.4×, typical ~5.1 µs / ~9.8×. A loaded machine reads
+meaningfully worse; compare like-for-like.)
 
 - **Duplex interning**: `drain()` hands back `DuplexHandle`s; the engine
   resolves each endpoint's `(tx, rx)` dense indices once (pre-seeded at
@@ -427,7 +431,8 @@ grew over a run. Two owner-directed fixes (no string-keying on any hot path):
   its cvar leaves at `build_shadow`; `StateTable::take_dirty_indices` filters
   the dirty set by integer membership — no id clones, no string compares, no
   string sort. `take_dirty` (string-keyed) stays as the scenario/cold twin.
-- **The ≥10× realtime bar is met on the fine-grid board world.** Residuals
+- **The ≥10× realtime bar is reached on the fine-grid board world** (at the
+  band's best edge; typical runs sit just under). Residuals
   exactly 13.6 / 16.8 mA; suites green both profiles. Remaining shares are
   ~real work: motor ODE ~2.4 (5 µs sub-step, owner constant — §16 measured
   identical at 10 µs if ever wanted), fw ~1.9 (mostly genuine ISR execution
