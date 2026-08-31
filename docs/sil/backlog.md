@@ -198,7 +198,6 @@ ADC, ...). Files, as of 2026-07-04:
   gone — DuplexTransfer replaced it and the Unity suite was rewritten against a
   test-owned hooks double; the remaining `_sim_*` getters here still apply)
 - `sw/lib/c/shared/hw/TIM/sim/HW_TIM_sim.h`
-- `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 
 **Why it goes:** the SIL (voyant) has white-box DWARF read/write access to all
 firmware memory, plus Route Table suspend/resume + direct destination writes for
@@ -236,9 +235,12 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
 - ☐ **GPIO** — sprint stage 6 (button gestures): drive the DWARF-visible input
   statics via `st.write` (policy already forbids `setInputLevel`); decide the
   EXTI-trigger seam; delete `HW_GPIO_sim.h`.
-- ☐ **USB** (+ `io/serial` test usage) — with the `usb_cdc`/`teleplot`
-  sig_type item above: comms-entry TX capture replaces the capture getters;
-  delete `HW_USB_sim.h`.
+- ☑ **USB** — DONE 2026-08-13: `io/serial` tests run on a boundary
+  `mock_HW_USB`, the sim-driver suite is retired (sim drivers are
+  framework-covered via SIL), `HW_USB_sim.h` deleted. `fw~hal_usb_004`
+  (CDC RX) joins the defect baseline until a firmware RX consumer exists
+  (desktop-app protocol); the `usb_cdc` sig_type item above stands on its
+  own for telemetry-as-signals.
 - ☐ **ADC** (conversion-stall), **DMA**, **OPAMP** — final sweep after sprint
   stage 7: pick per-capability replacements (test-owned hooks double or DWARF
   write), rewrite/retire the suites, delete the headers.
