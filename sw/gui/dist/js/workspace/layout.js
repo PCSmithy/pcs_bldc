@@ -11,7 +11,7 @@ import { PlotWidget } from "./plotwidget.js";
 import { TableWidget } from "./tablewidget.js";
 import { addWatch, meta } from "./watchflow.js";
 import { restoreColors, colorSlots } from "./colors.js";
-import { appearanceEntries, restoreAppearance, resolvedColor } from "./appearance.js";
+import { appearanceEntries, restoreAppearance } from "./appearance.js";
 
 const LS_KEY = "cockpit.workspace.v1";
 const SNAP = 50;
@@ -66,12 +66,8 @@ function syncEmptyState() {
   empty.hidden = widgets.length > 0;
 }
 
-/** The workspace's widget launcher (app~views_004's add-plot/add-table
- *  rows): a floating "+" that opens a one-line-per-widget-type menu. The
- *  menu items carry data-workspace, so main.js's workspace-create routing
- *  fires them exactly like the empty-state buttons; selection lands through
- *  the positionless addWidget default — an unoccupied lattice spot below
- *  the furthest widget. */
+/** The widget launcher (app~views_004): a floating "+" menu whose items
+ *  carry data-workspace, routing exactly like the empty-state buttons. */
 function wireLauncher(workspace) {
   const launcher = document.createElement("div");
   launcher.className = "widget-launcher";
@@ -212,13 +208,20 @@ function wireRaise() {
 // ── drops: create at the snapped drop point, or join the widget under it ──
 
 function wireDrops(workspace) {
+  const overGlow = (on) =>
+    document.querySelector(".empty-drop")?.classList.toggle("empty-drop--over", on);
   workspace.addEventListener("dragover", (ev) => {
     if (ev.dataTransfer.types.includes("text/x-signal")) {
       ev.preventDefault();
       ev.dataTransfer.dropEffect = "copy";
+      overGlow(Boolean(ev.target.closest?.(".empty-drop")));
     }
   });
+  workspace.addEventListener("dragleave", (ev) => {
+    if (!workspace.contains(ev.relatedTarget)) overGlow(false);
+  });
   workspace.addEventListener("drop", (ev) => {
+    overGlow(false);
     const path = ev.dataTransfer.getData("text/x-signal");
     if (!path) return;
     ev.preventDefault();
@@ -315,7 +318,7 @@ function wireResize() {
     resizing.widget.cfg.w = Math.max(MIN_W, snap(resizing.w + dx));
     resizing.widget.cfg.h = Math.max(MIN_H, snap(resizing.h + dy));
     applyGeometry(resizing.widget);
-    resizing.widget.refresh?.();
+    (resizing.widget.scheduleRefresh ?? resizing.widget.refresh)?.call(resizing.widget);
   });
   const end = (ev) => {
     if (!resizing || ev.pointerId !== resizing.pointerId) return;
@@ -375,7 +378,7 @@ function restore() {
   restoreAppearance(snap_.appearance); // before colors resolve: overrides win
   for (const w of snap_.watched || []) {
     meta.set(w.path, { size: w.size ?? 4, kind: w.kind ?? "f32", enums: w.enums });
-    store.watched.set(w.path, { period_ms: w.period_ms, color: resolvedColor(w.path) });
+    store.watched.set(w.path, { period_ms: w.period_ms });
   }
   notify("watched", store.watched);
   for (const cfg of snap_.widgets || []) {

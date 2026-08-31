@@ -224,8 +224,9 @@ Needs: fw, test
 
 The desktop application shall provide observability, control,
 configuration, diagnostics, and scripted-operation capabilities that
-augment but do not replace the device's standalone functionality. The app is optional; its
-absence shall not impair any standalone device behavior.
+augment but do not replace the device's standalone functionality. The
+app is optional; its absence shall not impair any standalone device
+behavior.
 
 Acceptance:
 

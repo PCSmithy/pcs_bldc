@@ -25,12 +25,13 @@ like end-to-end.
   a firmware-identity gate, DWARF-driven signal picker, live WebGL plots
   with honest min/max decimation, pause/zoom timeline with a comparison
   cursor, value table, and session restore. Spec-driven like the firmware
-  ([`specs/desktop-app/`](specs/desktop-app/)), verified by a 170-check
+  ([`specs/desktop-app/`](specs/desktop-app/)), verified by a playwright
   UI suite.
 - **Simulation and analysis tooling:** an SIL harness (`sw/sil`) exercises
   the native firmware build (protocol, trace engine, server); the
-  high-fidelity motor-model SIL and the analysis notebooks are not yet
-  started.
+  high-fidelity motor-model SIL and the formal `notebooks/` analysis
+  infrastructure are not yet started (ad-hoc trace analyses live in
+  `tools/trace_analysis/`).
 
 The hardware is a USB-PD-powered BLDC controller built around an STM32G431 MCU,
 an STSPIN32G4 integrated gate driver, and an AS5048 magnetic rotor encoder. It

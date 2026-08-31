@@ -125,11 +125,8 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #define TASK_PRIORITY_200MS (configMAX_PRIORITIES - 5U)
 
 // --- Task profiling --------------------------------------------------------
-// Each periodic task times its body against the microsecond time base and folds
-// the duration into a per-task worst-case (max). Read/reset via
-// profileTakeMaxUs, and readable externally by DWARF path (candidate State
-// Table / signal-trace signals). task_usb blocks on the USB event queue (not a
-// periodic body), so it is not profiled.
+// Per-task worst-case body duration in microseconds (read/reset via
+// profileTakeMaxUs). task_usb blocks on its event queue, so it is not profiled.
 typedef enum
 {
     PROFILE_TASK_1MS,
@@ -294,9 +291,8 @@ static void task_usb(void * params)
 }
 
 
-// Protocol server task: pump received frames, answer requests, publish the
-// 10 Hz Status, drain the printf log stream. 1 ms cadence below the periodic
-// control tasks, so serving the host never delays sampling or commutation.
+// Protocol server: prioritized below the periodic control tasks, so serving
+// the host never delays sampling or commutation.
 static void task_server(void * params)
 {
     (void)params;

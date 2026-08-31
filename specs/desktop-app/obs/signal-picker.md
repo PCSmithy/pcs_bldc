@@ -54,7 +54,6 @@ Acceptance:
 
 - A substring, a `*` pattern, and a regular expression each narrow
   the presented list to exactly their matches.
-- An invalid regular expression matches as a substring.
 
 Covers:
 - sys~obs_002~1

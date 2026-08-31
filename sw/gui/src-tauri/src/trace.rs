@@ -5,6 +5,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use pcs_proto::shared::envelope::Payload;
+use pcs_proto::trace::TraceStatus;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::firmware::{identity_matches, FirmwareState};
@@ -31,25 +33,6 @@ struct WatchEntry {
 
 struct WatchTable {
     entries: Vec<WatchEntry>,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct TraceStatusInfo {
-    pub ram_budget_bytes: u32,
-    pub ram_worst_tick_bytes: u32,
-    pub link_budget_bytes_per_s: u32,
-    pub link_rate_bytes_per_s: u32,
-}
-
-impl From<pcs_proto::trace::TraceStatus> for TraceStatusInfo {
-    fn from(ts: pcs_proto::trace::TraceStatus) -> Self {
-        Self {
-            ram_budget_bytes: ts.ram_budget_bytes,
-            ram_worst_tick_bytes: ts.ram_worst_tick_bytes,
-            link_budget_bytes_per_s: ts.link_budget_bytes_per_s,
-            link_rate_bytes_per_s: ts.link_rate_bytes_per_s,
-        }
-    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -94,21 +77,19 @@ fn decode(leaf: dwarf_map::Leaf, bytes: &[u8]) -> f64 {
 /// dropped whole.
 // [impl->app~obs_004~1]
 fn demux(table: &WatchTable, samples: &pcs_proto::trace::Samples) -> Vec<(usize, u32, f64)> {
-    let due: Vec<usize> = table
+    let due = |e: &WatchEntry| samples.tick_ms % e.period_ms == 0;
+    let expected: usize = table
         .entries
         .iter()
-        .enumerate()
-        .filter(|(_, e)| samples.tick_ms % e.period_ms == 0)
-        .map(|(i, _)| i)
-        .collect();
-    let expected: usize = due.iter().map(|&i| table.entries[i].size as usize).sum();
+        .filter(|e| due(e))
+        .map(|e| e.size as usize)
+        .sum();
     if expected != samples.data.len() {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(due.len());
+    let mut out = Vec::new();
     let mut offset = 0usize;
-    for i in due {
-        let entry = &table.entries[i];
+    for (i, entry) in table.entries.iter().enumerate().filter(|(_, e)| due(e)) {
         let bytes = &samples.data[offset..offset + entry.size as usize];
         offset += entry.size as usize;
         out.push((i, samples.tick_ms, decode(entry.leaf, bytes)));
@@ -151,9 +132,10 @@ impl BatchState {
             return None;
         }
         if let Some(prev) = self.prev_tick {
-            let stride = self.min_period_ms;
-            if samples.tick_ms > prev + stride {
-                self.dropped_ticks += (samples.tick_ms - prev) / stride - 1;
+            // Wrap-safe delta: tick_ms wraps u32 after ~49.7 days of uptime.
+            let delta = samples.tick_ms.wrapping_sub(prev);
+            if delta > self.min_period_ms {
+                self.dropped_ticks += delta / self.min_period_ms - 1;
             }
         }
         self.prev_tick = Some(samples.tick_ms);
@@ -195,18 +177,58 @@ impl BatchState {
 #[derive(Default)]
 pub struct TraceState(Mutex<Option<Arc<Mutex<BatchState>>>>);
 
+/// Drop any accumulator without emitting — a dead session's residual points
+/// must not leak into the next connection.
+pub fn drop_accumulator(trace: &TraceState) {
+    trace
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+}
+
 /// Flush any prior accumulator through `emit` (residual points would
 /// otherwise vanish on a list change) and uninstall it.
 fn flush_prior(trace: &TraceState, emit: &dyn Fn(SamplesBatch)) {
-    let prior = trace.0.lock().ok().and_then(|mut slot| slot.take());
+    let prior = trace
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     if let Some(prior) = prior {
-        if let Ok(mut state) = prior.lock() {
-            let batch = state.flush();
-            if !batch.signals.is_empty() {
-                emit(batch);
-            }
+        let batch = prior
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .flush();
+        if !batch.signals.is_empty() {
+            emit(batch);
         }
     }
+}
+
+/// Unwrap a watch/status reply into the device's `TraceStatus`, or the
+/// rejection cause.
+fn expect_trace_status(reply: Payload) -> Result<TraceStatus, String> {
+    match reply {
+        Payload::TraceStatus(ts) => Ok(ts),
+        Payload::Response(r) => Err(if r.cause.is_empty() {
+            "watch list rejected".to_string()
+        } else {
+            r.cause
+        }),
+        other => Err(format!("unexpected reply: {other:?}")),
+    }
+}
+
+/// The connected session's client handle and reported build id (lock scope:
+/// session only; requests run unlocked).
+fn session_client(session: &State<SessionState>) -> Result<(Arc<Client>, String), String> {
+    let guard = session.0.lock().map_err(|_| "session state poisoned")?;
+    let session = guard.as_ref().ok_or("not connected")?;
+    Ok((
+        session.client.clone(),
+        session.device_build_id().to_string(),
+    ))
 }
 
 /// Send the watch list and, on acceptance, commit the replacement table and
@@ -219,23 +241,12 @@ fn perform_install(
     trace: &TraceState,
     wire_watches: Vec<pcs_proto::trace::Watch>,
     entries: Vec<WatchEntry>,
-    emit: Box<dyn Fn(SamplesBatch) + Send>,
-) -> Result<(TraceStatusInfo, Option<SamplesConsumer>), String> {
-    use pcs_proto::shared::envelope::Payload;
+    emit: Box<dyn Fn(SamplesBatch) + Send + Sync>,
+) -> Result<(TraceStatus, Option<SamplesConsumer>), String> {
     let reply = client.request(Payload::WatchRequest(pcs_proto::trace::WatchRequest {
         watches: wire_watches,
     }))?;
-    let status = match reply {
-        Payload::TraceStatus(ts) => TraceStatusInfo::from(ts),
-        Payload::Response(r) => {
-            return Err(if r.cause.is_empty() {
-                "watch list rejected".to_string()
-            } else {
-                r.cause
-            })
-        }
-        other => return Err(format!("unexpected reply: {other:?}")),
-    };
+    let status = expect_trace_status(reply)?;
 
     flush_prior(trace, emit.as_ref());
     let consumer = if entries.is_empty() {
@@ -244,7 +255,7 @@ fn perform_install(
     } else {
         let shared = Arc::new(Mutex::new(BatchState::new(WatchTable { entries })));
         let consumer_shared = shared.clone();
-        let consumer: SamplesConsumer = Box::new(move |samples| {
+        let consumer: SamplesConsumer = Arc::new(move |samples| {
             let batch = consumer_shared
                 .lock()
                 .ok()
@@ -253,9 +264,11 @@ fn perform_install(
                 emit(batch);
             }
         });
-        if let Ok(mut slot) = trace.0.lock() {
-            *slot = Some(shared);
-        }
+        // The device already accepted: the table commit must never be lost.
+        *trace
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(shared);
         Some(consumer)
     };
     Ok((status, consumer))
@@ -270,7 +283,7 @@ pub fn install_watches(
     firmware: State<FirmwareState>,
     trace: State<TraceState>,
     watches: Vec<WatchSpec>,
-) -> Result<TraceStatusInfo, String> {
+) -> Result<TraceStatus, String> {
     for w in &watches {
         if !matches!(w.period_ms, 1 | 10 | 100) {
             return Err(format!(
@@ -303,15 +316,7 @@ pub fn install_watches(
         (loaded.build_id.clone(), wire, entries)
     };
 
-    // Session handles (lock scope: session only; the request runs unlocked).
-    let (client, device_build_id) = {
-        let guard = session.0.lock().map_err(|_| "session state poisoned")?;
-        let session = guard.as_ref().ok_or("not connected")?;
-        (
-            session.client.clone(),
-            session.device_build_id().to_string(),
-        )
-    };
+    let (client, device_build_id) = session_client(&session)?;
 
     if !identity_matches(&device_build_id, &elf_build_id) {
         return Err(format!(
@@ -331,58 +336,54 @@ pub fn install_watches(
         }),
     )?;
 
-    if let Ok(guard) = session.0.lock() {
-        if let Some(session) = guard.as_ref() {
-            session.set_samples_consumer(consumer);
-        }
-    }
-    let _ = app.emit("trace-status", status.clone());
+    install_consumer(&session, consumer);
+    let _ = app.emit("trace-status", status);
     Ok(status)
 }
 
+/// Post-acceptance consumer swap: the device is already serving the new
+/// list, so a poisoned session lock must not strand the stream.
+fn install_consumer(session: &State<SessionState>, consumer: Option<SamplesConsumer>) {
+    let guard = session
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(session) = guard.as_ref() {
+        session.set_samples_consumer(consumer);
+    }
+}
+
+/// Clear = install the empty list: teardown happens only after the device
+/// confirms (a timed-out clear leaves the prior list streaming, mirroring
+/// the install path).
 #[tauri::command]
 pub fn clear_watches(
     app: AppHandle,
     session: State<SessionState>,
     trace: State<TraceState>,
-) -> Result<TraceStatusInfo, String> {
-    let client = {
-        let guard = session.0.lock().map_err(|_| "session state poisoned")?;
-        let session = guard.as_ref().ok_or("not connected")?;
-        session.set_samples_consumer(None);
-        session.client.clone()
-    };
-    let flush_app = app.clone();
-    flush_prior(&trace, &move |batch| {
-        let _ = flush_app.emit("samples", batch);
-    });
-
-    use pcs_proto::shared::envelope::Payload;
-    let reply = client.request(Payload::WatchRequest(pcs_proto::trace::WatchRequest {
-        watches: Vec::new(),
-    }))?;
-    let status = match reply {
-        Payload::TraceStatus(ts) => TraceStatusInfo::from(ts),
-        Payload::Response(r) => return Err(r.cause),
-        other => return Err(format!("unexpected reply: {other:?}")),
-    };
-    let _ = app.emit("trace-status", status.clone());
+) -> Result<TraceStatus, String> {
+    let (client, _) = session_client(&session)?;
+    let emit_app = app.clone();
+    let (status, consumer) = perform_install(
+        &client,
+        &trace,
+        Vec::new(),
+        Vec::new(),
+        Box::new(move |batch| {
+            let _ = emit_app.emit("samples", batch);
+        }),
+    )?;
+    install_consumer(&session, consumer);
+    let _ = app.emit("trace-status", status);
     Ok(status)
 }
 
 #[tauri::command]
-pub fn trace_status(session: State<SessionState>) -> Result<TraceStatusInfo, String> {
-    let client = {
-        let guard = session.0.lock().map_err(|_| "session state poisoned")?;
-        guard.as_ref().ok_or("not connected")?.client.clone()
-    };
-    use pcs_proto::shared::envelope::Payload;
-    match client.request(Payload::TraceStatusRequest(
+pub fn trace_status(session: State<SessionState>) -> Result<TraceStatus, String> {
+    let (client, _) = session_client(&session)?;
+    expect_trace_status(client.request(Payload::TraceStatusRequest(
         pcs_proto::trace::TraceStatusRequest::default(),
-    ))? {
-        Payload::TraceStatus(ts) => Ok(TraceStatusInfo::from(ts)),
-        other => Err(format!("unexpected reply: {other:?}")),
-    }
+    ))?)
 }
 
 #[cfg(test)]
@@ -557,26 +558,13 @@ mod tests {
     /// Drive `perform_install` against a mock wire that answers the watch
     /// request with `reply`, and return the outcome plus the trace state.
     fn run_install(
-        reply: pcs_proto::shared::envelope::Payload,
+        reply: Payload,
     ) -> (
-        Result<(TraceStatusInfo, Option<SamplesConsumer>), String>,
+        Result<(TraceStatus, Option<SamplesConsumer>), String>,
         TraceState,
     ) {
-        use pcs_proto::shared::envelope::Payload;
+        use crate::testutil::{wait_for_requests, SharedBuf};
         use prost::Message;
-        use std::io::Write;
-
-        #[derive(Clone, Default)]
-        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
-        impl Write for SharedBuf {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
 
         let buf = SharedBuf::default();
         let client = Client::new(Box::new(buf.clone()));
@@ -603,15 +591,7 @@ mod tests {
                 )
             });
             // Answer the request once it hits the mock wire.
-            let request_id = loop {
-                let wire = buf.0.lock().unwrap().clone();
-                if let Some(frame) = pcs_wire::parse_frames(&wire).first() {
-                    break pcs_proto::shared::Envelope::decode(frame.as_slice())
-                        .unwrap()
-                        .request_id;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            };
+            let request_id = wait_for_requests(&buf, 1)[0];
             let env = pcs_proto::shared::Envelope {
                 request_id,
                 payload: Some(match &reply {
@@ -631,8 +611,6 @@ mod tests {
     // [test->app~obs_003~1]
     #[test]
     fn rejected_install_leaves_prior_state_intact() {
-        use pcs_proto::shared::envelope::Payload;
-
         let (result, trace) = run_install(Payload::Response(pcs_proto::shared::Response {
             accepted: false,
             cause: "exceeds link budget".into(),
@@ -649,9 +627,7 @@ mod tests {
     // [test->app~obs_003~1]
     #[test]
     fn accepted_install_replaces_the_table_and_yields_a_consumer() {
-        use pcs_proto::shared::envelope::Payload;
-
-        let (result, trace) = run_install(Payload::TraceStatus(pcs_proto::trace::TraceStatus {
+        let (result, trace) = run_install(Payload::TraceStatus(TraceStatus {
             ram_budget_bytes: 2048,
             ram_worst_tick_bytes: 8,
             link_budget_bytes_per_s: 1_100_000,

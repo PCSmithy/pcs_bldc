@@ -8,14 +8,15 @@ tags: [system, obs]
 ### Periodic status telemetry
 `sys~obs_001~1`
 
-While a host holds the device's virtual serial port open
-(`sys~arch_003~1`), the firmware shall publish a status message over the
-protocol (`sys~conn_001~1`) reporting the operating mode, fault state,
+While a host holds the device's serial port open (`sys~arch_003~1`),
+the firmware shall publish a status message over the protocol
+(`sys~conn_001~1`) reporting the motor-control mode, drive state,
 bus voltage, bus current, and rotor velocity as of publication, at 10 Hz
 within ± 2 % over any 10-second window.
 
 Acceptance:
 
+- Over any 10-second connected window, 100 ± 2 status messages arrive.
 - A mode change or fault entry appears in the next status message
   published after it.
 

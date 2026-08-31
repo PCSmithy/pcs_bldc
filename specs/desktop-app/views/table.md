@@ -25,7 +25,7 @@ Acceptance:
 - With a cursor time held (`app~views_005~1`), each row shows the
   value at that time.
 
-See also: [[cursor]], [[workspace]]
+See also: [[workspace]]
 
 Covers:
 - sys~arch_002~1

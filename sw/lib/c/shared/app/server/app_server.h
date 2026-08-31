@@ -8,6 +8,14 @@
 
 #include "lib_protobuf_config.h"   // project schema bindings: shared_/board_ types
 
+/* Defines */
+
+// Ring storage overhead past the budget: the worst tick's record header plus
+// the ring's one empty slot, so every list the u-formula admits fully fits.
+#define APP_SERVER_TRACE_RING_OVERHEAD_BYTES (3U)
+#define APP_SERVER_TRACE_STORAGE_BYTES(budgetBytes) \
+    ((budgetBytes) + APP_SERVER_TRACE_RING_OVERHEAD_BYTES)
+
 /* Typedefs */
 
 // One span of protocol-addressable memory (fw~conn_trace_001). base is the
@@ -35,7 +43,7 @@ typedef struct
 
     // Trace-service resources (fw~conn_trace_001). The board owns the RAM:
     // watchStorage holds 2 * watchCapacity entries (active + staged halves);
-    // sampleStorage holds sampleRamBudgetBytes of ring storage.
+    // sampleStorage holds APP_SERVER_TRACE_STORAGE_BYTES(sampleRamBudgetBytes).
     const app_server_region_S * readableRegions;
     uint32_t readableRegionCount;
     const app_server_region_S * writableRegions;
@@ -46,15 +54,11 @@ typedef struct
     uint32_t sampleRamBudgetBytes;
     uint32_t linkBudgetBytesPerS;
 
-    // Board hooks — the board-specific logic behind the envelope's two
-    // extension payloads (shared.proto fields 60/61). Either may be NULL on a
-    // board without commands / telemetry.
-    //
-    // handleRequest: consume a decoded board.Request, fill the framework
-    // Response verdict (accepted, or rejected with a cause).
+    // Board hooks behind the envelope's two extension payloads; either may be
+    // NULL on a board without commands / telemetry.
+    // Fill the Response verdict: accepted, or rejected with a cause.
     void (*handleRequest)(const board_Request * const request, shared_Response * const response);
-    // buildTelemetry: fill the periodic board.Telemetry; false skips this
-    // period's publication.
+    // Fill the periodic board.Telemetry; false skips this period.
     bool (*buildTelemetry)(board_Telemetry * const telemetry);
 } app_server_config_S;
 

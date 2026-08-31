@@ -133,20 +133,7 @@ impl Pump {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// In-memory transmit capture standing in for the serial writer.
-    #[derive(Clone, Default)]
-    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for SharedBuf {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::testutil::{wait_for_requests, SharedBuf};
 
     fn reply_frame(request_id: u32, payload: Payload) -> Vec<u8> {
         let env = pcs_proto::shared::Envelope {
@@ -161,27 +148,6 @@ mod tests {
             accepted,
             cause: cause.into(),
         })
-    }
-
-    /// Wait until the capture holds `n` whole frames, returning their decoded
-    /// request ids in write order.
-    fn wait_for_requests(buf: &SharedBuf, n: usize) -> Vec<u32> {
-        for _ in 0..200 {
-            let wire = buf.0.lock().unwrap().clone();
-            let frames = pcs_wire::parse_frames(&wire);
-            if frames.len() >= n {
-                return frames
-                    .iter()
-                    .map(|f| {
-                        pcs_proto::shared::Envelope::decode(f.as_slice())
-                            .unwrap()
-                            .request_id
-                    })
-                    .collect();
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("requests never reached the writer");
     }
 
     // [test->app~conn_003~1]

@@ -42,6 +42,10 @@ void IO_COBSFrame_run(void);
 bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer,
                       size_t bufferLen, size_t * const frameLen);
 
+// Drop a channel's accumulated and held RX state — a link-reset boundary
+// (frames from a dead session must not be served to the next one).
+void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel);
+
 // Frame and transmit payload; false (nothing transmitted) when the whole
 // encoded frame exceeds the channel's free transmit capacity.
 bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len);

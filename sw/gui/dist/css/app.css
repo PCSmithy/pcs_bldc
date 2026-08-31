@@ -1,9 +1,5 @@
-/* ══════════════════════════════════════════════════════════════════════════
-   Component layer — every value from a token (see tokens.css). Numbers come
-   from the design handoff README's component specs; deviations are bugs.
-   Widget interiors (.plot-widget, .table-widget, cursor) live in
-   workspace.css, owned by the workspace module.
-   ══════════════════════════════════════════════════════════════════════ */
+/* Component layer — every value from a token (tokens.css); numbers from the
+   design handoff's component specs. Widget interiors live in workspace.css. */
 
 /* ── shared vocabulary ── */
 .icon {
@@ -32,6 +28,31 @@
   letter-spacing: .11em;
   text-transform: uppercase;
   color: var(--color-neutral-600);
+}
+
+/* segmented control base — families layer sizing/typography deltas only */
+.seg {
+  display: inline-flex;
+  border: 1px solid rgba(var(--hair-rgb), .14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+.seg button {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 10px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 0;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+}
+.seg button + button { border-left: 1px solid rgba(var(--hair-rgb), .14); }
+.seg button.is-selected {
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  color: var(--ink-bg);
 }
 
 .btn {
@@ -305,12 +326,13 @@
 .app-stale .telemetry-cell--link .telemetry-value { color: var(--color-neutral-700); }
 .app-stale .telemetry-cell--link .icon { animation: none; }
 
-/* ── 3 · signal picker ── */
+/* ── 3 · signal picker (resizable column; .picker-body is the column) ── */
 .signal-picker {
+  position: relative;
   width: 302px;
   flex: none;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
   background: var(--ink-chrome);
   background-image: var(--chrome-grad);
@@ -318,10 +340,12 @@
 }
 .picker-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 8px;
   justify-content: space-between;
   padding: 12px 12px 8px;
 }
+.picker-head .picker-count { margin-left: auto; }
 .picker-title { font-size: 15px; }
 .picker-count { font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-600); }
 
@@ -462,28 +486,6 @@
   background: rgba(var(--ok-rgb), .12);
   color: var(--color-accent-2-300);
 }
-.period-seg {
-  flex: none;
-  display: inline-flex;
-  border: 1px solid rgba(var(--hair-rgb), .14);
-  border-radius: var(--r-pill);
-  overflow: hidden;
-}
-.period-seg button {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  padding: 1px 7px;
-  border: 0;
-  background: transparent;
-  color: var(--color-neutral-500);
-  cursor: pointer;
-}
-.period-seg button + button { border-left: 1px solid rgba(var(--hair-rgb), .14); }
-.period-seg button[aria-pressed="true"] {
-  background: var(--color-accent);
-  background-image: var(--accent-grad);
-  color: var(--ink-bg);
-}
 .picker-hint {
   margin: 8px 12px 12px;
   padding: 9px 11px;
@@ -610,9 +612,7 @@
   overflow-wrap: anywhere;
 }
 .reject-body { font-size: 13px; color: var(--color-neutral-300); margin: 0; }
-.reject-fixes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
-.reject-fixes li { display: flex; gap: 8px; font-size: 12.5px; color: var(--color-neutral-300); }
-.reject-fixes li::before { content: "•"; color: var(--color-accent-2-400); }
+.reject-fixes { margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .reject-actions { display: flex; gap: 8px; }
 
 /* ── 5 · log pane ── */
@@ -630,10 +630,9 @@
   align-items: center;
   gap: 10px;
   padding: 7px 16px;
-  cursor: ns-resize;
 }
 .log-head .icon { width: 13px; height: 13px; color: var(--color-neutral-600); }
-.log-title { font-size: 10px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--color-neutral-500); }
+.log-title { font-size: 10px; color: var(--color-neutral-500); }
 .log-meta { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .log-count { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-neutral-600); }
 .log-action {
@@ -662,8 +661,7 @@
 .log-pane--collapsed .log-head .icon-chevron { transform: rotate(-90deg); }
 .log-ts { color: var(--color-neutral-700); margin-right: 10px; }
 
-/* ── picker column: resize + collapse (additive; bench batch 2) ─────────── */
-.signal-picker { position: relative; flex-direction: row; }
+/* ── picker column: resize + collapse ── */
 .picker-body {
   flex: 1;
   min-width: 0;
@@ -671,8 +669,6 @@
   flex-direction: column;
   overflow: hidden;
 }
-.picker-head { align-items: center; gap: 8px; }
-.picker-head .picker-count { margin-left: auto; }
 .picker-collapse,
 .picker-expand {
   background: transparent;

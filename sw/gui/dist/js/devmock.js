@@ -1,7 +1,8 @@
 // ── DEV MOCK — browser-only stand-in for the Tauri backend ──────────────────
 // Loaded ONLY when window.__TAURI__ is absent (plain-browser visual QA).
 // Serves the design handoff's sample data and honors ?state=pre|matched|
-// mismatch|lost|empty to force app states for screenshots. Not production.
+// mismatch|lost|coldboot|coldboot-noport|badelf|rejected to force app
+// states for screenshots and the suite. Not production.
 
 const params = new URLSearchParams(location.search);
 const FORCED = params.get("state") || "matched";
@@ -125,11 +126,15 @@ export const mock = {
         // assertions.
         (window.__devmockInstalls ??= []).push(args.watches || []);
         if (FORCED === "rejected") throw "exceeds link budget";
-        watchList = (args.watches || []).map((w) => ({
-          path: w.path,
-          period_ms: w.period_ms,
-          size: signals.find((s) => s.path === w.path)?.size ?? 4,
-        }));
+        watchList = (args.watches || []).map((w) => {
+          const sig = signals.find((s) => s.path === w.path);
+          return {
+            path: w.path,
+            period_ms: w.period_ms,
+            size: sig?.size ?? 4,
+            kind: sig?.kind ?? "f32",
+          };
+        });
         // An accepted list restarts the stream from tick 0 — and the mock
         // backfills ~66 s at once so 60 s spans and pause/zoom are
         // exercisable immediately.
@@ -138,9 +143,12 @@ export const mock = {
           emitBatchRange(0, BACKFILL_MS);
           streamTick = BACKFILL_MS;
         }, 0);
+        // The Tauri side pushes a trace-status event on every list change.
+        emit("trace-status", traceStatusInfo());
         return traceStatusInfo();
       case "clear_watches":
         watchList = [];
+        emit("trace-status", traceStatusInfo());
         return traceStatusInfo();
       case "trace_status":
         return traceStatusInfo();
@@ -206,8 +214,7 @@ function emitBatchRange(t0, t1) {
     for (let i = 0; i < watchList.length; i++) {
       const w = watchList[i];
       if (t % w.period_ms === 0) {
-        const kind = signals.find((s) => s.path === w.path)?.kind ?? "f32";
-        sigs[i].points.push([t, waveform(w.path, kind, t)]);
+        sigs[i].points.push([t, waveform(w.path, w.kind, t)]);
       }
     }
   }

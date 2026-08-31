@@ -28,7 +28,7 @@ Acceptance:
 - Both budget rows hold, measured from the rendered-frame cadence
   across the full 60 s run of the reference shape.
 
-See also: [[live-plot]], [[workspace]]
+See also: [[live-plot]]
 
 Covers:
 - sys~arch_002~1

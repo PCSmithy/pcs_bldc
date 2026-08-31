@@ -27,6 +27,9 @@
 // stay ring-buffered) rather than popping text a full transport would drop.
 #define APP_SERVER_LOG_WIRE_RESERVE ((uint32_t) IO_COBSFRAME_WIRE_MAX(APP_SERVER_LOG_CHUNK_CHARS + 16U))
 
+// Bound on the disconnect-edge RX flush of a dead session's queued bytes.
+#define APP_SERVER_RX_DRAIN_MAX_BYTES (4096U)
+
 /* Private Data Definitions */
 
 typedef struct
@@ -36,14 +39,12 @@ typedef struct
     uint32_t telemetryDivider;
     ringbuf_t logRing;
     uint8_t logStorage[APP_SERVER_LOG_BUF_BYTES];
-    // RX is sized to the frame cap (an inbound watch list's callback-decoded
-    // watches don't count toward the envelope's encode bound); TX to the
-    // largest envelope the board encodes.
+    // RX sized to the frame cap (callback-decoded watches don't count toward
+    // the encode bound); TX to the largest envelope the board encodes.
     uint8_t rxFrame[IO_COBSFRAME_MAX_PAYLOAD];
     uint8_t txBytes[LIB_PROTOBUF_ENVELOPE_MAX];
-    // Envelope workspaces, static because two live at once during dispatch
-    // and each outgrew the 2 KB server-task stack when the trace payloads
-    // joined the union.
+    // Two envelopes are live at once during dispatch, and each is far too
+    // large for the 2 KB server-task stack.
     shared_Envelope rxEnvelope;
     shared_Envelope txEnvelope;
 } app_server_data_S;
@@ -177,6 +178,17 @@ static void app_server_private_pumpRequests(void)
         {
             app_server_private_handleEnvelope(request);
         }
+        else
+        {
+            // [impl->fw~conn_server_001~1] a CRC-valid but undecodable
+            // envelope is still answered (request_id unknowable: 0).
+            shared_Envelope * const reply = &data->txEnvelope;
+            app_server_private_zeroEnvelope(reply);
+            reply->which_payload = shared_Envelope_response_tag;
+            reply->payload.response.accepted = false;
+            (void) strcpy(reply->payload.response.cause, "decode error");
+            (void) app_server_private_sendEnvelope(reply);
+        }
         IO_COBSFrame_run();
     }
 }
@@ -276,9 +288,7 @@ void app_server_run1ms(void)
     if (data->config != NULL)
     {
         // Everything gates on an open host connection — including the request
-        // pump: a host can only send once it holds the port open, and touching
-        // the CDC read path before USB is configured corrupts enumeration
-        // (TinyUSB's read path claims endpoints unguarded).
+        // pump; the pre-configuration CDC read path is unsafe (see HW_USB.c).
         const bool connected = IO_serial_isConnected(data->config->serial);
         if (connected)
         {
@@ -295,8 +305,17 @@ void app_server_run1ms(void)
         }
         else if (data->wasConnected)
         {
-            // [impl->fw~conn_trace_003~1] the watch list dies with the port
+            // [impl->fw~conn_trace_003~1] the watch list dies with the port —
+            // and so does any half-received or held frame from that session.
             app_server_trace_clear();
+            IO_COBSFrame_reset(data->config->frame);
+            uint8_t discard[16];
+            uint32_t drained = 0U;
+            while ((IO_serial_read(data->config->serial, discard, sizeof(discard)) > 0U) &&
+                   (drained < APP_SERVER_RX_DRAIN_MAX_BYTES))
+            {
+                drained += (uint32_t) sizeof(discard);
+            }
         }
         else
         {

@@ -101,14 +101,14 @@ Needs: impl, test
 ### Ring state indication
 `fw~mc_009~1`
 
-The application shall present the active method identity and the bridge
+The application shall present the motor-control mode and the drive
 state — disabled, enabled, or faulted — on the LED ring, with a change
 reflected in the next 10 ms ring frame.
 
 Acceptance:
 - Each registered method has a distinct ring presentation.
-- The three bridge states are distinguishable on the ring.
-- A method or state change appears in the next ring frame.
+- The three drive states are distinguishable on the ring.
+- A mode or drive-state change appears in the next ring frame.
 
 Covers:
 - sys~mc_005~1

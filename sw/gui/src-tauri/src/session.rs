@@ -15,7 +15,7 @@ use crate::protocol::{Client, StreamEvent};
 
 /// Trace-client seam: once installed, receives every raw `Samples` stream
 /// message. Demultiplexing is its owner's concern, not the session's.
-pub type SamplesConsumer = Box<dyn Fn(pcs_proto::trace::Samples) + Send>;
+pub type SamplesConsumer = Arc<dyn Fn(pcs_proto::trace::Samples) + Send + Sync>;
 
 pub struct Session {
     pub client: Arc<Client>,
@@ -29,14 +29,30 @@ pub struct Session {
 impl Session {
     /// Install the trace client's raw-Samples consumer (replacing any prior).
     pub fn set_samples_consumer(&self, consumer: Option<SamplesConsumer>) {
-        if let Ok(mut slot) = self.samples_consumer.lock() {
-            *slot = consumer;
-        }
+        *self
+            .samples_consumer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = consumer;
     }
 
     /// The build identity the device reported at connect.
     pub fn device_build_id(&self) -> &str {
         &self.device_build_id
+    }
+
+    fn reader_alive(&self) -> bool {
+        self.reader.as_ref().is_some_and(|h| !h.is_finished())
+    }
+}
+
+impl Drop for Session {
+    /// Every drop path stops the reader and closes the port; the close lowers
+    /// DTR, on which the board clears its watch list itself.
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.reader.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -54,6 +70,16 @@ struct ConnectionEvent {
     state: &'static str,
     port: Option<String>,
     build_id: Option<String>,
+}
+
+impl ConnectionEvent {
+    fn down(state: &'static str) -> Self {
+        Self {
+            state,
+            port: None,
+            build_id: None,
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -98,10 +124,9 @@ pub struct SessionStatus {
 }
 
 /// macOS lists every serial device twice: a `/dev/tty.*` call-in node and
-/// its `/dev/cu.*` call-out twin. The app dials out, so a tty entry whose
-/// cu twin sits in the same listing is pure noise; a tty with no twin
-/// passes through. The `/dev/tty.` prefix (dot included) only occurs on
-/// macOS, so the rule is a no-op elsewhere and stays testable on any host.
+/// its `/dev/cu.*` call-out twin. The app dials out, so a tty entry whose cu
+/// twin is listed is noise; the `/dev/tty.` prefix only occurs on macOS, so
+/// the rule is a structural no-op elsewhere.
 fn is_shadowed_tty_twin(name: &str, all: &[String]) -> bool {
     match name.strip_prefix("/dev/tty.") {
         Some(suffix) => all
@@ -114,7 +139,10 @@ fn is_shadowed_tty_twin(name: &str, all: &[String]) -> bool {
 // [impl->app~conn_001~1]
 #[tauri::command]
 pub fn list_ports() -> Vec<PortInfo> {
-    let ports = serialport::available_ports().unwrap_or_default();
+    let ports = serialport::available_ports().unwrap_or_else(|e| {
+        eprintln!("list ports: {e}");
+        Vec::new()
+    });
     let names: Vec<String> = ports.iter().map(|p| p.port_name.clone()).collect();
     ports
         .into_iter()
@@ -143,9 +171,16 @@ pub fn list_ports() -> Vec<PortInfo> {
 /// returns the reported build id.
 // [impl->app~conn_001~1]
 #[tauri::command]
-pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Result<String, String> {
-    // A fresh connect replaces any existing session whole.
+pub fn connect(
+    app: AppHandle,
+    state: State<SessionState>,
+    trace: State<crate::trace::TraceState>,
+    port: String,
+) -> Result<String, String> {
+    // A fresh connect replaces any existing session whole; a dead session's
+    // residual trace points must not leak into the new one.
     teardown(&state);
+    crate::trace::drop_accumulator(&trace);
 
     let mut opened = serialport::new(&port, 115_200)
         .timeout(Duration::from_millis(50))
@@ -175,10 +210,11 @@ pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Resu
             let _ = sink_app.emit("telemetry", TelemetryEvent::from(telemetry));
         }
         StreamEvent::Samples(samples) => {
-            if let Ok(consumer) = sink_consumer.lock() {
-                if let Some(consumer) = consumer.as_ref() {
-                    consumer(samples);
-                }
+            // Clone the Arc out and call unlocked: a slow emit must not
+            // block install/clear on the consumer slot.
+            let consumer = sink_consumer.lock().ok().and_then(|g| (*g).clone());
+            if let Some(consumer) = consumer {
+                consumer(samples);
             }
         }
     }));
@@ -193,7 +229,7 @@ pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Resu
             let mut consecutive_errors = 0u32;
             while !reader_shutdown.load(Ordering::Relaxed) {
                 let n = match reader_port.read(&mut buf) {
-                    Ok(n) => {
+                    Ok(n) if n > 0 => {
                         consecutive_errors = 0;
                         n
                     }
@@ -201,19 +237,13 @@ pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Resu
                         consecutive_errors = 0;
                         0
                     }
-                    Err(_) => {
-                        // A vanished port (reset/unplug) errors every read; a
-                        // run of them means the port is gone, not a glitch.
+                    // A vanished port errors (or EOFs — Ok(0) is never a
+                    // healthy idle; that arrives as TimedOut) every read; a
+                    // run of them means the port is gone, not a glitch.
+                    _ => {
                         consecutive_errors += 1;
                         if consecutive_errors >= 5 {
-                            let _ = reader_app.emit(
-                                "connection",
-                                ConnectionEvent {
-                                    state: "lost",
-                                    port: None,
-                                    build_id: None,
-                                },
-                            );
+                            let _ = reader_app.emit("connection", ConnectionEvent::down("lost"));
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(20));
@@ -239,16 +269,11 @@ pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Resu
         .request(pcs_proto::shared::envelope::Payload::IdentityRequest(
             pcs_proto::shared::IdentityRequest::default(),
         ));
+    // On any error, dropping `session` stops the reader and closes the port.
     let build_id = match identity {
         Ok(pcs_proto::shared::envelope::Payload::Identity(identity)) => identity.build_id,
-        Ok(other) => {
-            stop_reader(&mut session);
-            return Err(format!("unexpected reply: {other:?}"));
-        }
-        Err(e) => {
-            stop_reader(&mut session);
-            return Err(e);
-        }
+        Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+        Err(e) => return Err(e),
     };
     session.device_build_id = build_id.clone();
 
@@ -265,16 +290,14 @@ pub fn connect(app: AppHandle, state: State<SessionState>, port: String) -> Resu
 }
 
 #[tauri::command]
-pub fn disconnect(app: AppHandle, state: State<SessionState>) {
+pub fn disconnect(
+    app: AppHandle,
+    state: State<SessionState>,
+    trace: State<crate::trace::TraceState>,
+) {
+    crate::trace::drop_accumulator(&trace);
     if teardown(&state) {
-        let _ = app.emit(
-            "connection",
-            ConnectionEvent {
-                state: "disconnected",
-                port: None,
-                build_id: None,
-            },
-        );
+        let _ = app.emit("connection", ConnectionEvent::down("disconnected"));
     }
 }
 
@@ -282,7 +305,9 @@ pub fn disconnect(app: AppHandle, state: State<SessionState>) {
 #[tauri::command]
 pub fn get_status(state: State<SessionState>) -> SessionStatus {
     match state.0.lock().ok().as_deref() {
-        Some(Some(session)) => SessionStatus {
+        // A dead reader means the link was lost even though the session
+        // lingers — a UI reload must not restore it as connected.
+        Some(Some(session)) if session.reader_alive() => SessionStatus {
             connected: true,
             port: Some(session.port_name.clone()),
             device_build_id: Some(session.device_build_id.clone()),
@@ -293,6 +318,16 @@ pub fn get_status(state: State<SessionState>) -> SessionStatus {
             device_build_id: None,
         },
     }
+}
+
+/// Drop any existing session (its `Drop` stops the reader); true if one existed.
+fn teardown(state: &State<SessionState>) -> bool {
+    state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .is_some()
 }
 
 #[cfg(test)]
@@ -334,25 +369,5 @@ mod tests {
         for n in &all {
             assert!(!is_shadowed_tty_twin(n, &all), "{n} must pass through");
         }
-    }
-}
-
-/// Stop the reader and drop the session; true if one existed. The port closes
-/// with the drop, which lowers DTR — the board clears its watch list itself.
-fn teardown(state: &State<SessionState>) -> bool {
-    let session = state.0.lock().ok().and_then(|mut s| s.take());
-    match session {
-        Some(mut session) => {
-            stop_reader(&mut session);
-            true
-        }
-        None => false,
-    }
-}
-
-fn stop_reader(session: &mut Session) {
-    session.shutdown.store(true, Ordering::Relaxed);
-    if let Some(handle) = session.reader.take() {
-        let _ = handle.join();
     }
 }

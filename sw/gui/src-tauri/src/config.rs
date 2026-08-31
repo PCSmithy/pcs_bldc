@@ -27,8 +27,15 @@ pub fn load_config(app: tauri::AppHandle) -> serde_json::Value {
     let Ok(path) = config_path(&app) else {
         return empty;
     };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return empty;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty,
+        Err(e) => {
+            // A transient read error must leave a trace before the next save
+            // can clobber a good file.
+            eprintln!("config {}: {e}", path.display());
+            return empty;
+        }
     };
     match serde_json::from_str(&text) {
         Ok(value) => value,

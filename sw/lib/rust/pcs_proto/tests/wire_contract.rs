@@ -5,53 +5,16 @@
 
 use prost::Message;
 
-// --- the hand-rolled oracle (ported from sw/sil/pcs_bldc_sil/tests/trace_stream.rs) ---
-
-fn put_varint(mut v: u64, out: &mut Vec<u8>) {
-    loop {
-        let byte = (v & 0x7F) as u8;
-        v >>= 7;
-        if v != 0 {
-            out.push(byte | 0x80);
-        } else {
-            out.push(byte);
-            break;
-        }
-    }
-}
-
-fn put_len_key(field: u32, out: &mut Vec<u8>) {
-    put_varint(u64::from((field << 3) | 2), out);
-}
-
-fn envelope(request_id: u64, payload_field: u32, payload: &[u8]) -> Vec<u8> {
-    let mut env = Vec::new();
-    if request_id != 0 {
-        env.push(0x08);
-        put_varint(request_id, &mut env);
-    }
-    put_len_key(payload_field, &mut env);
-    put_varint(payload.len() as u64, &mut env);
-    env.extend_from_slice(payload);
-    env
-}
-
-fn watch_request(request_id: u64, watches: &[(u32, u32, u32)]) -> Vec<u8> {
-    let mut wr = Vec::new();
-    for &(address, size, period_ms) in watches {
-        let mut w = Vec::new();
-        w.push(0x08);
-        put_varint(u64::from(address), &mut w);
-        w.push(0x10);
-        put_varint(u64::from(size), &mut w);
-        w.push(0x18);
-        put_varint(u64::from(period_ms), &mut w);
-        wr.push(0x0A);
-        put_varint(w.len() as u64, &mut wr);
-        wr.extend_from_slice(&w);
-    }
-    envelope(request_id, 30, &wr)
-}
+/// The minimal-varint wire bytes for the envelope of request_id 7 carrying
+/// WatchRequest [(0x2000_0000, 4, 1), (0x2000_0010, 2, 10)] — hand-derived
+/// by the oracle in sw/sil/pcs_bldc_sil/tests/trace_stream.rs, the encoding
+/// the firmware accepted on real hardware.
+const WATCH_REQUEST_WIRE: &[u8] = &[
+    0x08, 0x07, // request_id 7
+    0xF2, 0x01, 0x18, // envelope field 30 (WatchRequest), length 24
+    0x0A, 0x0A, 0x08, 0x80, 0x80, 0x80, 0x80, 0x02, 0x10, 0x04, 0x18, 0x01, 0x0A, 0x0A, 0x08, 0x90,
+    0x80, 0x80, 0x80, 0x02, 0x10, 0x02, 0x18, 0x0A,
+];
 
 fn prost_envelope(request_id: u32, payload: pcs_proto::shared::envelope::Payload) -> Vec<u8> {
     pcs_proto::shared::Envelope {
@@ -64,8 +27,16 @@ fn prost_envelope(request_id: u32, payload: pcs_proto::shared::envelope::Payload
 #[test]
 fn watch_request_matches_hand_rolled_bytes() {
     let watches = vec![
-        pcs_proto::trace::Watch { address: 0x2000_0000, size: 4, period_ms: 1 },
-        pcs_proto::trace::Watch { address: 0x2000_0010, size: 2, period_ms: 10 },
+        pcs_proto::trace::Watch {
+            address: 0x2000_0000,
+            size: 4,
+            period_ms: 1,
+        },
+        pcs_proto::trace::Watch {
+            address: 0x2000_0010,
+            size: 2,
+            period_ms: 10,
+        },
     ];
     let bytes = prost_envelope(
         7,
@@ -73,8 +44,7 @@ fn watch_request_matches_hand_rolled_bytes() {
             watches,
         }),
     );
-    let oracle = watch_request(7, &[(0x2000_0000, 4, 1), (0x2000_0010, 2, 10)]);
-    assert_eq!(bytes, oracle);
+    assert_eq!(bytes, WATCH_REQUEST_WIRE);
 }
 
 #[test]

@@ -10,18 +10,19 @@ and/or integration).
 Sub-folders are created when a topic gets its first spec.
 
 - `arch/` — process split and state ownership ([[core-ownership]]:
-  device and firmware state live in the native core)
-- `conn/` — device session and protocol client: `app~conn_001~1`
-  ([[session]]), framing + envelope codec ([[wire]])
+  device and firmware state live in the native core;
+  [[session-restore]]: the saved port/ELF/watch-list context)
+- `conn/` — device session and protocol client ([[session]]), framing
+  + envelope codec ([[wire]])
 - `obs/` — the acquisition model: ELF/DWARF signal selection
   ([[signal-picker]]), the build-identity gate ([[access-gate]]), the
   trace client and Samples demultiplexer ([[trace-client]])
 - `views/` — presentation surfaces: [[live-plot]] (plot, axes, trace
   appearance, decimation), [[telemetry]], [[log]], [[workspace]],
   [[cursor]] (cursor, pointed trace, comparison anchor + deltas),
-  [[table]], [[timeline]],
-  [[watch-panel]], [[render-budget]] (rendering performance floor),
-  and [[value-rendering]] (the surfaces' shared value formatting)
+  [[table]], [[timeline]], [[watch-panel]], [[render-budget]]
+  (rendering performance floor), and [[value-rendering]] (the
+  surfaces' shared value formatting)
 
 Convention: `obs/` holds acquisition and access — what bytes mean and
 when capabilities are available; `views/` holds presentation surfaces —

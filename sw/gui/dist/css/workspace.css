@@ -1,21 +1,9 @@
 /* Workspace interior: widget grid, plot/table widgets, shared cursor.
    Values follow the design handoff README §4–6; every color is a token. */
 
-/* [hidden] must beat the shell's display:flex on these overlays. */
-.workspace-empty[hidden],
-.widget-grid[hidden],
-.trace-gate[hidden],
-.reject-scrim[hidden] {
-  display: none !important;
-}
-
 .widget-grid {
-  /* A free canvas: widgets are absolutely positioned on the 50 px lattice.
-     z-index: 0 makes this a stacking context, so widget z-indexes (the
-     stacking order) can never climb over the gate/scrim/popover chrome.
-     background-attachment: local keeps the lattice dots riding the content
-     when the canvas scrolls; the 25 px offset centers each dot on a lattice
-     intersection, where widget corners park. */
+  /* A free canvas on the 50 px lattice. z-index: 0 makes this a stacking
+     context, so widget z-indexes never climb over the gate/scrim/popover. */
   position: relative;
   z-index: 0;
   flex: 1;
@@ -27,7 +15,7 @@
   background-image: radial-gradient(rgba(var(--hair-rgb), 0.09) 1px, transparent 1px);
   background-size: 50px 50px;
   background-position: 25px 25px;
-  background-attachment: local;
+  background-attachment: local; /* dots ride the content when it scrolls */
 }
 .grid-extent {
   position: absolute;
@@ -84,7 +72,7 @@
   flex: none;
 }
 .widget-tag {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--color-neutral-500);
   border: 1px solid rgba(var(--hair-rgb), 0.14);
@@ -109,20 +97,6 @@
   overflow: hidden;
   flex: none;
 }
-.axis-mode button {
-  font: 600 10.5px "Figtree", system-ui, sans-serif;
-  color: var(--color-neutral-500);
-  background: transparent;
-  border: 0;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-.axis-mode button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
-.axis-mode button.is-selected {
-  background: var(--color-accent);
-  background-image: var(--accent-grad);
-  color: var(--ink-bg);
-}
 
 .widget-legend {
   margin-left: auto;
@@ -133,7 +107,6 @@
   overflow: hidden;
 }
 .legend-entry { display: inline-flex; align-items: center; gap: 5px; cursor: default; }
-.plot-widget--split .legend-entry { cursor: pointer; }
 .legend-bar { width: 8px; height: 2.5px; border-radius: 1px; display: inline-block; flex: none; }
 .legend-name { font-size: 11px; color: var(--color-neutral-300); }
 .legend-period { font-size: 10px; color: var(--color-neutral-700); }
@@ -158,7 +131,6 @@
 }
 .y-axis--right { align-items: flex-start; width: 46px; padding-left: 7px; }
 .y-axis--accent span { color: var(--color-accent-500); }
-.y-axis[hidden] { display: none; }
 
 .plot-canvas {
   flex: 1;
@@ -184,7 +156,7 @@
   position: absolute;
   right: 10px;
   bottom: 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--ink-hint);
   pointer-events: none;
@@ -239,10 +211,9 @@
   pointer-events: none;
 }
 
-/* ── comparison anchor lines (app~views_017): the dropped sample's time and
-   value. Dashed, in the accent-2 (ok) family, so anchored vs dynamic cursor
-   read apart at a glance. pointer-events none: the release click is canvas
-   coordinate math, and the lines must never eat the hover tracking. ── */
+/* ── comparison anchor lines (app~views_017): dashed accent-2, so anchored
+   vs dynamic cursor read apart; pointer-events none — the lines must never
+   eat the hover tracking. ── */
 .anchor-line-x {
   position: absolute;
   top: 0;
@@ -261,9 +232,8 @@
     to right, var(--color-accent-2-400) 0 5px, transparent 5px 9px);
   pointer-events: none;
 }
-/* the Ctrl-held anchor candidate (app~views_019): the anchor family's voice
-   at a whisper — shorter dashes, half strength — so candidate vs dropped
-   read apart instantly. Never a release hit target. */
+/* the modifier-held anchor candidate (app~views_019): the anchor family's
+   voice at a whisper — candidate vs dropped read apart instantly. */
 .anchor-preview-y {
   position: absolute;
   left: 0;
@@ -300,13 +270,7 @@
   font-size: 11px;
   color: var(--color-accent-400);
 }
-.readout-group-label {
-  font: 600 9.5px "Figtree", system-ui, sans-serif;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--color-neutral-600);
-  margin: 2px 0 4px;
-}
+.readout-group-label { margin: 2px 0 4px; }
 .readout-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
 .readout-name { font-size: 11.5px; color: var(--color-neutral-300); flex: 1; min-width: 56px; overflow: hidden; text-overflow: ellipsis; }
 /* Long enumerator names ellipsize instead of spilling past the readout edge
@@ -316,9 +280,11 @@
 
 /* ── table widget ── */
 .table-body { flex: 1; overflow: auto; padding: 4px 12px 10px; }
-.value-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.value-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
 .value-table th {
-  font: 600 9.5px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 9.5px;
   text-transform: uppercase;
   letter-spacing: 0.11em;
   color: var(--color-neutral-600);
@@ -350,17 +316,7 @@
   background: var(--ink-raised);
   box-shadow: 0 0 0 1px rgba(var(--lit-rgb), 0.45);
 }
-.period-seg { display: inline-flex; border: 1px solid rgba(var(--hair-rgb), 0.14); border-radius: var(--r-pill); overflow: hidden; flex: none; }
-.period-seg button {
-  font: 600 10px "Figtree", system-ui, sans-serif;
-  color: var(--color-neutral-500);
-  background: transparent;
-  border: 0;
-  padding: 2px 7px;
-  cursor: pointer;
-}
-.period-seg button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
-.period-seg button.is-selected { background: var(--color-accent); background-image: var(--accent-grad); color: var(--ink-bg); }
+.period-seg button { padding: 2px 7px; }
 .budget-count { font-size: 10.5px; color: var(--color-neutral-500); margin-left: auto; margin-right: 8px; }
 
 .reject-fix {
@@ -372,10 +328,8 @@
   padding: 3px 0;
 }
 
-/* ── widget launcher (app~views_004's add-plot/add-table affordance): a
-   floating "+" over the canvas corner, whisper-quiet until hovered. Above
-   widgets (the canvas is its own z-index:0 stacking context), below the
-   gate (30) and scrim (40). ── */
+/* ── widget launcher (app~views_004): a floating "+", whisper-quiet until
+   hovered. Above widgets, below the gate (30) and scrim (40). ── */
 .widget-launcher {
   position: absolute;
   right: 18px;
@@ -394,7 +348,9 @@
   background: var(--ink-surface);
   background-image: var(--surface-grad);
   color: var(--color-neutral-300);
-  font: 300 24px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 300;
+  font-size: 24px;
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.32);
@@ -419,13 +375,14 @@
   padding: 5px;
   gap: 2px;
 }
-.launcher-menu[hidden] { display: none !important; }
 .launcher-menu button {
   background: none;
   border: 0;
   border-radius: var(--r-row);
   color: var(--color-neutral-300);
-  font: 500 12px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 12px;
   text-align: left;
   padding: 7px 10px;
   cursor: pointer;
@@ -448,36 +405,15 @@
 /* The bar rides with the grid: no widgets, no timeline. */
 .workspace:has(.widget-grid[hidden]) .timeline-bar { display: none; }
 
-.timeline-label {
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--color-neutral-600);
-  white-space: nowrap;
-}
-.span-group {
-  display: inline-flex;
-  border: 1px solid rgba(var(--hair-rgb), 0.14);
-  border-radius: var(--r-pill);
-  overflow: hidden;
-  flex: none;
-}
-.span-pill {
+.timeline-label { white-space: nowrap; }
+.span-group button {
+  font-family: var(--font-mono);
+  font-weight: 400;
   font-size: 10.5px;
   padding: 4px 10px;
-  background: transparent;
-  border: 0;
-  color: var(--color-neutral-500);
-  cursor: pointer;
   white-space: nowrap;
 }
-.span-pill + .span-pill { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
 .span-pill:hover:not(:disabled):not(.is-selected) { color: var(--color-accent-300); }
-.span-pill.is-selected {
-  background: var(--color-accent);
-  background-image: var(--accent-grad);
-  color: var(--ink-bg);
-}
 .span-pill:disabled { color: var(--color-neutral-700); cursor: default; }
 .timeline-readout { font-size: 11px; color: var(--color-neutral-500); white-space: nowrap; }
 
@@ -497,7 +433,7 @@
 
 .axes-popover {
   position: fixed;
-  z-index: 30;
+  z-index: 35; /* above the gate (30), below the reject scrim (40) */
   width: 264px;
   background: var(--ink-surface);
   background-image: var(--surface-grad);
@@ -524,33 +460,13 @@
 }
 .axes-empty { font-size: 11.5px; color: var(--color-neutral-700); padding: 4px 0; }
 
-.side-seg {
-  display: inline-flex;
-  border: 1px solid rgba(var(--hair-rgb), 0.14);
-  border-radius: var(--r-pill);
-  overflow: hidden;
-  flex: none;
-}
-.side-seg button {
-  font: 600 10px "Figtree", system-ui, sans-serif;
-  color: var(--color-neutral-500);
-  background: transparent;
-  border: 0;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.side-seg button + button { border-left: 1px solid rgba(var(--hair-rgb), 0.14); }
-.side-seg button.is-selected {
-  background: var(--color-accent);
-  background-image: var(--accent-grad);
-  color: var(--ink-bg);
-}
-
 .axes-remove {
   background: none;
   border: 0;
   color: var(--color-neutral-700);
-  font: 500 10.5px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10.5px;
   cursor: pointer;
   padding: 2px 4px;
   flex: none;
@@ -565,16 +481,8 @@
   border-top: 1px solid rgba(var(--hair-rgb), 0.07);
   flex-wrap: wrap;
 }
-.axes-scale-label {
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--color-neutral-600);
-  flex: 1;
-  white-space: nowrap;
-}
+.axes-scale-label { flex: 1; white-space: nowrap; }
 .scale-range { display: inline-flex; align-items: center; gap: 4px; }
-.scale-range[hidden] { display: none !important; } /* auto mode: no bounds */
 .scale-range input {
   width: 58px;
   background: var(--ink-raised);
@@ -599,7 +507,9 @@
 
 /* The derived shared/split chip: an indicator that opens the popover. */
 .axis-mode--derived {
-  font: 600 10.5px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 10.5px;
   color: var(--color-neutral-500);
   background: transparent;
   padding: 3px 10px;
@@ -615,13 +525,13 @@
   place-items: center;
   border: 1px dashed rgba(var(--hair-rgb), 0.16);
   border-radius: var(--r-card);
-  font: 500 11.5px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 11.5px;
   color: var(--color-neutral-700);
   pointer-events: none;
   z-index: 3;
 }
-/* The class's display:grid would beat the UA's [hidden] rule. */
-.plot-empty-hint[hidden] { display: none; }
 
 /* ── watch panel (app~views_010): the picker-docked master watch list ───── */
 .watch-panel {
@@ -666,27 +576,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.watch-seg {
-  display: flex;
-  border: 1px solid rgba(var(--hair-rgb), 0.14);
-  border-radius: var(--r-pill);
-  overflow: hidden;
-  flex: none;
-}
-.watch-seg-opt {
-  background: transparent;
-  border: none;
-  color: var(--color-neutral-500);
+.watch-seg button {
   font-family: var(--font-mono);
+  font-weight: 400;
   font-size: 10px;
   padding: 1px 6px;
-  cursor: pointer;
-}
-.watch-seg-opt + .watch-seg-opt { border-left: 1px solid rgba(var(--hair-rgb), 0.1); }
-.watch-seg-opt--on {
-  background: var(--color-accent);
-  background-image: var(--accent-grad);
-  color: var(--ink-bg);
 }
 .watch-value {
   /* Shrinkable with a floor: a long enumerator name ellipsizes instead of
@@ -734,14 +628,7 @@
   border-bottom: 1px solid rgba(var(--hair-rgb), 0.07);
 }
 .appearance-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.appearance-label {
-  font: 600 9.5px "Figtree", system-ui, sans-serif;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--color-neutral-600);
-  width: 38px;
-  flex: none;
-}
+.appearance-label { width: 38px; flex: none; }
 .swatch {
   width: 14px;
   height: 14px;
@@ -756,7 +643,9 @@
   width: auto;
   background: transparent;
   color: var(--color-neutral-500);
-  font: 500 10px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10px;
   padding: 0 6px;
   border-radius: var(--r-pill);
 }
@@ -778,7 +667,9 @@
   color: var(--color-neutral-500);
   border: 1px solid rgba(var(--hair-rgb), 0.14);
   border-radius: var(--r-pill);
-  font: 500 10.5px "Figtree", system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10.5px;
   padding: 2px 9px;
   cursor: pointer;
 }

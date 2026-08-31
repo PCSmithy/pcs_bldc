@@ -34,19 +34,9 @@ export function currentWindow() {
   return [newest - t.span_ms, newest];
 }
 
-// ── display clock: the smoothly estimated live "now" ──────────────────────
-// Batches land at ~20 Hz, so a window pinned to the newest tick jumps ~1% of
-// a 5 s span per redraw — visible stutter beside the 144 Hz cursor. The
-// clock advances an estimated device-time now at display rate: newest tick
-// plus wall-clock elapsed since it landed, lead-clamped so a stalled stream
-// freezes honestly instead of scrolling into emptiness. Monotonic — never
-// backwards. Under steady streaming, forward snaps (a batch outrunning the
-// estimate) are bounded by clock skew over one batch: invisible. A stall
-// LONGER than the lead clamp ends differently by design: the view freezes
-// at the clamp, and the batch that finally lands snaps it forward by the
-// stall's full excess — a hard, honest catch-up to reality. The one
-// non-monotonic case: a stream restart resets the tick domain to zero, and
-// the clock snaps down with it.
+// ── display clock: an estimated device-time "now" advanced at display rate,
+// lead-clamped (a stalled stream freezes honestly) and monotonic except for
+// a stream restart, which resets the tick domain and snaps the clock down.
 
 const LEAD_MAX_MS = 75;   // ~1.5 batch intervals of extrapolation, no more
 const CATCHUP_GAIN = 0.12; // fraction of the estimate error closed per frame
@@ -121,12 +111,9 @@ export function setSpan(span_ms) {
 
 export function pause() {
   if (tl().mode === "paused") return;
-  // Freeze the DISPLAYED window, not the newest sample: the display clock
-  // leads the newest tick by up to LEAD_MAX_MS, and freezing to the sample
-  // edge would pop the view left by that lead at the pause press. The
-  // frozen span is exactly what was on screen (views_008's span preceding
-  // the pause); its right edge honestly holds the ≤ LEAD_MAX_MS strip no
-  // samples reached yet.
+  // Freeze the DISPLAYED window, not the newest sample: freezing to the
+  // sample edge would pop the view left by the display clock's lead
+  // (views_008 — the frozen span is exactly what was on screen).
   const newest = Math.max(globalNewest(), tl().span_ms);
   const end = Math.max(newest, Math.min(disp.now || 0, newest + LEAD_MAX_MS));
   const win = [end - tl().span_ms, end];
@@ -208,8 +195,8 @@ function renderBar() {
   const t = tl();
   const paused = t.mode === "paused";
   bar.innerHTML = `
-    <span class="timeline-label">plot duration</span>
-    <span class="span-group" role="group" aria-label="Plot duration">
+    <span class="field-label timeline-label">plot duration</span>
+    <span class="seg span-group" role="group" aria-label="Plot duration">
       ${SPANS_MS.map(
         (s) =>
           `<button class="span-pill mono ${s === t.span_ms ? "is-selected" : ""}"

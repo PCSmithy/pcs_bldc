@@ -1,9 +1,5 @@
-// Plot widget: the WebGL renderer (glrender.js) draws the traces; the chrome
-// (head, DOM axes, gap ribbon, cursor line + readout) is ours so the design's
-// classes and type land exactly. Trace geometry comes from the per-signal
-// decimated window tables: gap markers (null) split a trace into runs, and a
-// run never draws across a tick-count gap. Each signal renders from its OWN
-// table, so a slower signal between its samples is simply a longer segment —
+// Plot widget: glrender.js draws the traces, DOM chrome does the rest. Each
+// signal renders from its OWN decimated table (nulls split runs at gaps), so
 // no cross-signal alignment exists to punch holes through.
 // [impl->app~views_001~1]
 
@@ -20,18 +16,16 @@ import { currentWindow, displayWindow, zoomAt, panBy, selectRange } from "./time
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor, updateTitle } from "./titlebar.js";
 import { isAnchorModifier, ANCHOR_KEY } from "../platform.js";
+import { esc, shortName } from "../dom.js";
 
-// Wheel-zoom feel (app~views_009 pins 1.0015 per wheel-delta unit): wheel-up
-// zooms in (~×0.86 per notch). A taste constant — invert the exponent's sign
-// or retune the base if the bench prefers the other direction or pace.
+// Wheel-zoom feel (app~views_009 pins 1.0015 per wheel-delta unit): a taste
+// constant — retune if the bench prefers another direction or pace.
 const WHEEL_ZOOM_BASE = 1.0015;
-
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const shortName = (path) => path.split(".").pop();
 
 const BASE_STROKE_W = 1.5;
 const POINTED_MAX_PX = 40; // app~views_012's pointing threshold
+const CLICK_MAX_PX = 6; // press+release under this is a click; over, a select drag
+const ANCHOR_HIT_PX = 8; // bare-click release distance to an anchor line
 
 export class PlotWidget {
   /** cfg: { id, signals: [path], sides: {path:'L'|'R'}, scales: {L|R: {mode:'auto'|'manual', min, max}},
@@ -81,9 +75,27 @@ export class PlotWidget {
           this.applyPointed(null);
           this.releaseAnchor(); // Resume releases (app~views_017)
         }
-        this.refresh();
+        this.scheduleRefresh();
       }),
     ];
+  }
+
+  /** Leading-edge + trailing rAF coalesce: the first trigger renders
+   *  synchronously (interaction reads stay coherent); same-frame repeats
+   *  (wheel bursts, resize streams) fold into one trailing refresh. */
+  scheduleRefresh() {
+    if (this._refreshRaf) {
+      this._refreshDirty = true;
+      return;
+    }
+    this.refresh();
+    this._refreshRaf = requestAnimationFrame(() => {
+      this._refreshRaf = null;
+      if (this._refreshDirty) {
+        this._refreshDirty = false;
+        this.refresh();
+      }
+    });
   }
 
   // [impl->app~views_016~1] unset title: earliest-added signal's leaf name,
@@ -123,6 +135,23 @@ export class PlotWidget {
       <div class="x-axis"></div>
       <div class="resize-handle" data-resize aria-hidden="true"></div>`;
 
+    const $w = (sel) => this.el.querySelector(sel);
+    this._els = {
+      canvas: $w(".plot-canvas"),
+      host: $w(".trace-host"),
+      yL: $w(".y-axis--left"),
+      yR: $w(".y-axis--right"),
+      xAxis: $w(".x-axis"),
+      ribbon: $w(".gap-ribbon"),
+      legend: $w(".widget-legend"),
+      emptyHint: $w(".plot-empty-hint"),
+      cursorLine: $w(".cursor-line"),
+      readout: $w(".cursor-readout"),
+      anchorX: $w(".anchor-line-x"),
+      anchorY: $w(".anchor-line-y"),
+      previewY: $w(".anchor-preview-y"),
+    };
+
     // Both the ⋯ menu and the derived axis chip open the axes configuration —
     // assignment, scale modes, and signal removal all live there.
     this.el.querySelectorAll("[data-axesconfig]").forEach((b) =>
@@ -132,7 +161,7 @@ export class PlotWidget {
       }),
     );
 
-    const canvas = this.el.querySelector(".plot-canvas");
+    const canvas = this._els.canvas;
     canvas.addEventListener("pointermove", (ev) => {
       // The shared cursor is pure window math — it must work (app-wide!)
       // even while this widget's renderer is unavailable.
@@ -161,10 +190,8 @@ export class PlotWidget {
     this.rebuild();
   }
 
-  // ── paused-range controls on the canvas ──────────────────────────────────
-  // Wheel zooms about the held cursor time (range center without one);
-  // horizontal scroll / Shift+wheel pans at the current scale; dragging a
-  // horizontal section zooms every plot to it. All no-ops while live.
+  // ── paused-range controls: wheel zooms, horizontal/Shift+wheel pans,
+  // horizontal drag zooms every plot to the selection. No-ops while live.
   // [impl->app~views_009~1]
 
   wireTimelineActions(canvas) {
@@ -208,12 +235,11 @@ export class PlotWidget {
         selectRange(toTick(Math.min(sel.x0, ev.clientX)), toTick(Math.max(sel.x0, ev.clientX)));
         return;
       }
-      // A press and release moving under 6 px is a click (the select gesture
-      // above claims larger movements): with the anchor modifier it drops
-      // the comparison anchor, bare it releases one when it lands near a line.
-      // [impl->app~views_017~1]
+      // A click is a press+release under the select-activation travel — the
+      // x metric only, matching the horizontal select gesture it yields to,
+      // so vertical wiggle never voids a click. [impl->app~views_017~1]
       if (!click) return;
-      if (Math.hypot(ev.clientX - click.x0, ev.clientY - click.y0) >= 6) return;
+      if (Math.abs(ev.clientX - click.x0) >= CLICK_MAX_PX) return;
       if (click.ctrl) {
         this.dropAnchor(ev.clientX, ev.clientY, canvas);
       } else {
@@ -285,14 +311,9 @@ export class PlotWidget {
     if (cursor.tick !== null) this.positionCursor();
   }
 
-  // ── pointed-trace emphasis (paused only, app~views_012) ──────────────────
-  // The trace whose rendered line lies nearest the pointer (≤ 40 px, pixel
-  // space — split axes handled inherently since each signal converts through
-  // its own scale group) doubles its stroke and its readout row is marked.
-  // Mechanism: flip the built trace's width and redraw from cached geometry —
-  // uniforms + draw calls, no rebuild — then toggle row classes in place.
-  // Transient: the persisted appearance and cfg are never touched.
-  // [impl->app~views_012~1]
+  // ── pointed-trace emphasis (paused only): nearest rendered line ≤ 40 px
+  // doubles its stroke via a cached-geometry redraw. Transient — persisted
+  // appearance and cfg are never touched. [impl->app~views_012~1]
 
   trackPointed(clientX, clientY, canvas) {
     if (this.pointedRaf) return;
@@ -369,7 +390,7 @@ export class PlotWidget {
     const sel = this.sel;
     if (!sel) return;
     const dx = ev.clientX - sel.x0;
-    if (!sel.active && Math.abs(dx) > 6) {
+    if (!sel.active && Math.abs(dx) > CLICK_MAX_PX) {
       sel.active = true;
       sel.el = document.createElement("div");
       sel.el.className = "select-region";
@@ -382,10 +403,8 @@ export class PlotWidget {
     }
   }
 
-  // ── comparison anchor (app~views_017): a sample of one of this widget's
-  // signals, marked by a vertical line at its time and a horizontal line at
-  // its value against the signal's own axis. Paused-only by lifecycle (set
-  // needs a pointed trace; Resume releases) and never persisted.
+  // ── comparison anchor: a sample marked by time + value lines against its
+  // signal's own axis. Paused-only by lifecycle, never persisted.
   // [impl->app~views_017~1]
 
   /** The sample a Ctrl+click at this pointer x anchors: the pointed
@@ -417,15 +436,12 @@ export class PlotWidget {
     this.renderCursor();
   }
 
-  // ── anchor preview (app~views_019): while paused with Ctrl held and a
-  // pointed trace, a horizontal candidate mark sits at the value of the
-  // sample a Ctrl+click would anchor, following the pointer and the
-  // pointed-trace transfer. It is not an anchor line: the release hit-test
-  // never sees it, and dropping/releasing anchors ignores it entirely.
+  // ── anchor preview: the candidate mark a modifier+click would anchor. Not
+  // an anchor line — the release hit-test never sees it.
   // [impl->app~views_019~1]
 
   refreshPreview() {
-    const canvas = this.el.querySelector(".plot-canvas");
+    const canvas = this._els?.canvas;
     let next = null;
     if (
       this._ctrl && this._ptr && canvas &&
@@ -437,7 +453,7 @@ export class PlotWidget {
       if (path) next = this.snapSample(path, this._ptr.x, canvas);
     }
     this.preview = next;
-    const ly = this.el.querySelector(".anchor-preview-y");
+    const ly = this._els?.previewY;
     if (!ly) return;
     if (!next) {
       ly.hidden = true;
@@ -456,28 +472,25 @@ export class PlotWidget {
     this.renderCursor();
   }
 
-  /** The bare-click release: within 8 px of either anchor line. Only a
-   *  VISIBLE line is a target — renderAnchor hides a line whose coordinate
-   *  left the window or its axis range, and a hidden line's projection must
-   *  not keep a phantom click strip alive at the canvas edge. With both
-   *  lines hidden, only Resume (or the signal leaving) releases. */
+  /** The bare-click release. Only a VISIBLE line is a target — a hidden
+   *  line's projection must not keep a phantom click strip at the edge. */
   releaseAnchorNear(px, py, rect) {
     const a = this.anchor;
     if (!a) return;
     const hitX =
-      !this.el.querySelector(".anchor-line-x").hidden &&
-      Math.abs(px - this.xFracOf(a.tick) * rect.width) <= 8;
+      !this._els.anchorX.hidden &&
+      Math.abs(px - this.xFracOf(a.tick) * rect.width) <= ANCHOR_HIT_PX;
     const hitY =
-      !this.el.querySelector(".anchor-line-y").hidden &&
-      Math.abs(py - this.yPxOf(a.value, this.sideOf(a.path), rect.height)) <= 8;
+      !this._els.anchorY.hidden &&
+      Math.abs(py - this.yPxOf(a.value, this.sideOf(a.path), rect.height)) <= ANCHOR_HIT_PX;
     if (hitX || hitY) this.releaseAnchor();
   }
 
   /** Position the anchor lines; each hides alone when its coordinate leaves
    *  the current window or its axis's range (paused zoom/pan/scrub). */
   renderAnchor() {
-    const lx = this.el.querySelector(".anchor-line-x");
-    const ly = this.el.querySelector(".anchor-line-y");
+    const lx = this._els?.anchorX;
+    const ly = this._els?.anchorY;
     if (!lx) return;
     const a = this.anchor;
     if (!a) {
@@ -550,11 +563,11 @@ export class PlotWidget {
   }
 
   renderLegend() {
-    this.el.querySelector(".widget-legend").innerHTML = this.cfg.signals
+    this._els.legend.innerHTML = this.cfg.signals
       .map((p) => {
         const w = store.watched.get(p);
-        return `<span class="legend-entry" data-legend="${esc(p)}" title="${esc(p)}">
-          <span class="legend-bar" style="background:${w?.color || resolvedColor(p)}"></span>
+        return `<span class="legend-entry" title="${esc(p)}">
+          <span class="legend-bar" style="background:${resolvedColor(p)}"></span>
           <span class="legend-name mono">${esc(shortName(p))}</span>
           <span class="legend-period">${w ? `${w.period_ms}ms` : ""}</span>
         </span>`;
@@ -595,9 +608,7 @@ export class PlotWidget {
 
   /** The signal's rendered trace style. An explicit line style — "solid"
    *  included — always wins; the 6-color overflow dash applies only while
-   *  the style is auto (null). Dash on/off lengths keep the Canvas2D-era
-   *  proportions; the renderer round-caps each dash window (capsule SDF),
-   *  so dots and dashes read slightly softer than butt-capped Canvas2D. */
+   *  the style is auto (null). */
   // [impl->app~views_011~1]
   traceStyle(path) {
     const a = appearanceOf(path);
@@ -608,7 +619,7 @@ export class PlotWidget {
       : traceDashed(path) ? [6, 4]
       : null;
     return {
-      color: store.watched.get(path)?.color || resolvedColor(path),
+      color: resolvedColor(path),
       dash,
       dots: a.dots,
       interp: a.interp,
@@ -627,10 +638,10 @@ export class PlotWidget {
     if (chip) chip.textContent = split ? "split" : "shared Y";
     const mark = this.el.querySelector(".plot-watermark");
     if (mark) mark.textContent = `canvas · webgl${split ? " · 2 scales" : ""}`;
-    this.el.querySelector(".plot-empty-hint").hidden = this.cfg.signals.length > 0;
+    this._els.emptyHint.hidden = this.cfg.signals.length > 0;
     // One axis per assigned side IN USE: an all-right plot shows only the
     // right axis, not a vacant left column's mirror.
-    this.el.querySelector(".y-axis--right").hidden = !this.scaleGroups().some((g) => g.key === "R");
+    this._els.yR.hidden = !this.scaleGroups().some((g) => g.key === "R");
     this.renderLegend();
     this.refresh();
   }
@@ -658,13 +669,23 @@ export class PlotWidget {
     return h ? h.windowTable(this.window[0], this.window[1]) : [[], []];
   }
 
+  /** Flush a trailing coalesced refresh so surface reads are current. */
+  _flushRefresh() {
+    if (this._refreshDirty) {
+      this._refreshDirty = false;
+      this.refresh();
+    }
+  }
+
   /** The per-signal decimated window tables as rendered (test surface). */
   renderedTables() {
+    this._flushRefresh();
     return new Map(this.cfg.signals.map((p) => [p, this.tableFor(p)]));
   }
 
   /** Last-applied Y ranges per scale group key (test surface). */
   ranges() {
+    this._flushRefresh();
     return { ...this._ranges };
   }
 
@@ -693,16 +714,12 @@ export class PlotWidget {
       this.gl.destroy();
       this.gl = null;
     }
-    if (!this.gl) this.gl = new GlTraces(this.el.querySelector(".trace-host"));
+    if (!this.gl) this.gl = new GlTraces(this._els.host);
     this.gl.resize(width, height);
   }
 
-  /** The batch-rate entry point. Live, the window slides every batch, so a
-   *  full refresh is due; paused, the visible window is frozen and streaming
-   *  batches change nothing on screen — zero redraws (range edits arrive
-   *  through the timeline subscription's direct refresh instead). A widget
-   *  whose renderer never initialized (created detached / context evicted)
-   *  self-heals here even while paused. */
+  /** Batch-rate entry point: paused with a live renderer, streaming batches
+   *  change nothing on screen — zero redraws. */
   refreshBatch() {
     if (store.timeline.mode === "paused" && this.gl?.alive()) {
       this._hostSize = null; // never let a skipped cycle's measure go stale
@@ -711,15 +728,11 @@ export class PlotWidget {
     this.refresh();
   }
 
-  /** Batch-cycle read pass: cache the host size so refreshAll can measure
-   *  every widget BEFORE any widget writes DOM — one layout flush per
-   *  cycle instead of one per widget (interleaved reads and writes force
-   *  a flush each). One-shot: refresh() consumes and clears it, so direct
-   *  refresh() callers (resize, timeline edits, widget moves) still
-   *  measure live. */
+  /** Batch-cycle read pass: measure every widget BEFORE any widget writes
+   *  DOM — one layout flush per cycle. One-shot; refresh() consumes it, so
+   *  direct refresh() callers still measure live. */
   measureHost() {
-    const host = this.el.querySelector(".trace-host");
-    const { width, height } = host.getBoundingClientRect();
+    const { width, height } = this._els.host.getBoundingClientRect();
     this._hostSize = { width, height };
   }
 
@@ -728,9 +741,7 @@ export class PlotWidget {
   refresh() {
     this.window = currentWindow();
 
-    const { width, height } = this._hostSize ?? this.el
-      .querySelector(".trace-host")
-      .getBoundingClientRect();
+    const { width, height } = this._hostSize ?? this._els.host.getBoundingClientRect();
     this._hostSize = null;
     if (width < 20 || height < 20) return;
     this.computeTables(width);
@@ -750,14 +761,9 @@ export class PlotWidget {
     // Geometry maps the BATCH window (this.window) to pixels; the live
     // scroll pass translates it to the display window per frame.
     const mapX = (t) => ((t - t0) / (t1 - t0 || 1)) * width;
-    // Dash-phase continuity: the live window clips a run's left edge, so
-    // its first vertex is a different sample every rebuild — re-anchoring
-    // the cumulative arc there would jump every fixed sample's dash phase
-    // per batch. Carry a per-signal arc datum across rebuilds, advanced
-    // along the PREVIOUS build's own polyline to the new first sample (arc
-    // is translation-invariant, so an unchanged mapping makes that exact).
-    // Any mapping change (span/zoom/resize/y-range/interp/dash) re-anchors
-    // once; the datum wraps modulo the dash period, so it never grows.
+    // Dash-phase continuity: a per-signal arc datum carries across rebuilds
+    // (advanced along the previous build's polyline to the new first
+    // sample), else the clipped left edge would jump every dash per batch.
     const prevDatum = this._dashDatum || new Map();
     this._dashDatum = new Map();
     this._built = this.cfg.signals.map((p) => {
@@ -772,12 +778,8 @@ export class PlotWidget {
         if (f < xs.length) {
           const tFirst = xs[f];
           // The y-range is deliberately NOT in the fingerprint: live auto
-          // ranges breathe every few batches as peaks slide through the
-          // window, and re-anchoring on each breath would echo the pop
-          // this datum exists to kill. Carrying through a y change costs
-          // only the dropped PREFIX's arc-stretch — sub-pixel per event —
-          // while the X mapping (span/zoom/resize) and the pattern itself
-          // still re-anchor.
+          // ranges breathe every few batches, and re-anchoring on each
+          // breath would echo the pop this datum exists to kill.
           const fp = `${pxPerMs}|${width}|${height}|${st.interp}|${st.dash[0]}:${st.dash[1]}`;
           const prev = prevDatum.get(p);
           if (prev && prev.fp === fp && tFirst >= prev.tick) {
@@ -789,16 +791,20 @@ export class PlotWidget {
           this._dashDatum.set(p, { tick: tFirst, arc: arcStart, fp, t0, run0: null });
         }
       }
-      const geo = buildTraceGeometry(xs, ys, mapX, mapY, st.interp, pxPerMs, st.dots, arcStart);
+      // Sample dots auto-hide when denser than they are wide — counted from
+      // the table BEFORE building, so hidden dots cost no geometry.
+      let wantDots = st.dots;
+      if (wantDots) {
+        let n = 0;
+        for (const v of ys) if (v != null && Number.isFinite(v)) n++;
+        wantDots = n > 0 && width / n >= DOT_SIZE_PX * 1.5;
+      }
+      const geo = buildTraceGeometry(xs, ys, mapX, mapY, st.interp, pxPerMs, wantDots, arcStart);
       const datum = this._dashDatum.get(p);
       if (datum) datum.run0 = geo.runs[0]?.verts || null;
-      // Sample dots auto-hide when denser than they are wide (the Canvas2D
-      // renderer did the same) — a paused zoom brings them back.
-      const dotCount = geo.dots ? geo.dots.length / 2 : 0;
-      const dotsVisible = dotCount > 0 && width / dotCount >= DOT_SIZE_PX * 1.5;
       return {
         runs: geo.runs,
-        dots: dotsVisible ? geo.dots : null,
+        dots: geo.dots,
         color: parseColor(st.color),
         widthPx: this.strokeWidthFor(p),
         dash: st.dash,
@@ -810,8 +816,13 @@ export class PlotWidget {
 
     // An axis with no assigned signals shows nothing, not stale labels.
     const live = new Set(groups.map((g) => g.key));
-    if (!live.has("L")) this.el.querySelector(".y-axis--left").innerHTML = "";
-    if (!live.has("R")) this.el.querySelector(".y-axis--right").innerHTML = "";
+    for (const key of ["L", "R"]) {
+      if (!live.has(key)) {
+        const el = key === "R" ? this._els.yR : this._els.yL;
+        if (this._axisHtml?.[key]) el.innerHTML = "";
+        if (this._axisHtml) this._axisHtml[key] = "";
+      }
+    }
 
     this.renderXAxis();
     this.renderGapRibbon();
@@ -821,11 +832,15 @@ export class PlotWidget {
   }
 
   renderYAxis(key, min, max) {
-    const el = this.el.querySelector(key === "R" ? ".y-axis--right" : ".y-axis--left");
-    if (!el || el.hidden) { if (key === "L") return; }
+    const el = key === "R" ? this._els.yR : this._els.yL;
     const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2));
     const ticks = [...Array(5)].map((_, i) => max - ((max - min) * i) / 4);
-    el.innerHTML = ticks.map((v) => `<span class="mono ${key === "R" ? "y-tick--r" : ""}">${fmt(v)}</span>`).join("");
+    const html = ticks.map((v) => `<span class="mono">${fmt(v)}</span>`).join("");
+    this._axisHtml ??= {};
+    if (this._axisHtml[key] !== html) {
+      this._axisHtml[key] = html;
+      el.innerHTML = html;
+    }
     el.classList.toggle("y-axis--accent", this.isSplit() && key === "L");
   }
 
@@ -834,8 +849,12 @@ export class PlotWidget {
     // More decimals as the paused zoom narrows, so labels stay distinct.
     const dp = t1 - t0 < 2000 ? 3 : 1;
     const fmt = (t) => `${(t / 1000).toFixed(dp)} s`;
-    this.el.querySelector(".x-axis").innerHTML =
+    const html =
       `<span class="mono">${fmt(t0)}</span><span class="mono">${fmt((t0 + t1) / 2)}</span><span class="mono">${fmt(t1)}</span>`;
+    if (this._xAxisHtml !== html) {
+      this._xAxisHtml = html;
+      this._els.xAxis.innerHTML = html;
+    }
   }
 
   renderGapRibbon() {
@@ -847,9 +866,13 @@ export class PlotWidget {
       for (const [a, b] of h.gapsIn(t0, t1)) spans.set(`${a}:${b}`, [a, b]);
     }
     const pct = (t) => (((t - t0) / (t1 - t0)) * 100).toFixed(2);
-    this.el.querySelector(".gap-ribbon").innerHTML = [...spans.values()]
+    const html = [...spans.values()]
       .map(([a, b]) => `<span class="gap-span" style="left:${pct(a)}%;width:${Math.max(0.4, pct(b) - pct(a))}%"></span>`)
       .join("");
+    if (this._ribbonHtml !== html) {
+      this._ribbonHtml = html;
+      this._els.ribbon.innerHTML = html;
+    }
   }
 
   /** Per-signal cursor value, read from raw history (never decimated). */
@@ -863,8 +886,8 @@ export class PlotWidget {
    *  values: only positions move between content re-renders). Returns
    *  false when the tick left the window (overlays hidden). */
   positionCursor() {
-    const line = this.el.querySelector(".cursor-line");
-    const readout = this.el.querySelector(".cursor-readout");
+    const line = this._els.cursorLine;
+    const readout = this._els.readout;
     const [t0, t1] = this.viewWindow();
     if (cursor.tick === null || cursor.tick < t0 || cursor.tick > t1) {
       line.hidden = true;
@@ -879,19 +902,17 @@ export class PlotWidget {
     // hidden, and signals imply scale groups).
     if (readout.hidden && this.cfg.signals.length) readout.hidden = false;
     const flipped = frac > 0.5;
-    readout.classList.toggle("cursor-readout--flipped", flipped);
     readout.style.left = flipped ? "" : `calc(${(frac * 100).toFixed(2)}% + 10px)`;
     readout.style.right = flipped ? `calc(${((1 - frac) * 100).toFixed(2)}% + 10px)` : "";
     return true;
   }
 
   renderCursor() {
-    const readout = this.el.querySelector(".cursor-readout");
+    const readout = this._els.readout;
     if (!this.positionCursor()) return;
 
     const groups = this.scaleGroups();
-    // A signal-less plot has no scale groups — and no readout to render
-    // (indexing groups[0] here threw on every shared-cursor move).
+    // A signal-less plot has no scale groups — and no readout to render.
     if (!groups.length) {
       readout.hidden = true;
       return;
@@ -920,7 +941,7 @@ export class PlotWidget {
         delta = `<span class="readout-delta mono" data-delta-v>Δ ${dv < 0 ? "-" : "+"}${formatValue(Math.abs(dv), ints ? "i32" : "f32")}</span>`;
       }
       return `<div class="readout-row ${p === this.pointed ? "readout-row--pointed" : ""}" data-path="${esc(p)}">
-        <span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : w?.color || resolvedColor(p)}"></span>
+        <span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : resolvedColor(p)}"></span>
         <span class="readout-name mono">${esc(shortName(p))}</span>
         <span class="readout-value mono ${absent ? "readout-value--absent" : ""}">${absent ? "no sample" : esc(formatValue(v, meta.get(p)?.kind, meta.get(p)?.enums))}</span>
         ${delta}
@@ -929,7 +950,7 @@ export class PlotWidget {
     // Every scale group renders, stacked under its label (labels are null
     // while shared, leaving a single unlabeled section).
     const sections = groups
-      .map((g) => `${g.label ? `<div class="readout-group-label">${esc(g.label)}</div>` : ""}${g.signals.map(row).join("")}`)
+      .map((g) => `${g.label ? `<div class="field-label readout-group-label">${esc(g.label)}</div>` : ""}${g.signals.map(row).join("")}`)
       .join("");
     const dt = anchor ? cursor.tick - anchor.tick : null;
     readout.innerHTML = `
@@ -943,6 +964,7 @@ export class PlotWidget {
   destroy() {
     closeAxesConfigFor(this);
     if (this.pointedRaf) cancelAnimationFrame(this.pointedRaf);
+    if (this._refreshRaf) cancelAnimationFrame(this._refreshRaf);
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("keyup", this._onKey);
     window.removeEventListener("blur", this._onBlur);

@@ -59,14 +59,9 @@ export function initWorkspace() {
     armScroll();
   });
 
-  // ── live smooth scroll ────────────────────────────────────────────────
-  // Geometry rebuilds at batch rate (refreshAll above), but the window
-  // GLIDES at display rate: each frame advances the display clock and
-  // redraws every plot's cached geometry at the new X translation —
-  // uniforms + draw calls, no rebuild. The loop parks itself when the
-  // clock stops moving (paused, stalled stream, disconnect — the lead
-  // clamp freezes the estimate) and any samples batch or timeline change
-  // re-arms it.
+  // ── live smooth scroll: geometry rebuilds at batch rate, the window
+  // glides at display rate from cached geometry. The loop parks when the
+  // clock stops moving; any samples batch or timeline change re-arms it.
   let scrollRaf = null;
   let idleFrames = 0;
   const scrollPass = (now) => {
@@ -92,32 +87,26 @@ export function initWorkspace() {
   // catch it, one batch later).
   subscribe("stream-restart", resetDisplayClock);
 
-  subscribe("watched", () => forEachWidget((w) => w.renderLegend?.() || w.refresh()));
-  window.addEventListener("resize", () => forEachWidget((w) => w.refresh()));
+  subscribe("watched", () => {
+    forEachWidget((w) => w.renderLegend?.());
+    forEachWidget((w) => w.refresh());
+  });
+  window.addEventListener("resize", () =>
+    forEachWidget((w) => (w.scheduleRefresh ?? w.refresh).call(w)),
+  );
 
-  // An appearance edit propagates everywhere the signal renders: refresh the
-  // watched map's resolved color (legend/picker/watch-panel/table all read
-  // it), rebuild the plots so legends and trace styles re-derive, and
-  // persist — appearance restores with the layout.
+  // An appearance edit propagates everywhere the signal renders (every
+  // reader resolves through resolvedColor); persist — it restores with
+  // the layout.
   subscribe("appearance", (path) => {
-    const w = store.watched.get(path);
-    if (w) {
-      store.watched.set(path, { ...w, color: resolvedColor(path) });
-      notify("watched", store.watched);
-    }
+    if (store.watched.has(path)) notify("watched", store.watched);
     forEachWidget((wd) => wd.rebuild?.() ?? wd.refresh());
     persist();
   });
 
-  // A theme is a token block — the trace cycle retints with it. Colors are
-  // slot-stable per signal; re-resolve and rebuild so legends and traces
-  // retint. The appearance rule applies here: an un-overridden signal
-  // re-resolves to its slot's new token, while a user-overridden color is
-  // absolute and comes back from resolvedColor exactly as chosen.
+  // A theme is a token block — the trace cycle retints with it: rebuild so
+  // legends and traces re-resolve (user-overridden colors are absolute).
   new MutationObserver(() => {
-    for (const [path, w] of store.watched) {
-      store.watched.set(path, { ...w, color: resolvedColor(path) });
-    }
     notify("watched", store.watched);
     forEachWidget((w) => w.rebuild?.() ?? w.refresh());
   }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });

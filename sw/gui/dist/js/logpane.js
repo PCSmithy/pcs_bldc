@@ -3,9 +3,9 @@
 // itself is firmware output and is never reformatted.
 
 import { icon } from "./icons.js";
-import { subscribe, store, notify, prefs } from "./state.js";
+import { subscribe, prefs } from "./state.js";
+import { $, esc } from "./dom.js";
 
-const $ = (sel) => document.querySelector(sel);
 const MAX_LINES = 2000; // ring: drop oldest past this
 
 let pending = "";
@@ -17,29 +17,37 @@ function ts() {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 
-// [impl->app~views_003~1]
+const lineHtml = (l) => `<div><span class="log-ts">${l.ts}</span>${esc(l.text)}</div>`;
+
+// [impl->app~views_003~1] Completed lines APPEND — a chunk never re-renders
+// the whole backlog.
 function push(text) {
   pending += text;
   let nl;
-  let added = false;
+  const fresh = [];
   while ((nl = pending.indexOf("\n")) >= 0) {
-    lines.push({ ts: ts(), text: pending.slice(0, nl) });
+    fresh.push({ ts: ts(), text: pending.slice(0, nl) });
     pending = pending.slice(nl + 1);
-    added = true;
   }
-  if (lines.length > MAX_LINES) lines = lines.slice(-MAX_LINES);
-  if (added) render();
+  if (!fresh.length) return;
+  lines.push(...fresh);
+  const host = $(".log-lines");
+  const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 8;
+  host.insertAdjacentHTML("beforeend", fresh.map(lineHtml).join(""));
+  const drop = lines.length - MAX_LINES;
+  if (drop > 0) {
+    lines = lines.slice(drop);
+    for (let i = 0; i < drop; i++) host.firstElementChild?.remove();
+  }
+  $(".log-count").textContent = `${lines.length} lines`;
+  if (stick) host.scrollTop = host.scrollHeight;
 }
 
 function render() {
   const host = $(".log-lines");
-  const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 8;
-  host.innerHTML = lines
-    .map((l) => `<div><span class="log-ts">${l.ts}</span>${l.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</div>`)
-    .join("");
+  host.innerHTML = lines.map(lineHtml).join("");
   $(".log-count").textContent = `${lines.length} lines`;
-  if (stick) host.scrollTop = host.scrollHeight;
-  store.logCount = lines.length;
+  host.scrollTop = host.scrollHeight;
 }
 
 export function initLogPane() {
@@ -47,7 +55,7 @@ export function initLogPane() {
   pane.innerHTML = `
     <div class="log-head">
       ${icon("terminal")}
-      <span class="log-title">Firmware log</span>
+      <span class="field-label log-title">Firmware log</span>
       <span class="tag tag-ok">printf · live</span>
       <span class="log-meta">
         <span class="log-count">0 lines</span>

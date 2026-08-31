@@ -1,13 +1,14 @@
 // Picker interactivity the shell left to the workspace: clicking a row
 // toggles it into the watch list (default 10 ms); the active row grows the
-// 1/10/100 period segmented control; the budget meters render the LIVE
-// preview (before any request) with the sage→accent crossover, plus the
-// "n/32 watched" count.
+// 1/10/100 period segmented control; the budget meters (SOLE owner here)
+// render the live preview, falling back to the device's trace status.
 
 import { store, subscribe } from "../state.js";
 import { addWatch, setPeriod, removeWatch } from "./watchflow.js";
+import { WATCH_CAPACITY } from "./budget.js";
+import { esc } from "../dom.js";
 
-const HOT_FRACTION = 0.8;
+const HOT_FRACTION = 0.85; // sage while comfortable, accent near the limit
 let activePath = null;
 
 export function initPickerWatchControls() {
@@ -39,7 +40,10 @@ export function initPickerWatchControls() {
 
   // The shell re-renders rows on watched/signals changes; decorate after it.
   for (const topic of ["watched", "signals", "gate"]) subscribe(topic, () => queueMicrotask(decorate));
-  subscribe("budgetPreview", renderPreviewMeters);
+  for (const topic of ["budgetPreview", "traceStatus", "budgetVerdict"]) {
+    subscribe(topic, renderPreviewMeters);
+  }
+  renderPreviewMeters();
 
   function decorate() {
     for (const row of tree.querySelectorAll(".signal-row")) {
@@ -51,7 +55,7 @@ export function initPickerWatchControls() {
       if (existing) continue;
       const w = store.watched.get(path);
       const seg = document.createElement("span");
-      seg.className = "period-seg";
+      seg.className = "seg period-seg";
       seg.innerHTML =
         [1, 10, 100]
           .map((p) => `<button data-period="${p}" class="${w.period_ms === p ? "is-selected" : ""}">${p}</button>`)
@@ -60,9 +64,20 @@ export function initPickerWatchControls() {
     }
   }
 
-  function renderPreviewMeters(p) {
+  function renderPreviewMeters() {
     const host = document.querySelector(".budget-meters");
-    if (!host || !p) return;
+    if (!host) return;
+    const s = store.traceStatus;
+    const p =
+      store.budgetPreview ??
+      (s && {
+        u: s.ram_worst_tick_bytes,
+        ramMax: s.ram_budget_bytes,
+        r: s.link_rate_bytes_per_s,
+        linkMax: s.link_budget_bytes_per_s,
+        count: store.watched.size,
+        capacity: WATCH_CAPACITY,
+      });
     const meter = (label, text, frac) => `
       <div class="budget-meter">
         <div class="budget-meter-row">
@@ -78,10 +93,10 @@ export function initPickerWatchControls() {
     host.innerHTML = `
       <div class="budget-head">
         <span class="field-label">device budget</span>
-        <span class="budget-count mono">${p.count}/${p.capacity} watched</span>
-        <span class="budget-status ${verdict !== "accepted" && verdict !== "—" ? "budget-status--rejected" : ""}">${verdict}</span>
+        ${p ? `<span class="budget-count mono">${p.count}/${p.capacity} watched</span>` : ""}
+        <span class="budget-status ${verdict !== "accepted" && verdict !== "—" ? "budget-status--rejected" : ""}">${esc(verdict)}</span>
       </div>
-      ${meter("watch RAM", `${p.u} / ${p.ramMax} B`, p.u / p.ramMax)}
-      ${meter("link bandwidth", `${Math.round((p.r / p.linkMax) * 100)} / 100 %`, p.r / p.linkMax)}`;
+      ${meter("watch RAM", p ? `${p.u} / ${p.ramMax} B` : "— / —", p ? p.u / p.ramMax : 0)}
+      ${meter("link bandwidth", p ? `${Math.round((p.r / p.linkMax) * 100)} / 100 %` : "— / —", p ? p.r / p.linkMax : 0)}`;
   }
 }

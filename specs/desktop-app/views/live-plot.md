@@ -16,7 +16,7 @@ A plot widget shall plot each of its signals' demultiplexed
 values (`app~obs_004~1`) against their tick timestamps as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
 extending as messages arrive, each gap-free run of ticks rendered as
-one connected segment, its points rendered per `app~views_014~1`.
+one connected segment, its samples rendered per `app~views_014~1`.
 
 Acceptance:
 
@@ -31,11 +31,11 @@ Needs: impl, test
 ### Trace decimation
 `app~views_014~1`
 
-A plot widget shall render each trace's points by pixel column of the
-plotted X range:
+A plot widget shall render each trace by pixel column of the plotted
+X range, the samples rendered per:
 
-| Samples in a pixel column | Rendered points |
-|---------------------------|-----------------|
+| Samples in a pixel column | Rendered |
+|---------------------------|----------|
 | More than two | The column's minimum and maximum samples |
 | At most two | The column's samples |
 
@@ -87,12 +87,11 @@ Needs: impl, test
 
 The app shall render a signal's trace, on every plot widget holding
 it, per the signal's appearance, set in a widget's configuration menu:
-its color — an automatically assigned trace color, assigned when the
-signal is first selected and held stable until changed — a solid,
-dotted, or dashed line; an optional dot at each rendered sample
-(`app~views_014~1`); and an interpolation, applied between
-consecutive rendered samples within each gap-free run of ticks
-(`app~views_001~1`):
+its color, auto-assigned when the signal is first selected and stable
+until changed; a solid, dotted, or dashed line; an optional dot at
+each rendered sample (`app~views_014~1`); and an interpolation,
+applied between consecutive rendered samples within each gap-free run
+of ticks (`app~views_001~1`):
 
 | Interpolation | Rendering |
 |---------------|-----------|

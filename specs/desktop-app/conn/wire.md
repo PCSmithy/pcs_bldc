@@ -9,8 +9,6 @@ The app side of the wire contract: COBS/CRC frames carrying protobuf
 `Envelope`s, per the same format the firmware serves
 ([[../../firmware/conn/proto|proto]]).
 
-## Frame codec
-
 ### Frame codec
 `app~conn_002~1`
 
@@ -34,8 +32,6 @@ Covers:
 - sys~conn_002~1
 
 Needs: impl, test
-
-## Envelope codec
 
 ### Envelope exchange
 `app~conn_003~1`

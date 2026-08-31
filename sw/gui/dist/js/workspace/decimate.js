@@ -1,19 +1,10 @@
-// Trace decimation: bound each trace's rendered points per pixel column of
-// the plotted X range — a column holding more than two samples renders that
-// column's minimum and maximum samples (real samples, real ticks — a
-// single-sample spike survives), a column holding at most two renders its
-// samples raw. Gap markers (null values injected by windowTable) pass
-// through untouched and split the column's segments, so decimation never
-// selects an extreme across a tick-count gap and the line still breaks.
+// Trace decimation: a pixel column holding more than two samples renders
+// its min and max samples (real samples, real ticks — a spike survives);
+// gap markers pass through and still split segments. Two entry points with
+// identical outputs: envelopeTable() queries the ring via the pyramid
+// (O(pixel columns), the hot path); decimateTable() transforms a
+// materialized [xs, ys] pair.
 // [impl->app~views_014~1]
-//
-// Two entry points share these semantics: envelopeTable() queries a
-// SignalHistory ring directly (binary-searched column bounds + the min/max
-// pyramid — O(pixel columns), the live-refresh hot path), and
-// decimateTable() transforms an already-materialized [xs, ys] pair (the
-// fallback path and the in-page spec checks). Their outputs are identical
-// for the same window; the suite pins envelopeTable via the rendered-path
-// checks and decimateTable via direct import.
 
 /** Ring-native envelope query: SignalHistory -> decimated [xs, ys] over
  *  [t0, t1] at `cols` pixel columns, without materializing the window. */

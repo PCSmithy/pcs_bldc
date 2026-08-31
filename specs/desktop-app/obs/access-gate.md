@@ -22,8 +22,6 @@ Acceptance:
   unavailable, while a ping round trip and the telemetry view
   (`app~views_002~1`) continue.
 
-See also: [[signal-picker]]
-
 Covers:
 - sys~obs_004~1
 

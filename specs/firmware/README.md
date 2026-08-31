@@ -22,8 +22,6 @@ Sub-folders are created when a topic gets its first spec.
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
 - `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4
   gate-driver management); also FOC, motion, trajectory tracking
-- `foc/` — Park / Clarke transforms, PWM modulation strategies
-  (SVPWM/SPWM), inner current control loop
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver), `fw~est_velocity_001~1` (encoder-derived
   velocity estimate); also the Kalman observer, sensorless observer, and
@@ -40,10 +38,6 @@ Sub-folders are created when a topic gets its first spec.
   `fw~conn_server_*` (app_server request dispatch), `fw~conn_trace_*`
   (app_server trace services: watch streaming, memory read/write,
   trace capability report)
-- `motion/` — velocity loop, position loop, trajectory generator
-- `drivers/` — AS5048 encoder, ADC current sensing, USB CDC stack
-- `telemetry/` — USB streaming frame format, ring buffers, sample-rate
-  control
 - `safety/` — fault state machine, protection thresholds, recovery
   paths
 

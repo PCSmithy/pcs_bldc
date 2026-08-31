@@ -53,12 +53,14 @@ the bridge enabled running that method — rejecting the command when:
 |---------------|
 | The value names no `board.Mode` member |
 | A method other than the active one is named while the bridge is enabled (`sys~mc_005~1`) |
-| A method is named while a fault is latched (`fw~mc_007~1`) |
+| A method is named while a fault is latched (`fw~safety_001~1`, `fw~safety_002~1`) |
 
 Acceptance:
 - With the bridge disabled and no fault latched, a method value is
   accepted and the bridge enable is requested with that method;
   `MODE_OFF` is accepted in every state.
+- Each rejection condition rejects the command, the requested state
+  unchanged.
 
 Covers:
 - sys~ops_002~1

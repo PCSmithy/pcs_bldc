@@ -12,9 +12,6 @@ the envelope's fixed-name board payloads — and cross the wire as
 COBS-delimited, CRC-validated frames carried by the `IO_COBSFrame`
 io-layer frame driver over an `IO_serial` channel ([[serial]]).
 
-See also: the system specs `sys~conn_001~1` (schema) and `sys~conn_002~1`
-(framing).
-
 ## Schema
 
 ### Envelope schema

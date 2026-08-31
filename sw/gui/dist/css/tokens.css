@@ -186,6 +186,8 @@
 
 /* ── ground rules (theme-independent, consuming only tokens) ── */
 *, *::before, *::after { box-sizing: border-box; }
+/* display flavors on hideable elements must never defeat the attribute */
+[hidden] { display: none !important; }
 html, body {
   margin: 0;
   height: 100%;

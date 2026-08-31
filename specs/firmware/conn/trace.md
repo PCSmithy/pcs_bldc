@@ -10,10 +10,6 @@ watch list of memory spans sampled at per-entry periods and streamed
 as `Samples` messages, one-shot memory reads and writes, and the trace
 capability report.
 
-See also: the system specs behind these services — signal trace
-(`sys~obs_005~1`), signal write (`sys~obs_006~1`), memory read
-(`sys~obs_008~1`), trace capability report (`sys~obs_009~1`).
-
 ## Configuration
 
 ### Trace resource configuration

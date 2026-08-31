@@ -4,6 +4,7 @@ file:// with the browser devmock (no board, no Tauri).
 Run:  .venv/Scripts/python sw/gui/tests/test_views.py
 """
 
+import json
 import os
 import sys
 import threading
@@ -42,9 +43,10 @@ def boot(page):
 
 
 def add_plot_with(page, paths, period=1):
+    """Watch `paths`, plot them on a fresh widget, return the widget id."""
     for p in paths:
         page.evaluate(f"() => __cockpit.addWatch({p!r}, {period})")
-    page.evaluate(
+    wid = page.evaluate(
         "(paths) => { const w = __cockpit.addWidget({ type: 'plot', signals: [] });"
         "  for (const p of paths) w.addSignal(p); return w.cfg.id; }",
         paths,
@@ -54,6 +56,7 @@ def add_plot_with(page, paths, period=1):
         "() => __cockpit.store.traceStatus && __cockpit.store.traceStatus.link_rate_bytes_per_s > 0",
         timeout=5000,
     )
+    return wid
 
 
 def wait_for_samples(page, path, min_points=50):
@@ -89,6 +92,40 @@ def widget_eval(page, wid, expr, arg=None):
     )
 
 
+def drop_signal(page, path, widget_id=None, at=None):
+    """Dispatch the picker's drag payload: onto the widget `widget_id` (the
+    join path) or onto the workspace at workspace-relative `at` (create)."""
+    page.evaluate(
+        """([path, wid, at]) => {
+          const dt = new DataTransfer();
+          dt.setData('text/x-signal', path);
+          const ws = document.querySelector('.workspace');
+          const el = wid ? document.querySelector(`[data-widget-id="${wid}"]`) : ws;
+          const opts = { dataTransfer: dt, bubbles: true };
+          if (at) {
+            const r = ws.getBoundingClientRect();
+            opts.clientX = r.left + at[0];
+            opts.clientY = r.top + at[1];
+          }
+          el.dispatchEvent(new DragEvent('dragover', opts));
+          el.dispatchEvent(new DragEvent('drop', opts));
+        }""",
+        [path, widget_id, at],
+    )
+
+
+def widget_cfgs(page, fields):
+    """Per-widget cfg projection in widgets-array order (specials: 'z' reads
+    the element's z-index; absent cfg fields read null)."""
+    return page.evaluate(
+        "(fs) => { const g = []; __cockpit.forEachWidget(w => {"
+        " const o = { id: w.cfg.id };"
+        " for (const f of fs) o[f] = f === 'z' ? w.el.style.zIndex : (w.cfg[f] ?? null);"
+        " g.push(o); }); return g; }",
+        fields,
+    )
+
+
 # Nearest sample-y of `p` around window-time `t` (px space) — the shared
 # probe idiom for placing real-mouse targets on a rendered trace.
 NEAREST_Y_JS = (
@@ -104,6 +141,107 @@ NEAREST_Y_JS = (
     " };"
 )
 
+# Devmock signal paths shared across batches.
+VEL_M = "app_motorControl_data.channels[0].velocityMeasured_radPerSec"
+VEL_S = "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec"
+ENUM_S = "IO_AS5048_data.channels[0].status"
+U32_S = "task1msRuns"
+
+
+def probe_target_on(page, wid, path, frac):
+    """A real-mouse point 6 px under `path`'s trace at window fraction
+    `frac` on widget `wid`, only where every other trace is at least 22 px
+    away (the pointed rule must resolve to `path`), or None."""
+    return widget_eval(
+        page, wid,
+        """(w, [path, frac]) => {
+          w.el.scrollIntoView({ block: 'center' });
+          w.refresh();
+          const canvas = w.el.querySelector('.plot-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const px = rect.width * frac;
+          const t = w.tickAtPx(px, rect.width);
+          """ + NEAREST_Y_JS + """
+          const yOf = (p) => nearestY(w, p, t, rect);
+          const yT = yOf(path);
+          if (yT === null) return null;
+          for (const p of w.cfg.signals) {
+            if (p === path) continue;
+            const y = yOf(p);
+            if (y !== null && Math.abs(y - yT) < 22) return null;
+          }
+          const cy = Math.min(rect.height - 3, Math.max(3, yT + 6));
+          const at = [rect.left + px, rect.top + cy];
+          if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
+          // The exact resolver the click will run: only a target the
+          // pointed rule already resolves to `path` is a valid probe
+          // (nearest-sample y and interpolated y can diverge).
+          if (w.computePointed(at[0], at[1], canvas) !== path) return null;
+          return { at, clickTick: t };
+        }""",
+        [path, frac],
+    )
+
+
+def find_target_on(page, wid, path):
+    # Bounded retry: on a starved host the fraction sweep can run before
+    # the paused plot's geometry settles; healthy hosts resolve first round.
+    for _ in range(10):
+        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
+            tgt = probe_target_on(page, wid, path, frac)
+            if tgt:
+                return tgt
+        page.wait_for_timeout(500)
+    return None
+
+
+def require_target_on(page, wid, path, label):
+    # check() + never-None: exhausting the retry sweep fails the probe
+    # check but returns a harmless fallback (a workspace-center click
+    # that points no trace), so dependent checks fail on their own
+    # terms instead of a NoneType subscript aborting the whole suite.
+    tgt = find_target_on(page, wid, path)
+    check(label, tgt is not None, tgt)
+    if tgt is None:
+        ws = page.evaluate(
+            "() => { const r = document.querySelector('.workspace').getBoundingClientRect();"
+            " return [r.x + r.width / 2, r.y + r.height / 2]; }"
+        )
+        return {"at": tuple(ws), "clickTick": -(10**9)}
+    return tgt
+
+
+def far_target_on(page, wid):
+    """A canvas point far (40 px+) from every trace on `wid` — where the
+    pointed rule resolves to nothing — or None."""
+    return widget_eval(
+        page, wid,
+        """(w) => {
+          w.el.scrollIntoView({ block: 'center' });
+          w.refresh();
+          const canvas = w.el.querySelector('.plot-canvas');
+          const rect = canvas.getBoundingClientRect();
+          """ + NEAREST_Y_JS + """
+          for (const frac of [0.5, 0.3, 0.7, 0.4, 0.6]) {
+            const px = rect.width * frac;
+            const t = w.tickAtPx(px, rect.width);
+            const ys = w.cfg.signals.map(p => nearestY(w, p, t, rect)).filter(v => v !== null);
+            if (!ys.length) continue;
+            let best = null, bestD = -1;
+            for (let y = 4; y < rect.height - 4; y += 4) {
+              const d = Math.min(...ys.map(v => Math.abs(y - v)));
+              if (d > bestD) { bestD = d; best = y; }
+            }
+            if (bestD < 50) continue;
+            const at = [rect.left + px, rect.top + best];
+            if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) continue;
+            if (w.computePointed(at[0], at[1], canvas) !== null) continue;
+            return at;
+          }
+          return null;
+        }""",
+    )
+
 
 def run(page):
     print("suite: views")
@@ -115,25 +253,45 @@ def run(page):
     vbus = page.locator(".telemetry-strip").inner_text()
     check("views_002 telemetry renders vbus", "19.8" in vbus, vbus[:120])
 
-    # ── [test->app~views_003~1] log lines render in order ──
+    # ── [test->app~views_003~1] log lines render in order; chunks assemble
+    #    at newline boundaries ──
     page.wait_for_function(
-        "() => document.querySelectorAll('.log-lines > div').length >= 2", timeout=8000
+        "() => document.querySelectorAll('.log-lines > div').length >= 3", timeout=8000
     )
-    lines = page.eval_on_selector_all(".log-lines > div", "els => els.map(e => e.textContent)")
-    check("views_003 log lines in order", "heartbeat" in "".join(lines), lines[:2])
-
-    # ── [test->app~views_004~1] drop-on-empty creates a plot widget ──
-    page.evaluate(
+    seq = page.evaluate(
         """() => {
-          const dt = new DataTransfer();
-          dt.setData('text/x-signal', 'task1msRuns');
-          const ws = document.querySelector('.workspace');
-          ws.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-          ws.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true,
-            clientX: ws.getBoundingClientRect().left + 200,
-            clientY: ws.getBoundingClientRect().top + 100 }));
+          const texts = [...document.querySelectorAll('.log-lines > div')]
+            .map(e => e.textContent.slice(e.querySelector('.log-ts').textContent.length));
+          const cycle = [
+            'heartbeat 184s up, server 184000 runs',
+            'watch list installed: 14 entries, r=968000 B/s',
+            'heartbeat 185s up, server 185000 runs',
+          ];
+          const start = cycle.indexOf(texts[0]);
+          const ordered = start >= 0
+            && texts.every((t, i) => t === cycle[(start + i) % cycle.length]);
+          return { ordered, texts: texts.slice(0, 4) };
         }"""
     )
+    check("views_003 log lines render in emission order", seq["ordered"], seq)
+    # Split delivery through the same seam the backend feeds (notify('log')):
+    # a partial chunk holds until its newline arrives, then appends ONE line.
+    n0 = page.evaluate("() => document.querySelectorAll('.log-lines > div').length")
+    page.evaluate("() => __cockpit.notify('log', 'split hea')")
+    page.evaluate("() => __cockpit.notify('log', 'd + tail\\n')")
+    added = page.evaluate(
+        f"""() => [...document.querySelectorAll('.log-lines > div')].slice({n0})
+          .map(e => e.textContent.slice(e.querySelector('.log-ts').textContent.length))"""
+    )
+    check(
+        "views_003 a split chunk assembles into one appended line",
+        ("split head + tail" in added)
+        and not any(a.startswith("split hea") and a != "split head + tail" for a in added),
+        added,
+    )
+
+    # ── [test->app~views_004~1] drop-on-empty creates a plot widget ──
+    drop_signal(page, "task1msRuns", at=(200, 100))
     check(
         "views_004 drop creates plot widget",
         page.locator(".plot-widget").count() == 1
@@ -165,9 +323,9 @@ def run(page):
     )
 
     # Two plots for the shared-cursor assertions.
-    add_plot_with(page, ["app_motorControl_data.channels[0].velocityMeasured_radPerSec"], 1)
+    add_plot_with(page, [VEL_M], 1)
     wait_for_samples(page, "task1msRuns")
-    wait_for_samples(page, "app_motorControl_data.channels[0].velocityMeasured_radPerSec")
+    wait_for_samples(page, VEL_M)
 
     # ── [test->app~views_001~1] traces render; a tick-count gap breaks them ──
     plot_ready = page.evaluate(
@@ -244,6 +402,29 @@ def run(page):
     page.evaluate(f"() => __cockpit.setCursorTick({cursor_tick})")
     at_cursor = page.locator(".table-widget .table-mode-tag").inner_text()
     check("views_006 at-cursor mode tag", "at cursor" in at_cursor, at_cursor)
+    # The row VALUE must be the sample at the cursor time (not the latest),
+    # alongside its type and period cells. The u32 in the regex pins the
+    # type cell; the period cell must echo the watch's period.
+    at_row = page.evaluate(
+        f"""() => {{
+          const row = [...document.querySelectorAll('.value-table tr')]
+            .find(r => r.textContent.includes('task1msRuns'));
+          const m = row && row.textContent.match(/task1msRuns\\s*(\\d+)\\s*u32/);
+          const w = __cockpit.store.watched.get('task1msRuns');
+          return {{
+            shown: m ? parseInt(m[1], 10) : null,
+            expect: __cockpit.histories.get('task1msRuns').valueAt({cursor_tick}),
+            period: row ? row.textContent.includes(`${{w.period_ms}} ms`) : false,
+          }};
+        }}"""
+    )
+    check(
+        "views_006 at-cursor row reads the value at that time with type + period",
+        at_row["shown"] is not None
+        and at_row["shown"] == at_row["expect"]
+        and at_row["period"],
+        at_row,
+    )
     page.evaluate("() => __cockpit.clearCursor()")
 
     # ── [test->app~views_007~1] axes configuration: per-signal L/R assignment
@@ -251,12 +432,11 @@ def run(page):
     wid = page.evaluate(
         "() => { let id = null; __cockpit.forEachWidget(w => { if (!id && w.setSide) id = w.cfg.id; }); return id; }"
     )
+    check("views_007 a multi-signal plot exists", wid is not None, wid)
     widget_eval(
         page, wid,
-        "(w) => { if (w.cfg.signals.length < 2)"
-        " w.addSignal('app_motorControl_data.channels[0].velocityMeasured_radPerSec'); }",
+        f"(w) => {{ if (w.cfg.signals.length < 2) w.addSignal({VEL_M!r}); }}",
     )
-    check("views_007 a multi-signal plot exists", wid is not None, wid)
     page.click(f"[data-widget-id='{wid}'] .widget-menu")
     page.wait_for_selector(".axes-popover")
     page.locator(".axes-popover .axes-row").first.locator("[data-side='R']").click()
@@ -267,7 +447,11 @@ def run(page):
         ".plot-widget--split .y-axis--left span", "els => els.map(e => e.textContent)"
     )
     check("views_007 assignment renders right-scale labels", len(right_labels) == 5, right_labels)
-    check("views_007 scales are distinct", right_labels != left_labels or len(left_labels) == 0)
+    check(
+        "views_007 scales are distinct",
+        len(left_labels) > 0 and right_labels != left_labels,
+        (left_labels, right_labels),
+    )
     derived = page.locator(f"[data-widget-id='{wid}'] .axis-mode--derived").inner_text()
     check("views_007 derived chip reads split", derived == "split", derived)
 
@@ -293,21 +477,27 @@ def run(page):
         " && !__cockpit.store.watched.has(s.path)) || {}).path || null"
     )
     check("views_007 a ramp-kind signal exists for the auto check", ramp is not None, ramp)
-    page.evaluate(f"() => __cockpit.addWatch({ramp!r}, 1)")
-    scratch = page.evaluate(
-        f"() => {{ const w = __cockpit.addWidget({{ type: 'plot', signals: [] }}); w.addSignal({ramp!r}); return w.cfg.id; }}"
-    )
+    scratch = add_plot_with(page, [ramp], 1)
     wait_for_samples(page, ramp, 100)
 
     def scale_l(widget_id):
         return widget_eval(page, widget_id, "(w) => w.ranges().L ?? null")
 
     a1 = scale_l(scratch)
-    page.wait_for_timeout(400)
+    grew = True
+    try:
+        page.wait_for_function(
+            f"""() => {{ let r = null;
+              __cockpit.forEachWidget(w => {{ if (w.cfg.id === {scratch!r}) r = w.ranges().L; }});
+              return r && JSON.stringify(r) !== {json.dumps(json.dumps(a1))}; }}""",
+            timeout=8000,
+        )
+    except Exception:
+        grew = False
     a2 = scale_l(scratch)
     check(
         "views_007 auto axis follows the signal's extents",
-        a1 is not None and a2 is not None and (a2[1] > a1[1] or a2[0] < a1[0]),
+        grew and a1 is not None and a2 is not None and (a2[1] > a1[1] or a2[0] < a1[0]),
         (a1, a2),
     )
 
@@ -358,12 +548,13 @@ def run(page):
              d.style.color = c; document.body.appendChild(d);
              const v = getComputedStyle(d).color; d.remove(); return v; };
            let ok = true, seen = 0;
-           document.querySelectorAll('.widget-legend [data-legend]').forEach(e => {
-             const w = __cockpit.store.watched.get(e.dataset.legend);
+           document.querySelectorAll('.widget-legend .legend-entry').forEach(e => {
+             const path = e.getAttribute('title');
              const bar = e.querySelector('.legend-bar');
-             if (!w || !bar) return;
+             if (!__cockpit.store.watched.has(path) || !bar) return;
              seen++;
-             if (getComputedStyle(bar).backgroundColor !== norm(w.color)) ok = false;
+             const expect = norm(__cockpit.appearance.resolvedColor(path));
+             if (getComputedStyle(bar).backgroundColor !== expect) ok = false;
            });
            return ok && seen > 0; }"""
     )
@@ -379,12 +570,19 @@ def run(page):
     page.click(".timeline-bar [data-pause]")
     frozen1 = page.evaluate("() => JSON.stringify(__cockpit.timeline.get().window)")
     newest_before = page.evaluate("() => __cockpit.histories.get('task1msRuns').newestTick()")
-    page.wait_for_timeout(300)  # several 50 ms mock batches
+    advanced = True
+    try:
+        page.wait_for_function(
+            f"() => __cockpit.histories.get('task1msRuns').newestTick() > {newest_before}",
+            timeout=8000,
+        )
+    except Exception:
+        advanced = False
     page.evaluate("() => __cockpit.forEachWidget(w => w.refresh())")
     frozen2 = page.evaluate("() => JSON.stringify(__cockpit.timeline.get().window)")
     newest_after = page.evaluate("() => __cockpit.histories.get('task1msRuns').newestTick()")
     check("views_008 pause freezes the window", frozen1 == frozen2, (frozen1, frozen2))
-    check("views_008 acquisition continues while paused", newest_after > newest_before, (newest_before, newest_after))
+    check("views_008 acquisition continues while paused", advanced and newest_after > newest_before, (newest_before, newest_after))
 
     # ── [test->app~views_009~1] paused range control: zoom, select, pan ──
     win0 = page.evaluate("() => __cockpit.timeline.get().window")
@@ -467,6 +665,38 @@ def run(page):
         (at_floor, still),
     )
 
+    # ── [test->app~views_009~1] with NO cursor held, zoom anchors at the
+    #    window's center; zoom-out clamps at the paused span, dead-stop ──
+    page.evaluate("() => __cockpit.clearCursor()")
+    wc0 = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    canvas.dispatch_event("wheel", {"deltaY": 300, "bubbles": True, "cancelable": True})
+    wc1 = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    check(
+        "views_009 cursor-less zoom is center-anchored",
+        (wc1[1] - wc1[0]) > (wc0[1] - wc0[0])
+        and abs((wc1[0] + wc1[1]) - (wc0[0] + wc0[1])) / 2 <= (wc1[1] - wc1[0]) * 0.02 + 1,
+        (wc0, wc1),
+    )
+    page.evaluate(
+        "() => { const w = __cockpit.timeline.get().window;"
+        " __cockpit.timeline.zoomAt((w[0] + w[1]) / 2, 1e9); }"
+    )
+    pspan_out = page.evaluate("() => __cockpit.timeline.get().pausedSpan")
+    at_span = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    check(
+        "views_009 zoom-out clamps at the paused span",
+        abs(at_span[0] - pspan_out[0]) < 1 and abs(at_span[1] - pspan_out[1]) < 1,
+        (at_span, pspan_out),
+    )
+    for _ in range(3):
+        canvas.dispatch_event("wheel", {"deltaY": 300, "bubbles": True, "cancelable": True})
+    still_out = page.evaluate("() => [...__cockpit.timeline.get().window]")
+    check(
+        "views_009 zoom-out at the span is a dead stop, both edges pinned",
+        still_out == at_span,
+        (at_span, still_out),
+    )
+
     # a sub-6 px drag is a click, not a selection
     wf0 = page.evaluate("() => [...__cockpit.timeline.get().window]")
     page.mouse.move(box["x"] + box["width"] * 0.5, y)
@@ -545,16 +775,18 @@ def run(page):
         "() => { let done = false; __cockpit.forEachWidget(w => {"
         " if (!done && w.setScaleMode && w.cfg.signals.length) { w.setScaleMode('L', 'manual'); done = true; } }); }"
     )
-    snapshot_js = (
-        "() => JSON.stringify({ n: document.querySelectorAll('.widget').length,"
-        " watched: [...__cockpit.store.watched.keys()].sort(),"
-        " colors: [...__cockpit.store.watched.values()].map(w => w.color).sort(),"
-        " axes: (() => { const c = []; __cockpit.forEachWidget(w =>"
-        "   c.push({ id: w.cfg.id, sides: w.cfg.sides || null, scales: w.cfg.scales || null })); return c; })() })"
-    )
-    before = page.evaluate(snapshot_js)
+    def full_snapshot():
+        core = page.evaluate(
+            "() => ({ n: document.querySelectorAll('.widget').length,"
+            " watched: [...__cockpit.store.watched.keys()].sort(),"
+            " colors: [...__cockpit.store.watched.keys()].map(p => __cockpit.appearance.resolvedColor(p)).sort() })"
+        )
+        core["axes"] = widget_cfgs(page, ["sides", "scales"])
+        return core
+
+    before = full_snapshot()
     restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.widget').length > 0")
-    after = page.evaluate(snapshot_js)
+    after = full_snapshot()
     check(
         "views_004 restart restores arrangement/signals/colors/axes config",
         before == after,
@@ -605,36 +837,12 @@ def run(page):
     )
     check("views_008 resume after a marathon pause shows an honest gap", gap_ok, ps)
 
-    # ═══ bench batch 2: resize fix, filter, watch panel ═══
-
-    # ── [test->app~views_004~1] the corner handle resizes the widget, and
-    #    the size survives the restart round trip ──
-    fresh_boot(page)
-    add_plot_with(page, ["task1msRuns"])
-    page.wait_for_selector(".plot-widget")
-    hb = page.locator(".resize-handle").first.bounding_box()
-    before_h = page.locator(".plot-widget").first.bounding_box()["height"]
-    page.mouse.move(hb["x"] + 6, hb["y"] + 6)
-    page.mouse.down()
-    for i in range(1, 9):
-        page.mouse.move(hb["x"] + 6, hb["y"] + 6 + 25 * i)
-    page.mouse.up()
-    after_h = page.locator(".plot-widget").first.bounding_box()["height"]
-    check(
-        "views_004 corner drag grows the widget",
-        after_h >= before_h + 150,
-        (before_h, after_h),
-    )
-    restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.plot-widget').length > 0")
-    restored_h = page.locator(".plot-widget").first.bounding_box()["height"]
-    check(
-        "views_004 resized height survives restart",
-        abs(restored_h - after_h) <= 2,
-        (after_h, restored_h),
-    )
+    # ═══ bench batch 2: filter, watch panel ═══
+    # (Corner-resize coverage lives in batch 5's mixed-workspace geometry
+    # round-trip, which pins exact px deltas — strictly stronger.)
 
     # ── [test->app~obs_005~1] filter: substring / glob / regex / invalid ──
-    boot(page)
+    fresh_boot(page)
 
     def filter_paths(q, until=None):
         # The filter applies after a 120 ms debounce; on a loaded host the
@@ -662,14 +870,15 @@ def run(page):
         page.wait_for_timeout(200)
     check("obs_005 full namespace cached for filtering", full > 600, full)
 
+    # Mixed-case query: the match must be case-insensitive.
     sub = filter_paths(
-        "velocity",
+        "Velocity",
         until=f"""() => {{ const l = __cockpit.store.signals.map(s => s.path);
             return l.length > 0 && l.length < {full}
                 && l.every(p => p.toLowerCase().includes('velocity')); }}""",
     )
     check(
-        "obs_005 substring narrows to matches",
+        "obs_005 substring narrows to matches, case-insensitively",
         len(sub) > 0 and all("velocity" in p.lower() for p in sub) and len(sub) < full,
         (len(sub), full),
     )
@@ -707,14 +916,14 @@ def run(page):
 
     # ── [test->app~views_010~1] the watch panel ──
     add_plot_with(page, ["task1msRuns"])
+    # Watching adds a panel row whose value cell tracks the newest sample
+    # (the waits are the asserts).
     page.wait_for_selector(".watch-row[data-path='task1msRuns']")
-    check("views_010 watching adds a panel row", True)
     v1 = page.locator(".watch-row [data-value]").first.inner_text()
     page.wait_for_function(
         f"() => document.querySelector('.watch-row [data-value]').textContent !== {v1!r}",
         timeout=5000,
     )
-    check("views_010 value cell tracks the newest sample", True)
     installs_before = page.evaluate("() => (window.__devmockInstalls || []).length")
     page.click(".watch-row[data-path='task1msRuns'] [data-period='100']")
     page.wait_for_function(
@@ -747,26 +956,17 @@ def run(page):
     page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
     page.evaluate("() => __cockpit.setPeriod('task1msRuns', 1)")
     page.wait_for_selector(
-        ".watch-row[data-path='task1msRuns'] [data-period='1'].watch-seg-opt--on"
+        ".watch-row[data-path='task1msRuns'] [data-period='1'].is-selected"
     )
-    page.evaluate(
-        """() => {
-          const dt = new DataTransfer();
-          dt.setData('text/x-signal', 'task1msRuns');
-          const el = document.querySelector('.plot-widget');
-          const r = el.getBoundingClientRect();
-          el.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-          el.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true,
-            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
-        }"""
-    )
+    first_plot = page.evaluate("() => document.querySelector('.plot-widget').dataset.widgetId")
+    drop_signal(page, "task1msRuns", widget_id=first_plot)
     after_drop = page.evaluate(
         """() => ({
           period: __cockpit.store.watched.get('task1msRuns')?.period_ms,
           joined: (() => { let j = false; __cockpit.forEachWidget(w =>
             { if (w.cfg.signals.includes('task1msRuns')) j = true; }); return j; })(),
           seg: !!document.querySelector(
-            ".watch-row[data-path='task1msRuns'] [data-period='1'].watch-seg-opt--on"),
+            ".watch-row[data-path='task1msRuns'] [data-period='1'].is-selected"),
         })"""
     )
     check(
@@ -798,10 +998,9 @@ def run(page):
 
     # ═══ batch 3: trace appearance + pointed-trace emphasis ═══════════════
 
-    # Re-boot after the picker block's reload (empty watched from views_010).
-    page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
-    page.evaluate("() => __cockpit.api.listSignals('')")
-    page.wait_for_function("() => __cockpit.store.gate === 'matched'")
+    # Full boot: batch 3 must not lean on whatever page state the picker
+    # block's reload left behind.
+    boot(page)
     sig_a = "app_motorControl_data.channels[0].phaseCurrent_a[0]"
     sig_b = "app_motorControl_data.channels[0].phaseCurrent_a[1]"
     add_plot_with(page, [sig_a, sig_b], 1)
@@ -871,11 +1070,11 @@ def run(page):
 
     # Color override: renders wherever the trace color renders; survives a
     # theme switch exactly as chosen while auto colors retint.
-    auto_b = page.evaluate(f"() => __cockpit.store.watched.get({sig_b!r}).color")
+    auto_b = page.evaluate(f"() => __cockpit.appearance.resolvedColor({sig_b!r})")
     page.evaluate(f"() => __cockpit.appearance.set({sig_a!r}, {{ color: '#ff0000' }})")
     spread = page.evaluate(
         f"""() => {{ const red = (el) => getComputedStyle(el).backgroundColor === 'rgb(255, 0, 0)';
-          const legends = [...document.querySelectorAll(`.widget-legend [data-legend="{sig_a}"] .legend-bar`)];
+          const legends = [...document.querySelectorAll(`.widget-legend .legend-entry[title="{sig_a}"] .legend-bar`)];
           const row = document.querySelector(`.watch-row[data-path="{sig_a}"] .legend-bar`);
           return {{ legends: legends.length, legendsRed: legends.every(red), rowRed: row ? red(row) : false }}; }}"""
     )
@@ -886,8 +1085,8 @@ def run(page):
     )
     page.evaluate("() => document.documentElement.setAttribute('data-theme', 'graphite')")
     themed = page.evaluate(
-        f"""() => ({{ a: __cockpit.store.watched.get({sig_a!r}).color,
-                      b: __cockpit.store.watched.get({sig_b!r}).color }})"""
+        f"""() => ({{ a: __cockpit.appearance.resolvedColor({sig_a!r}),
+                      b: __cockpit.appearance.resolvedColor({sig_b!r}) }})"""
     )
     check(
         "views_011 override survives the theme switch; auto retints",
@@ -898,44 +1097,17 @@ def run(page):
 
     # ── [test->app~views_012~1] pointed-trace emphasis, paused only ──
     page.evaluate("() => __cockpit.timeline.pause()")
-    targets = page.evaluate(
-        f"""() => {{ let res = null;
-          __cockpit.forEachWidget(w => {{
-            if (res || !w.renderedTables || w.cfg.signals.length !== 2) return;
-            // The grid scrolls: the widget must be truly on screen, or the
-            // real mouse events land on whatever covers those coordinates.
-            w.el.scrollIntoView({{ block: 'center' }});
-            w.refresh();
-            const canvas = w.el.querySelector('.plot-canvas');
-            const inCanvas = ([x, y]) =>
-              document.elementFromPoint(x, y)?.closest('.plot-canvas') === canvas;
-            const rect = canvas.getBoundingClientRect();
-            {NEAREST_Y_JS}
-            for (const frac of [0.5, 0.4, 0.6, 0.3, 0.7]) {{
-              const px = rect.width * frac;
-              const t = w.tickAtPx(px, rect.width);
-              const ys = w.cfg.signals.map((p) => nearestY(w, p, t, rect));
-              if (ys.some(v => v === null)) continue;
-              const [yA, yB] = ys;
-              if (Math.abs(yA - yB) < 30) continue;
-              let far = null, farD = -1;
-              for (let y = 4; y < rect.height - 4; y += 4) {{
-                const d = Math.min(Math.abs(y - yA), Math.abs(y - yB));
-                if (d > farD) {{ farD = d; far = y; }}
-              }}
-              if (farD < 50) continue;
-              const clampY = (y) => Math.min(rect.height - 3, Math.max(3, y));
-              const cand = {{ id: w.cfg.id,
-                nearA: [rect.left + px, rect.top + clampY(yA + 6)],
-                nearB: [rect.left + px, rect.top + clampY(yB + 6)],
-                far: [rect.left + px, rect.top + far] }};
-              if (!inCanvas(cand.nearA) || !inCanvas(cand.nearB) || !inCanvas(cand.far)) continue;
-              res = cand;
-            }}
-          }});
-          return res; }}"""
+    wid3 = page.evaluate(
+        "() => { let id = null; __cockpit.forEachWidget(w => {"
+        " if (!id && w.renderedTables && w.cfg.signals.length === 2) id = w.cfg.id; });"
+        " return id; }"
     )
-    check("views_012 geometry probe found separable targets", targets is not None, targets)
+    tgt_a = require_target_on(page, wid3, sig_a, "views_012 probe found a point near trace A")
+    tgt_b = require_target_on(page, wid3, sig_b, "views_012 probe found a point near trace B")
+    far_at = far_target_on(page, wid3)
+    check("views_012 probe found a point far from both traces", far_at is not None, far_at)
+    if far_at is None:
+        far_at = [10, 10]  # off-canvas; the probe check above already failed
     pointed_of = (
         "() => { let p = null; __cockpit.forEachWidget(w => { if (w.pointed) p = w.pointed; }); return p; }"
     )
@@ -954,9 +1126,9 @@ def run(page):
             out = w.cfg.signals.map(p => w.traceInfo(p).widthPx); });
           return out; }"""
     )
-    page.mouse.move(*targets["nearA"])
+    page.mouse.move(*tgt_a["at"])
     wait_pointed(sig_a)
-    widths = page.evaluate(widths_of, targets["id"])
+    widths = page.evaluate(widths_of, wid3)
     marked = page.evaluate(
         f"""() => {{ const r = document.querySelector('.readout-row--pointed');
           return r ? r.dataset.path : null; }}"""
@@ -966,9 +1138,9 @@ def run(page):
         widths == [3.0, 1.5] and marked == sig_a,
         (widths, marked),
     )
-    page.mouse.move(*targets["nearB"])
+    page.mouse.move(*tgt_b["at"])
     wait_pointed(sig_b)
-    widths = page.evaluate(widths_of, targets["id"])
+    widths = page.evaluate(widths_of, wid3)
     marked = page.evaluate(
         "() => document.querySelector('.readout-row--pointed')?.dataset.path || null"
     )
@@ -977,12 +1149,12 @@ def run(page):
         widths == [1.5, 3.0] and marked == sig_b,
         (widths, marked),
     )
-    page.mouse.move(*targets["far"])
+    page.mouse.move(*far_at)
     wait_pointed(None)
-    widths = page.evaluate(widths_of, targets["id"])
+    widths = page.evaluate(widths_of, wid3)
     check("views_012 nothing within 40 px clears the emphasis", widths == [1.5, 1.5], widths)
     page.evaluate("() => __cockpit.timeline.resume()")
-    page.mouse.move(*targets["nearA"])
+    page.mouse.move(*tgt_a["at"])
     page.wait_for_timeout(120)  # a few rAFs: live mode must stay unemphasized
     live_pointed = page.evaluate(pointed_of)
     check("views_012 live mode never emphasizes", live_pointed is None, live_pointed)
@@ -1027,9 +1199,9 @@ def run(page):
         both == 6 and writable_only == 3,
         (both, writable_only),
     )
+    # Disabling restores the read-only matches (the wait is the assert).
     page.click("[data-hideconst]")
     page.wait_for_function(f"() => __cockpit.store.signals.length === {both}")
-    check("obs_006 disabling restores the read-only matches", True)
 
     # ── [test->app~obs_006~1] a watched signal hidden by the exclusion keeps
     #    its watch-panel row ──
@@ -1122,8 +1294,8 @@ def run(page):
     # ── [test->app~views_011~1] explicit solid beats the overflow dash ──
     fresh_boot(page)
     seven = [
-        "app_motorControl_data.channels[0].velocityMeasured_radPerSec",
-        "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec",
+        VEL_M,
+        VEL_S,
         "app_motorControl_data.channels[0].mechanicalAngle_rad",
         "app_motorControl_data.channels[0].busCurrent",
         "app_motorControl_data.channels[0].duty[0]",
@@ -1150,8 +1322,8 @@ def run(page):
     check("views_011 popover style seg shows the effective (dashed) style", seg_selected == "dashed", seg_selected)
     page.keyboard.press("Escape")
     page.evaluate("() => __cockpit.appearance.set('task1msRuns', { style: 'solid' })")
+    # Explicit solid overrides the overflow dash (the wait is the assert).
     page.wait_for_function(f"() => ({dash_state})() === false")
-    check("views_011 explicit solid overrides the overflow dash", True)
     page.wait_for_timeout(600)
     restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.plot-widget').length > 0")
     check("views_011 explicit solid survives restart", page.evaluate(dash_state) is False)
@@ -1298,13 +1470,9 @@ def run(page):
     )
 
     # ── [test->app~views_004~1] restart restores geometry + stacking exactly ──
-    geometry_js = (
-        "() => { const g = []; __cockpit.forEachWidget(w => g.push({ id: w.cfg.id,"
-        " x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h, z: w.el.style.zIndex })); return g; }"
-    )
-    geo_before = page.evaluate(geometry_js)
+    geo_before = widget_cfgs(page, ["x", "y", "w", "h", "z"])
     restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.widget').length === 2")
-    geo_after = page.evaluate(geometry_js)
+    geo_after = widget_cfgs(page, ["x", "y", "w", "h", "z"])
     check(
         "views_004 restart restores positions, sizes, and stacking",
         geo_before == geo_after,
@@ -1324,10 +1492,7 @@ def run(page):
               watched: [], colors: null, appearance: null } })); }"""
     )
     restart(page, wait_js="() => document.querySelectorAll('.widget').length === 3")
-    mig = page.evaluate(
-        "() => { const g = []; __cockpit.forEachWidget(w => g.push({ id: w.cfg.id,"
-        " x: w.cfg.x, y: w.cfg.y, w: w.cfg.w, h: w.cfg.h, hpx: w.cfg.hpx ?? null })); return g; }"
-    )
+    mig = widget_cfgs(page, ["x", "y", "w", "h", "hpx"])
     check(
         "views_004 flow cfgs migrate to the stack; canvas cfgs pass through",
         mig == [
@@ -1388,7 +1553,7 @@ def run(page):
     )
 
     # ── [test->app~views_013~1] the name renders in all three surfaces ──
-    enum_sig = "IO_AS5048_data.channels[0].status"
+    enum_sig = ENUM_S
     add_plot_with(page, [enum_sig], period=10)
     wait_for_samples(page, enum_sig, 5)
     # Watch panel row (views_010's surface); the cell refreshes at batch rate,
@@ -1422,10 +1587,8 @@ def run(page):
         cell,
     )
     # Cursor readout (views_005's surface), at the newest sampled tick — on
-    # the widget that HOLDS the enum signal, waiting for its row to render.
-    # (First-match readout sampling was order/timing-flaky: which plot sits
-    # first in the DOM depends on suite history, and reading between batch
-    # re-renders raced the row's content.)
+    # the widget that HOLDS the enum signal (DOM order varies), waiting for
+    # its row to render (reads between batch re-renders race the content).
     enum_wid = page.evaluate(
         f"""() => {{ let id = null; __cockpit.forEachWidget(w => {{
           if (w.renderedTables && w.cfg.signals.includes({enum_sig!r})) id = w.cfg.id; }});
@@ -1451,7 +1614,6 @@ def run(page):
 
     # ── [test->app~views_013~1] enumerators survive restart via the snapshot ──
     page.wait_for_timeout(700)  # let the watched-list persist debounce settle
-    restart(page)
     boot(page)
     page.wait_for_function(
         f"() => (__cockpit.histories.get({enum_sig!r})?.ticks.length || 0) >= 3",
@@ -1477,7 +1639,6 @@ def run(page):
               watched: [{{ path: {enum_sig!r}, period_ms: 10, size: 1, kind: 'enum' }}],
               colors: null, appearance: null }} }})); }}"""
     )
-    restart(page)
     boot(page)
     page.wait_for_function(
         f"""() => (document.querySelector(".watch-row[data-path='{enum_sig}'] [data-value]")
@@ -1511,11 +1672,7 @@ def run(page):
     #    column, every column's extent equal to the raw extent, a
     #    single-sample spike preserved ──
     dense_sig = "task1msRuns"
-    page.evaluate(f"() => __cockpit.addWatch({dense_sig!r}, 1)")
-    dense_id = page.evaluate(
-        f"() => {{ const w = __cockpit.addWidget({{ type: 'plot', signals: [] }});"
-        f"  w.addSignal({dense_sig!r}); return w.cfg.id; }}"
-    )
+    dense_id = add_plot_with(page, [dense_sig], 1)
     # Deterministic dense history: 10 000 samples @1 ms seeded AT the live
     # edge (the devmock stream keeps moving globalNewest, so the seed anchors
     # to it and the live window lands exactly on the synthetic span). One
@@ -1659,6 +1816,11 @@ def run(page):
 
     # ═══ batch 8: WebGL renderer plumbing ═══
 
+    # The batch's scratch plots watch an explicitly-seeded signal — no
+    # dependence on whichever watch an earlier batch left first in the map.
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    wait_for_samples(page, "task1msRuns", 5)
+
     # ── GL context loss/restore: the widget rebuilds its programs and
     #    redraws from the CPU-side tables; nothing else notices ──
     survived = page.evaluate(
@@ -1687,7 +1849,7 @@ def run(page):
     paused_add = page.evaluate(
         """() => {
           __cockpit.timeline.pause();
-          const p = [...__cockpit.store.watched.keys()][0];
+          const p = 'task1msRuns';
           const w = __cockpit.addWidget({ type: 'plot', signals: [] });
           w.addSignal(p);
           const out = {
@@ -1739,12 +1901,30 @@ def run(page):
         nan_geo,
     )
 
+    # ── [test->app~views_011~1] zoh renders a STEP: hold at the previous
+    #    value until the next sample's x, then the riser ──
+    zoh_pts = page.evaluate(
+        """async () => {
+          const { buildTraceGeometry } = await import('./js/workspace/glrender.js');
+          const geo = buildTraceGeometry([0, 10], [0, 5], x => x, y => y, 'zoh', 1, false);
+          const v = geo.runs[0]?.verts || [];
+          const pts = [];
+          for (let k = 0; k + 2 < v.length; k += 3) pts.push([v[k], v[k + 1]]);
+          return pts;
+        }"""
+    )
+    check(
+        "views_011 zoh geometry emits the hold-step vertex",
+        zoh_pts[:1] == [[0, 0]] and [10, 0] in zoh_pts and [10, 5] in zoh_pts,
+        zoh_pts,
+    )
+
     # ── context budget: 18 live plots exceed the browser's context cap; the
     #    LRU release + on-demand re-creation must leave every widget able to
     #    draw (no permanently blank plot) ──
     eviction = page.evaluate(
         """() => new Promise((resolve) => {
-          const p = [...__cockpit.store.watched.keys()][0];
+          const p = 'task1msRuns';
           const made = [];
           for (let i = 0; i < 18; i++) {
             const w = __cockpit.addWidget({ type: 'plot', signals: [] });
@@ -1829,7 +2009,6 @@ def run(page):
     named = title_span.inner_text()
     check("views_016 a committed name replaces the unset title", named == "Motor speeds", named)
     page.wait_for_timeout(700)  # let the persist debounce settle
-    restart(page)
     boot(page)
     page.wait_for_selector(f"[data-widget-id='{twid}'] .widget-title")
     restored = page.locator(f"[data-widget-id='{twid}'] .widget-title").inner_text()
@@ -1867,10 +2046,6 @@ def run(page):
 
     # ═══ batch 10: comparison cursor (views_017 anchor + views_018 deltas) ═══
 
-    VEL_M = "app_motorControl_data.channels[0].velocityMeasured_radPerSec"
-    VEL_S = "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec"
-    ENUM_S = "IO_AS5048_data.channels[0].status"
-    U32_S = "task1msRuns"
     for p in (VEL_M, VEL_S, ENUM_S, U32_S):
         page.evaluate(f"() => __cockpit.addWatch({p!r}, 1)")
         wait_for_samples(page, p)
@@ -1880,15 +2055,8 @@ def run(page):
         f"() => (__cockpit.histories.get({VEL_S!r})?.ticks.length || 0) >= 5200",
         timeout=15000,
     )
-    cwid = page.evaluate(
-        """(paths) => {
-          const w = __cockpit.addWidget({ type: 'plot', signals: [] });
-          for (const p of paths) w.addSignal(p);
-          w.setSide(paths[3], 'R');   // the u32 counter gets the right axis
-          return w.cfg.id;
-        }""",
-        [VEL_M, VEL_S, ENUM_S, U32_S],
-    )
+    cwid = add_plot_with(page, [VEL_M, VEL_S, ENUM_S, U32_S], 1)
+    widget_eval(page, cwid, f"(w) => w.setSide({U32_S!r}, 'R')")  # u32 → right axis
     page.evaluate("() => __cockpit.timeline.pause()")
 
     def cwidget_eval(expr, arg=None):
@@ -1896,64 +2064,13 @@ def run(page):
         return widget_eval(page, cwid, expr, arg)
 
     def probe_target(path, frac):
-        """A real-mouse point 6 px under `path`'s trace at window fraction
-        `frac`, only where every other trace is at least 22 px away (the
-        pointed rule must resolve to `path`), or None."""
-        return cwidget_eval(
-            """(w, [path, frac]) => {
-              w.el.scrollIntoView({ block: 'center' });
-              w.refresh();
-              const canvas = w.el.querySelector('.plot-canvas');
-              const rect = canvas.getBoundingClientRect();
-              const px = rect.width * frac;
-              const t = w.tickAtPx(px, rect.width);
-              """ + NEAREST_Y_JS + """
-              const yOf = (p) => nearestY(w, p, t, rect);
-              const yT = yOf(path);
-              if (yT === null) return null;
-              for (const p of w.cfg.signals) {
-                if (p === path) continue;
-                const y = yOf(p);
-                if (y !== null && Math.abs(y - yT) < 22) return null;
-              }
-              const cy = Math.min(rect.height - 3, Math.max(3, yT + 6));
-              const at = [rect.left + px, rect.top + cy];
-              if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
-              // The exact resolver the click will run: only a target the
-              // pointed rule already resolves to `path` is a valid probe
-              // (nearest-sample y and interpolated y can diverge).
-              if (w.computePointed(at[0], at[1], canvas) !== path) return null;
-              return { at, clickTick: t };
-            }""",
-            [path, frac],
-        )
+        return probe_target_on(page, cwid, path, frac)
 
     def find_target(path):
-        # Bounded retry: on a starved host the fraction sweep can run
-        # before the paused plot's geometry settles (run-5 CI returned
-        # None once); healthy hosts resolve on the first round.
-        for _ in range(10):
-            for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
-                tgt = probe_target(path, frac)
-                if tgt:
-                    return tgt
-            page.wait_for_timeout(500)
-        return None
+        return find_target_on(page, cwid, path)
 
     def require_target(path, label):
-        # check() + never-None: exhausting the retry sweep fails the probe
-        # check but returns a harmless fallback (a workspace-center click
-        # that points no trace), so dependent checks fail on their own
-        # terms instead of a NoneType subscript aborting the whole suite.
-        tgt = find_target(path)
-        check(label, tgt is not None, tgt)
-        if tgt is None:
-            ws = page.evaluate(
-                "() => { const r = document.querySelector('.workspace').getBoundingClientRect();"
-                " return [r.x + r.width / 2, r.y + r.height / 2]; }"
-            )
-            return {"at": tuple(ws), "clickTick": -(10**9)}
-        return tgt
+        return require_target_on(page, cwid, path, label)
 
     # The anchor gesture's modifier is platform-mapped (views_017's table:
     # Ctrl; Command on macOS) — the suite must send whichever key the app
@@ -2097,28 +2214,9 @@ def run(page):
         cwidget_eval("(w) => w.anchor?.path") == VEL_M,
         cwidget_eval("(w) => w.anchor?.path"),
     )
-    other = page.evaluate(
-        f"""([cwid, twid]) => {{
-          let wB = null;
-          __cockpit.forEachWidget(w => {{ if (w.cfg.id === twid) wB = w; }});
-          wB.el.scrollIntoView({{ block: 'center' }});
-          wB.refresh();
-          const canvas = wB.el.querySelector('.plot-canvas');
-          const rect = canvas.getBoundingClientRect();
-          const p = wB.cfg.signals[0];
-          const [txs, tys] = wB.renderedTables().get(p);
-          const mid = Math.floor(txs.length / 2);
-          if (tys[mid] == null) return null;
-          const px = ((txs[mid] - wB.window[0]) / (wB.window[1] - wB.window[0])) * rect.width;
-          const py = Math.min(rect.height - 3, Math.max(3, wB.yPxOf(tys[mid], wB.sideOf(p), rect.height) + 6));
-          const at = [rect.left + px, rect.top + py];
-          if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
-          if (wB.computePointed(at[0], at[1], canvas) !== p) return null;
-          return {{ at, path: p }};
-        }}""",
-        [cwid, twid],
-    )
-    check("views_017 second-widget probe", other is not None, other)
+    # The batch makes its OWN second plot — no lean on batch 9's title widget.
+    twid2 = add_plot_with(page, [U32_S], 1)
+    other = require_target_on(page, twid2, U32_S, "views_017 second-widget probe")
     ctrl_click(other["at"])
     indep = page.evaluate(
         f"""([cwid, twid]) => {{
@@ -2129,17 +2227,17 @@ def run(page):
           }});
           return out;
         }}""",
-        [cwid, twid],
+        [cwid, twid2],
     )
     check(
         "views_017 two widgets hold independent anchors, lines on their own plots",
         indep["a"]["path"] == VEL_M
-        and indep["b"]["path"] == other["path"]
+        and indep["b"]["path"] == U32_S
         and indep["a"]["lx"]
         and indep["b"]["lx"],
         indep,
     )
-    widget_eval(page, twid, "(w) => w.releaseAnchor()")
+    widget_eval(page, twid2, "(w) => w.releaseAnchor()")
 
     # ── [test->app~views_018~1] the time delta shows on the anchoring widget
     #    with the cursor set from ANOTHER plot ──
@@ -2150,7 +2248,7 @@ def run(page):
           const r = wB.el.querySelector('.plot-canvas').getBoundingClientRect();
           return [r.left + r.width / 2, r.top + 10];
         }}""",
-        twid,
+        twid2,
     )
     page.mouse.move(*hover_b)
     page.wait_for_function("() => __cockpit.cursor.tick !== null")
@@ -2182,7 +2280,9 @@ def run(page):
     dv_read = cwidget_eval(
         """(w, p) => {
           const el = w.el.querySelector(`[data-path="${p}"] [data-delta-v]`);
-          const v = w.cursorValueFor(p);
+          // Expectation from the history itself, independent of the widget's
+          // own cursor-value plumbing (the surface under test).
+          const v = __cockpit.histories.get(p).valueAt(__cockpit.cursor.tick);
           return { text: el ? el.textContent : null,
                    expect: v === null || !w.anchor ? null : v - w.anchor.value };
         }""",
@@ -2504,17 +2604,16 @@ def run(page):
     # Per plot, at least half the page's frames scrolled (the lead clamp
     # legitimately freezes the tail of a slow batch gap), and scroll
     # updates outnumber geometry draws — the feature's whole point.
-    # Liveliness gate: below ~10 rAF/s the host (a starved CI runner ran
-    # ~4 fps) is not rendering frames to track — the cadence claim is
-    # unmeasurable there, so skip with the observed numbers rather than
-    # re-test load. A merely-busy box (measured 18 rAF/s locally) still
+    # Liveliness gate: below ~10 rAF/s the host is not rendering frames to
+    # track — the cadence claim is unmeasurable there, so skip with the
+    # observed numbers rather than re-test load; a merely-busy box still
     # asserts and passes.
     if rates["rafs"] >= 20:  # 2 s window
         # The beat-draws ratio only discriminates when the display ticks
         # meaningfully faster than geometry lands: at rAF ≈ batch cadence
-        # (run-3 macOS: 23 rafs vs 26 draws) scrolls cannot outnumber
-        # draws 1.5x by construction — gate that clause on rafs ≥ 2x
-        # draws; the frame-tracking clause asserts at any liveliness.
+        # scrolls cannot outnumber draws 1.5x by construction — gate that
+        # clause on rafs ≥ 2x draws; the frame-tracking clause asserts at
+        # any liveliness.
         beat_ok = (
             rates["scrolls"] > rates["draws"] * 1.5
             if rates["rafs"] >= rates["draws"] * 2
@@ -2554,14 +2653,13 @@ def run(page):
         }"""
     )
     # The display clock may only track DELIVERED data plus the lead clamp:
-    # on a starved host the devmock's own batch emitter gaps (run-4 CI:
-    # advance 750 over 2360 ms wall — the clamp honestly froze through the
-    # gaps), so the advance floor is bounded by the data's advance, never
-    # by wall time. Monotonicity is load-independent honesty and is
-    # asserted in EVERY condition. With healthy data flow (dataAdv >= 900)
-    # the display must track it (>= 75% covers clamp-freeze tails); with a
-    # starved emitter the floor is unmeasurable — skip with the numbers.
-    # The upper bound stays: advance can never exceed wall + lead.
+    # on a starved host the devmock's own batch emitter gaps and the clamp
+    # honestly freezes through them, so the advance floor is bounded by the
+    # data's advance, never by wall time. Monotonicity is load-independent
+    # honesty and is asserted in EVERY condition. With healthy data flow
+    # (dataAdv >= 900) the display must track it (>= 75% covers clamp-freeze
+    # tails); with a starved emitter the floor is unmeasurable — skip with
+    # the numbers. The upper bound stays: advance never exceeds wall + lead.
     upper_ok = walk["advance"] <= walk["wall"] + 200
     if walk["dataAdv"] >= 900:
         check(
@@ -2791,9 +2889,15 @@ def run(page):
         "() => (__cockpit.histories.get('task1msRuns')?.size || 0) > 100", timeout=8000
     )
     h0 = page.evaluate("() => __cockpit.histories.get('task1msRuns').size")
-    page.wait_for_timeout(300)
+    flowing = True
+    try:
+        page.wait_for_function(
+            f"() => __cockpit.histories.get('task1msRuns').size > {h0}", timeout=8000
+        )
+    except Exception:
+        flowing = False
     h1 = page.evaluate("() => __cockpit.histories.get('task1msRuns').size")
-    check("conn_001 stream restarts and histories repopulate after reconnect", h1 > h0, (h0, h1))
+    check("conn_001 stream restarts and histories repopulate after reconnect", flowing and h1 > h0, (h0, h1))
     val = page.locator(".watch-row .watch-value").first.inner_text()
     check("conn_001 watch panel shows a live value after reconnect", val not in ("", "no sample"), val)
 
@@ -2816,17 +2920,7 @@ def run(page):
     # drag sources, UI zoom (the views_009 dead-stop lives with its batch) ═══
 
     fresh_boot(page)
-    for p in (VEL_M, VEL_S):
-        page.evaluate(f"() => __cockpit.addWatch({p!r}, 1)")
-    cwid = page.evaluate(
-        """(paths) => { const w = __cockpit.addWidget({ type: 'plot', signals: [] });
-          for (const p of paths) w.addSignal(p); return w.cfg.id; }""",
-        [VEL_M, VEL_S],
-    )
-    page.wait_for_function(
-        "() => __cockpit.store.traceStatus && __cockpit.store.traceStatus.link_rate_bytes_per_s > 0",
-        timeout=5000,
-    )
+    cwid = add_plot_with(page, [VEL_M, VEL_S], 1)
     for p in (VEL_M, VEL_S):
         wait_for_samples(page, p)
     page.evaluate("() => __cockpit.timeline.pause()")
@@ -2977,16 +3071,7 @@ def run(page):
 
     # ── [test->app~views_004~1] a drop onto the launcher-added plot traces it ──
     new_plot_id = added[0]["id"]
-    page.evaluate(
-        """([id, path]) => {
-          let el = null; __cockpit.forEachWidget(w => { if (w.cfg.id === id) el = w.el; });
-          const canvas = el.querySelector('.plot-canvas');
-          const dt = new DataTransfer();
-          dt.setData('text/x-signal', path);
-          canvas.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-          canvas.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true })); }""",
-        [new_plot_id, U32_S],
-    )
+    drop_signal(page, U32_S, widget_id=new_plot_id)
     joined = widget_eval(
         page, new_plot_id,
         "(w) => ({ sigs: [...w.cfg.signals], hintHidden: w.el.querySelector('.plot-empty-hint').hidden })",
@@ -3015,30 +3100,11 @@ def run(page):
         drag["ok"] and drag["payload"] == VEL_S,
         drag,
     )
-    page.evaluate(
-        """([id, path]) => {
-          let el = null; __cockpit.forEachWidget(w => { if (w.cfg.id === id) el = w.el; });
-          const canvas = el.querySelector('.plot-canvas');
-          const dt = new DataTransfer();
-          dt.setData('text/x-signal', path);
-          canvas.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-          canvas.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true })); }""",
-        [new_plot_id, VEL_S],
-    )
+    drop_signal(page, VEL_S, widget_id=new_plot_id)
     sigs2 = widget_eval(page, new_plot_id, "(w) => [...w.cfg.signals]")
     check("watch-row drag joins an existing plot on drop", sigs2 == [U32_S, VEL_S], sigs2)
     nw0 = page.evaluate("() => { let n = 0; __cockpit.forEachWidget(() => n++); return n; }")
-    page.evaluate(
-        """(path) => {
-          const dt = new DataTransfer();
-          dt.setData('text/x-signal', path);
-          const ws = document.querySelector('.workspace');
-          ws.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-          ws.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true,
-            clientX: ws.getBoundingClientRect().left + 300,
-            clientY: ws.getBoundingClientRect().top + 90 })); }""",
-        VEL_M,
-    )
+    drop_signal(page, VEL_M, at=(300, 90))
     nw1 = page.evaluate("() => { let n = 0; __cockpit.forEachWidget(() => n++); return n; }")
     check("watch-row drag onto empty canvas creates a plot", nw1 == nw0 + 1, (nw0, nw1))
 
@@ -3069,6 +3135,54 @@ def run(page):
     z5 = page.evaluate("() => document.body.style.zoom")
     check("ui zoom resets with Ctrl+'0'", z5 == "", z5)
 
+    # ── Ctrl+wheel: UI zoom everywhere EXCEPT over a paused plot, where the
+    #    wheel belongs to the views_009 range gesture ──
+    page.evaluate(
+        "() => document.body.dispatchEvent(new WheelEvent('wheel',"
+        " { ctrlKey: true, deltaY: -120, bubbles: true, cancelable: true }))"
+    )
+    zw = page.evaluate("() => document.body.style.zoom")
+    check("ui zoom: Ctrl+wheel up scales the UI", zw == "1.1", zw)
+    page.evaluate("() => __cockpit.timeline.pause()")
+    zw2 = page.evaluate(
+        """() => { const c = document.querySelector('.plot-canvas');
+          c.dispatchEvent(new WheelEvent('wheel',
+            { ctrlKey: true, deltaY: -120, bubbles: true, cancelable: true }));
+          return document.body.style.zoom; }"""
+    )
+    check("ui zoom: Ctrl+wheel over a paused plot leaves UI zoom alone", zw2 == "1.1", zw2)
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.keyboard.down("Control")
+    page.keyboard.press("0")
+    page.keyboard.up("Control")
+
+    # ── a deliberate disconnect ends the session: the persisted port is
+    #    cleared so the next boot cannot auto-reconnect ──
+    page.evaluate("() => __cockpit.api.connect('COM8')")
+    page.evaluate("() => __cockpit.api.disconnect()")
+    port_pref = page.evaluate(
+        "() => JSON.parse(localStorage.getItem('cockpit.config.v1'))['cockpit.session.port'] ?? null"
+    )
+    check("conn: deliberate disconnect clears the persisted session port", port_pref is None, port_pref)
+
+    # ── reject dialog keyboard contract: focus lands on the dismiss action;
+    #    Escape dismisses ──
+    page.goto(URL.replace("state=matched", "state=rejected"))
+    page.wait_for_function("() => window.__cockpit !== undefined")
+    page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
+    page.evaluate("() => __cockpit.api.listSignals('')")
+    page.wait_for_function("() => __cockpit.store.gate === 'matched'")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.commit().catch(() => {})")
+    page.wait_for_selector(".reject-dialog")
+    dismiss_focused = page.evaluate(
+        "() => document.activeElement !== null && 'dismiss' in document.activeElement.dataset"
+    )
+    check("reject dialog focuses its dismiss action", dismiss_focused, dismiss_focused)
+    page.keyboard.press("Escape")
+    scrim_gone = page.evaluate("() => !document.querySelector('.reject-scrim')")
+    check("reject dialog dismisses on Escape", scrim_gone)
+
     # ═══ batch 14 (QA): reconnect races, paused-reconnect deferral, zoom
     #     hotkeys vs focused editors ═══
 
@@ -3077,8 +3191,41 @@ def run(page):
     #    NOT fire a second connect (its teardown would kill the fresh
     #    session), and its aftermath must not clobber "connected" ──
     fresh_boot(page)
+
+    # ── the empty-state drop zone glows under a signal drag (and clears
+    #    when the drag moves off) ──
+    glow = page.evaluate(
+        """() => { const dt = new DataTransfer(); dt.setData('text/x-signal', 'task1msRuns');
+          const zone = document.querySelector('.empty-drop');
+          zone.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          const on = zone.classList.contains('empty-drop--over');
+          const ws = document.querySelector('.workspace');
+          ws.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+          return { on, off: !zone.classList.contains('empty-drop--over') }; }"""
+    )
+    check("empty-state drop zone highlights under a signal drag", glow["on"] and glow["off"], glow)
+
+    # ── keyboard: Enter on a focused signal row toggles its watch ──
+    page.evaluate("() => document.querySelector('.signal-row').focus()")
+    page.keyboard.press("Enter")
+    row_watched = page.evaluate(
+        """() => { const p = document.querySelector('.signal-row').dataset.path;
+          const w = __cockpit.store.watched.has(p);
+          if (w) __cockpit.removeWatch(p);
+          return w; }"""
+    )
+    check("keyboard: Enter on a focused signal row toggles its watch", row_watched, row_watched)
+
     add_plot_with(page, ["task1msRuns"], period=10)
     wait_for_samples(page, "task1msRuns")
+
+    # ── keyboard: Enter on a focused widget title opens the rename editor ──
+    page.evaluate("() => document.querySelector('.widget-title').focus()")
+    page.keyboard.press("Enter")
+    editor_open = page.evaluate("() => !!document.querySelector('.widget-title-edit')")
+    check("keyboard: Enter on a focused widget title opens the rename editor", editor_open, editor_open)
+    page.keyboard.press("Escape")
+
     page.evaluate("() => window.__devmockConn.pull()")
     page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
     page.evaluate(
@@ -3132,26 +3279,31 @@ def run(page):
         after,
     )
     h0 = page.evaluate("() => __cockpit.histories.get('task1msRuns')?.size || 0")
-    page.wait_for_timeout(400)
+    raced_flow = True
+    try:
+        page.wait_for_function(
+            f"() => (__cockpit.histories.get('task1msRuns')?.size || 0) > {h0}", timeout=8000
+        )
+    except Exception:
+        raced_flow = False
     h1 = page.evaluate("() => __cockpit.histories.get('task1msRuns')?.size || 0")
-    check("conn_001 stream keeps flowing through the raced reconnect", h1 > h0, (h0, h1))
+    check("conn_001 stream keeps flowing through the raced reconnect", raced_flow and h1 > h0, (h0, h1))
 
     # ── [test->app~conn_001~1] + views_008: reconnect while PAUSED defers
     #    the recommit — the frozen inspection stays honest until resume ──
     fresh_boot(page)
-    VEL = "app_motorControl_data.channels[0].velocityMeasured_radPerSec"
-    add_plot_with(page, [VEL], period=1)
+    add_plot_with(page, [VEL_M], period=1)
     page.wait_for_function(
-        f"() => (__cockpit.histories.get({VEL!r})?.size || 0) > 400", timeout=8000
+        f"() => (__cockpit.histories.get({VEL_M!r})?.size || 0) > 400", timeout=8000
     )
     page.evaluate("() => __cockpit.timeline.pause()")
     frozen = page.evaluate(
         f"""() => {{
-          const h = __cockpit.histories.get({VEL!r});
+          const h = __cockpit.histories.get({VEL_M!r});
           const win = __cockpit.timeline.get().window;
           const tick = h.tickAtOrBefore((win[0] + win[1]) / 2);
           let w = null; __cockpit.forEachWidget(x => {{ w = w || x; }});
-          w.anchor = {{ path: {VEL!r}, tick, value: h.valueAt(tick) }};
+          w.anchor = {{ path: {VEL_M!r}, tick, value: h.valueAt(tick) }};
           w.renderAnchor();
           return {{ tick, value: h.valueAt(tick), size: h.size, newest: h.newestTick() }};
         }}"""
@@ -3163,7 +3315,7 @@ def run(page):
     # history until the stream dies; frozen-ness is asserted from here on.
     at_pull = page.evaluate(
         f"""() => {{
-          const h = __cockpit.histories.get({VEL!r});
+          const h = __cockpit.histories.get({VEL_M!r});
           return {{ size: h.size, newest: h.newestTick() }};
         }}"""
     )
@@ -3174,7 +3326,7 @@ def run(page):
     page.wait_for_timeout(1200)  # room for a (wrong) eager recommit to land
     paused_state = page.evaluate(
         f"""() => {{
-          const h = __cockpit.histories.get({VEL!r});
+          const h = __cockpit.histories.get({VEL_M!r});
           let w = null; __cockpit.forEachWidget(x => {{ w = w || x; }});
           return {{
             installs: (window.__devmockInstalls || []).length,
@@ -3216,7 +3368,7 @@ def run(page):
         resumed,
     )
     page.wait_for_function(
-        f"() => (__cockpit.histories.get({VEL!r})?.size || 0) > 100", timeout=8000
+        f"() => (__cockpit.histories.get({VEL_M!r})?.size || 0) > 100", timeout=8000
     )
 
     # ── zoom hotkeys vs a focused title editor (capture-phase handler):
@@ -3254,10 +3406,10 @@ def run(page):
 
 BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"
 # "off": run the budget scenario for error coverage but skip the numeric
-# asserts — for hosts with no GPU-class renderer (CI's SwiftShader measured
-# far under the views_015 floor on its first run; the spec's budget is a
-# bench/laptop gate, not a shared-runner property). Never silent: the skip
-# prints, and draws still must advance (a dead renderer fails everywhere).
+# asserts — software-GL hosts (CI's SwiftShader) measure far under the
+# views_015 floor; the spec's budget is a bench/laptop gate. Never silent:
+# the skip prints, and draws still must advance (a dead renderer fails
+# everywhere).
 BUDGET_OFF = os.environ.get("PCS_RENDER_BUDGET") == "off"
 
 
@@ -3322,10 +3474,10 @@ def run_budget(pw):
             f"batches={batches}"
         )
         # A starved runner delivers a fraction of the nominal 20 Hz batch
-        # cadence (first CI run: 4 fps, ~1/4 of the batches), so the floor
-        # scales to the batches the host ACTUALLY emitted — "every batch
-        # drew on every plot, with coalescing slack" — with an absolute
-        # minimum so a dead renderer (zero draws) fails on any host.
+        # cadence, so the floor scales to the batches the host ACTUALLY
+        # emitted — "every batch drew on every plot, with coalescing
+        # slack" — with an absolute minimum so a dead renderer (zero
+        # draws) fails on any host.
         min_draws_off = max(20, int(batches * 4 * 0.75))
         check(
             f"views_015 renderer draws advance over {seconds} s (budget asserts off)",

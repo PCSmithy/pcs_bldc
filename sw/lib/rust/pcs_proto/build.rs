@@ -23,6 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let descriptors = protox::compile(&files, [shared.as_path(), board.as_path()])?;
-    prost_build::Config::new().compile_fds(descriptors)?;
+    prost_build::Config::new()
+        // The GUI serializes TraceStatus straight into its "trace-status"
+        // event; field names are the wire names either way.
+        .type_attribute(".trace.TraceStatus", "#[derive(serde::Serialize)]")
+        .compile_fds(descriptors)?;
     Ok(())
 }

@@ -7,15 +7,13 @@ import { icon } from "../icons.js";
 import { store, subscribe } from "../state.js";
 import { histories } from "./history.js";
 import { meta } from "./watchflow.js";
-import { traceColor } from "./colors.js";
+import { resolvedColor } from "./appearance.js";
 import { cursor } from "./cursor.js";
 import { formatValue } from "./plotwidget.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor } from "./titlebar.js";
 import { throttleTrailing } from "../perf.js";
-
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+import { esc } from "../dom.js";
 
 export class TableWidget {
   /** cfg: { id, signals: [path] } */
@@ -25,11 +23,8 @@ export class TableWidget {
     this.el = document.createElement("div");
     this.el.className = "table-widget widget";
     this.el.dataset.widgetId = cfg.id;
-    // The batch-rate entry point (refreshAll): live values change ~20×/s but
-    // read fine at 10 Hz, so the full-tbody rebuild is throttled with a
-    // trailing edge (the newest batch always lands). Everything else —
-    // cursor moves, membership edits, explicit calls — uses refresh()
-    // directly and renders immediately.
+    // Batch-rate rebuilds throttle to 10 Hz with a trailing edge (the newest
+    // batch always lands); everything else refreshes immediately.
     this.refreshBatch = throttleTrailing(() => this.refresh());
     this.render();
     this.unsubs = [subscribe("cursor", () => this.refresh())];
@@ -103,7 +98,7 @@ export class TableWidget {
         const v = this.rowValue(path);
         const absent = v === null;
         return `<tr>
-          <td><span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : w?.color || traceColor(path)}"></span><span class="mono">${esc(path)}</span></td>
+          <td><span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : resolvedColor(path)}"></span><span class="mono">${esc(path)}</span></td>
           <td class="col-value mono ${absent ? "readout-value--absent" : ""} ${m?.kind === "enum" ? "value--enum" : ""} ${m?.kind === "bool" && v === 0 ? "value--ok" : ""}">${esc(formatValue(v, m?.kind, m?.enums))}</td>
           <td class="col-type">${esc(m?.kind ?? "—")}</td>
           <td class="col-period mono">${w ? `${w.period_ms} ms` : "—"}</td>

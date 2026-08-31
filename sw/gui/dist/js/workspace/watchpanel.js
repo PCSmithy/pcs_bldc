@@ -11,11 +11,11 @@ import { meta, setPeriod, removeWatch } from "./watchflow.js";
 import { WATCH_CAPACITY } from "./budget.js";
 import { forEachWidget, persist } from "./layout.js";
 import { formatValue } from "./plotwidget.js";
+import { resolvedColor } from "./appearance.js";
 import { throttleTrailing } from "../perf.js";
+import { esc } from "../dom.js";
 
 const PERIODS = [1, 10, 100];
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 let host = null;
 
@@ -36,11 +36,11 @@ function renderRows() {
       return `
       <div class="watch-row" data-path="${esc(path)}" title="${esc(path)}">
         <span class="watch-drag" draggable="true">
-          <span class="legend-bar" style="background:${w.color}"></span>
+          <span class="legend-bar" style="background:${resolvedColor(path)}"></span>
           <span class="watch-name mono">${esc(path)}</span>
         </span>
-        <span class="watch-seg" role="group" aria-label="Sample period">
-          ${PERIODS.map((p) => `<button class="watch-seg-opt ${p === w.period_ms ? "watch-seg-opt--on" : ""}"
+        <span class="seg watch-seg" role="group" aria-label="Sample period">
+          ${PERIODS.map((p) => `<button class="watch-seg-opt ${p === w.period_ms ? "is-selected" : ""}"
               data-period="${p}">${p}</button>`).join("")}
         </span>
         <span class="watch-value mono" data-value>${esc(formatValue(histories.get(path)?.latest() ?? null, m?.kind, m?.enums))}</span>
@@ -82,11 +82,8 @@ export function initWatchPanel() {
     else if (ev.target.dataset.period) setPeriod(path, +ev.target.dataset.period);
   });
 
-  // Watch rows are drag sources like picker rows — the same "text/x-signal"
-  // payload the workspace drop targets consume — so plots and tables can be
-  // rearranged from the persistent list without re-searching. The handle is
-  // the color+name region only; the period seg and remove control stay
-  // plain buttons.
+  // Watch rows are "text/x-signal" drag sources like picker rows; the
+  // handle is the color+name region only.
   host.addEventListener("dragstart", (ev) => {
     const row = ev.target.closest(".watch-row");
     if (!row || !ev.target.closest(".watch-drag")) return;

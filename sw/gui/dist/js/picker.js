@@ -1,19 +1,15 @@
-// Signal picker: search over the DWARF namespace, grouped rows, budget
-// meters, and the watch panel host. Rows are drag SOURCES (dataTransfer
-// "text/x-signal" = path) and re-render from store.watched; period/watch
-// interactivity belongs to the workspace module, which owns store.watched
-// and the install flow. The column is user-resizable and collapsible to a
-// slim rail (persisted).
+// Signal picker: search over the DWARF namespace, grouped rows, and the
+// budget-meter/watch-panel hosts. Rows are drag SOURCES (dataTransfer
+// "text/x-signal" = path) and re-render from store.watched; watch/period/
+// meter interactivity belongs to the workspace module. The column is
+// user-resizable and collapsible to a slim rail (persisted).
 
 import { icon } from "./icons.js";
-import { api, store, set, subscribe, notify, prefs } from "./state.js";
-
-const $ = (sel) => document.querySelector(sel);
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+import { api, store, set, subscribe, prefs } from "./state.js";
+import { resolvedColor } from "./workspace/appearance.js";
+import { $, esc } from "./dom.js";
 
 const groupOf = (path) => path.split(/[.[]/)[0];
-const HOT_FRACTION = 0.85; // sage while comfortable, accent as it nears the limit
 
 const PICKER_LS = "cockpit.picker.v1";
 const MIN_W = 220;
@@ -35,7 +31,7 @@ let collapsedGroups = new Set();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // [impl->app~obs_005~1]
-export function compileFilter(q) {
+function compileFilter(q) {
   if (!q) return () => true;
   // Literal-only: no regex metacharacters at all — plain substring.
   if (/^[^\\^$.|?*+()[\]{}]+$/.test(q)) {
@@ -67,31 +63,7 @@ function refreshPresented() {
 }
 
 // ── renderers ──────────────────────────────────────────────────────────────
-
-function renderBudgets() {
-  const host = $(".budget-meters");
-  const s = store.traceStatus;
-  const meter = (label, valueText, frac) => `
-    <div class="budget-meter">
-      <div class="budget-meter-row">
-        <span class="budget-meter-label">${label}</span>
-        <span class="budget-meter-value">${valueText}</span>
-      </div>
-      <div class="budget-track">
-        <div class="budget-fill ${frac >= HOT_FRACTION ? "budget-fill--hot" : ""}"
-             style="width:${Math.min(100, frac * 100).toFixed(1)}%"></div>
-      </div>
-    </div>`;
-  const ramFrac = s ? s.ram_worst_tick_bytes / s.ram_budget_bytes : 0;
-  const linkFrac = s ? s.link_rate_bytes_per_s / s.link_budget_bytes_per_s : 0;
-  host.innerHTML = `
-    <div class="budget-head">
-      <span class="field-label">device budget</span>
-      <span class="budget-status ${store.budgetVerdict !== "accepted" && store.budgetVerdict !== "—" ? "budget-status--rejected" : ""}">${esc(store.budgetVerdict)}</span>
-    </div>
-    ${meter("watch RAM", s ? `${s.ram_worst_tick_bytes} / ${s.ram_budget_bytes} B` : "— / —", ramFrac)}
-    ${meter("link bandwidth", s ? `${Math.round(linkFrac * 100)} / 100 %` : "— / —", linkFrac)}`;
-}
+// (The budget meters render in workspace/pickerhooks.js — the sole owner.)
 
 /** Group names of the currently presented (filtered) list. */
 function presentedGroupNames() {
@@ -143,8 +115,8 @@ function renderRows() {
       const shortName = sig.path === name ? sig.path : sig.path.slice(name.length).replace(/^\./, "");
       html += `
         <div class="signal-row ${watched ? "signal-row--watched" : ""}" draggable="true"
-             data-path="${esc(sig.path)}" title="${esc(sig.path)}">
-          <span class="signal-chip" ${watched ? `style="background:${watched.color}"` : ""}></span>
+             tabindex="0" role="button" data-path="${esc(sig.path)}" title="${esc(sig.path)}">
+          <span class="signal-chip" ${watched ? `style="background:${resolvedColor(sig.path)}"` : ""}></span>
           <span class="signal-name">${esc(shortName)}</span>
           <span class="signal-type">${esc(sig.kind)}</span>
           ${watched ? `<span class="period-pill">${watched.period_ms} ms</span>` : `<span class="signal-add">add</span>`}
@@ -171,13 +143,13 @@ function savePickerPrefs(patch) {
 }
 
 function wireColumn(host) {
-  const prefs = loadPickerPrefs();
+  const saved = loadPickerPrefs();
   const maxW = () => Math.max(MIN_W, Math.floor(window.innerWidth / 2));
   const setWidth = (w) => {
     host.style.width = `${Math.max(MIN_W, Math.min(maxW(), w))}px`;
   };
-  if (Number.isFinite(prefs.width)) setWidth(prefs.width);
-  host.classList.toggle("signal-picker--collapsed", !!prefs.collapsed);
+  if (Number.isFinite(saved.width)) setWidth(saved.width);
+  host.classList.toggle("signal-picker--collapsed", !!saved.collapsed);
 
   const resizer = host.querySelector(".picker-resizer");
   let drag = null;
@@ -273,8 +245,8 @@ export function initPicker() {
     renderRows();
   });
 
-  // Drag source + row activation hooks for the workspace module; group
-  // headers toggle their section instead.
+  // Drag source (row clicks belong to workspace/pickerhooks); group
+  // headers toggle their section.
   host.addEventListener("dragstart", (ev) => {
     const row = ev.target.closest(".signal-row");
     if (!row) return;
@@ -289,15 +261,20 @@ export function initPicker() {
   };
   host.addEventListener("click", (ev) => {
     const header = ev.target.closest(".picker-group");
-    if (header) return toggleGroup(header.dataset.group);
-    const row = ev.target.closest(".signal-row");
-    if (row) notify("row-activate", row.dataset.path);
+    if (header) toggleGroup(header.dataset.group);
   });
   host.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
     const header = ev.target.closest?.(".picker-group");
-    if (header && (ev.key === "Enter" || ev.key === " ")) {
+    if (header) {
       ev.preventDefault();
       toggleGroup(header.dataset.group);
+      return;
+    }
+    const row = ev.target.closest?.(".signal-row");
+    if (row) {
+      ev.preventDefault();
+      row.click(); // same toggle path as a pointer press
     }
   });
 
@@ -321,7 +298,5 @@ export function initPicker() {
     if (!input.value && !hideConst && s.length > allSignals.length) allSignals = s;
   });
   for (const topic of ["signals", "watched", "gate"]) subscribe(topic, renderRows);
-  for (const topic of ["trace-status", "traceStatus", "budgetVerdict", "budgetPreview"]) subscribe(topic, renderBudgets);
   renderRows();
-  renderBudgets();
 }

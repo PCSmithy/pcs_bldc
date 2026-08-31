@@ -13,7 +13,7 @@ pub const TELEMETRY_TAG_BYTES: [u8; 2] = [0xF2, 0x03];
 /// Decode one COBS block (delimiters already stripped); `None` on malformed
 /// input.
 pub fn cobs_decode(seg: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(seg.len());
     let mut i = 0usize;
     while i < seg.len() {
         let code = seg[i] as usize;
@@ -62,7 +62,11 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     for &b in bytes {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     crc ^ 0xFFFF_FFFF
@@ -71,26 +75,28 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 /// Validate one delimiter-stripped segment: COBS-decode, check the CRC-32
 /// trailer, return the envelope payload — `None` for anything malformed.
 pub fn deframe(segment: &[u8]) -> Option<Vec<u8>> {
-    let plain = cobs_decode(segment)?;
+    let mut plain = cobs_decode(segment)?;
     if plain.len() < 4 {
         return None;
     }
-    let (payload, trailer) = plain.split_at(plain.len() - 4);
-    let rx = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
-    if crc32(payload) != rx {
+    let cut = plain.len() - 4;
+    let rx = u32::from_le_bytes(plain[cut..].try_into().unwrap());
+    if crc32(&plain[..cut]) != rx {
         return None;
     }
-    Some(payload.to_vec())
+    plain.truncate(cut);
+    Some(plain)
 }
 
 /// Split a raw capture at 0x00 delimiters and return the envelope payloads of
 /// the valid frames — the whole-buffer convenience over [`deframe`], for
 /// snapshot captures (the SIL's sim USB buffer).
 pub fn parse_frames(wire: &[u8]) -> Vec<Vec<u8>> {
-    wire.split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .filter_map(deframe)
-        .collect()
+    let mut deframer = Deframer::default();
+    let mut out = deframer.push(wire);
+    // Terminate any trailing segment, matching the split-at-delimiter shape.
+    out.extend(deframer.push(&[0]));
+    out
 }
 
 /// Frame an envelope payload for transmission: leading delimiter,
@@ -129,14 +135,18 @@ impl Deframer {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        while let Some(pos) = self.buf.iter().position(|&b| b == 0) {
-            let segment: Vec<u8> = self.buf.drain(..=pos).take(pos).collect();
-            if !segment.is_empty() {
-                if let Some(payload) = deframe(&segment) {
+        // Deframe segments in place; one front-drain per push, not per frame.
+        let mut start = 0usize;
+        while let Some(rel) = self.buf[start..].iter().position(|&b| b == 0) {
+            let end = start + rel;
+            if end > start {
+                if let Some(payload) = deframe(&self.buf[start..end]) {
                     out.push(payload);
                 }
             }
+            start = end + 1;
         }
+        self.buf.drain(..start);
         // A delimiter-less run past any legal frame length is line noise;
         // drop it so the buffer cannot grow unbounded. The next delimiter
         // then terminates a truncated segment, which the CRC discards.
@@ -205,7 +215,11 @@ mod tests {
             }
             assert_eq!(
                 got,
-                vec![b"first payload".to_vec(), vec![0x11, 0x00, 0x22], b"third".to_vec()],
+                vec![
+                    b"first payload".to_vec(),
+                    vec![0x11, 0x00, 0x22],
+                    b"third".to_vec()
+                ],
                 "chunk size {chunk}"
             );
         }

@@ -1,14 +1,10 @@
 name: desktop app
 
-# Cockpit (sw/gui) UI suite + the shared Rust crate suites, on the app's two
-# supported platforms. Linux is deliberately absent: the project targets
-# Windows and macOS only (docs/setup.md), so there is no Linux cell to keep
-# green. Path-filtered so firmware-only pushes don't burn macOS minutes.
+# Cockpit (sw/gui) UI suite + the shared Rust crate suites on the app's two
+# platforms (no Linux — docs/setup.md); path-filtered to spare macOS minutes.
 on:
   push:
-    # usb_serial_protocol is listed so the matrix proves itself pre-PR;
-    # workflow_dispatch can't target a branch until the file reaches main.
-    branches: [main, usb_serial_protocol]
+    branches: [main]
     paths:
       - "sw/gui/**"
       - "sw/lib/rust/**"
@@ -18,9 +14,12 @@ on:
       - "sw/gui/**"
       - "sw/lib/rust/**"
       - ".github/workflows/app.yml"
-  # Manual runs: lets a feature branch prove the matrix (esp. the macOS
-  # leg) before its PR exists.
+  # Manual runs: lets a feature branch prove the matrix before its PR exists.
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Match ci.yml: every run step goes through bash (Git Bash on Windows).
 defaults:
@@ -31,7 +30,7 @@ jobs:
   app:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -40,9 +39,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # --- webview UI suite (playwright over the devmock) -----------------
-      # test_views.py needs only the stdlib and playwright; the repo-wide
-      # requirements.txt drags scientific wheels the suite never imports,
-      # so CI installs the one dependency directly.
+      # test_views.py needs only stdlib + playwright; skip the repo-wide
+      # requirements.txt (scientific wheels the suite never imports).
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -52,19 +50,10 @@ jobs:
           pip install playwright
           python -m playwright install chromium
 
-      # The views_015 budget smoke inside the suite launches a HEADED
-      # chromium for 12 s and asserts render capability; GitHub runners
-      # rasterize with software GL, so this is the step most likely to need
-      # calibration after the first real runs — deliberately not softened
-      # in advance. The 60 s spec run (PCS_RENDER_BUDGET=full) stays a
-      # bench-side gate, not CI.
       - name: Run the UI suite
         timeout-minutes: 20
-        # PCS_RENDER_BUDGET=off: runners rasterize with SwiftShader, far
-        # under the views_015 capability floor (first-run evidence: both
-        # legs failed only that check). The scenario still runs for error
-        # coverage and draw-advance; the spec's budget gates on the bench
-        # and the laptop, where a real GPU renders.
+        # Runners rasterize with SwiftShader, far below the views_015 budget
+        # floor; the budget gates on the bench. The scenario still runs.
         env:
           PCS_RENDER_BUDGET: "off"
         run: python sw/gui/tests/test_views.py 2>&1 | tee ui-suite.log
@@ -96,10 +85,8 @@ jobs:
             (cd "sw/lib/rust/$crate" && cargo test)
           done
 
-      # firmware_backend's DLL-backed tests skip themselves (early return
-      # with a message) when the natively built firmware library is absent;
-      # CI doesn't build the C firmware here, so those cases self-skip and
-      # the rest of the suite still runs.
+      # firmware_backend's DLL-backed tests self-skip when the native
+      # firmware library is absent (CI doesn't build the C firmware here).
       - name: Test the Tauri core
         timeout-minutes: 25
         run: cd sw/gui/src-tauri && cargo test

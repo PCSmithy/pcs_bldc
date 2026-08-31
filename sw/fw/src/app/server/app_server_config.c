@@ -15,10 +15,8 @@
 
 /* Defines */
 
-// Trace-service resources (fw~conn_trace_001). Link budget is 90% of the
-// USB FS bulk ceiling. The RAM point (32 watches + 2 KB ring) matches the
-// 256-byte Samples cap exactly (32 x 8 B worst tick) and leaves SRAM
-// headroom for the motor-control application.
+// Trace resources (fw~conn_trace_001): link budget is 90% of the USB FS bulk
+// ceiling; the RAM point matches the 256 B Samples cap (32 x 8 B worst tick).
 #define APP_SERVER_WATCH_CAPACITY          (32U)
 #define APP_SERVER_SAMPLE_RAM_BYTES        (2048U)
 #define APP_SERVER_LINK_BUDGET_BYTES_PER_S (1100000U)
@@ -41,7 +39,7 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
 /* Private Data Definitions */
 
 static app_server_watch_S app_server_config_watchStorage[2U * APP_SERVER_WATCH_CAPACITY];
-static uint8_t app_server_config_sampleStorage[APP_SERVER_SAMPLE_RAM_BYTES];
+static uint8_t app_server_config_sampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(APP_SERVER_SAMPLE_RAM_BYTES)];
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
 
@@ -80,9 +78,7 @@ static const app_server_region_S app_server_config_writableRegions[] =
 
 /* Public Data Definitions */
 
-// Single-instance config: the server answers the CDC protocol channel; the
-// board hooks below carry this board's telemetry assembly and command
-// handling.
+// The server answers the CDC protocol channel with this board's hooks.
 const app_server_config_S app_server_config =
 {
     .frame          = IO_COBSFRAME_CHANNEL_CDC,
@@ -145,25 +141,31 @@ static void app_server_config_private_handleRequest(const board_Request * const 
             {
                 // Method values: selection only while the bridge is disabled
                 // (sys~mc_005) and never while faulted (button-path parity,
-                // fw~mc_007) — an accepted-but-inert command would lie.
+                // fw~mc_007). Verdict and setMode share one critical section
+                // so the 1 ms task cannot enable the bridge or latch a fault
+                // between check and act (bounded: compares + one enum store).
                 app_motorControl_snapshot_S snapshot = { 0 };
+                const char * cause = NULL;
                 taskENTER_CRITICAL();
                 (void) app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &snapshot);
-                taskEXIT_CRITICAL();
-
                 if (snapshot.state == APP_MOTORCONTROL_STATE_FAULTED)
                 {
-                    (void) strcpy(response->cause, "fault latched");
+                    cause = "fault latched";
                 }
                 else if ((snapshot.state == APP_MOTORCONTROL_STATE_ENABLED) &&
                          (requestedMode != snapshot.mode))
                 {
-                    (void) strcpy(response->cause, "bridge enabled");
+                    cause = "bridge enabled";
                 }
                 else
                 {
                     app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, requestedMode);
                     response->accepted = true;
+                }
+                taskEXIT_CRITICAL();
+                if (cause != NULL)
+                {
+                    (void) strcpy(response->cause, cause);
                 }
             }
             break;

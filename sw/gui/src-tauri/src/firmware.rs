@@ -55,17 +55,13 @@ pub struct SignalInfo {
 /// the per-signal read-only check is a range lookup, not an object-file
 /// parse.
 // [impl->app~obs_006~1]
-fn section_ranges(image: &[u8]) -> Result<Vec<(u64, u64, bool)>, String> {
+fn section_ranges(file: &object::File) -> Vec<(u64, u64, bool)> {
     use object::SectionFlags;
-    let file = object::File::parse(image).map_err(|e| format!("parse image: {e}"))?;
-    Ok(file
-        .sections()
+    file.sections()
         .filter(|s| s.size() > 0)
         .map(|s| {
             let writable = match s.flags() {
-                SectionFlags::Elf { sh_flags } => {
-                    sh_flags & u64::from(object::elf::SHF_WRITE) != 0
-                }
+                SectionFlags::Elf { sh_flags } => sh_flags & u64::from(object::elf::SHF_WRITE) != 0,
                 SectionFlags::Coff { characteristics } => {
                     characteristics & object::pe::IMAGE_SCN_MEM_WRITE != 0
                 }
@@ -75,7 +71,7 @@ fn section_ranges(image: &[u8]) -> Result<Vec<(u64, u64, bool)>, String> {
             };
             (s.address(), s.address() + s.size(), writable)
         })
-        .collect())
+        .collect()
 }
 
 fn leaf_kind(leaf: dwarf_map::Leaf) -> &'static str {
@@ -101,8 +97,7 @@ fn leaf_kind(leaf: dwarf_map::Leaf) -> &'static str {
 /// Read the NUL-terminated identity string at link address `addr` out of the
 /// image file's section data (the DWARF may live in a sibling .dSYM, but the
 /// bytes live in the image itself).
-fn read_identity(image: &[u8], addr: u64) -> Result<String, String> {
-    let object = object::File::parse(image).map_err(|e| format!("parse image: {e}"))?;
+fn read_identity(object: &object::File, addr: u64) -> Result<String, String> {
     for section in object.sections() {
         let start = section.address();
         if addr < start || addr >= start + section.size() {
@@ -138,8 +133,9 @@ impl LoadedFirmware {
             )
         })?;
         let image = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let build_id = read_identity(&image, addr)?;
-        let sections = section_ranges(&image)?;
+        let object = object::File::parse(&*image).map_err(|e| format!("parse image: {e}"))?;
+        let build_id = read_identity(&object, addr)?;
+        let sections = section_ranges(&object);
         let enumeration = map.enumerate_leaves(ENUM_ARRAY_THRESHOLD, &[]);
         Ok(Self {
             map,
@@ -188,10 +184,9 @@ impl LoadedFirmware {
         }
     }
 
-    /// Resolve a signal path to a watch entry: device address (link-time ==
-    /// runtime on this MCU), byte size, and leaf type. Leaves outside the
-    /// 1..8-byte watch range are rejected.
-    pub fn resolve_watch(&self, path: &str) -> Result<(u32, u32, dwarf_map::Leaf), String> {
+    /// Resolve a signal path to its full link address, byte size, and leaf
+    /// type; leaves outside the 1..8-byte watch range are rejected.
+    pub fn resolve_leaf(&self, path: &str) -> Result<(u64, u32, dwarf_map::Leaf), String> {
         let (addr, leaf) = self
             .map
             .resolve(path)
@@ -205,7 +200,16 @@ impl LoadedFirmware {
                 "{path}: {size}-byte leaf is outside the 1..8-byte watch range"
             ));
         }
-        Ok((addr as u32, size as u32, leaf))
+        Ok((addr, size as u32, leaf))
+    }
+
+    /// [`resolve_leaf`](Self::resolve_leaf) narrowed to the device's 32-bit
+    /// address space (link-time == runtime on this MCU) — never truncated.
+    pub fn resolve_watch(&self, path: &str) -> Result<(u32, u32, dwarf_map::Leaf), String> {
+        let (addr, size, leaf) = self.resolve_leaf(path)?;
+        let address = u32::try_from(addr)
+            .map_err(|_| format!("{path}: address {addr:#x} exceeds the device's 32-bit space"))?;
+        Ok((address, size, leaf))
     }
 }
 
@@ -226,8 +230,7 @@ fn wrap_enumerators(size: u64, mut enums: Vec<(i64, String)>) -> Vec<(i64, Strin
     enums
 }
 
-/// The identity gate's comparison: exact string equality between the
-/// device's reported build id and the loaded ELF's embedded one.
+/// The identity gate: exact equality — no prefix or dirty-suffix tolerance.
 // [impl->app~obs_002~1]
 pub fn identity_matches(device_build_id: &str, elf_build_id: &str) -> bool {
     device_build_id == elf_build_id
@@ -241,7 +244,7 @@ pub fn load_elf(state: State<FirmwareState>, path: String) -> Result<ElfInfo, St
         build_id: loaded.build_id.clone(),
         signal_count: loaded.signal_paths.len(),
     };
-    *state.0.lock().unwrap() = Some(loaded);
+    *state.0.lock().map_err(|_| "firmware state poisoned")? = Some(loaded);
     Ok(info)
 }
 
@@ -252,7 +255,7 @@ pub fn list_signals(
     filter: String,
     limit: usize,
 ) -> Result<Vec<SignalInfo>, String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.0.lock().map_err(|_| "firmware state poisoned")?;
     let firmware = guard.as_ref().ok_or("no firmware ELF loaded")?;
     let needle = filter.to_lowercase();
     Ok(firmware

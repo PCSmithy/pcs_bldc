@@ -25,8 +25,6 @@ Acceptance:
 - A value of each table row renders as that row states in every
   surface displaying it.
 
-See also: [[table]], [[cursor]], [[watch-panel]]
-
 Covers:
 - sys~arch_002~1
 

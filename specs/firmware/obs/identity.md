@@ -9,8 +9,7 @@ The firmware's build identity: a string derived by the build from the
 git state of the source tree, embedded in the image, and reported over
 the protocol on request.
 
-See also: the system spec `sys~obs_003~1`; [[proto]] (the envelope
-carrying the request).
+See also: [[proto]] (the envelope carrying the request).
 
 ### Identity content
 `fw~obs_identity_001~1`

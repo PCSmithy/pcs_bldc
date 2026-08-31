@@ -2370,6 +2370,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+ "serde",
 ]
 
 [[package]]

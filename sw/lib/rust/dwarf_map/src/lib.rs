@@ -185,14 +185,12 @@ impl DwarfMap {
         if image_has_dwarf(&image) {
             return Self::parse(&image);
         }
-        let dsym = dsym_dwarf_path(lib)
-            .filter(|p| p.exists())
-            .ok_or_else(|| {
-                format!(
-                    "no DWARF in {} and no .dSYM alongside it (run dsymutil)",
-                    lib.display()
-                )
-            })?;
+        let dsym = dsym_dwarf_path(lib).filter(|p| p.exists()).ok_or_else(|| {
+            format!(
+                "no DWARF in {} and no .dSYM alongside it (run dsymutil)",
+                lib.display()
+            )
+        })?;
         let dwarf = std::fs::read(&dsym)?;
         Self::parse(&dwarf)
     }
@@ -202,8 +200,9 @@ impl DwarfMap {
     pub fn parse(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let object = object::File::parse(bytes)?;
 
-        let load =
-            |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> { Ok(section_data(&object, id)) };
+        let load = |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> {
+            Ok(section_data(&object, id))
+        };
         let sections = gimli::DwarfSections::load(&load)?;
         let dwarf = sections.borrow(|s| gimli::EndianSlice::new(s, gimli::LittleEndian));
 
@@ -314,8 +313,8 @@ impl DwarfMap {
 
     /// Recursive leaf walk for [`enumerate_leaves`](Self::enumerate_leaves).
     fn walk_leaves(&self, path: String, ty: usize, depth: u32, ctx: &mut EnumCtx) {
-        if ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET) {
-            ctx.capped = ctx.capped || (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET);
+        ctx.capped |= (depth > ENUM_DEPTH_CAP) || (ctx.out.len() >= ENUM_LEAF_BUDGET);
+        if ctx.capped {
             return;
         }
         let ty = self.peel(ty);
@@ -323,7 +322,7 @@ impl DwarfMap {
         // Struct / union: recurse members in offset order (deterministic).
         if let Some(members) = self.0.members.get(&ty) {
             let mut ms: Vec<(&String, &(u64, usize))> = members.iter().collect();
-            ms.sort_by_key(|(name, (off, _))| (*off, (*name).clone()));
+            ms.sort_by(|(an, &(aoff, _)), (bn, &(boff, _))| (aoff, an).cmp(&(boff, bn)));
             for (name, (_off, mty)) in ms {
                 self.walk_leaves(format!("{path}.{name}"), *mty, depth + 1, ctx);
             }
@@ -397,7 +396,12 @@ impl DwarfMap {
 
     /// The enumerator name for a numeric value.
     pub fn enum_name(&self, off: usize, value: i64) -> Option<&str> {
-        self.0.enums.get(&off)?.values.get(&value).map(String::as_str)
+        self.0
+            .enums
+            .get(&off)?
+            .values
+            .get(&value)
+            .map(String::as_str)
     }
 
     /// The numeric value for an enumerator name (for writes).
@@ -409,8 +413,7 @@ impl DwarfMap {
     /// Every (value, name) enumerator of an enum type, sorted by value.
     pub fn enumerators(&self, off: usize) -> Option<Vec<(i64, String)>> {
         let e = self.0.enums.get(&off)?;
-        let mut out: Vec<(i64, String)> =
-            e.values.iter().map(|(&v, n)| (v, n.clone())).collect();
+        let mut out: Vec<(i64, String)> = e.values.iter().map(|(&v, n)| (v, n.clone())).collect();
         out.sort_unstable_by_key(|&(v, _)| v);
         Some(out)
     }
@@ -472,15 +475,41 @@ impl DwarfMap {
                 8 => Scalar::I64,
                 _ => return None,
             },
-            e if e == gimli::DW_ATE_unsigned.0 || e == gimli::DW_ATE_unsigned_char.0 => match size {
-                1 => Scalar::U8,
-                2 => Scalar::U16,
-                4 => Scalar::U32,
-                8 => Scalar::U64,
-                _ => return None,
-            },
+            e if e == gimli::DW_ATE_unsigned.0 || e == gimli::DW_ATE_unsigned_char.0 => {
+                match size {
+                    1 => Scalar::U8,
+                    2 => Scalar::U16,
+                    4 => Scalar::U32,
+                    8 => Scalar::U64,
+                    _ => return None,
+                }
+            }
             _ => return None,
         })
+    }
+
+    /// The byte size of a resolved [`Leaf`] — a scalar's fixed width, or an
+    /// enum's DWARF `byte_size` (`None` for an unknown enum offset).
+    pub fn leaf_size(&self, leaf: Leaf) -> Option<usize> {
+        match leaf {
+            Leaf::Scalar(kind) => Some(scalar_byte_size(kind)),
+            Leaf::Enum(off) => self.enum_size(off).map(|s| s as usize),
+        }
+    }
+
+    /// Build a [`DwarfMap`] with only the var/func address maps populated — for
+    /// anchor-selection tests in consumer crates (which cannot reach the private
+    /// [`Maps`]). Types are irrelevant to the anchor (only the address delta matters).
+    #[doc(hidden)]
+    pub fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
+        let mut m = Maps::default();
+        for (n, a) in vars {
+            m.vars.insert((*n).to_string(), (VarLoc::Addr(*a), 0));
+        }
+        for (n, a) in funcs {
+            m.functions.insert((*n).to_string(), *a);
+        }
+        DwarfMap(m)
     }
 }
 
@@ -527,14 +556,19 @@ fn collect_unit(
             stack.pop();
         }
 
-        let goff = entry.offset().to_debug_info_offset(&unit.header).map(|o| o.0);
+        let goff = entry
+            .offset()
+            .to_debug_info_offset(&unit.header)
+            .map(|o| o.0);
         let tag = entry.tag();
 
         match tag {
             gimli::DW_TAG_variable => {
-                if let (Some(name), Some(loc), Some(ty)) =
-                    (die_name(dwarf, unit, entry), die_loc(dwarf, unit, entry), type_goff(unit, entry))
-                {
+                if let (Some(name), Some(loc), Some(ty)) = (
+                    die_name(dwarf, unit, entry),
+                    die_loc(dwarf, unit, entry),
+                    type_goff(unit, entry),
+                ) {
                     maps.vars.insert(name, (loc, ty));
                 }
             }
@@ -550,13 +584,19 @@ fn collect_unit(
             }
             gimli::DW_TAG_member => {
                 if let Some(&(_, parent, ptag)) = stack.last() {
-                    if matches!(ptag, gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type) {
+                    if matches!(
+                        ptag,
+                        gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type
+                    ) {
                         if let (Some(name), Some(off), Some(ty)) = (
                             die_name(dwarf, unit, entry),
                             member_offset(entry),
                             type_goff(unit, entry),
                         ) {
-                            maps.members.entry(parent).or_default().insert(name, (off, ty));
+                            maps.members
+                                .entry(parent)
+                                .or_default()
+                                .insert(name, (off, ty));
                         }
                     }
                 }
@@ -609,7 +649,11 @@ fn collect_unit(
                         if let (Some(name), Some(val)) =
                             (die_name(dwarf, unit, entry), const_value(entry))
                         {
-                            maps.enums.entry(parent).or_default().values.insert(val, name);
+                            maps.enums
+                                .entry(parent)
+                                .or_default()
+                                .values
+                                .insert(val, name);
                         }
                     }
                 }
@@ -641,26 +685,9 @@ fn die_name(
     Some(s.to_string_lossy().into_owned())
 }
 
-/// Link-time location of a static from its `DW_AT_location` expression.
-///
-/// The location must be a `DW_AT_location` exprloc resolving to memory storage;
-/// anything else (a frame-relative/register local, a loclist) yields `None`, so
-/// only real statics enter the map. The expression is **fully evaluated** rather
-/// than pattern-matched on its first op:
-///
-/// * ELF/PE (GCC) emit one `DW_OP_addr <final-addr>` per static.
-/// * A macOS `.dSYM` (dsymutil) relocates debug-map statics as
-///   `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>` — several statics sharing
-///   one relocation anchor, distinguished only by the trailing offset. Reading
-///   just the leading `DW_OP_addr` collapsed every such static onto the anchor's
-///   address (the Mach-O same-TU collapse this reader now fixes).
-/// * At `-O3`, SRA decomposes an aggregate static into a `DW_OP_piece` composite
-///   (some pieces storage-less where a member was folded away) — kept as
-///   [`VarLoc::Pieces`] so members still resolve individually.
-///
-/// Evaluating the whole expression covers all three: a lone `DW_OP_addr` still
-/// yields that address (ELF/PE unchanged), `+ DW_OP_plus_uconst` is honored
-/// (Mach-O correct). `DW_OP_addrx` (DWARF 5 indexed) is resolved via `.debug_addr`.
+/// A static's memory location from its `DW_AT_location` exprloc; anything
+/// else (frame/register locals, loclists) yields `None`. Producer shapes:
+/// see [`eval_static_loc`].
 fn die_loc(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
@@ -672,14 +699,13 @@ fn die_loc(
     }
 }
 
-/// Evaluate a DWARF location expression to a static's memory location — one
-/// whole-object address, or a byte-granular piece list — or `None` if it is not
-/// plain static storage (needs a frame base, a register, memory, TLS, or uses
-/// sub-byte `DW_OP_bit_piece` granularity). Handles `DW_OP_addr`
-/// (`RequiresRelocatedAddress` — resumed unchanged, since our DWARF addresses are
-/// already final) and `DW_OP_addrx` (`RequiresIndexedAddress` — resolved through
-/// `.debug_addr`); arithmetic ops such as `DW_OP_plus_uconst` are applied by the
-/// evaluator itself.
+/// Fully evaluate a location expression to memory storage — one address or a
+/// byte-granular piece list; `None` for anything that is not plain static
+/// storage. Fully evaluating (never first-op matching) covers the three
+/// producer shapes: ELF/PE lone `DW_OP_addr`; dsymutil's shared-anchor
+/// `DW_OP_addr + DW_OP_plus_uconst`; `-O3` SRA `DW_OP_piece` composites
+/// (storage-less pieces keep their extent). `DW_OP_addrx` resolves via
+/// `.debug_addr`.
 fn eval_static_loc(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
@@ -690,17 +716,14 @@ fn eval_static_loc(
     loop {
         match result {
             gimli::EvaluationResult::Complete => break,
-            // DW_OP_addr: the reader supplies the (already-final) address back.
+            // DW_OP_addr: our addresses are already final — resume unchanged.
             gimli::EvaluationResult::RequiresRelocatedAddress(addr) => {
                 result = eval.resume_with_relocated_address(addr).ok()?;
             }
-            // DW_OP_addrx: pull the address out of `.debug_addr` by index.
             gimli::EvaluationResult::RequiresIndexedAddress { index, .. } => {
                 let addr = dwarf.address(unit, index).ok()?;
                 result = eval.resume_with_indexed_address(addr).ok()?;
             }
-            // Anything else (frame base, register, memory, TLS, ...) is not a
-            // static's link address — skip this DIE.
             _ => return None,
         }
     }
@@ -725,7 +748,10 @@ fn eval_static_loc(
                     gimli::Location::Empty => None,
                     _ => return None,
                 };
-                out.push(VarPiece { size: bits / 8, addr });
+                out.push(VarPiece {
+                    size: bits / 8,
+                    addr,
+                });
             }
             Some(VarLoc::Pieces(out))
         }
@@ -787,7 +813,11 @@ fn member_offset(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64>
 }
 
 fn byte_size(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> {
-    entry.attr_value(gimli::DW_AT_byte_size).ok().flatten()?.udata_value()
+    entry
+        .attr_value(gimli::DW_AT_byte_size)
+        .ok()
+        .flatten()?
+        .udata_value()
 }
 
 fn encoding(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u8> {
@@ -815,7 +845,8 @@ fn subrange_len(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<u64> 
 /// An enumerator's `DW_AT_const_value` as an i64 (signed first, else unsigned).
 fn const_value(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<i64> {
     let v = entry.attr_value(gimli::DW_AT_const_value).ok().flatten()?;
-    v.sdata_value().or_else(|| v.udata_value().map(|u| u as i64))
+    v.sdata_value()
+        .or_else(|| v.udata_value().map(|u| u as i64))
 }
 
 /// Split a path segment like `counts[6]` into (`"counts"`, `[6]`), or
@@ -836,44 +867,14 @@ fn split_indices(seg: &str) -> Option<(&str, Vec<usize>)> {
     }
 }
 
-impl DwarfMap {
-    /// The byte size of a resolved [`Leaf`] — a scalar's fixed width, or an
-    /// enum's DWARF `byte_size` (`None` for an unknown enum offset).
-    pub fn leaf_size(&self, leaf: Leaf) -> Option<usize> {
-        match leaf {
-            Leaf::Scalar(kind) => Some(scalar_byte_size(kind)),
-            Leaf::Enum(off) => self.enum_size(off).map(|s| s as usize),
-        }
-    }
-
-    /// Build a [`DwarfMap`] with only the var/func address maps populated — for
-    /// anchor-selection tests in consumer crates (which cannot reach the private
-    /// [`Maps`]). Types are irrelevant to the anchor (only the address delta matters).
-    #[doc(hidden)]
-    pub fn for_anchor_test(vars: &[(&str, u64)], funcs: &[(&str, u64)]) -> Self {
-        let mut m = Maps::default();
-        for (n, a) in vars {
-            m.vars.insert((*n).to_string(), (VarLoc::Addr(*a), 0));
-        }
-        for (n, a) in funcs {
-            m.functions.insert((*n).to_string(), *a);
-        }
-        DwarfMap(m)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Regression: on macOS a `.dSYM` relocates same-TU file-scope statics as
-    /// `DW_OP_addr <anchor> ; DW_OP_plus_uconst <addend>`, several sharing one
-    /// anchor. The reader must evaluate the whole expression (not just the leading
-    /// `DW_OP_addr`), else the group collapses onto the anchor's address. The
-    /// fixture is the real arm64 dSYM DWARF from CI (~214 KB, `tests/fixtures/`);
-    /// these five `static uint32_t` counters in `sw/fw/src/main.c` collapsed onto
-    /// two addresses before the fix (four onto `0x14008`, `taskUsbRuns` onto
-    /// `0x14000`). Their true, distinct addresses:
+    /// dsymutil relocates same-TU statics as `DW_OP_addr <anchor> ;
+    /// DW_OP_plus_uconst <addend>`, several sharing one anchor — the reader
+    /// must evaluate the full expression or the group aliases. Fixture: real
+    /// arm64 dSYM DWARF (`tests/fixtures/`); the true, distinct addresses:
     fn macho_dsym_static_addresses() -> Vec<(&'static str, u64)> {
         vec![
             ("taskUsbRuns", 0x14000),
@@ -901,15 +902,17 @@ mod tests {
         let mut addrs: Vec<u64> = expected.iter().map(|(_, a)| *a).collect();
         addrs.sort_unstable();
         addrs.dedup();
-        assert_eq!(addrs.len(), expected.len(), "static addresses must be distinct");
+        assert_eq!(
+            addrs.len(),
+            expected.len(),
+            "static addresses must be distinct"
+        );
     }
 
-    /// Regression: at `-O3`, SRA decomposes an aggregate static into a
-    /// `DW_OP_piece` composite location (observed for `lib_timer_data` in the
-    /// macOS release dylib: `DW_OP_piece 0x8, DW_OP_addr X, DW_OP_piece 0x4,
-    /// DW_OP_piece 0x4, DW_OP_addr X, DW_OP_plus_uconst 0x8, DW_OP_piece 0x8`).
-    /// The fixture is the real arm64 dSYM DWARF; before piece support the whole
-    /// variable was absent from the map and every `lib_timer_data.*` path failed.
+    /// At `-O3`, SRA decomposes an aggregate static into a `DW_OP_piece`
+    /// composite (some pieces storage-less). Fixture: real arm64 dSYM DWARF;
+    /// members resolve at their piece addresses, folded members and the
+    /// whole-object anchor do not.
     #[test]
     fn macho_dsym_sra_pieced_static_resolves_members() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -943,12 +946,25 @@ mod tests {
         members.insert("currentTime_us".to_string(), (16, 11));
         m.members.insert(100, members);
         let pieces = vec![
-            VarPiece { size: 8, addr: None },
-            VarPiece { size: 4, addr: Some(0x100) },
-            VarPiece { size: 4, addr: None },
-            VarPiece { size: 8, addr: Some(0x108) },
+            VarPiece {
+                size: 8,
+                addr: None,
+            },
+            VarPiece {
+                size: 4,
+                addr: Some(0x100),
+            },
+            VarPiece {
+                size: 4,
+                addr: None,
+            },
+            VarPiece {
+                size: 8,
+                addr: Some(0x108),
+            },
         ];
-        m.vars.insert("t".to_string(), (VarLoc::Pieces(pieces), 100));
+        m.vars
+            .insert("t".to_string(), (VarLoc::Pieces(pieces), 100));
         let dw = DwarfMap(m);
 
         let addr = |p: &str| dw.resolve(p).map(|(a, _)| a);
@@ -992,7 +1008,8 @@ mod tests {
         // vars
         m.vars.insert("n".to_string(), (VarLoc::Addr(0x1000), 10));
         m.vars.insert("s".to_string(), (VarLoc::Addr(0x2000), 100));
-        m.vars.insert("grid".to_string(), (VarLoc::Addr(0x3000), 40));
+        m.vars
+            .insert("grid".to_string(), (VarLoc::Addr(0x3000), 40));
         DwarfMap(m)
     }
 
@@ -1042,7 +1059,10 @@ mod tests {
         let en = dw.enumerate_leaves(32, &["grid[1][2]".to_string()]);
         // Exactly the one reached element joins; no other grid cell does.
         assert!(en.paths.contains(&"grid[1][2]".to_string()));
-        assert_eq!(en.paths.iter().filter(|p| p.starts_with("grid[")).count(), 1);
+        assert_eq!(
+            en.paths.iter().filter(|p| p.starts_with("grid[")).count(),
+            1
+        );
         // s.big stays excluded; grid is now force-expanded to its one element.
         assert_eq!(en.excluded_arrays, 1);
     }
@@ -1061,18 +1081,24 @@ mod tests {
     #[test]
     fn enumerators_list_sorted_by_value() {
         let mut m = Maps::default();
-        let mut e = EnumInfo { size: 1, ..Default::default() };
+        let mut e = EnumInfo {
+            size: 1,
+            ..Default::default()
+        };
         e.values.insert(2, "FAULT".to_string());
         e.values.insert(0, "IDLE".to_string());
         e.values.insert(1, "RUN".to_string());
         m.enums.insert(50, e);
         m.sizes.insert(50, 1);
-        m.vars.insert("mode".to_string(), (VarLoc::Addr(0x4000), 50));
+        m.vars
+            .insert("mode".to_string(), (VarLoc::Addr(0x4000), 50));
         let dw = DwarfMap(m);
 
         // The variable resolves as an enum leaf carrying its type offset...
         let (_, leaf) = dw.resolve("mode").expect("mode resolves");
-        let Leaf::Enum(off) = leaf else { panic!("mode must be an enum leaf") };
+        let Leaf::Enum(off) = leaf else {
+            panic!("mode must be an enum leaf")
+        };
         // ...whose full enumerator list comes back value-sorted, agreeing with
         // the per-value lookup.
         assert_eq!(

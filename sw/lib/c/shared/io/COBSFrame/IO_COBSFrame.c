@@ -152,7 +152,7 @@ bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer
 {
     bool got = false;
     if ((data->config != NULL) &&
-        (channel < IO_COBSFRAME_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels) &&
         (buffer != NULL) &&
         (frameLen != NULL))
     {
@@ -174,13 +174,25 @@ bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer
     return got;
 }
 
+void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel)
+{
+    if ((data->config != NULL) && (channel < data->config->numChannels))
+    {
+        IO_COBSFrame_channelData_S * const chData = &data->channelData[channel];
+        chData->accumLen = 0U;
+        chData->overflowed = false;
+        chData->pendingValid = false;
+        chData->pendingLen = 0U;
+    }
+}
+
 // [impl->fw~conn_proto_002~1]
 // [impl->fw~conn_proto_004~1]
 bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len)
 {
     bool sent = false;
     if ((data->config != NULL) &&
-        (channel < IO_COBSFRAME_CHANNEL_COUNT) &&
+        (channel < data->config->numChannels) &&
         ((payload != NULL) || (len == 0U)))
     {
         const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];

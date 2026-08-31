@@ -176,7 +176,6 @@ bool app_motorControl_init(const app_motorControl_config_S * const config)
                 data->channels[channel].velocityFilter.type = LIB_FILTERIIR_TYPE_EMA;
                 data->channels[channel].velocityFilter.ema.alpha = (VELOCITY_TICK_S / config->channels[channel].velocityEstimateFilterTau_s);
                 data->channels[channel].velocityFilter.init = false;
-                // lib_filterIIR_init(&data->channels[channel].velocityFilter);
             }
             success = true;
         }

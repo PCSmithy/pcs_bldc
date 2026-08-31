@@ -47,12 +47,8 @@ bool HW_USB_connected(void)
     return tud_cdc_connected();
 }
 
-// tud_cdc's ready/connected calls are internally gated on the device being
-// configured, but its FIFO read/write paths are NOT: before the host
-// configures the device the CDC endpoints are unopened (address 0), and a
-// read/write can claim and queue transfers on endpoint 0 — corrupting the
-// control transfers of enumeration itself. Guard every FIFO path on
-// tud_ready().
+// tud_cdc FIFO read/write paths are not gated on configuration: touched
+// before tud_ready(), they queue transfers on EP0 and corrupt enumeration.
 
 // [impl->fw~hal_usb_003~1]
 uint32_t HW_USB_write(const uint8_t * data, uint32_t len)

@@ -9,8 +9,6 @@ The firmware side of the text log stream: standard-output text is
 captured into a bounded buffer by the app_server module
 ([[../conn/server]]) and emitted over the protocol.
 
-## Capture
-
 ### Log capture
 `fw~obs_log_001~1`
 
@@ -28,8 +26,6 @@ Covers:
 - sys~obs_007~1
 
 Needs: impl, test
-
-## Emission
 
 ### Log emission
 `fw~obs_log_002~1`

@@ -1,22 +1,11 @@
-// Per-signal sample history: the plot/table/cursor read side of the
-// "samples" batches. Ticks are ms; a signal's samples land only at
-// multiples of its period, so an exact-tick lookup either hits or the
-// sample is absent — never nearest-neighbor across a tick-count gap.
-//
-// Storage is a pair of preallocated Float64Array rings (ticks, values)
-// with a [start, start+len) live window — appends write at the tail,
-// horizon trims advance `start` (no memmove), and the tail compacts
-// back to 0 only when it reaches capacity. Values are Float64 because
-// u32 counters exceed an f32 mantissa and the previous plain-array
-// storage held full-precision JS numbers. A null sample value (the
-// wire's encoding for non-finite firmware floats) is stored as NaN and
-// its tick recorded in `_nullTicks`, so read-out can decode it back to
-// null exactly — a genuine NaN appended by a caller stays NaN.
-//
-// A min/max pyramid (storage-aligned bucket levels of 16/128/1024/8192
-// samples, updated O(1) amortized per append) serves range-extreme
-// queries in O(log n), which keeps envelope decimation (decimate.js,
-// app~views_014) at O(pixel columns) instead of O(window samples).
+// Per-signal sample history. Ticks are ms at period multiples, so an
+// exact-tick lookup either hits or the sample is absent — never
+// nearest-neighbor across a gap. Storage: preallocated Float64Array rings
+// (Float64 — u32 counters exceed an f32 mantissa); a null sample (the
+// wire's non-finite encoding) stores as NaN with its tick in `_nullTicks`
+// so read-out decodes it back exactly. A min/max pyramid serves
+// range-extreme queries in O(log n), keeping envelope decimation
+// (decimate.js, app~views_014) at O(pixel columns).
 
 import { store } from "../state.js";
 
@@ -33,24 +22,18 @@ export function lowerBound(xs, t) {
 
 const CAP_MS = 120_000; // live retention horizon per signal
 
-// While paused, the frozen span is sacred: nothing at or after the paused
-// window's start is trimmed, no matter how long the pause holds. Appends
-// continue for up to this much stream time past the pause (so Resume lands
-// on continuous data), then stop — the session keeps draining the wire and
-// only history skips the samples, so the resume-time tick jump renders as
-// an honest gap through the existing gap machinery. Bounded so a marathon
-// pause cannot grow memory without limit (max retained while paused:
-// span + PAUSE_CATCHUP_MS of samples).
+// While paused, the frozen span is sacred: nothing at or after its start is
+// trimmed. Appends continue this much stream time past the pause (Resume
+// lands on continuous data), then stop — bounding a marathon pause's memory;
+// the resume-time tick jump renders as an honest gap.
 const PAUSE_CATCHUP_MS = 120_000;
 
-// Readers are horizon-bounded by their own window math, so stale samples
-// below the horizon only need to leave storage occasionally: let this many
-// pool, then advance `start` once (an O(1) index bump on the ring).
+// Readers are horizon-bounded by their own window math: let this many stale
+// samples pool, then advance `start` once (O(1) on the ring).
 const TRIM_SLACK = 4096;
 
-// The most history a ring must ever hold: live mode retains CAP_MS; paused,
-// retention runs from the sacred span start to the catch-up cutoff, at most
-// max-display-span (60 s) + PAUSE_CATCHUP_MS. The larger bound wins.
+// Worst-case retention: live CAP_MS, or paused sacred-span-start → catch-up
+// cutoff (max display span 60 s + PAUSE_CATCHUP_MS).
 const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
 
 // Pyramid levels: bucket sizes 16 / 128 / 1024 / 8192 samples. Buckets are

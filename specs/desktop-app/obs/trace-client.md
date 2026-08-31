@@ -9,8 +9,6 @@ The app side of the signal-trace stream: installing watch lists and
 demultiplexing the returned `Samples` messages, against the firmware
 services of [[../../firmware/conn/trace|trace]].
 
-## Watch installation
-
 ### Watch installation
 `app~obs_003~1`
 
@@ -32,8 +30,6 @@ Covers:
 - sys~obs_009~1
 
 Needs: impl, test
-
-## Samples demultiplexing
 
 ### Samples demultiplexing
 `app~obs_004~1`

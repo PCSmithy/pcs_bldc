@@ -28,7 +28,7 @@ Acceptance:
 - Each plot's readout lists its signals' values at the held time; for
   a time inside a tick-count gap the readout states the absence.
 
-See also: [[live-plot]], [[table]], [[value-rendering]]
+See also: [[live-plot]], [[table]]
 
 Covers:
 - sys~arch_002~1
@@ -126,10 +126,10 @@ Needs: impl, test
 
 While the timeline is paused (`app~views_008~1`) and the anchor
 modifier (`app~views_017~1`) is held with a pointed trace
-(`app~views_012~1`), a plot widget shall show a candidate mark — a horizontal line at the value of the pointed
-signal's sample nearest the pointer in time, the earlier of two
-equidistant — the mark following the pointer and the pointed trace,
-and shown only while that condition holds.
+(`app~views_012~1`), a plot widget shall show a candidate mark — a
+horizontal line at the value of the pointed signal's sample nearest
+the pointer in time, the earlier of two equidistant — the mark
+following the pointer and the pointed trace.
 
 Acceptance:
 

@@ -8,8 +8,6 @@ tags: [app, views]
 The plot widgets' shared time base ([[live-plot]]): one span and one
 live/paused mode for every plot widget, and the paused-range controls.
 
-## Time base
-
 ### Timeline
 `app~views_008~1`
 
@@ -37,14 +35,12 @@ Acceptance:
   that arrived while paused; resuming later renders the unretained
   interval as a tick-count gap.
 
-See also: [[cursor]], [[workspace]]
+See also: [[workspace]]
 
 Covers:
 - sys~arch_002~1
 
 Needs: impl, test
-
-## Paused range control
 
 ### Paused range control
 `app~views_009~1`

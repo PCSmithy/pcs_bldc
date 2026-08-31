@@ -26,6 +26,11 @@
 #define APP_SERVER_TRACE_BARRIER_ACQUIRE() __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #define APP_SERVER_TRACE_BARRIER_RELEASE() __atomic_thread_fence(__ATOMIC_RELEASE)
 
+// The board's storage macro must cover exactly the record header + empty slot.
+_Static_assert(APP_SERVER_TRACE_RING_OVERHEAD_BYTES ==
+                   (APP_SERVER_TRACE_RECORD_HEADER_BYTES + 1U),
+               "ring overhead mismatch");
+
 /* Private Data Definitions */
 
 typedef struct
@@ -41,9 +46,8 @@ typedef struct
     bool stagedRejected;
     char stagedCause[sizeof(((shared_Response *) 0)->cause)];
     uint32_t tick;
-    // SPSC sample ring over config->sampleStorage: head is written only by
-    // the sampler (1 ms task), tail only by the server task; one slot stays
-    // empty so full and empty are distinguishable without a shared count.
+    // Sample ring: SPSC while streaming (sampler owns head, server owns tail);
+    // cross-writer resets only inside a critical section excluding the sampler.
     volatile uint32_t head;
     volatile uint32_t tail;
 } app_server_trace_data_S;
@@ -53,9 +57,16 @@ static app_server_trace_data_S * const data = &app_server_trace_data;
 
 /* Private Function Definitions */
 
+// Physical ring size: the budget plus header + one empty slot (full and empty
+// stay distinguishable), so a worst tick at u == budget still fits.
+static uint32_t app_server_trace_private_capacity(void)
+{
+    return data->config->sampleRamBudgetBytes + APP_SERVER_TRACE_RING_OVERHEAD_BYTES;
+}
+
 static uint32_t app_server_trace_private_ringUsed(void)
 {
-    const uint32_t capacity = data->config->sampleRamBudgetBytes;
+    const uint32_t capacity = app_server_trace_private_capacity();
     const uint32_t head = data->head;
     const uint32_t tail = data->tail;
     return ((head >= tail)) ? (head - tail) : ((head + capacity) - tail);
@@ -65,7 +76,7 @@ static uint32_t app_server_trace_private_ringUsed(void)
 // caller publishes data->head only after the whole record is written.
 static uint32_t app_server_trace_private_ringWrite(uint32_t index, const uint8_t * const bytes, uint32_t len)
 {
-    const uint32_t capacity = data->config->sampleRamBudgetBytes;
+    const uint32_t capacity = app_server_trace_private_capacity();
     uint8_t * const storage = data->config->sampleStorage;
     for (uint32_t i = 0U; i < len; i++)
     {
@@ -82,7 +93,7 @@ static uint32_t app_server_trace_private_ringWrite(uint32_t index, const uint8_t
 // Byte at `offset` past the tail, without consuming (offset < capacity).
 static uint8_t app_server_trace_private_ringPeek(uint32_t offset)
 {
-    const uint32_t capacity = data->config->sampleRamBudgetBytes;
+    const uint32_t capacity = app_server_trace_private_capacity();
     uint32_t index = data->tail + offset;
     if (index >= capacity)
     {
@@ -263,7 +274,7 @@ void app_server_trace_sample1ms(void)
 
         if (dataLen > 0U)
         {
-            const uint32_t capacity = data->config->sampleRamBudgetBytes;
+            const uint32_t capacity = app_server_trace_private_capacity();
             const uint32_t needed = APP_SERVER_TRACE_RECORD_HEADER_BYTES +
                                     APP_SERVER_TRACE_TICK_BYTES + dataLen;
             const uint32_t freeBytes = (capacity - 1U) - app_server_trace_private_ringUsed();
@@ -498,7 +509,7 @@ bool app_server_trace_pop(uint32_t * const tick,
             }
             *dataLen = len;
 
-            const uint32_t capacity = data->config->sampleRamBudgetBytes;
+            const uint32_t capacity = app_server_trace_private_capacity();
             uint32_t newTail = data->tail +
                                (APP_SERVER_TRACE_RECORD_HEADER_BYTES +
                                 APP_SERVER_TRACE_TICK_BYTES + (uint32_t) len);

@@ -8,10 +8,8 @@
 // nanopb's shared_Envelope_size defined for everything the board transmits.
 #define trace_WatchRequest_size 0
 
-// [impl->fw~conn_proto_001~1] shared_Envelope: request_id + oneof of all
-// protocol payloads. Generated from the framework schema
-// (sw/lib/c/shared/proto/shared.proto), which imports this board's
-// sw/proto/board.proto for the two fixed-name extension payloads.
+// [impl->fw~conn_proto_001~1] shared_Envelope, generated from the framework
+// schema plus this board's sw/proto/board.proto extension payloads.
 #include "shared.pb.h"
 
 /* Defines */

@@ -15,18 +15,22 @@ fn native_dll() -> PathBuf {
         .join("../../../build/native-fw/src/libpcs_bldc_fw.dll")
 }
 
-// [test->app~obs_001~1]
-#[test]
-fn loads_firmware_and_resolves_signals() {
+fn load_or_skip() -> Option<firmware::LoadedFirmware> {
     let dll = native_dll();
     if !dll.exists() {
         eprintln!(
             "skipping: {} absent (run tools/build_native.sh first)",
             dll.display()
         );
-        return;
+        return None;
     }
-    let fw = firmware::LoadedFirmware::load(&dll).expect("load native firmware DLL");
+    Some(firmware::LoadedFirmware::load(&dll).expect("load native firmware DLL"))
+}
+
+// [test->app~obs_001~1]
+#[test]
+fn loads_firmware_and_resolves_signals() {
+    let Some(fw) = load_or_skip() else { return };
 
     // The embedded identity: 12-hex commit, optionally +8-hex dirty suffix.
     assert!(
@@ -49,10 +53,9 @@ fn loads_firmware_and_resolves_signals() {
         fw.signal_paths().len()
     );
 
-    // A known 1 kHz counter resolves as a 4-byte unsigned scalar.
-    let (addr, size, leaf) = fw
-        .resolve_watch("task1msRuns")
-        .expect("resolve task1msRuns");
+    // A known 1 kHz counter resolves as a 4-byte unsigned scalar (full
+    // address: the DLL's 64-bit image base is what resolve_watch rejects).
+    let (addr, size, leaf) = fw.resolve_leaf("task1msRuns").expect("resolve task1msRuns");
     assert_ne!(addr, 0);
     assert_eq!(size, 4);
     assert!(matches!(
@@ -60,8 +63,12 @@ fn loads_firmware_and_resolves_signals() {
         dwarf_map::Leaf::Scalar(dwarf_map::Scalar::U32)
     ));
 
+    // The device cast refuses (never truncates) an address past u32.
+    let err = fw.resolve_watch("task1msRuns").unwrap_err();
+    assert!(err.contains("32-bit"), "truncation must error: {err}");
+
     // A bogus path errors instead of resolving.
-    assert!(fw.resolve_watch("no_such_symbol_xyz").is_err());
+    assert!(fw.resolve_leaf("no_such_symbol_xyz").is_err());
 
     // An enumeration resolves with its enumerator names by value: some enum
     // leaf exists in the namespace and its list is non-empty and value-sorted
@@ -70,29 +77,26 @@ fn loads_firmware_and_resolves_signals() {
     let enum_leaf = fw
         .signal_paths()
         .iter()
-        .find_map(|p| match fw.resolve_watch(p) {
+        .find_map(|p| match fw.resolve_leaf(p) {
             Ok((_, _, leaf @ dwarf_map::Leaf::Enum(_))) => Some(leaf),
             _ => None,
         })
         .expect("the firmware namespace holds at least one enum leaf");
-    let enums = fw.enumerators(enum_leaf).expect("enum leaf lists enumerators");
+    let enums = fw
+        .enumerators(enum_leaf)
+        .expect("enum leaf lists enumerators");
     assert!(!enums.is_empty());
     assert!(enums.windows(2).all(|w| w[0].0 < w[1].0), "value-sorted");
-    assert!(fw.enumerators(leaf).is_none(), "scalar leaf carries no enumerators");
+    assert!(
+        fw.enumerators(leaf).is_none(),
+        "scalar leaf carries no enumerators"
+    );
 }
 
 // [test->app~obs_006~1]
 #[test]
 fn readonly_follows_section_writability() {
-    let dll = native_dll();
-    if !dll.exists() {
-        eprintln!(
-            "skipping: {} absent (run tools/build_native.sh first)",
-            dll.display()
-        );
-        return;
-    }
-    let fw = firmware::LoadedFirmware::load(&dll).expect("load native firmware DLL");
+    let Some(fw) = load_or_skip() else { return };
 
     // The identity anchor is a const char[] in read-only storage; the 1 kHz
     // counter is a mutable static in a writable section. Full 64-bit

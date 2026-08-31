@@ -4,8 +4,8 @@
 //
 //   store            read-only snapshot fields (mutate via set()/helpers)
 //   subscribe(t, fn) topics: connection | gate | ports | elf | signals |
-//                    telemetry | log | trace-status | samples | watched |
-//                    timeline
+//                    telemetry | log | traceStatus | samples | watched |
+//                    timeline (set() topics are store keys, camelCase)
 //   set(patch)       shallow-merge + notify the affected topics
 //   api.*            typed wrappers over the Tauri commands
 //
@@ -98,9 +98,8 @@ export const store = {
   linkHz: 0,                // measured telemetry arrival rate
   traceStatus: null,        // last TraceStatusInfo
   budgetVerdict: "—",       // 'accepted' | rejection cause | '—'
-  watched: new Map(),       // path -> { period_ms, color }  (workspace-owned)
+  watched: new Map(),       // path -> { period_ms }  (workspace-owned)
   gapCount: 0,              // cumulative dropped ticks from samples batches
-  logCount: 0,
   // The plot timeline (workspace-owned, see workspace/timeline.js; mutations
   // notify the "timeline" topic). window/pausedSpan are [t0, t1] ms or null.
   timeline: { span_ms: 10_000, mode: "live", window: null, pausedSpan: null },
@@ -176,6 +175,9 @@ export const api = {
   async disconnect() {
     await invoke("disconnect");
     set({ connection: { state: "disconnected", port: null, buildId: null } });
+    // A deliberate disconnect ends the session: the next boot must not
+    // auto-reconnect to this port.
+    prefs.set("cockpit.session.port", null);
   },
   async getStatus() {
     return invoke("get_status");
@@ -194,11 +196,6 @@ export const api = {
   async installWatches(watches) {
     const status = await invoke("install_watches", { watches });
     set({ traceStatus: status, budgetVerdict: "accepted" });
-    return status;
-  },
-  async clearWatches() {
-    const status = await invoke("clear_watches");
-    set({ traceStatus: status, budgetVerdict: "—" });
     return status;
   },
   async traceStatus() {

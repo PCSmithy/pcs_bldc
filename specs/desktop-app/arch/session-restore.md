@@ -14,7 +14,7 @@ The app shall restore its saved session context at launch per:
 |---------|----------|
 | Serial port | The session re-opens on the saved port when present (`app~conn_001~1`); port selection is offered otherwise |
 | Firmware ELF | The saved path reloads (`app~obs_001~1`) when readable; the load action is offered otherwise |
-| Watch list | Reinstalled (`app~obs_003~1`) after connecting, while the device's and the loaded ELF's build identities are equal (`app~obs_002~1`); held otherwise |
+| Watch list | Reinstalled (`app~obs_003~1`) after connecting, while the device's and the loaded ELF's build identities are equal (`app~obs_002~1`); retained uninstalled otherwise |
 
 Acceptance:
 

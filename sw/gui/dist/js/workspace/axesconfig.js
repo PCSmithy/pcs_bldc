@@ -1,23 +1,13 @@
-// Widget configuration popover, opened from a widget's ⋯ menu (or its
-// derived axis-mode chip). Plot widgets get the full surface — per-signal
-// axis side (L/R), remove, the trace-appearance editor (color, line style,
-// dots, interpolation — global per signal), and per-side scale mode (auto,
-// or manual min–max); table widgets get the signal rows and remove only:
-// they have no axes, and a signal's appearance is edited from any plot
-// holding it.
-// Removing a signal no other widget holds also removes its watch, so the
-// budgets recompute and the list re-commits (watchflow's normal path).
+// Widget configuration popover. Plots get the full surface (axis sides,
+// scale modes, appearance editor, remove); tables get rows + remove only.
+// Removing a signal's last holder also removes its watch (watchflow path).
 // [impl->app~views_007~1] (the axes-configuration surface)
 // [impl->app~views_011~1] (the appearance editor)
 
-import { store } from "../state.js";
 import { holdersOf } from "./layout.js";
 import { removeWatch } from "./watchflow.js";
 import { appearanceOf, setAppearance, resolvedColor, effectiveStyle } from "./appearance.js";
-
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const shortName = (path) => path.split(".").pop();
+import { esc, shortName } from "../dom.js";
 
 let open = null; // { el, widget, appearancePath }
 
@@ -72,7 +62,7 @@ function appearanceEditor(path) {
     )
     .join("");
   const seg = (name, opts, current) =>
-    `<span class="side-seg appearance-seg" role="group" aria-label="${name}">
+    `<span class="seg side-seg appearance-seg" role="group" aria-label="${name}">
        ${opts
          .map(
            ([val, label]) =>
@@ -82,18 +72,18 @@ function appearanceEditor(path) {
      </span>`;
   return `<div class="axes-appearance" data-path="${esc(path)}">
     <div class="appearance-line">
-      <span class="appearance-label">color</span>
+      <span class="field-label appearance-label">color</span>
       ${swatches}
       <input type="color" data-colorpick value="${toHex(resolvedColor(path))}" aria-label="Arbitrary color">
       <button class="swatch swatch--auto ${a.color ? "" : "is-selected"}" data-color="">auto</button>
     </div>
     <div class="appearance-line">
-      <span class="appearance-label">style</span>
+      <span class="field-label appearance-label">style</span>
       ${seg("style", [["solid", "solid"], ["dotted", "dotted"], ["dashed", "dashed"]], effectiveStyle(path))}
       <button class="dots-toggle ${a.dots ? "is-selected" : ""}" data-dots>dots</button>
     </div>
     <div class="appearance-line">
-      <span class="appearance-label">interp</span>
+      <span class="field-label appearance-label">interp</span>
       ${seg("interp", [["zoh", "ZOH"], ["linear", "linear"], ["cubic", "cubic"]], a.interp)}
     </div>
   </div>`;
@@ -116,7 +106,7 @@ function render() {
 
   const rows = widget.cfg.signals
     .map((path) => {
-      const color = store.watched.get(path)?.color || resolvedColor(path);
+      const color = resolvedColor(path);
       const side = plot ? widget.sideOf(path) : null;
       const editing = plot && open.appearancePath === path;
       return `<div class="axes-row ${editing ? "axes-row--editing" : ""}" data-path="${esc(path)}">
@@ -129,7 +119,7 @@ function render() {
         <span class="axes-name mono" title="${esc(path)}">${esc(shortName(path))}</span>
         ${
           plot
-            ? `<span class="side-seg" role="group" aria-label="Axis side">
+            ? `<span class="seg side-seg" role="group" aria-label="Axis side">
                  <button data-side="L" class="${side === "L" ? "is-selected" : ""}">L</button>
                  <button data-side="R" class="${side === "R" ? "is-selected" : ""}">R</button>
                </span>`
@@ -148,8 +138,8 @@ function render() {
           const sc = widget.scaleConfig(g.key);
           const manual = sc.mode === "manual";
           return `<div class="axes-scale" data-scale="${g.key}">
-            <span class="axes-scale-label">${g.key === "L" ? "left" : "right"} axis</span>
-            <span class="side-seg scale-seg" role="group" aria-label="Scale mode">
+            <span class="field-label axes-scale-label">${g.key === "L" ? "left" : "right"} axis</span>
+            <span class="seg side-seg scale-seg" role="group" aria-label="Scale mode">
               <button data-mode="auto" class="${manual ? "" : "is-selected"}">auto</button>
               <button data-mode="manual" class="${manual ? "is-selected" : ""}">manual</button>
             </span>
@@ -266,6 +256,11 @@ document.addEventListener("pointerdown", (ev) => {
   }
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") closeAxesConfig();
+  // Topmost-first: an open popover consumes the Escape so listeners
+  // registered later (the launcher menu's) don't also dismiss.
+  if (ev.key === "Escape" && open) {
+    ev.stopImmediatePropagation();
+    closeAxesConfig();
+  }
 });
 window.addEventListener("resize", () => closeAxesConfig());

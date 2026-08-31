@@ -12,23 +12,16 @@ and an AS5048 magnetic rotor encoder, with on-device user controls (knob +
 mode button + RGB status LEDs) for standalone operation. Hardware is designed
 in **KiCad 10**, currently frozen pending firmware work.
 
-Both software components exist and run on the bench. The **firmware**
-carries the full spec'd + traced hw/io/dev/app driver stack (clocks,
-GPIO, ADC, DMA, SPI, I2C, timers, USB CDC, op-amps, encoder, LED ring,
-button, serial — all 10 board analog inputs bench-verified in
-engineering units), first motor drive (app_motorControl six-step
-trapezoidal through the STSPIN32G4 gate driver; V/f sinusoidal specced
-but not yet implemented), USB-PD sink monitoring, overcurrent +
+Both software components exist and run on the bench (README's Status
+section carries the feature inventory). The **firmware**: the spec'd +
+traced driver stack, first motor drive (six-step trapezoidal; V/f
+specced but not yet implemented), USB-PD sink monitoring, overcurrent +
 encoder-fault protection, and a protobuf-over-USB-CDC protocol
 (telemetry, signal trace engine, log stream, firmware identity). The
-**desktop app** (`sw/gui`, Tauri 2) ships the observability slice:
-connect + build-identity gate, DWARF signal picker, watch panel,
-WebGL-rendered live plots with honest min/max decimation, shared cursor
-+ comparison cursor, value table, free-position widget canvas, session
-restore — 29 blind-audited `app~` specs, all impl+test covered, with a
-170-check playwright suite (`sw/gui/tests/test_views.py`). An SIL
-harness (`sw/sil`) exercises the native firmware build (protocol, trace
-engine, server). Build system is fully stood up (CMake + Ninja,
+**desktop app** (`sw/gui`, Tauri 2): the observability slice,
+spec-driven, verified by the playwright suite
+(`sw/gui/tests/test_views.py`). An SIL harness (`sw/sil`) exercises the
+native firmware build. Build system is fully stood up (CMake + Ninja,
 dual-target embedded + native for SIL — see **Build System** below);
 `.github/workflows/` carries `ci.yml` (firmware + SIL, 3 OS) and
 `app.yml` (desktop app, Windows + macOS).
@@ -113,7 +106,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   ├── overview.md    System overview + arch/persist anchor specs
 │   │   └── conn/ mc/ obs/ ops/ pd/ safety/   (sys~ topic folders)
 │   ├── firmware/          fw~ requirements — hal/io/est/obs/ui/conn/mc/pd/safety
-│   └── desktop-app/       app~ requirements — arch/conn/obs/views (29 specs)
+│   └── desktop-app/       app~ requirements — arch/conn/obs/views
 │
 ├── docs/                 Project documentation
 │   ├── setup.md           Full first-time-setup guide (Win + macOS)
@@ -121,6 +114,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── spec-style.md      Spec wording rules (companion to spec-system.md)
 │   ├── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
 │   ├── backlog.md         Firmware/tooling backlog
+│   ├── motor-sprint.md    Motor-control sprint plan (FOC/estimation ahead)
 │   └── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
 │
 └── tools/                Project tooling
@@ -130,11 +124,16 @@ The project uses **spec-driven development with end-to-end traceability** via
     ├── spec_convention.py Shared helper (parses the canonical topic table)
     ├── build_native.sh   Configure + build + ctest a CMake project natively
     ├── build_arm.sh      Cross-compile a CMake project for STM32G431
-    └── convert_cubemx_to_canonical.sh
-                          Copy CubeMX-generated code from sw/fw/stm32cube/g4/
-                          into the canonical layout (vendor packages at the
-                          top of sw/lib/c/, board-specific files at
-                          sw/fw/src/hw/stm32g4/)
+    ├── run_sil.sh        Build the native firmware lib + run the SIL suite
+    ├── generate_proto.sh Regenerate the nanopb protocol bindings manually
+    ├── pcs_client.py     Reference host client (protocol decode over serial)
+    ├── convert_cubemx_to_canonical.sh
+    │                     Copy CubeMX-generated code from sw/fw/stm32cube/g4/
+    │                     into the canonical layout (vendor packages at the
+    │                     top of sw/lib/c/, board-specific files at
+    │                     sw/fw/src/hw/stm32g4/)
+    └── …                 plus bench/analysis scripts (serial capture, MF4,
+                          trace_analysis/ notebooks)
 
 (Build outputs: build/<target>-<source-basename>/, gitignored.
 notebooks/ — created when that work begins.)
@@ -218,9 +217,9 @@ sufficient to make the tooling aware of a new topic.
 
 ### Current spec state
 
-- `specs/system/` — 29 `sys~` specs: anchors in `overview.md`
-  (`sys~arch_001..005`, `sys~persist_001`) plus topic folders (`conn`,
-  `mc`, `obs`, `ops`, `pd`, `safety`). 22 are intentionally uncovered
+- `specs/system/` — `sys~` anchors in `overview.md` (`sys~arch_001..005`,
+  `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
+  `obs`, `ops`, `pd`, `safety`). 22 are intentionally uncovered
   (system-level tests deferred to the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
@@ -234,24 +233,25 @@ sufficient to make the tooling aware of a new topic.
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
     + `mc/six-step.md` + `mc/vf-sinusoidal.md` (app_motorControl),
     `safety/overcurrent.md` + `safety/encoder-fault.md`.
-- **Desktop-app specs** (`specs/desktop-app/`) — 29 `app~` specs across
+- **Desktop-app specs** (`specs/desktop-app/`) — `app~` specs across
   `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,
   signal picker + identity gate + trace client, plots with decimation +
   render budget, cursor + comparison anchor/deltas, table + value
   rendering, timeline, watch panel, workspace + widget titles). All
-  impl+test covered; `[impl->]`/`[test->]` tags live in `.js` and `.py`
-  files too, and the UI verification surface is the playwright suite
-  `sw/gui/tests/test_views.py` (170 checks over the devmock).
-- 172 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
+  impl-covered; test-covered except `app~arch_001` (its UI-reload test
+  needs the live Tauri core). `[impl->]`/`[test->]` tags live in `.js`
+  and `.py` files too, and the UI verification surface is the playwright
+  suite `sw/gui/tests/test_views.py` (over the devmock).
+- 173 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
   with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs). The intentional defect baseline is
-  **31**: the 22 `sys~` anchors; 7 reserved `fw~` specs —
+  **30**: the 22 `sys~` anchors; 7 reserved `fw~` specs —
   `fw~hal_adc_003`/`fw~hal_adc_008` (timer-triggered injected + async
   completion) + `fw~hal_tim_006` (TRGO) for the interrupt-driven-control
   sprint, `fw~mc_007` (gesture map) + `fw~mc_010` (V/f) future app
   methods, `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
-  pending); and `app~arch_001` + `app~conn_001` (implemented; their tests
-  need live hardware). Anything else = investigate. Both `[test->]` and
+  pending); and `app~arch_001` (implemented; its test needs the live
+  Tauri core). Anything else = investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
 
 ### Decisions explicitly deferred (will become specs when made)
@@ -309,11 +309,12 @@ For `tools/build_arm.sh`, post-build hooks emit `pcs_bldc_fw.bin`,
 `pcs_bldc_fw.elf`.
 
 Firmware builds **require the project venv** (`./setup.sh`): the protocol
-bindings `sw/fw/src/lib/protobuf/generated/{shared,board}.pb.{h,c}` are
-generated at build time by the venv's nanopb generator and are gitignored,
-never committed. The schema is split: the reusable framework schema
-(`sw/lib/c/shared/proto/shared.proto` — envelope + generic services)
-imports this board's `sw/proto/board.proto` through two fixed-name
+bindings `sw/fw/src/lib/protobuf/generated/{shared,trace,board}.pb.{h,c}`
+are generated at build time by the venv's nanopb generator and are
+gitignored, never committed. The schema is split: the reusable framework
+schema (`sw/lib/c/shared/proto/` — `shared.proto` envelope + generic
+services, `trace.proto` trace messages) imports this board's
+`sw/proto/board.proto` through two fixed-name
 extension payloads (`board.Request`, `board.Telemetry`). CMake fails the
 configure with a pointer to `setup.sh` if `.venv` is missing;
 `tools/generate_proto.sh` is the standalone manual regeneration path.
@@ -601,12 +602,11 @@ them:
 .venv/bin/python <script>       # on macOS
 ```
 
-Installed packages (from `requirements.txt`): `requests`, `playwright`,
-`nanopb`, `grpcio-tools`, `numpy`, `asammdf`, `matplotlib`, `ipykernel`,
-`pyserial`. After install, run `.venv/Scripts/playwright install
-chromium` (Windows) or `.venv/bin/playwright install chromium` (macOS) —
-Playwright drives the app's UI test suite and is the browser fallback
-used by some datasheet sites.
+Installed packages: see `requirements.txt`. After install, run
+`.venv/Scripts/playwright install chromium` (Windows) or
+`.venv/bin/playwright install chromium` (macOS) — Playwright drives the
+app's UI test suite and is the browser fallback used by some datasheet
+sites.
 
 ## Key Components
 

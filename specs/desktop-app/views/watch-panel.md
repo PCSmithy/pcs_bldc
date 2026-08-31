@@ -22,7 +22,7 @@ Acceptance:
 - Editing a row's period, and removing a row, each reach the device
   as one recommitted watch list (`app~obs_003~1`).
 
-See also: [[../obs/signal-picker|signal-picker]], [[table]], [[value-rendering]]
+See also: [[../obs/signal-picker|signal-picker]], [[table]]
 
 Covers:
 - sys~arch_002~1

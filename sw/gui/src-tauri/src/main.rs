@@ -4,15 +4,15 @@ mod config;
 mod firmware;
 mod protocol;
 mod session;
+#[cfg(test)]
+mod testutil;
 mod trace;
 
 use firmware::FirmwareState;
 use session::SessionState;
 use trace::TraceState;
 
-/// UI zoom (chrome ergonomics): the native webview zoom factor — WebView2's
-/// ZoomFactor on Windows, WKWebView page zoom on macOS — driven by the
-/// frontend's Ctrl+'+'/'-'/'0' bindings, which also own clamping and
+/// Native webview zoom; the frontend's Ctrl bindings own clamping and
 /// persistence.
 #[tauri::command]
 fn set_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {

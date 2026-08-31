@@ -1,27 +1,18 @@
-// WebGL2 trace renderer — replaces Canvas2D path stroking, whose per-segment
-// cost saturates WebView2's GPU service (the profiled 7 fps wall). Each
-// segment is one instance of a screen-space quad: the vertex shader widens
-// the segment to the stroke band (+feather +cap room), the fragment shader
-// antialiases against the capsule SDF and windows the dash pattern by arc
-// length. Round caps at run ends fall out of the clamped-distance SDF;
-// overlapping caps at interior vertices read as round joins. Geometry is in
-// CSS px (the backing store carries the DPR); scale mapping happens where
-// vertices are built, so a cached-geometry redraw (the pointed-emphasis
-// width flip) is uniforms + draw calls only.
+// WebGL2 trace renderer: each segment is one instanced screen-space quad,
+// antialiased against a capsule SDF; dash windows key on cumulative arc
+// length, so caps/joins/dashes all share the round AA falloff. Geometry is
+// CSS px (the backing store carries the DPR). Vertex buffers upload once
+// per draw(); cached redraws (pointed width, live scroll) bind + draw only.
 // [impl->app~views_015~1]
 
 import { monotoneTangents } from "./interp.js";
 import { markDraw, markScroll } from "../perf.js";
 
 const FEATHER_PX = 1.0; // AA falloff half-width
-export const DOT_SIZE_PX = 7; // sample-dot diameter (css px) — bench-tuned up from 5: dots read clearly even on a narrow plot at the 10 ms zoom floor
+export const DOT_SIZE_PX = 7; // sample-dot diameter, css px
 
-// Browsers cap live WebGL contexts (~16 per page) and EVICT the oldest —
-// with no restore event for the evicted canvas. We stay under the cap with
-// our own LRU: at most this many live contexts; creating one beyond the
-// budget explicitly releases the least-recently-DRAWN renderer (it
-// re-creates on demand from its owner's next refresh). More than this many
-// plots drawing simultaneously will thrash contexts — a known limit.
+// Browsers cap live WebGL contexts (~16/page) and evict the oldest with no
+// restore event; our LRU stays under that — beyond it, plots thrash.
 const MAX_LIVE_CONTEXTS = 12;
 const liveContexts = new Set(); // GlTraces instances with an alive context
 let drawSeq = 0;
@@ -220,8 +211,10 @@ export class GlTraces {
     liveContexts.add(this);
     this.lineProg = link(gl, LINE_VS, LINE_FS);
     this.dotProg = link(gl, DOT_VS, DOT_FS);
-    this.lineBuf = gl.createBuffer();
-    this.dotBuf = gl.createBuffer();
+    // Buffer pool, reused across draw() uploads; a lost context invalidates
+    // every handle, so the pool resets with the context.
+    this._pool = [];
+    this._used = 0;
     this.lineU = {
       view: gl.getUniformLocation(this.lineProg, "uView"),
       width: gl.getUniformLocation(this.lineProg, "uWidth"),
@@ -257,12 +250,32 @@ export class GlTraces {
 
   /** traces: [{ runs: [{ verts: Float32Array (x,y,arc)* }], dots: Float32Array|null,
    *             color: [r,g,b,a], widthPx, dash: [on,off]|null, dotSizePx }].
-   *  Geometry is cached for uniform-only redraws (drawCached / scroll).
-   *  offsetX (css px) is the live-scroll translation the frame draws at. */
+   *  Uploads every buffer ONCE; cached redraws (drawCached / scroll) then
+   *  bind + set uniforms + draw. offsetX (css px) is the scroll translation. */
   draw(traces, offsetX = 0) {
     this._traces = traces;
     this._offsetX = offsetX;
+    this._uploadAll();
     this.drawCached();
+  }
+
+  _upload(data) {
+    const gl = this.gl;
+    const buf = this._pool[this._used] ?? (this._pool[this._used] = gl.createBuffer());
+    this._used++;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    return buf;
+  }
+
+  _uploadAll() {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost()) return;
+    this._used = 0;
+    for (const tr of this._traces) {
+      for (const run of tr.runs) run._glBuf = this._upload(run.verts);
+      tr._glDots = tr.dots && tr.dots.length >= 2 ? this._upload(tr.dots) : null;
+    }
   }
 
   /** Geometry-rate redraw: counts toward the draws honesty metric. */
@@ -304,9 +317,8 @@ export class GlTraces {
       );
       for (const run of tr.runs) {
         const n = run.verts.length / 3;
-        if (n < 2) continue;
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.lineBuf);
-        gl.bufferData(gl.ARRAY_BUFFER, run.verts, gl.STREAM_DRAW);
+        if (n < 2 || !run._glBuf) continue;
+        gl.bindBuffer(gl.ARRAY_BUFFER, run._glBuf);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
         gl.vertexAttribDivisor(0, 1);
@@ -322,11 +334,10 @@ export class GlTraces {
     gl.uniform1f(this.dotU.dpr, this.dpr);
     gl.uniform1f(this.dotU.offx, this._offsetX || 0);
     for (const tr of this._traces) {
-      if (!tr.dots || tr.dots.length < 2) continue;
+      if (!tr._glDots || !tr.dots || tr.dots.length < 2) continue;
       gl.uniform4fv(this.dotU.color, tr.color);
       gl.uniform1f(this.dotU.size, tr.dotSizePx || DOT_SIZE_PX);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.dotBuf);
-      gl.bufferData(gl.ARRAY_BUFFER, tr.dots, gl.STREAM_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, tr._glDots);
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
       gl.vertexAttribDivisor(0, 0);
@@ -363,13 +374,8 @@ export function buildTraceGeometry(xs, ys, mapX, mapY, interp, pxPerMs, wantDots
     if (breaker(ys[i])) { i++; continue; }
     let j = i;
     while (j < n && !breaker(ys[j])) j++;
-    const runX = [], runY = [];
-    for (let k = i; k < j; k++) {
-      runX.push(xs[k]);
-      runY.push(ys[k]);
-      if (dotPts) dotPts.push(mapX(xs[k]), mapY(ys[k]));
-    }
-    runs.push(buildRun(runX, runY, mapX, mapY, interp, pxPerMs, runs.length ? 0 : firstRunArcStart));
+    if (dotPts) for (let k = i; k < j; k++) dotPts.push(mapX(xs[k]), mapY(ys[k]));
+    runs.push(buildRun(xs, ys, i, j, mapX, mapY, interp, pxPerMs, runs.length ? 0 : firstRunArcStart));
     i = j;
   }
   return { runs, dots: dotPts ? new Float32Array(dotPts) : null };
@@ -395,16 +401,18 @@ export function arcAtX(verts, x) {
   return Math.abs(x - lastX) <= 1e-6 ? verts[verts.length - 1] : null;
 }
 
-function buildRun(runX, runY, mapX, mapY, interp, pxPerMs, arcStart = 0) {
+/** Builds the [i0, i1) run of xs/ys — index ranges, no per-run copies. */
+function buildRun(xs, ys, i0, i1, mapX, mapY, interp, pxPerMs, arcStart = 0) {
   let px = [], py = [];
   if (interp === "zoh") {
-    for (let k = 0; k < runX.length; k++) {
-      if (k > 0) { px.push(mapX(runX[k])); py.push(py[py.length - 1]); }
-      px.push(mapX(runX[k]));
-      py.push(mapY(runY[k]));
+    for (let k = i0; k < i1; k++) {
+      if (k > i0) { px.push(mapX(xs[k])); py.push(py[py.length - 1]); }
+      px.push(mapX(xs[k]));
+      py.push(mapY(ys[k]));
     }
-  } else if (interp === "cubic" && runX.length > 2) {
+  } else if (interp === "cubic" && i1 - i0 > 2) {
     // Hermite evaluation from the Fritsch–Carlson tangents, ~1 vertex/px.
+    const runX = xs.slice(i0, i1), runY = ys.slice(i0, i1);
     const m = monotoneTangents(runX, runY);
     for (let k = 0; k < runX.length - 1; k++) {
       const x0 = runX[k], x1 = runX[k + 1];
@@ -425,9 +433,9 @@ function buildRun(runX, runY, mapX, mapY, interp, pxPerMs, arcStart = 0) {
     px.push(mapX(runX[runX.length - 1]));
     py.push(mapY(runY[runY.length - 1]));
   } else {
-    for (let k = 0; k < runX.length; k++) {
-      px.push(mapX(runX[k]));
-      py.push(mapY(runY[k]));
+    for (let k = i0; k < i1; k++) {
+      px.push(mapX(xs[k]));
+      py.push(mapY(ys[k]));
     }
   }
   const verts = new Float32Array(px.length * 3);

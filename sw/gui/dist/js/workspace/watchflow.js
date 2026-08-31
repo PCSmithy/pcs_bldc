@@ -9,7 +9,6 @@ import { api, store, set, notify, subscribe } from "../state.js";
 import { icon } from "../icons.js";
 import { preview, WATCH_CAPACITY } from "./budget.js";
 import { releaseColor } from "./colors.js";
-import { resolvedColor } from "./appearance.js";
 import { historyFor, histories } from "./history.js";
 
 const COMMIT_DEBOUNCE_MS = 600;
@@ -53,8 +52,7 @@ export function addWatch(path, period_ms = 10) {
   // An already-watched signal keeps its entry untouched (the drop handler
   // re-adds before joining a widget — a join must not clobber the period).
   if (store.watched.has(path)) return;
-  const color = resolvedColor(path);
-  store.watched.set(path, { period_ms, color });
+  store.watched.set(path, { period_ms });
   historyFor(path, period_ms);
   afterEdit();
 }
@@ -86,11 +84,9 @@ let pausedDeferral = false;
 export async function commit() {
   clearTimeout(debounceTimer);
   if (store.gate !== "matched") return;
-  // A paused workspace is a frozen inspection (views_008's sacred span):
-  // an accepted install clears every history, so any commit that lands
-  // while paused — a reconnect's recommit included — defers to resume.
-  // Connection and gate re-establish meanwhile; the frozen traces,
-  // readouts, and anchors stay consistent with the frozen histories.
+  // views_008's sacred span: an accepted install clears every history, so
+  // any commit landing while paused — a reconnect's recommit included —
+  // defers to resume; the frozen inspection stays consistent.
   if (store.timeline.mode === "paused") {
     pausedDeferral = true;
     return;
@@ -126,7 +122,7 @@ export function initWatchflow() {
   subscribe("timeline", () => {
     if (store.timeline.mode === "live" && pausedDeferral) commit();
   });
-  subscribe("trace-status", renderPreview);
+  subscribe("traceStatus", renderPreview);
   // Snapshot-restored meta is only as fresh as the last session (an old
   // snapshot has no enums; a reloaded ELF may rename them) — every arriving
   // signal list re-resolves the watched paths' meta.
@@ -176,8 +172,10 @@ function pctOfLink(r) {
   return `${Math.round((r / max) * 100)} %`;
 }
 
+let closeRejectDialog = null; // replacing a dialog must also release its listener
+
 function showRejectDialog(cause) {
-  document.querySelector(".reject-scrim")?.remove();
+  closeRejectDialog?.();
   const fixes = computeFixes();
   const scrim = document.createElement("div");
   scrim.className = "reject-scrim";
@@ -201,9 +199,25 @@ function showRejectDialog(cause) {
     .map((f, i) => `<div class="reject-fix">${icon("plus")}<span data-fixlabel="${i}"></span></div>`)
     .join("");
   fixes.forEach((f, i) => (scrim.querySelector(`[data-fixlabel="${i}"]`).textContent = f.label));
+  const close = () => {
+    scrim.remove();
+    window.removeEventListener("keydown", onKey, true);
+    closeRejectDialog = null;
+  };
+  closeRejectDialog = close;
+  // Modal keyboard contract: Escape dismisses (capture — the dialog is
+  // topmost), and focus starts on the dismiss action.
+  const onKey = (ev) => {
+    if (ev.key === "Escape") {
+      ev.stopImmediatePropagation();
+      close();
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
   scrim.addEventListener("click", (ev) => {
-    if (ev.target.dataset.fix !== undefined) { fixes[+ev.target.dataset.fix].apply(); scrim.remove(); }
-    else if (ev.target.dataset.dismiss !== undefined || ev.target === scrim) scrim.remove();
+    if (ev.target.dataset.fix !== undefined) { fixes[+ev.target.dataset.fix].apply(); close(); }
+    else if (ev.target.dataset.dismiss !== undefined || ev.target === scrim) close();
   });
   document.querySelector(".workspace").appendChild(scrim);
+  scrim.querySelector("[data-dismiss]").focus();
 }

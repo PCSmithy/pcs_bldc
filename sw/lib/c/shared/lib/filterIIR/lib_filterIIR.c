@@ -36,10 +36,6 @@ bool lib_filterIIR_init(lib_filterIIR_channel_S * const filter)
                 }
                 break;
             }
-            // case LIB_FILTERIIR_TYPE_BUTTERWORTH: // TODO
-            // case LIB_FILTERIIR_TYPE_CHEBYSHEV:
-            // case LIB_FILTERIIR_TYPE_CHEBYSHEV_II:
-            // case LIB_FILTERIIR_TYPE_BESSEL:
             case LIB_FILTERIIR_TYPE_COUNT:
             default:
                 break;
@@ -63,10 +59,6 @@ void lib_filterIIR_update(lib_filterIIR_channel_S * const filter)
                 ema->y_k = ((1.0f - a) * ema->y_k_1) + (a * ema->x_k);
                 break;
             }
-            // case LIB_FILTERIIR_TYPE_BUTTERWORTH: // TODO
-            // case LIB_FILTERIIR_TYPE_CHEBYSHEV:
-            // case LIB_FILTERIIR_TYPE_CHEBYSHEV_II:
-            // case LIB_FILTERIIR_TYPE_BESSEL:
             case LIB_FILTERIIR_TYPE_COUNT:
             default:
                 break;

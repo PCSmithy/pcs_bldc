@@ -29,7 +29,7 @@ static app_server_config_S       serverConfig;
 
 static uint32_t traceMemory[64];
 static app_server_watch_S traceWatchStorage[2U * TRACE_WATCH_CAPACITY];
-static uint8_t traceSampleStorage[TRACE_RAM_BUDGET];
+static uint8_t traceSampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(TRACE_RAM_BUDGET)];
 static const app_server_region_S traceReadableRegions[] = {
     { .start = TRACE_TEST_BASE, .length = sizeof(traceMemory), .base = (uintptr_t) traceMemory },
 };
@@ -40,8 +40,9 @@ static const app_server_region_S traceWritableRegions[] = {
 // Oversized fixtures for the list-level admission bounds (Samples capacity)
 // and the max-size Samples frame, unreachable at the default capacity of 8.
 #define TRACE_BIG_WATCH_CAPACITY (80U)
+#define TRACE_BIG_RAM_BUDGET     (1024U)
 static app_server_watch_S traceBigWatchStorage[2U * TRACE_BIG_WATCH_CAPACITY];
-static uint8_t traceBigSampleStorage[1024U];
+static uint8_t traceBigSampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(TRACE_BIG_RAM_BUDGET)];
 
 /* Stub board hooks: settable telemetry, request recorder. */
 
@@ -261,6 +262,37 @@ static void test_board_request_without_hook_rejected(void)
     TEST_ASSERT_TRUE(strlen(replies[0].payload.response.cause) > 0U);
 }
 
+// [test->fw~conn_server_001~1] a CRC-valid but undecodable envelope is still
+// answered: rejection with a cause, request_id 0.
+static void test_undecodable_frame_rejected_with_cause(void)
+{
+    uint8_t plain[7];
+    plain[0] = 0xFFU;   // field 31, wire type 7: invalid protobuf
+    plain[1] = 0xFFU;
+    plain[2] = 0xFFU;
+    const uint32_t crc = lib_crc32_compute(plain, 3U);
+    plain[3] = (uint8_t) (crc & 0xFFU);
+    plain[4] = (uint8_t) ((crc >> 8U) & 0xFFU);
+    plain[5] = (uint8_t) ((crc >> 16U) & 0xFFU);
+    plain[6] = (uint8_t) ((crc >> 24U) & 0xFFU);
+
+    uint8_t wire[16];
+    wire[0] = 0x00U;
+    size_t cobsLen = 0U;
+    TEST_ASSERT_TRUE(lib_cobs_encode(plain, sizeof(plain), &wire[1], sizeof(wire) - 2U, &cobsLen));
+    wire[cobsLen + 1U] = 0x00U;
+    HW_USB_sim_injectRx(wire, (uint32_t) (cobsLen + 2U));
+
+    app_server_run1ms();
+
+    shared_Envelope replies[2];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 2U));
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].request_id);
+    TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
+    TEST_ASSERT_NOT_NULL(strstr(replies[0].payload.response.cause, "decode"));
+}
+
 /* ---- fw~obs_identity_002: identity query ---- */
 
 // [test->fw~obs_identity_002~1]
@@ -455,7 +487,7 @@ static void useBigTraceConfig(void)
     serverConfig.watchStorage         = traceBigWatchStorage;
     serverConfig.watchCapacity        = TRACE_BIG_WATCH_CAPACITY;
     serverConfig.sampleStorage        = traceBigSampleStorage;
-    serverConfig.sampleRamBudgetBytes = sizeof(traceBigSampleStorage);
+    serverConfig.sampleRamBudgetBytes = TRACE_BIG_RAM_BUDGET;
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
 }
 
@@ -559,6 +591,31 @@ static void test_watch_admission_ram_budget_rejection(void)
     expectWatchRejection(&w, 1U, "RAM");
 }
 
+// [test->fw~conn_trace_002~1] a list admitted at exactly u == budget must
+// also BUFFER its worst tick — the ring's header + empty slot live outside
+// the budget, not inside it.
+static void test_watch_admission_ram_budget_boundary_fits(void)
+{
+    serverConfig.sampleRamBudgetBytes = 36U;   // u = 4 + (4 x 8) = 36 == budget
+    TEST_ASSERT_TRUE(app_server_init(&serverConfig));
+    trace_Watch watches[4];
+    for (uint32_t i = 0U; i < 4U; i++)
+    {
+        watches[i] = (trace_Watch){
+            .address = TRACE_TEST_BASE + (i * 8U), .size = 8U, .period_ms = 1U };
+    }
+    (void) installWatches(watches, 4U);   // asserts acceptance at u == budget
+
+    app_server_sample1ms();   // every entry due: the full worst tick
+    app_server_run1ms();
+
+    shared_Envelope replies[2];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 2U));
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(32U, replies[0].payload.samples.data.size);
+}
+
 // [test->fw~conn_trace_002~1]
 static void test_watch_admission_samples_capacity_rejection(void)
 {
@@ -628,6 +685,38 @@ static void test_watch_list_clears_on_disconnect(void)
     TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.trace_status.link_rate_bytes_per_s);
 }
 
+// [test->fw~conn_trace_003~1] frames of a dead session are never served: a
+// held frame and queued partial bytes both die on the disconnect edge.
+static void test_stale_rx_dropped_on_disconnect(void)
+{
+    app_server_run1ms();   // a quiet connected pass arms the disconnect edge
+
+    // Park a complete valid frame as the channel's held frame (pumped but
+    // never received), and queue a partial frame behind it.
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 90U;
+    req.which_payload = shared_Envelope_ping_tag;
+    injectEnvelope(&req);
+    IO_COBSFrame_run();
+
+    const uint8_t partial[] = { 0x00U, 0x11U, 0x22U, 0x33U };
+    HW_USB_sim_injectRx(partial, (uint32_t) sizeof(partial));
+
+    HW_USB_sim_setConnected(false);
+    app_server_run1ms();   // disconnect edge: framing reset + RX drain
+    HW_USB_sim_setConnected(true);
+
+    app_server_run1ms();
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 4U));
+
+    req.request_id = 91U;  // the new session's own request is served
+    injectEnvelope(&req);
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL_UINT32(91U, replies[0].request_id);
+}
+
 /* ---- fw~conn_trace_004: sampling ---- */
 
 // [test->fw~conn_trace_004~1]
@@ -695,7 +784,8 @@ static void test_ring_overflow_skips_whole_ticks_leaving_gap(void)
     const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
     (void) installWatches(&w, 1U);
 
-    // Record = 10 B, ring free = 255 B: ticks 0..24 fit, 25..29 are skipped.
+    // Record = 10 B, ring free = 258 B (budget 256 + overhead 3 - empty
+    // slot): ticks 0..24 fit, 25..29 are skipped.
     for (uint32_t i = 0U; i < 30U; i++)
     {
         app_server_sample1ms();
@@ -862,6 +952,7 @@ int main(void)
 
     RUN_TEST(test_ping_accepted_with_request_id);
     RUN_TEST(test_unrecognized_payload_rejected_with_cause);
+    RUN_TEST(test_undecodable_frame_rejected_with_cause);
     RUN_TEST(test_board_request_forwarded_to_hook);
     RUN_TEST(test_board_request_without_hook_rejected);
 
@@ -880,10 +971,12 @@ int main(void)
     RUN_TEST(test_watch_admission_rejects_bad_entries);
     RUN_TEST(test_watch_admission_link_budget_boundary);
     RUN_TEST(test_watch_admission_ram_budget_rejection);
+    RUN_TEST(test_watch_admission_ram_budget_boundary_fits);
     RUN_TEST(test_watch_admission_samples_capacity_rejection);
     RUN_TEST(test_rejected_request_leaves_prior_list_streaming);
 
     RUN_TEST(test_watch_list_clears_on_disconnect);
+    RUN_TEST(test_stale_rx_dropped_on_disconnect);
 
     RUN_TEST(test_sampling_due_rule_and_order);
     RUN_TEST(test_new_list_restarts_stream_discarding_buffered);
