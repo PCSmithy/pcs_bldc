@@ -282,12 +282,12 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   detected by `HW_GPIO_run1ms` from injected-level transitions (per-port
   `extiEdgeCount` is the observable; `tests/gpio_behavior.rs`); re-entrant
   init is the clean slate; `HW_GPIO_sim.h` deleted.
-- ☑ **USB** — DONE 2026-08-13: `io/serial` tests run on a boundary
-  `mock_HW_USB`, the sim-driver suite is retired (sim drivers are
-  framework-covered via SIL), `HW_USB_sim.h` deleted. `fw~hal_usb_004`
-  (CDC RX) joins the defect baseline until a firmware RX consumer exists
-  (desktop-app protocol); the `usb_cdc` sig_type item above stands on its
-  own for telemetry-as-signals.
+- ◐ **USB** — partial: `io/serial` tests run on a boundary `mock_HW_USB`
+  (2026-08-13), but the protocol sprint (PR #6) rebuilt the sim USB — RX,
+  `writeAvailable`, a fresh Unity suite — on the `_sim` API, so
+  `HW_USB_sim.h` is back with live consumers. Redo the removal against the
+  protocol-era driver (the pended-completion + DWARF-knob pattern) in a
+  later sweep.
 - ☑ **ADC** — DONE 2026-08-18: conversion-stall injection and multimode
   inspection move to SIL DWARF write/read (`tests/adc_faults.rs`); sim
   `HW_ADC_init` is re-entrant, so the Unity suite's clean slate is a rejected
@@ -304,11 +304,13 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   file/captures/injection/fault knobs are DWARF-visible `HW_I2C_data` fields
   (`tests/i2c_behavior.rs`; the board world already drove `regMem` by DWARF);
   re-entrant init; `HW_I2C_sim.h` deleted.
-- ☑ **Exit criterion — met 2026-08-30:** no `*_sim.h` files remain under
-  `sw/lib/c/shared/hw/`. The surviving `_sim_` symbols are the sim drivers'
-  own pended completion ISR entries (`HW_<M>_sim_completionDispatch` —
-  external linkage so the fiber dispatch can name them), not inject/inspect
-  APIs; a CI lint should assert "no `*_sim.h` files" rather than grep `_sim_`.
+- ◐ **Exit criterion — one holdout (2026-08-31):** `HW_USB_sim.h` alone
+  remains under `sw/lib/c/shared/hw/` (the protocol sprint re-adopted it —
+  see the USB row). Every other `*_sim.h` is gone. The surviving `_sim_`
+  symbols elsewhere are the sim drivers' own pended completion ISR entries
+  (`HW_<M>_sim_completionDispatch` — external linkage so the fiber dispatch
+  can name them), not inject/inspect APIs; the eventual CI lint should
+  assert "no `*_sim.h` files" rather than grep `_sim_`.
 
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the

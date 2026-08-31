@@ -245,11 +245,9 @@ sufficient to make the tooling aware of a new topic.
 - 173 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
   with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs). The intentional defect baseline is
-  **30**: the 22 `sys~` anchors; 7 reserved `fw~` specs —
-  `fw~hal_adc_003`/`fw~hal_adc_008` (timer-triggered injected + async
-  completion) + `fw~hal_tim_006` (TRGO) for the interrupt-driven-control
-  sprint, `fw~mc_007` (gesture map) + `fw~mc_010` (V/f) future app
-  methods, `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
+  **27**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`
+  (gesture map) + `fw~mc_010` (V/f) future app methods,
+  `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
   pending); and `app~arch_001` (implemented; its test needs the live
   Tauri core). Anything else = investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
