@@ -78,15 +78,20 @@ Needs: impl, test
 ### Dial speed target
 `fw~mc_008~1`
 
-The application shall maintain a signed speed target: zero at each bridge
-enable, adjusted by dial-encoder angle deltas scaled by a configured gain,
-and clamped to a configured maximum magnitude.
+The application shall maintain the dial's speed demand, writing each
+change of it to the shared speed target (`sys~ops_002~1`): the demand is
+zero at each bridge enable it commands, adjusted by dial-encoder angle
+deltas scaled by a configured gain, and clamped to a configured maximum
+magnitude.
 
 Acceptance:
-- At each bridge enable the speed target is zero.
-- Dial motion adjusts the target by the configured gain per degree, signed
-  by direction.
-- The target magnitude never exceeds the configured maximum.
+- At each on-device-commanded bridge enable the dial demand restarts at
+  zero.
+- Dial motion adjusts the demand by the configured gain per degree,
+  signed by direction.
+- The demand magnitude never exceeds the configured maximum.
+- A demand change, including the enable-time zero, appears as the shared
+  speed target.
 
 Covers:
 - sys~mc_005~1
@@ -96,14 +101,14 @@ Needs: impl, test
 ### Ring state indication
 `fw~mc_009~1`
 
-The application shall present the active method identity and the bridge
+The application shall present the motor-control mode and the drive
 state — disabled, enabled, or faulted — on the LED ring, with a change
 reflected in the next 10 ms ring frame.
 
 Acceptance:
 - Each registered method has a distinct ring presentation.
-- The three bridge states are distinguishable on the ring.
-- A method or state change appears in the next ring frame.
+- The three drive states are distinguishable on the ring.
+- A mode or drive-state change appears in the next ring frame.
 
 Covers:
 - sys~mc_005~1

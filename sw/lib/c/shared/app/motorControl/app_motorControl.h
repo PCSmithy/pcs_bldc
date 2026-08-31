@@ -41,6 +41,7 @@ typedef struct
     IO_bridge_channel_E bridge;
 
     float32_t maxVelocity_radPerSec;
+    float32_t velocityEstimateFilterTau_s;
 
     IO_AS5048_channel_E encoder; // TODO - abstract IO_AS5048 into a multi-encoder dev_encoder
 
@@ -62,6 +63,7 @@ typedef struct
     bool                     isAligned;
     float32_t                magneticAngle_rad;            // rotor electrical angle
     float32_t                velocitySetpoint_radPerSec;   // signed commanded speed target
+    float32_t                velocityMeasured_radPerSec;   // encoder-derived estimate (fw~est_velocity_001)
 } app_motorControl_snapshot_S;
 
 /* Public Function Declarations */

@@ -106,38 +106,26 @@ Three top-level component folders under `specs/`, each subdivided by topic:
 ```
 specs/
   README.md                           Top-level MOC; index of areas + conventions
-  _template.md                        Working example of the spec format
 
   system/                             sys~ requirements
     README.md                         MOC for system-level specs
-    motor-control/
-      torque-control.md
-      velocity-control.md
-      position-control.md
-      trajectory-tracking.md
-    estimation/
-    observability/
-    operating-modes/
-    safety/
-    power-startup/
+    overview.md                       Architectural picture + anchor sys~ specs
+    conn/  mc/  obs/  ops/  pd/  safety/
+      e.g. obs/signal-trace.md, conn/protocol.md
 
   firmware/                           fw~ requirements (STM32G4, C/C++)
     README.md                         MOC for firmware specs
-    architecture/
-    foc/
-    estimation/
-    motion/
-    drivers/
-    telemetry/
-    safety/
+    conn/  est/  hal/  io/  mc/  obs/  pd/  safety/  ui/
+      e.g. conn/trace.md, hal/adc.md
 
-  desktop-app/                        app~ requirements (Rust GUI)
+  desktop-app/                        app~ requirements (Rust + webview app)
     README.md                         MOC for desktop app specs
-    architecture/
-    connection/
-    views/
-    data/
+    arch/  conn/  obs/  views/
+      e.g. obs/trace-client.md, views/live-plot.md
 ```
+
+Topic folders use the canonical topic abbreviations from the table
+below, matching the spec-ID prefixes they hold.
 
 Sub-folders are created when a topic gets its first spec. Do not pre-create
 empty folders — that is a documentation graveyard waiting to happen.
@@ -192,11 +180,13 @@ file is the real description; the ID is just a stable index.
 - **Type** marks the artifact type: `sys`, `fw`, or `app`.
 - **Topic** is a short canonical abbreviation drawn from the table below.
 - **Subtopic** is an *optional* second-level abbreviation used to give a
-  busy topic per-area number spaces instead of one flat pool. It is
-  currently used by the `hal` topic, which carries one sub-topic per
-  peripheral: `hal_spi`, `hal_adc`, `hal_gpio`, `hal_dma`, `hal_tim`, ...
-  Most topics omit the sub-topic entirely. Sub-topics are lowercase
-  abbreviations; they are not separately enumerated in the topic table.
+  busy topic per-area number spaces instead of one flat pool. `hal`
+  carries one sub-topic per peripheral (`hal_spi`, `hal_adc`, ...); other
+  in-use examples are `conn_serial`/`conn_proto`/`conn_server`,
+  `io_i2c`/`io_bridge`, `est_encoder`/`est_velocity`, and
+  `obs_led`/`obs_status`/`obs_log`/`obs_identity`. Most topics omit the
+  sub-topic entirely. Sub-topics are lowercase abbreviations; they are
+  not separately enumerated in the topic table.
 - **NNN** is a zero-padded 3-digit sequential number, scoped to the
   `(type, topic, subtopic)` tuple. `sys~mc_001`, `sys~mc_002`, ...,
   `sys~mc_999`. `fw~mc_001` is a separate number space from `sys~mc_001`,

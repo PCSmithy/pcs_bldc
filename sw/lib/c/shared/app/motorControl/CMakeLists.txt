@@ -7,6 +7,7 @@ target_link_libraries(app_motorControl
   PUBLIC
     lib_types
     lib_timer
+    lib_filterIIR
     io_bridge
     io_AS5048
     dev_gateDriver

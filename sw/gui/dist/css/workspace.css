@@ -1,0 +1,691 @@
+/* Workspace interior: widget grid, plot/table widgets, shared cursor.
+   Values follow the design handoff README §4–6; every color is a token. */
+
+.widget-grid {
+  /* A free canvas on the 50 px lattice. z-index: 0 makes this a stacking
+     context, so widget z-indexes never climb over the gate/scrim/popover. */
+  position: relative;
+  z-index: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Opaque: the workspace paints its own (static) dots for the empty state,
+     and two lattices showing through each other read as a moiré. */
+  background-color: var(--ink-bg);
+  background-image: radial-gradient(rgba(var(--hair-rgb), 0.09) 1px, transparent 1px);
+  background-size: 50px 50px;
+  background-position: 25px 25px;
+  background-attachment: local; /* dots ride the content when it scrolls */
+}
+.grid-extent {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.widget {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--hair-rgb), 0.1);
+  border-top-color: var(--edge-lit);
+  border-radius: var(--r-widget);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+/* Stacking rides the inline z-index (array order); dragging only dims. */
+.widget--dragging { opacity: 0.75; }
+
+.widget-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow: hidden;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.07);
+  cursor: move;
+  flex: none;
+}
+.widget-head > .icon { color: var(--color-neutral-700); margin-left: -3px; flex: none; }
+.widget-title {
+  font-size: 13.5px;
+  white-space: nowrap;
+  color: var(--color-neutral-200);
+  cursor: text;
+}
+/* Click-to-edit title (app~views_016): the editor swaps in for the span at
+   the same type size; the negative margin absorbs its border so the head
+   row's height holds. */
+.widget-title-edit {
+  font-size: 13.5px;
+  color: var(--color-neutral-200);
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-row);
+  padding: 0 5px;
+  margin: -1px 0;
+  width: 150px;
+  flex: none;
+}
+.widget-tag {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-500);
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.widget-menu {
+  background: none;
+  border: 0;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+  padding: 2px;
+  flex: none;
+}
+.widget-menu:hover { color: var(--color-neutral-200); }
+
+.axis-mode {
+  display: inline-flex;
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  flex: none;
+}
+
+.widget-legend {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex: none;
+  overflow: hidden;
+}
+.legend-entry { display: inline-flex; align-items: center; gap: 5px; cursor: default; }
+.legend-bar { width: 8px; height: 2.5px; border-radius: 1px; display: inline-block; flex: none; }
+.legend-name { font-size: 11px; color: var(--color-neutral-300); }
+.legend-period { font-size: 10px; color: var(--color-neutral-700); }
+
+.plot-body {
+  flex: 1;
+  min-height: 96px;
+  display: flex;
+  padding: 8px 12px 4px;
+  gap: 6px;
+}
+.y-axis {
+  width: 44px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  font-size: 10.5px;
+  color: var(--color-neutral-600);
+  padding: 2px 0;
+}
+.y-axis--right { align-items: flex-start; width: 46px; padding-left: 7px; }
+.y-axis--accent span { color: var(--color-accent-500); }
+
+.plot-canvas {
+  flex: 1;
+  position: relative;
+  background: var(--ink-well);
+  background-image: var(--well-grad);
+  border-radius: var(--r-canvas);
+  overflow: hidden;
+  min-width: 0;
+}
+.plot-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(var(--hair-rgb), 0.055) 1px, transparent 1px) 0 0 / 100% 25%,
+    linear-gradient(90deg, rgba(var(--hair-rgb), 0.04) 1px, transparent 1px) 0 0 / 12.5% 100%;
+}
+/* The WebGL trace canvas fills this host; its backing store is sized in
+   device px by the renderer (css size 100% via inline style). */
+.trace-host { position: absolute; inset: 0; }
+.plot-watermark {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-hint);
+  pointer-events: none;
+}
+.gap-ribbon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(var(--hair-rgb), 0.04);
+  pointer-events: none;
+}
+.gap-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--color-accent-400);
+  opacity: 0.85;
+}
+
+.x-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--color-neutral-700);
+  padding: 2px 14px 8px 68px;
+  flex: none;
+}
+.plot-widget--split .x-axis { padding-left: 76px; padding-right: 58px; }
+
+.resize-handle {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid rgba(var(--hair-rgb), 0.22);
+  border-bottom: 2px solid rgba(var(--hair-rgb), 0.22);
+  border-bottom-right-radius: 4px;
+  cursor: nwse-resize;
+}
+
+/* ── shared cursor ── */
+.cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-accent-400);
+  box-shadow: var(--cursor-glow);
+  pointer-events: none;
+}
+
+/* ── comparison anchor lines (app~views_017): dashed accent-2, so anchored
+   vs dynamic cursor read apart; pointer-events none — the lines must never
+   eat the hover tracking. ── */
+.anchor-line-x {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: repeating-linear-gradient(
+    to bottom, var(--color-accent-2-400) 0 5px, transparent 5px 9px);
+  pointer-events: none;
+}
+.anchor-line-y {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right, var(--color-accent-2-400) 0 5px, transparent 5px 9px);
+  pointer-events: none;
+}
+/* the modifier-held anchor candidate (app~views_019): the anchor family's
+   voice at a whisper — candidate vs dropped read apart instantly. */
+.anchor-preview-y {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right, rgba(var(--ok-rgb), 0.5) 0 3px, transparent 3px 9px);
+  pointer-events: none;
+}
+
+/* the readout's delta figures (app~views_018) share the anchor's voice */
+.readout-delta {
+  font-size: 11px;
+  color: var(--color-accent-2-300);
+  white-space: nowrap;
+}
+.cursor-readout {
+  position: absolute;
+  top: 10px;
+  width: 192px;
+  padding: 8px 10px;
+  background: rgba(var(--surface-rgb), 0.96);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-row);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 2;
+}
+.readout-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.readout-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-accent-400);
+}
+.readout-group-label { margin: 2px 0 4px; }
+.readout-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+.readout-name { font-size: 11.5px; color: var(--color-neutral-300); flex: 1; min-width: 56px; overflow: hidden; text-overflow: ellipsis; }
+/* Long enumerator names ellipsize instead of spilling past the readout edge
+   or crushing the name to nothing. */
+.readout-value { font-size: 12px; color: var(--color-neutral-200); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readout-value--absent { color: var(--color-neutral-700); }
+
+/* ── table widget ── */
+.table-body { flex: 1; overflow: auto; padding: 4px 12px 10px; }
+.value-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+.value-table th {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--color-neutral-600);
+  text-align: left;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.12);
+  padding: 6px 8px;
+}
+.value-table td { padding: 6px 8px; border-bottom: 1px solid rgba(var(--hair-rgb), 0.06); color: var(--color-neutral-200); }
+.value-table tr:last-child td { border-bottom: 0; }
+.value-table .legend-bar { width: 7px; height: 7px; border-radius: 2px; margin-right: 7px; }
+.value-table .col-value, .value-table .col-period { text-align: right; }
+.value-table .col-type { color: var(--color-neutral-600); }
+.value-table .col-period { color: var(--color-neutral-500); }
+.value--enum { color: var(--color-accent-400); }
+.value--ok { color: var(--color-accent-2-300); }
+
+.drop-target {
+  margin-top: 8px;
+  border: 1px dashed rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-card);
+  padding: 10px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+/* period segmented control grown inside an active picker row */
+.signal-row--active {
+  background: var(--ink-raised);
+  box-shadow: 0 0 0 1px rgba(var(--lit-rgb), 0.45);
+}
+.period-seg button { padding: 2px 7px; }
+.budget-count { font-size: 10.5px; color: var(--color-neutral-500); margin-left: auto; margin-right: 8px; }
+
+.reject-fix {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--color-accent-2-300);
+  padding: 3px 0;
+}
+
+/* ── widget launcher (app~views_004): a floating "+", whisper-quiet until
+   hovered. Above widgets, below the gate (30) and scrim (40). ── */
+.widget-launcher {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.launcher-fab {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--hair-rgb), 0.18);
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  color: var(--color-neutral-300);
+  font-family: var(--font-body);
+  font-weight: 300;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.32);
+  opacity: 0.3;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.launcher-fab:hover,
+.launcher-fab[aria-expanded="true"] {
+  opacity: 1;
+  transform: scale(1.06);
+  color: var(--color-accent-300);
+}
+.launcher-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-card);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  padding: 5px;
+  gap: 2px;
+}
+.launcher-menu button {
+  background: none;
+  border: 0;
+  border-radius: var(--r-row);
+  color: var(--color-neutral-300);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 12px;
+  text-align: left;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.launcher-menu button:hover {
+  background: var(--ink-raised);
+  color: var(--color-neutral-200);
+}
+
+/* ── timeline bar (app~views_008): span pills + pause/resume ─────────────── */
+
+.timeline-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  row-gap: 8px;
+  padding: 10px 12px 0;
+}
+/* The bar rides with the grid: no widgets, no timeline. */
+.workspace:has(.widget-grid[hidden]) .timeline-bar { display: none; }
+
+.timeline-label { white-space: nowrap; }
+.span-group button {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 10.5px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.span-pill:hover:not(:disabled):not(.is-selected) { color: var(--color-accent-300); }
+.span-pill:disabled { color: var(--color-neutral-700); cursor: default; }
+.timeline-readout { font-size: 11px; color: var(--color-neutral-500); white-space: nowrap; }
+
+/* Drag-select region over a paused plot canvas. */
+.select-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(var(--lit-rgb), 0.12);
+  border-left: 1px solid rgba(var(--lit-rgb), 0.45);
+  border-right: 1px solid rgba(var(--lit-rgb), 0.45);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ── axes configuration popover (opened from a widget's ⋯ / axis chip) ── */
+
+.axes-popover {
+  position: fixed;
+  z-index: 35; /* above the gate (30), below the reject scrim (40) */
+  width: 264px;
+  background: var(--ink-surface);
+  background-image: var(--surface-grad);
+  border: 1px solid rgba(var(--lit-rgb), 0.35);
+  border-radius: var(--r-card);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.axes-title { font-size: 13.5px; }
+.axes-rows { display: flex; flex-direction: column; }
+.axes-row { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
+.axes-row .legend-bar { flex: none; }
+.axes-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--color-neutral-300);
+}
+.axes-empty { font-size: 11.5px; color: var(--color-neutral-700); padding: 4px 0; }
+
+.axes-remove {
+  background: none;
+  border: 0;
+  color: var(--color-neutral-700);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10.5px;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex: none;
+}
+.axes-remove:hover { color: var(--color-accent-400); }
+
+.axes-scale {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.07);
+  flex-wrap: wrap;
+}
+.axes-scale-label { flex: 1; white-space: nowrap; }
+.scale-range { display: inline-flex; align-items: center; gap: 4px; }
+.scale-range input {
+  width: 58px;
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-pill);
+  color: var(--color-neutral-200);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  text-align: right;
+}
+/* Invalid manual bounds (min !< max): the accent raises it; the previous
+   valid pair keeps ruling the axis. */
+.scale-range.is-invalid input { border-color: var(--color-accent-400); }
+.scale-range-dash { color: var(--color-neutral-700); }
+
+.axes-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.07);
+}
+
+/* The derived shared/split chip: an indicator that opens the popover. */
+.axis-mode--derived {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--color-neutral-500);
+  background: transparent;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.axis-mode--derived:hover { color: var(--color-neutral-200); }
+
+/* An emptied plot keeps its place and invites the next drop. */
+.plot-empty-hint {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-card);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ── watch panel (app~views_010): the picker-docked master watch list ───── */
+.watch-panel {
+  flex: none;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(var(--hair-rgb), 0.1);
+  background: var(--ink-surface);
+}
+.watch-panel:empty { display: none; }
+.watch-panel-head {
+  padding: 8px 12px 4px;
+  flex: none;
+}
+.watch-rows { overflow-y: auto; padding: 0 8px 8px; }
+.watch-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px;
+  border-radius: var(--r-row);
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.06);
+}
+.watch-row:last-child { border-bottom: none; }
+/* the row's drag handle: color + name only — the seg and remove controls
+   stay plain buttons, so a press there never starts a drag */
+.watch-drag {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: grab;
+}
+.watch-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-neutral-300);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watch-seg button {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 10px;
+  padding: 1px 6px;
+}
+.watch-value {
+  /* Shrinkable with a floor: a long enumerator name ellipsizes instead of
+     pushing the row past the panel and displacing the remove control. */
+  flex: 0 1 auto;
+  min-width: 62px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11px;
+  color: var(--color-neutral-200);
+  font-variant-numeric: tabular-nums;
+}
+.watch-remove {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--color-neutral-700);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.watch-remove:hover { color: var(--color-accent-400); }
+
+/* ── trace appearance editor (app~views_011, inside the config popover) ── */
+.axes-row--editing { background: rgba(var(--hair-rgb), 0.06); border-radius: var(--r-row); }
+.swatch-btn {
+  background: none;
+  border: 1px solid rgba(var(--hair-rgb), 0.18);
+  border-radius: var(--r-pill);
+  padding: 3px 5px;
+  cursor: pointer;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.swatch-btn:hover { border-color: var(--color-accent-400); }
+.axes-appearance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px 8px 22px;
+  border-bottom: 1px solid rgba(var(--hair-rgb), 0.07);
+}
+.appearance-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.appearance-label { width: 38px; flex: none; }
+.swatch {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(var(--hair-rgb), 0.25);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+.swatch:hover { border-color: var(--color-accent-400); }
+.swatch--auto {
+  width: auto;
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+}
+.swatch--auto.is-selected {
+  color: var(--color-accent-2-300);
+  border-color: rgba(var(--ok-rgb), 0.4);
+}
+.axes-appearance input[type="color"] {
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(var(--hair-rgb), 0.25);
+  border-radius: 4px;
+  background: var(--ink-raised);
+  cursor: pointer;
+}
+.dots-toggle {
+  background: transparent;
+  color: var(--color-neutral-500);
+  border: 1px solid rgba(var(--hair-rgb), 0.14);
+  border-radius: var(--r-pill);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10.5px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.dots-toggle.is-selected {
+  color: var(--ink-bg);
+  background: var(--color-accent);
+  background-image: var(--accent-grad);
+  border-color: transparent;
+}
+
+/* ── pointed-trace emphasis (app~views_012): the marked readout row ── */
+.readout-row--pointed {
+  background: var(--ink-raised);
+  box-shadow: inset 0 0 0 1px rgba(var(--lit-rgb), 0.35);
+  border-radius: 4px;
+  padding-left: 4px;
+  padding-right: 4px;
+  margin: 0 -4px;
+}

@@ -35,10 +35,19 @@ specs in them yet.
 - `mc/` — sensored & sensorless motor control (anchor `sys~mc_001`), torque,
   velocity, position, trajectory tracking; gate-driver management (anchors
   `sys~mc_002` configuration, `sys~mc_003` fault observability)
-- `estimation/` — state estimation, sensorless operation
-- `observability/` — telemetry stream, diagnostics, logging
-- `operating-modes/` — system mode state machine (idle / calibrate / run /
-  fault), command authority, mode transitions
+- `est/` — state estimation, sensorless operation
+- `conn/` — device↔app protocol: schema-defined messages
+  (`sys~conn_001`), message framing (`sys~conn_002`), request
+  acknowledgement (`sys~conn_003`)
+- `obs/` — observability: periodic status telemetry (`sys~obs_001`),
+  signal selection from firmware debug information (`sys~obs_002`),
+  firmware build identity + gate (`sys~obs_003`/`_004`), signal trace
+  (`sys~obs_005`), signal write (`sys~obs_006`), text log stream
+  (`sys~obs_007`), memory read (`sys~obs_008`), trace capability report
+  (`sys~obs_009`)
+- `ops/` — system mode state machine (idle / calibrate / run / fault),
+  command authority (`sys~ops_002`, [[command-authority]]), mode
+  transitions (anchor `sys~ops_001` lives in [[overview]])
 - `safety/` — protections (overcurrent, overtemp, encoder-loss,
   gate-driver fault), fault recovery
 - `pd/` — USB-PD sink power monitoring (anchor `sys~pd_001`), power-up

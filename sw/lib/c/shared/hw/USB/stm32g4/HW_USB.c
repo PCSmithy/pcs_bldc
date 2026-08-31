@@ -47,15 +47,37 @@ bool HW_USB_connected(void)
     return tud_cdc_connected();
 }
 
+// tud_cdc FIFO read/write paths are not gated on configuration: touched
+// before tud_ready(), they queue transfers on EP0 and corrupt enumeration.
+
 // [impl->fw~hal_usb_003~1]
 uint32_t HW_USB_write(const uint8_t * data, uint32_t len)
 {
-    return (uint32_t) tud_cdc_write(data, len);
+    uint32_t accepted = 0U;
+    if (tud_ready())
+    {
+        accepted = (uint32_t) tud_cdc_write(data, len);
+    }
+    return accepted;
+}
+
+// [impl->fw~hal_usb_005~1]
+uint32_t HW_USB_writeAvailable(void)
+{
+    uint32_t available = 0U;
+    if (tud_ready())
+    {
+        available = (uint32_t) tud_cdc_write_available();
+    }
+    return available;
 }
 
 void HW_USB_writeFlush(void)
 {
-    (void) tud_cdc_write_flush();
+    if (tud_ready())
+    {
+        (void) tud_cdc_write_flush();
+    }
 }
 
 void HW_USB_serviceYield(void)
@@ -68,10 +90,20 @@ void HW_USB_serviceYield(void)
 // [impl->fw~hal_usb_004~1]
 uint32_t HW_USB_available(void)
 {
-    return (uint32_t) tud_cdc_available();
+    uint32_t count = 0U;
+    if (tud_ready())
+    {
+        count = (uint32_t) tud_cdc_available();
+    }
+    return count;
 }
 
 uint32_t HW_USB_read(uint8_t * buffer, uint32_t len)
 {
-    return (uint32_t) tud_cdc_read(buffer, len);
+    uint32_t count = 0U;
+    if (tud_ready())
+    {
+        count = (uint32_t) tud_cdc_read(buffer, len);
+    }
+    return count;
 }

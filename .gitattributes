@@ -1,0 +1,5 @@
+# Line-ending policy, repo-owned so Windows and macOS checkouts agree:
+# LF in the repository, native line endings at checkout — except shell
+# scripts, which check out as LF everywhere for bash.
+* text=auto
+*.sh text eol=lf

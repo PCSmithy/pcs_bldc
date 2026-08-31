@@ -1,13 +1,20 @@
 name: firmware + SIL
 
-# Build the board firmware and run the SIL sanity suite on all three dev
-# platforms. Linux/macOS use the hand-rolled coroutine FreeRTOS port; Windows
-# uses the Win32-fiber port. macOS runners are Apple Silicon (arm64); Linux and
-# Windows are x86-64. Rust/CMake are preinstalled on GitHub runners.
+# Board firmware + SIL sanity suite on all three dev platforms (Linux/macOS:
+# coroutine FreeRTOS port; Windows: Win32 fibers; macOS runners are arm64).
 on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "hw/**"
+      - "datasheets/**"
+      - "**.md"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Run the tools/*.sh scripts through bash on every platform (Git Bash on Windows).
 defaults:
@@ -18,6 +25,7 @@ jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +52,18 @@ jobs:
         run: |
           C:/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
           echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
+
+      # The firmware configure requires .venv (nanopb generates the protocol
+      # bindings; grpcio-tools bundles the protoc the generator invokes).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create the project venv (nanopb generator)
+        run: |
+          python -m venv .venv
+          if [ -f .venv/Scripts/pip.exe ]; then VPIP=.venv/Scripts/pip.exe; else VPIP=.venv/bin/pip; fi
+          "$VPIP" install nanopb grpcio-tools
 
       # --- board firmware (.elf/.bin/.hex) --------------------------------
       - name: Build firmware (embedded ARM)

@@ -63,6 +63,23 @@ Covers:
 
 Needs: impl, test
 
+### CDC free transmit capacity
+`fw~hal_usb_005~1`
+
+The driver shall report the number of bytes a transmit write
+(`fw~hal_usb_003~1`) accepts in full.
+
+Acceptance:
+- With the transmit space empty, the reported capacity is the full
+  transmit buffer size, and a write of that size reports every byte
+  accepted.
+- With N accepted, undrained bytes, the reported capacity is N lower.
+
+Covers:
+- sys~arch_005~1
+
+Needs: impl, test
+
 ### CDC byte reception
 `fw~hal_usb_004~1`
 

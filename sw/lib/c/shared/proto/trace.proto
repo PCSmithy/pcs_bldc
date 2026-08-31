@@ -1,0 +1,63 @@
+// Framework trace feature: host-selected memory locations sampled at fixed
+// periods and streamed as raw bytes (the host decodes via the ELF's DWARF),
+// plus one-shot reads and writes. Admission is budget-based — the board
+// configures a RAM and a link budget, and TraceStatus reports both budgets
+// and the active list's computed usage so a client can expose the real
+// capability. Fields 30..59 of shared.Envelope belong to this feature.
+
+syntax = "proto3";
+
+package trace;
+
+// One watched location.
+message Watch {
+  uint32 address   = 1;
+  uint32 size      = 2;   // 1..8 bytes
+  uint32 period_ms = 3;   // 1, 10, or 100
+}
+
+// Replaces the entire watch list and resets the stream; an empty list stops
+// tracing. Answered with TraceStatus (accepted) or Response (rejected).
+message WatchRequest {
+  repeated Watch watches = 1;
+}
+
+// Budgets and the active list's computed usage. Field numbers 5..6 are
+// reserved for a future CPU-utilization budget (cpu_used_permille,
+// cpu_budget_permille) — admission then gains a third check without any
+// message change.
+message TraceStatus {
+  uint32 ram_budget_bytes         = 1;
+  uint32 ram_worst_tick_bytes     = 2;
+  uint32 link_budget_bytes_per_s  = 3;
+  uint32 link_rate_bytes_per_s    = 4;
+  reserved 5, 6;
+}
+
+// Query the current TraceStatus without changing the watch list.
+message TraceStatusRequest {
+}
+
+// One tick's samples: the watched bytes, in list order, of every entry whose
+// period divides tick_ms — the host reconstructs membership from the list it
+// set, so no per-sample framing rides the wire.
+message Samples {
+  uint32 tick_ms = 1;
+  bytes  data    = 2;
+}
+
+// One-shot read of a memory span.
+message ReadRequest {
+  uint32 address = 1;
+  uint32 size    = 2;   // 1..128 bytes
+}
+
+message ReadReply {
+  bytes data = 1;
+}
+
+// One-shot write; answered with Response.
+message WriteRequest {
+  uint32 address = 1;
+  bytes  data    = 2;   // 1..8 bytes
+}

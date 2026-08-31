@@ -6,7 +6,9 @@
 
 /* Defines */
 
-#define HW_USB_SIM_BUF  512U
+// Sized past the frame cap's wire expansion so tests and SIL scenarios can
+// stage whole max-size frames (watch lists in, Samples out) in one pass.
+#define HW_USB_SIM_BUF  2048U
 
 /* Private Data Definitions */
 
@@ -66,6 +68,12 @@ uint32_t HW_USB_write(const uint8_t * data_in, uint32_t len)
         }
     }
     return n;
+}
+
+// [impl->fw~hal_usb_005~1]
+uint32_t HW_USB_writeAvailable(void)
+{
+    return (data->txAccepting) ? (HW_USB_SIM_BUF - data->txLen) : 0U;
 }
 
 void HW_USB_writeFlush(void)

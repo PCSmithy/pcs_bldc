@@ -1,0 +1,92 @@
+name: desktop app
+
+# Cockpit (sw/gui) UI suite + the shared Rust crate suites on the app's two
+# platforms (no Linux — docs/setup.md); path-filtered to spare macOS minutes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sw/gui/**"
+      - "sw/lib/rust/**"
+      - ".github/workflows/app.yml"
+  pull_request:
+    paths:
+      - "sw/gui/**"
+      - "sw/lib/rust/**"
+      - ".github/workflows/app.yml"
+  # Manual runs: lets a feature branch prove the matrix before its PR exists.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Match ci.yml: every run step goes through bash (Git Bash on Windows).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  app:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- webview UI suite (playwright over the devmock) -----------------
+      # test_views.py needs only stdlib + playwright; skip the repo-wide
+      # requirements.txt (scientific wheels the suite never imports).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install playwright + chromium
+        run: |
+          pip install playwright
+          python -m playwright install chromium
+
+      - name: Run the UI suite
+        timeout-minutes: 20
+        # Runners rasterize with SwiftShader, far below the views_015 budget
+        # floor; the budget gates on the bench. The scenario still runs.
+        env:
+          PCS_RENDER_BUDGET: "off"
+        run: python sw/gui/tests/test_views.py 2>&1 | tee ui-suite.log
+
+      - name: Upload UI suite log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-suite-log-${{ matrix.os }}
+          path: ui-suite.log
+
+      # --- Rust suites -----------------------------------------------------
+      # Rust is preinstalled on GitHub runners (same assumption as ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            sw/gui/src-tauri
+            sw/lib/rust/dwarf_map
+            sw/lib/rust/pcs_wire
+            sw/lib/rust/pcs_proto
+            sw/lib/rust/prng
+
+      # pcs_proto generates its bindings via protox at build time — no
+      # protoc install needed on the runner.
+      - name: Test shared Rust crates
+        timeout-minutes: 15
+        run: |
+          for crate in dwarf_map pcs_wire pcs_proto prng; do
+            (cd "sw/lib/rust/$crate" && cargo test)
+          done
+
+      # firmware_backend's DLL-backed tests self-skip when the native
+      # firmware library is absent (CI doesn't build the C firmware here).
+      - name: Test the Tauri core
+        timeout-minutes: 25
+        run: cd sw/gui/src-tauri && cargo test

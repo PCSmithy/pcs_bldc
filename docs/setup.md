@@ -21,9 +21,22 @@ and prints install instructions if they are missing.
 | Tool      | Version       | Required for     | Windows install                         | macOS install                       |
 |-----------|---------------|------------------|-----------------------------------------|-------------------------------------|
 | Java JDK  | 17 or later   | OFT (all work)   | `winget install Microsoft.OpenJDK.21`   | `brew install --cask temurin@21`    |
-| Python    | 3.10 or later | SIL, analysis    | `winget install Python.Python.3.12`     | `brew install python@3.12`          |
+| Python    | 3.10 or later | firmware builds (protobuf bindings), SIL, analysis | `winget install Python.Python.3.12` | `brew install python@3.12` |
+| CMake     | recent        | firmware / SIL builds | `winget install Kitware.CMake`     | `brew install cmake`                |
+| Ninja     | recent        | `tools/build_*.sh` | `winget install Ninja-build.Ninja`    | `brew install ninja`                |
+| ARM GCC   | recent        | embedded firmware builds | [ARM GNU toolchain downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) | `brew install --cask gcc-arm-embedded` |
+| Rust      | stable        | desktop app (`sw/gui`), SIL harness, Rust crates | [rustup.rs](https://rustup.rs) | [rustup.rs](https://rustup.rs) |
 | KiCad     | 10.x          | **HW design only** | `winget install KiCad.KiCad`          | `brew install --cask kicad`         |
 | Git       | recent        | (cloning)        | `winget install Git.Git`                | preinstalled / `brew install git`   |
+
+Java and Python block `setup.sh`; CMake, Ninja, ARM GCC, and KiCad are
+warn-only (each gates only its own workflow). Rust is not checked by
+`setup.sh` — install it if you touch `sw/gui`, `sw/sil`, or `sw/lib/rust`.
+
+**Python is a firmware-build prerequisite**: the firmware configure
+generates its protocol bindings with the venv's nanopb generator and
+fails without `.venv` (the protoc it invokes is bundled by
+`grpcio-tools`; both come from `requirements.txt` via `setup.sh`).
 
 **KiCad is required only for hardware design work.** If you are only
 contributing to firmware, SIL infrastructure, analysis notebooks, or the
@@ -46,7 +59,8 @@ assumes `java` is on `PATH`.
 
 Once prerequisites are present, `./setup.sh` is idempotent and:
 
-1. Detects the OS and verifies prereqs (Java, Python, KiCad).
+1. Detects the OS and verifies prereqs (Java, Python, KiCad, ARM GCC,
+   CMake, Ninja).
 2. Downloads and SHA256-verifies the project-pinned OpenFastTrace JAR via
    [`tools/oft/install.sh`](../tools/oft/install.sh).
 3. Creates `.venv/` if it does not exist and installs Python dependencies
@@ -72,12 +86,7 @@ example of the spec system described in [`spec-system.md`](spec-system.md).
 
 Setup steps that will be added as the project grows:
 
-- **Rust toolchain** (`rustup`, `cargo`) — when the first Rust component
-  lands. Likely candidates: USB telemetry desktop visualizer / control
-  app.
-- **ARM C toolchain** (`arm-none-eabi-gcc`) — when firmware work begins.
 - **Docker / devcontainer** — for fully reproducible builds in CI.
-- **CI runner config** — once there is something to test in CI.
 
 ## Troubleshooting
 

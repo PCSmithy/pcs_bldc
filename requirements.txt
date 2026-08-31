@@ -1,5 +1,7 @@
 requests
 playwright
+nanopb
+grpcio-tools
 numpy
 asammdf
 matplotlib

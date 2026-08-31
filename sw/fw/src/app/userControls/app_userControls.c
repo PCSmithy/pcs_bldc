@@ -18,6 +18,11 @@
 // motor fault (and never also toggles).
 #define APP_USERCONTROLS_FAULT_CLEAR_HOLD_MS (3000U)
 
+// A velocity write counts as a dial change only past this deadband from the
+// last SENT value, so encoder LSB noise can't re-assert the dial every cycle
+// against an app command (fw~conn_server_002 arbitration).
+#define APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC (0.05f)
+
 // Window (ms) after a tap to wait for a second tap: a double-tap cycles the LED
 // ring's display mode, a lone tap (window elapsed) toggles run/stop.
 #define APP_USERCONTROLS_DOUBLE_TAP_WINDOW_MS (300U)
@@ -50,6 +55,13 @@ typedef struct
     bool tapPending;
 
     float32_t velocityRequest_radPerSec;
+
+    // Last mode/velocity actually written to motorControl. Outputs are written
+    // only on change, so an app command (the other writer of the same request
+    // state) is not re-overwritten every cycle — later writer prevails.
+    app_motorControl_mode_E modeSent;
+    float32_t velocitySent_radPerSec;
+    bool outputsSeeded;   // first cycle always writes
 } app_userControls_data_S;
 
 /* Private Function Declarations */
@@ -231,9 +243,24 @@ void app_userControls_run1ms(void)
                 break;
         }
 
-        // set outputs
-        app_motorControl_setMode(data->config->motor, (data->mode == APP_USERCONTROLS_MODE_VELOCITY) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP : APP_MOTORCONTROL_MODE_OFF);
-        app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec);
+        // set outputs — only on change, so the controls and app commands
+        // share the request state by order of arrival (fw~conn_server_002).
+        const app_motorControl_mode_E modeOut =
+            ((data->mode == APP_USERCONTROLS_MODE_VELOCITY)) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP
+                                                             : APP_MOTORCONTROL_MODE_OFF;
+        if ((!data->outputsSeeded) || (modeOut != data->modeSent))
+        {
+            app_motorControl_setMode(data->config->motor, modeOut);
+            data->modeSent = modeOut;
+        }
+        if ((!data->outputsSeeded) ||
+            (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
+             APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC))
+        {
+            app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec);
+            data->velocitySent_radPerSec = data->velocityRequest_radPerSec;
+        }
+        data->outputsSeeded = true;
     }
 }
 

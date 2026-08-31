@@ -46,6 +46,20 @@ static void test_write_into_full_space_reports_zero(void)
     TEST_ASSERT_EQUAL_UINT32(0U, HW_USB_write(msg, 1U));
 }
 
+// [test->fw~hal_usb_005~1]
+static void test_write_available_tracks_tx_space(void)
+{
+    const uint32_t full = HW_USB_writeAvailable();
+    TEST_ASSERT_TRUE(full > 0U);
+
+    const uint8_t msg[4] = { 1U, 2U, 3U, 4U };
+    TEST_ASSERT_EQUAL_UINT32(4U, HW_USB_write(msg, 4U));
+    TEST_ASSERT_EQUAL_UINT32(full - 4U, HW_USB_writeAvailable());
+
+    HW_USB_sim_setTxAccepting(false);
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_USB_writeAvailable());
+}
+
 // [test->fw~hal_usb_004~1]
 static void test_receive_available_and_read(void)
 {
@@ -68,6 +82,7 @@ int main(void)
     RUN_TEST(test_connection_state);
     RUN_TEST(test_write_accepts_and_reports_count);
     RUN_TEST(test_write_into_full_space_reports_zero);
+    RUN_TEST(test_write_available_tracks_tx_space);
     RUN_TEST(test_receive_available_and_read);
     return UNITY_END();
 }

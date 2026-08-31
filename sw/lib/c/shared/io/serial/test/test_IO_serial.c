@@ -140,10 +140,25 @@ static void test_connection_status(void)
     TEST_ASSERT_TRUE(IO_serial_init(&config));
 
     HW_USB_sim_setConnected(true);
-    TEST_ASSERT_TRUE(IO_serial_connected(IO_SERIAL_CHANNEL_CDC));
+    TEST_ASSERT_TRUE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
 
     HW_USB_sim_setConnected(false);
-    TEST_ASSERT_FALSE(IO_serial_connected(IO_SERIAL_CHANNEL_CDC));
+    TEST_ASSERT_FALSE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
+}
+
+/* ---- fw~conn_serial_006: free transmit capacity ---- */
+
+// [test->fw~conn_serial_006~1]
+static void test_tx_free_tracks_transport_space(void)
+{
+    TEST_ASSERT_TRUE(IO_serial_init(&config));
+
+    const uint32_t full = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC);
+    TEST_ASSERT_TRUE(full > 0U);
+
+    const uint8_t msg[4] = { 1U, 2U, 3U, 4U };
+    IO_serial_write(IO_SERIAL_CHANNEL_CDC, msg, 4U);
+    TEST_ASSERT_EQUAL_UINT32(full - 4U, IO_serial_txFree(IO_SERIAL_CHANNEL_CDC));
 }
 
 int main(void)
@@ -166,6 +181,8 @@ int main(void)
     RUN_TEST(test_receive_available_and_read);
 
     RUN_TEST(test_connection_status);
+
+    RUN_TEST(test_tx_free_tracks_transport_space);
 
     return UNITY_END();
 }

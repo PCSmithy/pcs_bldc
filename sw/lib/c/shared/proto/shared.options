@@ -1,0 +1,10 @@
+# nanopb static-allocation bounds for shared.proto.
+#
+# submsg_callback gives Envelope a cb_payload hook invoked when a payload
+# arm's tag decodes — the sanctioned way to set callback fields inside a
+# oneof (the union is memset first, so pre-set callbacks in it are wiped).
+# The server uses it to install the WatchRequest.watches entry consumer.
+shared.Envelope          submsg_callback:true
+shared.Response.cause    max_size:64
+shared.LogText.text      max_size:128
+shared.Identity.build_id max_size:32

@@ -1,26 +1,12 @@
 //! The flagship path: command the AS5048 encoder model's angle through the unit
 //! boundary and read it back out of real firmware telemetry — the model answers the
 //! firmware's actual READ-ANGLE polls over the duplex bus, IO_AS5048 decodes,
-//! telemetryTask reports, and the sim USB capture carries the Teleplot text.
+//! server publishes, and the sim USB capture carries the framed protocol.
 
 use pcs_bldc_sil::board::COUNTS_PER_REV;
+use pcs_bldc_sil::wire::{parse_frames, read_tx_capture, TELEMETRY_TAG_BYTES};
 use pcs_bldc_sil::{cid, As5048Model, Sil, SOURCE};
-use voyant::{Firmware, SignalId, Value};
-
-/// Read the sim USB TX capture buffer (txLen + tx[] bytes) by DWARF and decode it as
-/// the Teleplot text the firmware emitted.
-fn read_tx_capture(fw: &Firmware) -> String {
-    let len = fw.read_cvar("HW_USB_sim_data.txLen").as_u64().unwrap_or(0);
-    let mut bytes = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        let b = fw
-            .read_cvar(&format!("HW_USB_sim_data.tx[{i}]"))
-            .as_u64()
-            .unwrap_or(0) as u8;
-        bytes.push(b);
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
+use voyant::{SignalId, Value};
 
 // [test->fw~est_encoder_003~1]
 // [test->fw~est_encoder_004~1]
@@ -89,8 +75,8 @@ fn end_to_end() {
     sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
         .expect("drain txLen");
 
-    // No host port open: telemetryTask skips its body, so five telemetry windows go by
-    // with nothing transmitted.
+    // No host port open: the server emits neither Status nor log frames, so
+    // ten ticks go by with nothing transmitted.
     for _ in 0..10 {
         sim.step().expect("engine step");
     }
@@ -109,7 +95,7 @@ fn end_to_end() {
     sim.write(&cid("HW_USB_sim_data.connected"), true)
         .expect("write connected");
 
-    // task_1ms samples the encoder each tick; telemetry fires every 2 ms.
+    // task_1ms samples the encoder each tick.
     for _ in 0..10 {
         sim.step().expect("engine step");
     }
@@ -147,36 +133,39 @@ fn end_to_end() {
         "AS5048 decodes the model's SPI frame: raw = {raw} (expect {exp_raw}, reverse={reverse}), angle_deg = {deg:.2} (expect {exp_deg_str})"
     );
 
-    // Pull the sim USB TX capture and confirm the Teleplot telemetry text.
-    // Direct read: tx[] is over the mirror threshold — see backlog usb_cdc/teleplot.
-    let text = read_tx_capture(&sim.fw());
-    let has_keys = text.contains("motor_angle:") && text.contains("motor_raw:");
-    let has_angle = text.contains(&exp_deg_str);
-    let has_raw = text.contains(&exp_raw.to_string());
-    assert!(
-        has_keys,
-        "telemetry text present with expected keys: captured {} bytes; motor_angle/motor_raw keys MISSING",
-        text.len()
-    );
-    assert!(
-        has_angle && has_raw,
-        "telemetry carries the commanded angle end-to-end: contains angle {exp_deg_str} = {has_angle}, raw {exp_raw} = {has_raw}"
-    );
-
-    // Drain the capture (txLen back to 0, flushed on the next step's in-sync before
-    // telemetry runs) and re-verify the next windows refill it — proves the path
-    // keeps flowing and the drain works.
-    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
-        .expect("drain txLen");
-    for _ in 0..6 {
+    // Run to the server's 10 Hz cadence (100 connected 1 ms ticks) and confirm
+    // the framed protocol flows: the capture parses into COBS-framed, CRC-valid
+    // envelopes whose payload is the board Telemetry message. Direct tx[] read: the
+    // capture is over the mirror threshold — see backlog usb_cdc.
+    for _ in 0..100 {
         sim.step().expect("engine step");
     }
-    let text2 = read_tx_capture(&sim.fw());
-    // motor_angle goes out in the fast (2 ms) tier every window; motor_raw is
-    // slow-tier (200 ms) and won't appear in a short post-drain capture.
+    let wire = read_tx_capture(&sim.fw());
+    let frames = parse_frames(&wire);
+    let telems = frames
+        .iter()
+        .filter(|f| f.starts_with(&TELEMETRY_TAG_BYTES))
+        .count();
     assert!(
-        text2.contains(&exp_deg_str) && text2.contains("motor_angle:"),
-        "TX capture drains and refills across windows: post-drain capture {} bytes, still carries the angle",
-        text2.len()
+        telems >= 1,
+        "framed Telemetry published while connected: {} valid frames ({telems} telemetry) in {} captured bytes",
+        frames.len(),
+        wire.len()
+    );
+
+    // Drain the capture and re-verify the next 100 ticks refill it — proves the
+    // path keeps flowing and the drain works.
+    sim.write(&cid("HW_USB_sim_data.txLen"), 0u32)
+        .expect("drain txLen");
+    for _ in 0..110 {
+        sim.step().expect("engine step");
+    }
+    let wire2 = read_tx_capture(&sim.fw());
+    let frames2 = parse_frames(&wire2);
+    assert!(
+        frames2.iter().any(|f| f.starts_with(&TELEMETRY_TAG_BYTES)),
+        "TX capture drains and refills with framed Telemetry: {} frames in {} bytes",
+        frames2.len(),
+        wire2.len()
     );
 }

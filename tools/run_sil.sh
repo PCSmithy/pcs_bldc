@@ -103,15 +103,25 @@ export PCS_SIL_DLL="$LIB_ARG"
 #    mutex uncontended; when nextest is absent, plain cargo test serializes them in one
 #    process. Exits nonzero on test failure either way.
 status=0
+# Whole workspace: the pcs_bldc_sil scenarios plus voyant's unit suites.
 if command -v cargo-nextest >/dev/null 2>&1; then
   echo "==> [3/4] Running SIL checks (cargo nextest, process-per-test) against $LIB_ARG"
   cargo nextest run ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
-    -p pcs_bldc_sil || status=$?
+    --workspace || status=$?
 else
   echo "==> [3/4] cargo-nextest not on PATH; running SIL checks (cargo test) against $LIB_ARG"
   cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANIFEST" \
-    -p pcs_bldc_sil || status=$?
+    --workspace || status=$?
 fi
+
+# The shared sw/lib/rust crates are workspace-less (each consumer workspace
+# resolves them by path), so their suites — dwarf_map's dSYM regressions
+# included — run here explicitly.
+for lib_crate in prng dwarf_map pcs_wire pcs_proto; do
+  echo "==> [3/4] Running shared-crate checks: $lib_crate"
+  cargo test ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} \
+    --manifest-path "$ROOT/sw/lib/rust/$lib_crate/Cargo.toml" || status=$?
+done
 if [ "$status" -ne 0 ]; then
   echo "==> SIL checks FAILED (exit $status)" >&2
   exit "$status"

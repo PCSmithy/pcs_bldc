@@ -1,0 +1,81 @@
+// Framework schema for the board <-> host protocol: the envelope and the
+// generic services every board serves. Byte-identical across projects — all
+// board variability lives in board.proto, reached through the two fixed-name
+// extension fields below (the protobuf analog of the C channelization seam).
+//
+// Field-number policy: framework services own 2..29, the trace feature owns
+// 30..59, the board extension fields are pinned at 60..62.
+
+syntax = "proto3";
+
+package shared;
+
+import "board.proto";
+import "trace.proto";
+
+// Every frame payload is exactly one Envelope. request_id correlates a
+// Response to the request that caused it; board-initiated stream messages
+// (log, telemetry) carry request_id 0.
+message Envelope {
+  uint32 request_id = 1;
+  oneof payload {
+    // framework services
+    PingRequest     ping             = 2;
+    Response        response         = 3;
+    LogText         log              = 4;
+    IdentityRequest identity_request = 5;
+    Identity        identity         = 6;
+
+    // trace feature: 30..59
+    trace.WatchRequest       watch_request        = 30;
+    trace.TraceStatus        trace_status         = 31;
+    trace.TraceStatusRequest trace_status_request = 32;
+    trace.Samples            samples              = 33;
+    trace.ReadRequest        read_request         = 34;
+    trace.ReadReply          read_reply           = 35;
+    trace.WriteRequest       write_request        = 36;
+
+    // board extension point — the only board-typed fields; every board.proto
+    // defines exactly these three message names. Request/Reply are the
+    // command pair (Reply per the result-or-Response convention below);
+    // Telemetry is the periodic stream.
+    board.Request   board_request = 60;
+    board.Reply     board_reply   = 61;
+    board.Telemetry telemetry     = 62;
+  }
+}
+
+// Reply convention (fw~conn_server_001): Response is the VERDICT type,
+// bespoke messages are RESULT types. A request that returns data is answered
+// with its result message (e.g. IdentityRequest -> Identity; receiving the
+// result IS the success signal); a request that is an action is answered
+// with Response (accepted, or rejected with a cause). Every request can be
+// rejected, and rejection always looks the same. Don't nest results inside
+// Response (it would have to import every feature's types) and don't define
+// empty per-request acks (that's Response's job).
+
+// Round-trip liveness probe; answered with an accepted Response.
+message PingRequest {
+}
+
+// Request acknowledgement: accepted, or rejected with a cause.
+message Response {
+  bool   accepted = 1;
+  string cause    = 2;
+}
+
+// A chunk of firmware standard-output text.
+message LogText {
+  string text = 1;
+}
+
+// Query the running firmware's build identity.
+message IdentityRequest {
+}
+
+// The build identity: commit hash of the built source, extended with a
+// hash of the uncommitted diff when the tree was dirty. Doubles as the
+// firmware version string.
+message Identity {
+  string build_id = 1;
+}

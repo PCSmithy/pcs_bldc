@@ -24,6 +24,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dwarf_map"
+version = "0.0.0"
+dependencies = [
+ "gimli",
+ "object",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,9 +121,14 @@ dependencies = [
 name = "pcs_bldc_sil"
 version = "0.0.0"
 dependencies = [
+ "pcs_wire",
  "prng",
  "voyant",
 ]
+
+[[package]]
+name = "pcs_wire"
+version = "0.0.0"
 
 [[package]]
 name = "prng"
@@ -247,7 +260,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 name = "voyant"
 version = "0.0.0"
 dependencies = [
- "gimli",
+ "dwarf_map",
  "indexmap",
  "libloading",
  "object",

@@ -1,0 +1,209 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Design tokens — ported from the design handoff (design_handoff_pcs_bldc_
+   cockpit). A THEME IS A TOKEN BLOCK AND NOTHING ELSE: no per-component
+   overrides anywhere. The base ramps come from the Organic design system
+   (_ds/…/styles.css); the --ink-* surfaces, overlay triples, radii, type
+   voices, and texture tokens are this app's addition.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Organic base ramps (Warm carries the design system's own values;
+      the other themes retune only the steps the app consumes) ── */
+:root {
+  --color-neutral-100: #f9f4ed;
+  --color-neutral-200: #eee7db;
+  --color-neutral-300: #dcd3c4;
+  --color-neutral-400: #c0b6a5;
+  --color-neutral-500: #a19786;
+  --color-neutral-600: #82796a;
+  --color-neutral-700: #645c50;
+  --color-neutral-800: #474238;
+  --color-neutral-900: #2e2b25;
+
+  --color-accent: #c67139;
+  --color-accent-300: #ffc6a5;
+  --color-accent-400: #f6a06b;
+  --color-accent-500: #c48a5e;
+
+  --color-accent-2-300: #ccdbb2;
+  --color-accent-2-400: #aebf92;
+}
+
+/* ── theme: Warm (default) — the Organic ground inverted onto its own dark ramp ── */
+:root {
+  --ink-bg: #1b1916;
+  --ink-chrome: #211f1b;
+  --ink-surface: #262320;
+  --ink-raised: #302c27;
+  --ink-well: #131110;
+  --ink-hint: #3d3831;
+  --ink-warn: #33261c;
+  --hair-rgb: 238, 231, 219;
+  --lit-rgb: 246, 160, 107;
+  --accent-rgb: 198, 113, 57;
+  --ok-rgb: 174, 191, 146;
+  --surface-rgb: 38, 35, 32;
+  --bg-rgb: 27, 25, 22;
+  --well-rgb: 19, 17, 16;
+  --r-widget: 20px;
+  --r-dialog: 26px;
+  --r-card: 16px;
+  --r-row: 12px;
+  --r-canvas: 10px;
+  --r-pill: 999px;
+  --font-display: "Caprasimo", system-ui, serif;
+  --display-track: normal;
+  --display-case: none;
+  --display-weight: 400;
+  --font-body: "Figtree", system-ui, sans-serif;
+  --font-mono: ui-monospace, Menlo, Consolas, monospace;
+  --icon-stroke: 2.75;
+  --icon-cap: round;
+  --chrome-grad: none;
+  --surface-grad: none;
+  --well-grad: none;
+  --accent-grad: none;
+  --cursor-glow: 0 0 8px rgba(var(--lit-rgb), .5);
+  --chip-glow: none;
+  --edge-lit: transparent;
+  --trace-1: var(--color-accent-400);
+  --trace-2: var(--color-accent-2-400);
+  --trace-3: #e0c46a;
+  --trace-4: #86b8c4;
+  --trace-5: #d98a9c;
+  --trace-6: #c9c1b4;
+}
+
+/* ── theme: Graphite — angular, cool grey, a restrained instrument ── */
+:root[data-theme="graphite"] {
+  --ink-bg: #111315;
+  --ink-chrome: #15181a;
+  --ink-surface: #1b1f22;
+  --ink-raised: #242a2e;
+  --ink-well: #0a0c0d;
+  --ink-hint: #2c3338;
+  --ink-warn: #22282b;
+  --hair-rgb: 223, 228, 231;
+  --lit-rgb: 95, 216, 232;
+  --accent-rgb: 47, 168, 189;
+  --ok-rgb: 142, 217, 159;
+  --surface-rgb: 27, 31, 34;
+  --bg-rgb: 17, 19, 21;
+  --well-rgb: 10, 12, 13;
+  --color-neutral-200: #dfe4e7;
+  --color-neutral-300: #bfc7cc;
+  --color-neutral-500: #8b959b;
+  --color-neutral-600: #69737a;
+  --color-neutral-700: #4a5257;
+  --color-accent: #2fa8bd;
+  --color-accent-300: #a8ecf5;
+  --color-accent-400: #5fd8e8;
+  --color-accent-500: #2b95a8;
+  --color-accent-2-300: #c6e8cf;
+  --color-accent-2-400: #8ed99f;
+  --r-widget: 3px;
+  --r-dialog: 4px;
+  --r-card: 2px;
+  --r-row: 2px;
+  --r-canvas: 1px;
+  --r-pill: 3px;
+  /* a condensed technical face where one exists on the machine, else the UI sans */
+  --font-display: "Bahnschrift Condensed", "Bahnschrift SemiCondensed", "DIN Condensed",
+    "Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Liberation Sans Narrow",
+    system-ui, sans-serif;
+  --display-track: .09em;
+  --display-case: uppercase;
+  --display-weight: 600;
+  --icon-stroke: 2;
+  --icon-cap: square;
+  --chrome-grad: linear-gradient(180deg, rgba(var(--hair-rgb), .055), rgba(var(--hair-rgb), 0) 70%);
+  --surface-grad: linear-gradient(180deg, rgba(var(--hair-rgb), .045), rgba(var(--hair-rgb), 0) 46%);
+  --well-grad: repeating-linear-gradient(0deg, rgba(var(--hair-rgb), .03) 0 1px, rgba(var(--hair-rgb), 0) 1px 3px);
+  --accent-grad: linear-gradient(180deg, #6fdff0, #25879a);
+  --cursor-glow: 0 0 10px rgba(var(--lit-rgb), .5), 0 0 26px rgba(var(--lit-rgb), .16);
+  --chip-glow: inset 0 1px 0 rgba(var(--hair-rgb), .12);
+  --edge-lit: rgba(var(--hair-rgb), .09);
+  --trace-3: #e8c46a;
+  --trace-4: #9d8bf0;
+  --trace-5: #f07aa8;
+  --trace-6: #b9c2c7;
+}
+
+/* ── theme: Neon — same geometry, pushed to a cyberpunk key ── */
+:root[data-theme="neon"] {
+  --ink-bg: #08070d;
+  --ink-chrome: #0c0b14;
+  --ink-surface: #13101f;
+  --ink-raised: #1c1730;
+  --ink-well: #040309;
+  --ink-hint: #2a2340;
+  --ink-warn: #1f0f1c;
+  --hair-rgb: 231, 226, 245;
+  --lit-rgb: 255, 111, 224;
+  --accent-rgb: 224, 31, 184;
+  --ok-rgb: 79, 240, 192;
+  --surface-rgb: 19, 16, 31;
+  --bg-rgb: 8, 7, 13;
+  --well-rgb: 4, 3, 9;
+  --color-neutral-200: #e7e2f5;
+  --color-neutral-300: #c3bcd9;
+  --color-neutral-500: #8b83a6;
+  --color-neutral-600: #6a6383;
+  --color-neutral-700: #4a4463;
+  --color-accent: #e01fb8;
+  --color-accent-300: #ffb3ee;
+  --color-accent-400: #ff6fe0;
+  --color-accent-500: #c018a0;
+  --color-accent-2-300: #b7f7e2;
+  --color-accent-2-400: #4ff0c0;
+  --r-widget: 2px;
+  --r-dialog: 2px;
+  --r-card: 2px;
+  --r-row: 2px;
+  --r-canvas: 0px;
+  --r-pill: 2px;
+  /* wide-tracked mono: the terminal voice, deliberately not the condensed one */
+  --font-display: "Iosevka Term", "JetBrains Mono", "IBM Plex Mono", "SF Mono",
+    ui-monospace, Menlo, Consolas, monospace;
+  --display-track: .13em;
+  --display-case: uppercase;
+  --display-weight: 700;
+  --icon-stroke: 1.6;
+  --icon-cap: square;
+  --chrome-grad: linear-gradient(180deg, rgba(var(--lit-rgb), .07), rgba(var(--lit-rgb), 0) 78%),
+    linear-gradient(90deg, rgba(79, 240, 192, .05), rgba(79, 240, 192, 0) 42%);
+  --surface-grad: linear-gradient(160deg, rgba(var(--lit-rgb), .075), rgba(var(--lit-rgb), 0) 38%);
+  --well-grad: repeating-linear-gradient(0deg, rgba(var(--hair-rgb), .035) 0 1px, rgba(var(--hair-rgb), 0) 1px 3px),
+    radial-gradient(120% 90% at 50% 120%, rgba(var(--lit-rgb), .12), rgba(var(--lit-rgb), 0) 70%);
+  --accent-grad: linear-gradient(135deg, #ff7ce4, #a04dff);
+  --cursor-glow: 0 0 12px rgba(var(--lit-rgb), .85), 0 0 34px rgba(var(--lit-rgb), .3);
+  --chip-glow: 0 0 12px rgba(var(--accent-rgb), .35);
+  --edge-lit: rgba(var(--lit-rgb), .22);
+  --trace-3: #ffd84f;
+  --trace-4: #5fd8ff;
+  --trace-5: #a56fff;
+  --trace-6: #c3bcd9;
+}
+
+/* ── ground rules (theme-independent, consuming only tokens) ── */
+*, *::before, *::after { box-sizing: border-box; }
+/* display flavors on hideable elements must never defeat the attribute */
+[hidden] { display: none !important; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink-bg);
+  color: var(--color-neutral-200);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4, h5, h6 { margin: 0; }
+a { color: var(--color-accent-400); text-decoration: none; }
+a:hover { color: var(--color-accent-300); }
+::selection { background: rgba(var(--lit-rgb), .3); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--color-accent-400); outline-offset: 2px; }
+/* a bench panel shows data, not tracks */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* the only sanctioned animation beside live data */
+@keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }

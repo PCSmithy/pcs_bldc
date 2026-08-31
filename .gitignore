@@ -69,6 +69,26 @@ fp-info-cache
 __pycache__/
 *.pyc
 
+# Rust build output — each workspace/standalone crate owns a target dir
+# (sw/sil/.gitignore covers the SIL workspace's)
+sw/lib/rust/*/target/
+sw/gui/src-tauri/target/
+
+# Tauri build-time generated context
+sw/gui/src-tauri/gen/
+
+# nanopb-generated protocol bindings (regenerated from sw/proto/ at build
+# time; the build requires the project venv — see sw/fw/src/lib/protobuf/)
+*.pb.h
+*.pb.c
+
+# Generated build identity (refreshed every build from git state — see
+# sw/fw/src/lib/build/generate_identity.cmake)
+lib_build_identity.h
+
+# Python protobuf bindings for the console client (generated on demand)
+tools/pcs_client_gen/
+
 # Claude Code runtime artifacts (committed config like skills/ stays tracked)
 .claude/scheduled_tasks.lock
 
