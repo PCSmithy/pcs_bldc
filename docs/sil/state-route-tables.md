@@ -340,16 +340,18 @@ is `add_with_latency(src, dst, 1)` (voyant) / `Engine::add_delayed_route(src, ds
 
 ```
 per tick:
-  1. now += tick_period; set_time(now)
+  1. now += grid_us; set_time(now)
   2. if wiring dirty: validate (below); cache the verdict + zero-latency topo order
   3. propagate DELAYED routes once — from a snapshot taken BEFORE any member
      advances (each delayed dst gets its source's end-of-previous-tick value)
   4. for each ENABLED member, in registration order:
        a. evaluate the enabled ZERO-latency routes in topological order with FRESH
           reads (a→b→c resolves fully, reading values produced earlier this tick)
-       b. member.advance(dt)   (a firmware member: flush fresh cvars →
+       b. if the member's Cadence says it is due: member.advance(dt)
+                               (a firmware member: flush fresh cvars →
                                 advance_tick → sweep the whole cvar mirror out; a
-                                model: read inputs, step, push outputs)
+                                model: read inputs, step, push outputs; OnDemand
+                                members skip a+b — the bus drives them)
   5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
 ```
 

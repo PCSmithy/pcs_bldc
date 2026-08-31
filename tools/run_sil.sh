@@ -97,11 +97,12 @@ cargo build ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"} --manifest-path "$SIL_MANI
 LIB_ARG="$(cygpath -m "$LIB" 2>/dev/null || echo "$LIB")"
 export PCS_SIL_DLL="$LIB_ARG"
 
-# 3. Run the behavioral checks. Each scenario is an independent #[test] over a fresh
-#    Sil world (a firmware DLL loaded, booted from reset, unloaded on drop). cargo
-#    nextest gives each test its own process, so the worlds parallelize with the world
-#    mutex uncontended; when nextest is absent, plain cargo test serializes them in one
-#    process. Exits nonzero on test failure either way.
+# 3. Run the checks — the whole workspace (voyant unit tests + the pcs_bldc_sil
+#    behavioral suite). Each scenario is an independent #[test] over a fresh Sil
+#    world (a firmware DLL loaded, booted from reset, unloaded on drop). cargo
+#    nextest gives each test its own process, so the worlds parallelize with the
+#    world mutex uncontended; when nextest is absent, plain cargo test serializes
+#    them in one process. Exits nonzero on test failure either way.
 status=0
 # Whole workspace: the pcs_bldc_sil scenarios plus voyant's unit suites.
 if command -v cargo-nextest >/dev/null 2>&1; then
