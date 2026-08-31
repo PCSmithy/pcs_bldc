@@ -219,7 +219,7 @@ impl Sil {
     /// Step the engine for `ms` milliseconds of sim time (at this world's grid),
     /// panicking on a step error.
     pub fn run_for_ms(&mut self, ms: u64) {
-        let ticks = (ms * 1_000) / self.tick_period_us();
+        let ticks = (ms * 1_000) / self.grid_us();
         for _ in 0..ticks {
             self.step().expect("engine step");
         }

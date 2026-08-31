@@ -9,7 +9,7 @@
 //! one tick of separation — a **delayed (latency-1) route** is that explicit ZOH cut,
 //! while forward (zero-latency) dataflow has no added latency. Each [`step`](Engine::step):
 //!
-//! 1. **Advance sim time** — `now += tick_period` (monotonic, wall-clock-free);
+//! 1. **Advance sim time** — `now += grid_us` (monotonic, wall-clock-free);
 //!    [`StateTable::set_time`] stamps every record this tick.
 //! 2. **Validate the wiring if dirty** (below); a cached invalid verdict re-raises
 //!    each step until fixed.
@@ -99,7 +99,9 @@ pub struct Engine {
     /// The shared duplex router any initiating member (firmware or model) couples
     /// through; the engine drains + records its transactions each `step`.
     duplex: DuplexRouter,
-    tick_period_us: u64,
+    /// Sim time advanced per step — the engine **grid** (an implementation
+    /// detail of time resolution, never part of any member's identity).
+    grid_us: u64,
     now_us: u64,
     /// Wiring changed since the last validation → revalidate at the next `step`.
     dirty: bool,
@@ -123,16 +125,16 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// A new engine advancing `tick_period_us` of sim time per [`step`](Self::step)
-    /// (e.g. 1000 for a 1 kHz cadence). Sim time starts at 0; the first `step`
-    /// records at `tick_period_us`.
-    pub fn new(tick_period_us: u64) -> Self {
+    /// A new engine advancing `grid_us` of sim time per [`step`](Self::step)
+    /// (e.g. 1000 for a 1 kHz grid). Sim time starts at 0; the first `step`
+    /// records at `grid_us`.
+    pub fn new(grid_us: u64) -> Self {
         Self {
             state: StateTable::new(),
             routes: RouteTable::new(),
             members: Vec::new(),
             duplex: DuplexRouter::new(),
-            tick_period_us,
+            grid_us,
             now_us: 0,
             dirty: true,
             verdict: None,
@@ -145,10 +147,10 @@ impl Engine {
 
     /// A new engine with a caller-configured [`StateTable`] (retention / epsilon /
     /// log capacity).
-    pub fn with_state(tick_period_us: u64, state: StateTable) -> Self {
+    pub fn with_state(grid_us: u64, state: StateTable) -> Self {
         Self {
             state,
-            ..Self::new(tick_period_us)
+            ..Self::new(grid_us)
         }
     }
 
@@ -351,7 +353,7 @@ impl Engine {
     /// re-raised each step until fixed).
     pub fn step(&mut self) -> Result<(), EngineError> {
         // 1. Sim time advances (monotonic, deterministic — no wall-clock).
-        self.now_us += self.tick_period_us;
+        self.now_us += self.grid_us;
         self.state.set_time(self.now_us);
 
         // A duplex link that still names an undeclared endpoint is dangling — warn
@@ -399,7 +401,7 @@ impl Engine {
         //    its bus transfers). `routes`, `state`, and `zl_order` are disjoint from
         //    `members`, so the borrows coexist. Propagation is table-only; the
         //    member syncs its own firmware mirrors.
-        let tick = self.tick_period_us;
+        let grid = self.grid_us;
         let now = self.now_us;
         for i in 0..self.members.len() {
             if !self.members[i].enabled {
@@ -436,7 +438,7 @@ impl Engine {
             // dt = elapsed since the previous advance (exactly the grid step for
             // EveryStep — a disabled gap never leaks in, see set_member_enabled).
             let dt = match cadence {
-                Cadence::EveryStep => tick,
+                Cadence::EveryStep => grid,
                 _ => now - entry.last_advance_us,
             };
             entry.last_advance_us = now;
@@ -505,9 +507,9 @@ impl Engine {
         self.now_us
     }
 
-    /// The tick period (microseconds).
-    pub fn tick_period_us(&self) -> u64 {
-        self.tick_period_us
+    /// The engine grid: sim time advanced per step (microseconds).
+    pub fn grid_us(&self) -> u64 {
+        self.grid_us
     }
 
     /// The State Table / historian, for assertions and inspection.
@@ -744,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn time_advances_by_tick_period() {
+    fn time_advances_by_the_grid_step() {
         let be = Rc::new(MockBackend::with_leaves(1_000, &["counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "counter", None).unwrap();

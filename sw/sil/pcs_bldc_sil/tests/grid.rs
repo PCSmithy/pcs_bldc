@@ -82,7 +82,7 @@ fn the_gated_mirror_delays_a_cvar_change_by_at_most_the_cadence() {
     // 1 ms mirror cadence the historian may trail firmware memory by one count — and
     // by no more, and without ever skipping one.
     let (mut sim, _member, _fast) = fine_world(Sil::options());
-    assert_eq!(sim.tick_period_us(), FINE_GRID_US);
+    assert_eq!(sim.grid_us(), FINE_GRID_US);
 
     let mut lagged = 0u64;
     for step in 1..=(5 * STEPS_PER_TICK) {
