@@ -21,7 +21,7 @@ use crate::signal::{SignalId, Value};
 use crate::state_table::StateTable;
 use libloading::{Library, Symbol};
 use object::Object;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{c_char, c_void, CStr};
@@ -153,11 +153,9 @@ pub(crate) trait Backend {
 
     // --- simulated interrupts ---------------------------------------------
     //
-    // The registration paths (the C `SIL_irq_*` upcalls and the config-time
-    // by-name path) both queue ops here, so one allocator hands out handles and one
-    // order applies them; the owning [`FirmwareMember`] drains the log into its
-    // [`IrqTable`] and dispatches what is due. Defaults make an interrupt-less
-    // backend inert.
+    // Both registration paths (the C `SIL_irq_*` upcalls and the config-time by-name
+    // path) queue into one op log here, so they share a handle allocator and an apply
+    // order. Defaults make an interrupt-less backend inert.
 
     /// Runtime address of a firmware **function** by name — the config-time
     /// registration path. `None` when the image's DWARF has no such function.
@@ -401,7 +399,7 @@ type SetIrqHooksFn = unsafe extern "C" fn(*const SilIrqHooks);
 /// C signature of the firmware's ISR dispatch entry (`sil_fw_dispatch_isr`).
 type DispatchIsrFn = unsafe extern "C" fn(Option<IsrFn>) -> bool;
 
-/// SAFETY (all four trampolines): `ctx` is the address of the [`IrqRendezvous`]
+/// SAFETY (every trampoline below): `ctx` is the address of the [`IrqRendezvous`]
 /// boxed inside the owning [`Firmware`], installed at load and cleared before
 /// unload ([`Firmware::drop`]), so it is valid whenever firmware code can run.
 /// Single-threaded; no Rust borrow of its `RefCell` is live during C execution.
@@ -435,7 +433,7 @@ unsafe fn irq_register(
     priority: u8,
 ) -> i32 {
     match handler {
-        Some(f) => (*(ctx as *const IrqRendezvous)).register(f as usize, kind, rate_or_delay_us, priority),
+        Some(f) => (*ctx.cast::<IrqRendezvous>()).register(f as usize, kind, rate_or_delay_us, priority),
         None => -1,
     }
 }
@@ -451,20 +449,20 @@ unsafe extern "C" fn irq_register_pended(
 
 /// See the SAFETY note on [`irq_register_periodic`].
 unsafe extern "C" fn irq_cancel(ctx: *mut c_void, handle: i32) {
-    (*(ctx as *const IrqRendezvous)).cancel(handle);
+    (*ctx.cast::<IrqRendezvous>()).cancel(handle);
 }
 
 /// See the SAFETY note on [`irq_register_periodic`].
 unsafe extern "C" fn irq_set_enabled(ctx: *mut c_void, handle: i32, enabled: bool) {
-    (*(ctx as *const IrqRendezvous)).set_enabled(handle, enabled);
+    (*ctx.cast::<IrqRendezvous>()).set_enabled(handle, enabled);
 }
 
 /// See the SAFETY note on [`irq_register_periodic`].
 unsafe extern "C" fn irq_pend(ctx: *mut c_void, handle: i32) {
-    (*(ctx as *const IrqRendezvous)).pend(handle);
+    (*ctx.cast::<IrqRendezvous>()).pend(handle);
 }
 
-/// SAFETY (all three trampolines): `ctx` is the address of the `PortState`
+/// SAFETY (every trampoline below): `ctx` is the address of the `PortState`
 /// boxed inside the owning [`Firmware`], installed at load and cleared before
 /// unload ([`Firmware::drop`]), so it is valid whenever firmware code can run.
 /// Single-threaded; no Rust borrow of the RefCell is live during C execution.
@@ -482,7 +480,7 @@ unsafe extern "C" fn port_register_signal(
             CStr::from_ptr(p).to_str().ok()
         }
     };
-    match (&*(ctx as *const PortState), cstr(sig_type), cstr(local)) {
+    match (&*ctx.cast::<PortState>(), cstr(sig_type), cstr(local)) {
         (state, Some(t), Some(l)) => {
             state
                 .inner
@@ -495,7 +493,7 @@ unsafe extern "C" fn port_register_signal(
 
 /// See the SAFETY note on [`port_register_signal`].
 unsafe extern "C" fn port_read_signal(ctx: *mut c_void, handle: i32, out: *mut f64) -> bool {
-    let state = &*(ctx as *const PortState);
+    let state = &*ctx.cast::<PortState>();
     match (state.inner.borrow().read(handle), out.is_null()) {
         (Some(v), false) => {
             *out = v;
@@ -507,7 +505,7 @@ unsafe extern "C" fn port_read_signal(ctx: *mut c_void, handle: i32, out: *mut f
 
 /// See the SAFETY note on [`port_register_signal`].
 unsafe extern "C" fn port_write_signal(ctx: *mut c_void, handle: i32, value: f64) {
-    let state = &*(ctx as *const PortState);
+    let state = &*ctx.cast::<PortState>();
     state.inner.borrow_mut().write(handle, value);
 }
 
@@ -531,21 +529,18 @@ unsafe extern "C" fn port_duplex_transfer(
     if rx_ptr.is_null() || out_len.is_null() {
         return false;
     }
-    let state = &*(ctx as *const PortState);
-    // Resolve the router + endpoint handle, dropping the ports borrow before the
-    // upcall so a nested transfer can re-enter the rendezvous.
-    let (router, endpoint) = match state.inner.borrow().duplex_route(handle) {
-        Some(r) => r,
-        None => return false,
+    let state = &*ctx.cast::<PortState>();
+    let Some((router, endpoint)) = state.inner.borrow().duplex_route(handle) else {
+        return false;
     };
     let tx = if tx_ptr.is_null() || tx_len == 0 {
         Vec::new()
     } else {
         std::slice::from_raw_parts(tx_ptr, tx_len).to_vec()
     };
-    let rx = match router.transfer_from_dispatch(endpoint, &tx) {
-        Some(rx) => rx,
-        None => return false, // unlinked endpoint (or no dispatch window) -> floating bus
+    // No rx = an unlinked endpoint, or firmware running outside a dispatch window.
+    let Some(rx) = router.transfer_from_dispatch(endpoint, &tx) else {
+        return false;
     };
     let n = rx.len().min(rx_max);
     std::ptr::copy_nonoverlapping(rx.as_ptr(), rx_ptr, n);
@@ -555,6 +550,8 @@ unsafe extern "C" fn port_duplex_transfer(
 
 /// A loaded firmware instance (one per process — see ffi-boundary.md §1).
 pub struct Firmware {
+    /// `lib` FIRST: fields drop in declaration order, so the image unloads before
+    /// the contexts its hooks point at are freed.
     lib: Library,
     dwarf: DwarfMap,
     /// runtime_addr - link_addr, applied to every DWARF address (ASLR slide).
@@ -569,6 +566,30 @@ pub struct Firmware {
     /// resolved once at leaf enumeration, indexed by the handle. The per-tick
     /// mirror sweep reads straight from here — no DWARF lookup, no path parsing.
     cvar_cache: RefCell<Vec<(*mut u8, Leaf)>>,
+    /// Control-ABI entry points, resolved once at load. `advance_time` runs once per
+    /// engine step and `dispatch_isr` once per due interrupt, so a `dlsym` per call
+    /// would put a loader hash lookup (and, on glibc, a lock) on the hottest path.
+    start_fn: unsafe extern "C" fn() -> bool,
+    advance_time_fn: unsafe extern "C" fn(u32),
+    dispatch_isr_fn: DispatchIsrFn,
+    shutdown_fn: unsafe extern "C" fn(),
+    /// True between a successful [`start`](Self::start) and a [`shutdown`](Self::shutdown).
+    /// The port's teardown asserts it runs on the main coroutine/fiber, so it must not
+    /// be called on an image whose scheduler never ran.
+    started: Cell<bool>,
+}
+
+/// Resolve one mandatory control-ABI export, naming it in the error.
+///
+/// SAFETY: the caller asserts `T` matches the exported symbol's C signature.
+unsafe fn sym<'a, T>(lib: &'a Library, name: &[u8]) -> Result<Symbol<'a, T>, Box<dyn Error>> {
+    lib.get(name).map_err(|_| {
+        format!(
+            "firmware is missing the control-ABI export {}",
+            String::from_utf8_lossy(&name[..name.len() - 1])
+        )
+        .into()
+    })
 }
 
 impl Firmware {
@@ -638,7 +659,7 @@ impl Firmware {
         unsafe {
             if let Ok(set_hooks) = lib.get::<SetHooksFn>(b"sil_fw_setHooks\0") {
                 let hooks = SilFwHooks {
-                    context: std::ptr::from_ref::<PortState>(&ports).cast_mut().cast::<c_void>(),
+                    context: std::ptr::from_ref(&*ports).cast_mut().cast::<c_void>(),
                     register_signal: port_register_signal,
                     read_signal: port_read_signal,
                     write_signal: port_write_signal,
@@ -654,7 +675,7 @@ impl Firmware {
         unsafe {
             if let Ok(set_irq_hooks) = lib.get::<SetIrqHooksFn>(b"sil_fw_setIrqHooks\0") {
                 let hooks = SilIrqHooks {
-                    context: std::ptr::from_ref::<IrqRendezvous>(&irq).cast_mut().cast::<c_void>(),
+                    context: std::ptr::from_ref(&*irq).cast_mut().cast::<c_void>(),
                     register_periodic: irq_register_periodic,
                     register_oneshot: irq_register_oneshot,
                     cancel: irq_cancel,
@@ -666,6 +687,18 @@ impl Firmware {
             }
         }
 
+        // Mandatory control-ABI exports, resolved once here: an image built without
+        // them names the missing symbol now rather than panicking at the first step.
+        // SAFETY: each signature is checked against `sw/fw/src/sil_fw.h`.
+        let (start_fn, advance_time_fn, dispatch_isr_fn, shutdown_fn) = unsafe {
+            (
+                *sym::<unsafe extern "C" fn() -> bool>(&lib, b"sil_fw_start\0")?,
+                *sym::<unsafe extern "C" fn(u32)>(&lib, b"sil_fw_advance_time\0")?,
+                *sym::<DispatchIsrFn>(&lib, b"sil_fw_dispatch_isr\0")?,
+                *sym::<unsafe extern "C" fn()>(&lib, b"sil_fw_shutdown\0")?,
+            )
+        };
+
         Ok(Self {
             lib,
             dwarf,
@@ -673,6 +706,11 @@ impl Firmware {
             ports,
             irq,
             cvar_cache: RefCell::new(Vec::new()),
+            started: Cell::new(false),
+            start_fn,
+            advance_time_fn,
+            dispatch_isr_fn,
+            shutdown_fn,
         })
     }
 
@@ -705,26 +743,20 @@ impl Firmware {
     /// Control ABI: HW init + create tasks + run the scheduler to first
     /// quiescence. Returns false on init/task-creation failure.
     pub fn start(&self) -> bool {
-        // SAFETY: signature matches `bool sil_fw_start(void)`.
-        unsafe {
-            let f: Symbol<unsafe extern "C" fn() -> bool> =
-                self.lib.get(b"sil_fw_start\0").expect("sil_fw_start");
-            f()
-        }
+        // SAFETY: resolved from this image at load; signature checked there.
+        let ok = unsafe { (self.start_fn)() };
+        self.started.set(ok);
+        ok
     }
 
     /// Control ABI: advance the firmware's hardware timebase by `elapsed_us`. No
     /// firmware code runs here; the kernel tick arrives through
     /// [`dispatch_isr`](Self::dispatch_isr) like every other interrupt.
     pub fn advance_time(&self, elapsed_us: u64) {
-        // SAFETY: signature matches `void sil_fw_advance_time(uint32_t)`.
-        unsafe {
-            let f: Symbol<unsafe extern "C" fn(u32)> = self
-                .lib
-                .get(b"sil_fw_advance_time\0")
-                .expect("sil_fw_advance_time");
-            f(u32::try_from(elapsed_us).expect("a step is under 2^32 us"))
-        }
+        // The ABI takes a u32; saturating is the honest clamp for a > 71 min step,
+        // and beats panicking across the FFI driver loop.
+        // SAFETY: resolved from this image at load; signature checked there.
+        unsafe { (self.advance_time_fn)(u32::try_from(elapsed_us).unwrap_or(u32::MAX)) }
     }
 
     /// Runtime address of a firmware **function** by name: its DWARF `DW_AT_low_pc`
@@ -746,22 +778,15 @@ impl Firmware {
         // from it or handed up by its own sim driver — and is only passed through to
         // the firmware's dispatch entry, which calls it behind the ISR bracket. The
         // signature matches `bool sil_fw_dispatch_isr(void (*)(void))`.
-        unsafe {
-            let f: Symbol<DispatchIsrFn> = self
-                .lib
-                .get(b"sil_fw_dispatch_isr\0")
-                .expect("sil_fw_dispatch_isr");
-            f(Some(std::mem::transmute::<usize, IsrFn>(handler)))
-        }
+        debug_assert_ne!(handler, 0, "null ISR address");
+        unsafe { (self.dispatch_isr_fn)(Some(std::mem::transmute::<usize, IsrFn>(handler))) }
     }
 
     /// Control ABI: tear down the scheduler.
     pub fn shutdown(&self) {
-        // SAFETY: signature matches `void sil_fw_shutdown(void)`.
-        unsafe {
-            let f: Symbol<unsafe extern "C" fn()> =
-                self.lib.get(b"sil_fw_shutdown\0").expect("sil_fw_shutdown");
-            f()
+        if self.started.replace(false) {
+            // SAFETY: resolved from this image at load; signature checked there.
+            unsafe { (self.shutdown_fn)() }
         }
     }
 
@@ -860,6 +885,10 @@ impl Firmware {
 
 impl Drop for Firmware {
     fn drop(&mut self) {
+        // End the scheduler first: unloading an image whose task stacks/fibers are
+        // still live leaves its code addresses on those stacks. No-op if `start`
+        // never succeeded, or if the caller already shut down.
+        self.shutdown();
         // Uninstall the hooks before the DLL unloads so no window exists in
         // which C could call into a dangling context (belt-and-braces: the sim
         // is single-threaded, so nothing can run concurrently anyway).
@@ -1090,7 +1119,7 @@ impl Backend for DeadBackend {
 ///    - *Ports* — apply pending registrations, then fill every port's input cache
 ///      from its entry (never driven → `None` → `readSignal` false → driver falls back).
 ///    - *Cvars (flush)* — write the **fresh** cvars (command-dirtied
-///      [`take_dirty`](StateTable::take_dirty)) into memory. Single-threaded ⇒ an entry
+///      [`take_dirty_indices`](StateTable::take_dirty_indices)) into memory. Single-threaded ⇒ an entry
 ///      differs from memory iff command-written, so "flush fresh" ≡ "flush all", done
 ///      sparsely.
 /// 2. **Dispatch** — every interrupt due at this sim time runs in the firmware fiber,
@@ -1332,11 +1361,9 @@ impl FirmwareMember {
 
     // --- simulated interrupts (`docs/sil/sim-interrupts.md`) ----------------
     //
-    // The config-time registration path: the scenario names a firmware function and
-    // the member resolves it through the image's DWARF. It queues into the SAME op
-    // log the C `SIL_irq_*` upcalls use, so both paths share one handle space and
-    // one apply order, and an entry registered here is indistinguishable from one a
-    // sim driver registered by pointer.
+    // The config-time path: a scenario names a firmware function, resolved through the
+    // image's DWARF. Queues into the same op log as the C upcalls, so an entry
+    // registered here is indistinguishable from one a sim driver registered by pointer.
 
     /// Register a **periodic** interrupt on the firmware function named `handler`,
     /// firing every `period_us` of sim time. `priority` orders same-step dispatch
@@ -1791,10 +1818,11 @@ impl Member for FirmwareMember {
         // (docs/sil/sim-interrupts.md). A step with nothing due runs no firmware.
         let now = ctx.st.now_us();
         self.apply_pending_irq_ops(ctx.st, now);
-        if !self.irq.any_due(now) {
-            return;
+        if self.irq.any_due(now) {
+            self.dispatch_due_irqs(ctx);
         }
-        self.dispatch_due_irqs(ctx);
+        // Out-sync unconditionally: the cvar sweep's own cadence is the only thing
+        // allowed to delay a readback, never the interrupt schedule.
         for binding in Binding::ALL {
             binding.out_sync(self, ctx);
         }
@@ -1847,7 +1875,6 @@ impl FirmwareMember {
     /// straight after, so it schedules relative to THIS step's time.
     fn dispatch_due_irqs(&mut self, ctx: &mut MemberCtx) {
         let now = ctx.st.now_us();
-        let backend = Rc::clone(&self.backend);
         // A firmware SPI upcall crosses the C frame, which carries no Rust borrow:
         // stash the table for the dispatch window so the router can build the
         // peer's ctx ([`DuplexRouter::transfer_from_dispatch`]).
@@ -1855,16 +1882,15 @@ impl FirmwareMember {
         ctx.duplex.set_dispatch_table(st_ptr);
         self.irq_dispatches += self
             .irq
-            .dispatch_due(now, |handler| backend.dispatch_isr(handler));
+            .dispatch_due(now, |handler| self.backend.dispatch_isr(handler));
         ctx.duplex.clear_dispatch_table();
-        let st = &mut *ctx.st;
-        self.apply_pending_irq_ops(st, now);
+        self.apply_pending_irq_ops(ctx.st, now);
 
         // The grid is meant to be at least as fine as the fastest interrupt;
         // say so once when it is not, rather than silently swallowing firings.
         if (self.irq.coalesced() > 0) && (!self.irq_coalesce_warned) {
             self.irq_coalesce_warned = true;
-            st.log(
+            ctx.st.log(
                 LogLevel::Warning,
                 &self.name,
                 format!(
@@ -3019,11 +3045,9 @@ mod tests {
 
     // --- mirror cadence ------------------------------------------------------
     //
-    // The sweep runs on a sim-time cadence rather than on every dispatching step, so a
-    // grid finer than the rate cvars are observed at does not pay for the whole
-    // namespace every step. What must hold: a change is delayed, never dropped; a
-    // cadence at or below the dispatch spacing sweeps every dispatch; and a forced
-    // mirror lands one on demand.
+    // The sweep runs on a sim-time cadence, not per step, so a grid finer than the
+    // observation rate does not pay for the whole namespace every step. The guarantee
+    // under test: a change is delayed by the cadence alone, and never dropped.
 
     #[test]
     fn the_mirror_sweeps_on_its_cadence_not_on_every_dispatch() {
@@ -3080,8 +3104,11 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_cadence_sweeps_every_dispatch_however_fine_the_grid() {
-        let be = Rc::new(ShadowMock::with_tick_period(16, &[("a", 0)], 200));
+    fn a_zero_cadence_sweeps_every_step_however_fine_the_grid() {
+        // A 200 us grid against a 1 ms kernel tick: four steps in five dispatch
+        // nothing at all. A zero cadence still mirrors on every one of them — the
+        // interrupt schedule must not gate the readback.
+        let be = Rc::new(ShadowMock::with_tick_period(16, &[("a", 0)], 1_000));
         let mut fm = FirmwareMember::with_backend("dut", be.clone());
         fm.set_sweep_period_us(0);
         let mut st = StateTable::new();
@@ -3123,9 +3150,7 @@ mod tests {
 
     // --- simulated interrupts ---------------------------------------------
     //
-    // The table's own scheduling semantics are unit-tested in `irq.rs`. Here we prove
-    // the MEMBER path: both registration routes reach one op log, ops apply and
-    // dispatch inside the member's step, and a masked firmware holds one pending.
+    // Scheduling semantics are unit-tested in `irq.rs`; these cover the MEMBER path.
 
     /// A backend with a name→address function map and an interrupt rendezvous, so a
     /// member's whole interrupt path runs without a DLL. Logs each dispatched handler
@@ -3357,7 +3382,7 @@ mod tests {
         extern "C" fn handler() {}
         let rv = IrqRendezvous::default();
         let ctx = std::ptr::from_ref(&rv).cast_mut().cast::<c_void>();
-        let f: IsrFn = unsafe { std::mem::transmute::<extern "C" fn(), IsrFn>(handler) };
+        let f: IsrFn = handler;
 
         assert_eq!(unsafe { irq_register_periodic(ctx, Some(f), 50, 3) }, 0);
         assert_eq!(unsafe { irq_register_oneshot(ctx, Some(f), 2, 7) }, 1);

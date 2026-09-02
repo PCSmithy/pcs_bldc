@@ -9,6 +9,7 @@
 
 bool HW_TIM_getPeripheral(HW_TIM_channels_E channel, HW_TIM_peripheral_E * const out);
 bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out);
+bool HW_TIM_getCounter(HW_TIM_peripheral_E peripheral, uint32_t * const out);
 bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts);
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled);
 bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled);

@@ -6,6 +6,10 @@
 #include "HW_TIM.h"
 #include "HW_ADC.h"
 
+/* Defines */
+
+#define IO_BRIDGE_INJECTED_NONE  (0xFFU)
+
 /* Typedefs */
 
 typedef enum
@@ -16,15 +20,14 @@ typedef enum
     IO_BRIDGE_PHASE_COUNT,
 } IO_bridge_phase_E;
 
-// One current-sense front end: the ADC (channel, physical IN#) the shunt
-// amplifier feeds, and the linear scaling that turns its volts into amps —
-// i = (v - zeroCurrentBias_V) / voltsPerAmp. A voltsPerAmp of 0 marks the
-// sense as unconfigured and makes the reader fail rather than divide by zero.
+// voltsPerAmp of 0 marks the sense as unconfigured and makes the reader fail
+// injectedIndex is the sense's position in that ADC's injected sequence
 typedef struct
 {
     HW_ADC_channels_E adcChannel;
     uint8_t           adcInput;
-    float32_t         zeroCurrentBias_V;
+    uint8_t           injectedIndex; // Could expand to specify a derived phase channel, solve KCL programmatically, if desired,
+    float32_t         zeroCurrentBias_V;    // for now, IO_bridge assumes phase W is derived
     float32_t         voltsPerAmp;
 } IO_bridge_currentSenseConfig_S;
 
@@ -38,53 +41,41 @@ typedef struct
     // sense. Read back in engineering units via the getCurrent accessors.
     IO_bridge_currentSenseConfig_S phaseCurrent[IO_BRIDGE_PHASE_COUNT];
     IO_bridge_currentSenseConfig_S busCurrent;
+    uint32_t injectedPairWindow_us; // max time span between U and V phase current
+                                   // sample times to consider them as synchronous
 } IO_bridge_channelConfig_S;
 
 typedef struct
 {
     const IO_bridge_channelConfig_S * channels;
     size_t                            numChannels;
+
+    // Free-running 1 us time base the injected callback stamps samples with.
+    HW_TIM_peripheral_E timeBasePeripheral;
 } IO_bridge_config_S;
 
 /* Public Function Declarations */
 
 bool IO_bridge_init(const IO_bridge_config_S * const config);
 
-// Returns false for a duty outside [0, 1], an out-of-range bridge or phase,
-// or an uninitialized driver.
 bool IO_bridge_setPhaseDuty(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t duty01);
 
-// Enable or disable one phase's output. A disabled phase holds its outputs at
-// the inactive level (both gate lines off) while the other phases keep driving.
-// Returns false for an out-of-range bridge or phase, or an uninitialized driver.
 bool IO_bridge_setPhaseOutputEnabled(IO_bridge_channel_E channel, IO_bridge_phase_E phase, bool enabled);
 
-// Set the bridge output enable through the phases' shared master output enable.
-// While disabled every phase output holds its inactive level; duty commands
-// issued meanwhile still land on the compare registers and take effect at
-// re-enable. Returns false for an out-of-range bridge or an uninitialized
-// driver.
 bool IO_bridge_setOutputEnabled(IO_bridge_channel_E channel, bool enabled);
 
-// Report the bridge output-enable state from the shared master output enable.
-// Reflects hardware truth, so a break-forced disable reads back as disabled.
-// Returns false for an out-of-range bridge, an uninitialized driver, or a NULL
-// `enabled`.
 bool IO_bridge_getOutputEnabled(IO_bridge_channel_E channel, bool * const enabled);
 
-// Clear the bridge's latched hardware-break flags. Intended for the one stale
-// latch every boot leaves behind (the gate driver holds its fault line active
-// until configured); afterwards a latched flag is real fault history. Returns
-// false for an out-of-range bridge or an uninitialized driver.
+// Clear the bridge's latched hardware-break flags. Must be called once
+// upon gate drive boot
 bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel);
 
-// Read one phase's sensed current in amps (signed; sign follows the shunt
-// front end's zero-current bias). Returns false — leaving *amps_out unchanged —
-// for an out-of-range bridge or phase, an uninitialized driver, a NULL
-// destination, an unconfigured sense (voltsPerAmp == 0), or an ADC read
-// failure.
+// phase current sampled in 1ms task - async to PWM period
 bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
 
-// Read the bridge's DC-bus input current in amps. Same failure modes as
-// IO_bridge_getPhaseCurrent (minus the phase argument).
 bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps_out);
+
+// phase current sampled at center of center-aligned bright PWM
+bool IO_bridge_getInjectedPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
+
+bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_phase_E phase, uint32_t * const out);

@@ -86,11 +86,9 @@ State Table dirty set, never the whole namespace). Measured on the pcs_bldc DLL:
 **~430 cvar leaves** swept per tick (the built-in array-size exclusion drops the
 task stacks / heap / 512-byte buffers that would otherwise dominate).
 Phase-isolated measurement (§11) shows the **sweep dominates a full engine step**:
-a bare firmware `advance_tick` is only ~4 µs, while the whole-namespace mirror +
+the bare firmware advance is only ~4 µs, while the whole-namespace mirror +
 flush + routes add ~45 µs on top — so **gated / dirty-page scanning is the
-highest-value next lever**, exactly as this section predicts (an earlier note here
-had it backwards, having measured the sweep folded into an *unoptimized*
-`advance` and mistaken it for firmware cost).
+highest-value next lever**, exactly as this section predicts.
 
 **Implemented — Tier 1 + Tier 2 (2026-07-09).** The naive per-leaf scan is
 replaced by two composed optimizations, taking the full step **49 → ~9 µs
@@ -341,14 +339,6 @@ in as a second range group built alongside the existing one in `build_shadow` an
 *ahead of* the gate in `out_sync_cvars`; the gate is one `if` in front of a whole-set
 sweep, so it neither shares nor constrains that group.
 
-**The plant scales with sim time, not step count.** `motor.rs` derives its
-integrator sub-step count from `dt_us` (1 µs sub-steps; a divisibility
-`debug_assert` guards a future coarser integrator step), so the board world runs
-on any grid and its physics cost is ~220 µs per millisecond of sim time
-regardless of step size. A full fine-grid board world therefore lands near
-~11 µs/step at 50 µs (≈4.5× realtime) — the plant is the floor, not the
-framework; the fine-grid numbers above isolate the framework's own cost.
-
 ## 16. Stage-7 perf pass, phase 2a (2026-08-30)
 
 Board world on the 50 µs grid, release, bridge dark, member-isolation rows
@@ -360,14 +350,22 @@ from the perf binary's `-- board-world report --` section (new):
 | motor integrator sub-step 1 → 5 µs         |    18.3 |      2.7× |
 | `SigHandle` resolve-once port IO           |     6.8 |      7.3× |
 
-- The §15 "plant is the floor" estimate is superseded: the plant's cost was
-  ~85% avoidable (per-access `SignalId` construction + hashing — ~450k/sim-s
-  — and 4/5 of the integrator iterations). Post-pass shares: firmware member
-  3.0 (per-step Binding sync + fiber ISR), motor 2.4 (the ODE itself),
-  encoders 0.67, sense 0.38, engine residual ~0.3.
-- Integrator 5 µs is owner-decided, measured-identical: all physics tests and
-  the north-star residuals hold at 5 and 10 µs (average-value bridge; L/R in
-  the hundreds of µs).
+- The plant is not the floor it looked like at §15: ~85% of its cost was
+  avoidable (per-access `SignalId` construction + hashing — ~450k/sim-s — and
+  4/5 of the integrator iterations). Post-pass shares: firmware member 3.0
+  (per-step Binding sync + fiber ISR), motor 2.4 (the ODE itself), encoders
+  0.67, sense 0.38, engine residual ~0.3. **Read the shares as indicative
+  only** — they come from the perf binary's world-with/world-without
+  subtraction, which attributes member interactions to whichever member was
+  disabled and can therefore report a negative share (`backlog.md`). The
+  full-world totals in the tables are sound; the splits are not.
+- Integrator 5 µs is owner-decided and measured-identical: all physics tests
+  and the north-star residuals hold at it. It has real margin — the electrical
+  time constant is L/R = 340 µs, so forward Euler is stable below 2·L/R =
+  680 µs, 136× out. The accuracy limit is the explicitly-forced BEMF term, so
+  error scales with ω_e·dt: 5 µs tracks a 1 µs reference to ~1–2 % across
+  10 Hz–5 kHz electrical, and coarser steps do not — 10 µs drifts 30 % at
+  2 kHz. The constant is not a free knob.
 - Models resolve `SigHandle`s at enable (`StateTable::handle` /
   `current_f64` / `record_by` — the public face of the index lanes routes
   already used). Member-side write short-circuiting was measured moot after
@@ -398,6 +396,8 @@ port-cache fill gated on its input-dirty bit. Same board-world row:
   13.6 / 16.8 mA over 800 periods; full suites green in both cargo profiles.
 - Cost now tracks events, not the grid: a spinning plant keeps sense + fw
   fill hot (currents change every step); idle worlds pay ~only motor + tick.
+  The share split carries §16's caveat: the attribution instrument is
+  subtraction-based and indicative only.
 - Next lever: the engine-side next-event queue (skip empty grid steps
   outright) — `sim-interrupts.md` §5; cadence made "next event" well-defined.
 
@@ -406,8 +406,8 @@ port-cache fill gated on its input-dirty bit. Same board-world row:
 A scratch phase split of the firmware member's advance (per-step ns,
 board world) named the real remainder: `in_sync_cvars` ≈ **1100** dominated —
 dispatch ≈ 450, out-sync ≈ 400, `advance_time` ≈ 260, gated port fill ≈ 120,
-duplex ≈ 30. `take_dirty` walked the table's whole dirty set every step doing
-a **string** source-compare per entry, then cloned and string-sorted the
+duplex ≈ 30. The flush drain walked the table's whole dirty set every step
+doing a **string** source-compare per entry, then cloned and string-sorted the
 matches — and the set accumulates every ever-commanded signal (route
 re-marks, the 4 `:tx`/`:rx` event records, scenario writes), so the cost
 grew over a run. Two owner-directed fixes (no string-keying on any hot path):
@@ -430,10 +430,11 @@ meaningfully worse; compare like-for-like.)
 - **Flush drain**: the firmware member interns `table idx → DWARF path` for
   its cvar leaves at `build_shadow`; `StateTable::take_dirty_indices` filters
   the dirty set by integer membership — no id clones, no string compares, no
-  string sort. `take_dirty` (string-keyed) stays as the scenario/cold twin.
+  string sort. It is the only drain: the string-keyed variant it replaced had
+  no callers outside its own tests and went with the change.
 - **The ≥10× realtime bar is reached on the fine-grid board world** (at the
   band's best edge; typical runs sit just under). Residuals
   exactly 13.6 / 16.8 mA; suites green both profiles. Remaining shares are
-  ~real work: motor ODE ~2.4 (5 µs sub-step, owner constant — §16 measured
-  identical at 10 µs if ever wanted), fw ~1.9 (mostly genuine ISR execution
-  + timebase), engine residual < 0.5.
+  ~real work: motor ODE ~2.4 (5 µs sub-step, owner constant — §16; coarser
+  is not free), fw ~1.9 (mostly genuine ISR execution + timebase), engine
+  residual < 0.5.

@@ -19,10 +19,16 @@ of channels.c can use them without divergent maintenance.
 Called from tools/convert_cubemx_to_canonical.sh. Stdlib only.
 """
 
+import functools
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+class GeneratorError(Exception):
+    """A config the generator cannot faithfully translate. Fatal by design:
+    emitting a plausible-looking approximation is worse than not generating."""
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CUBEMX_MAIN = REPO_ROOT / "sw/fw/stm32cube/g4/Core/Src/main.c"
@@ -31,16 +37,20 @@ GPIO_OUT = REPO_ROOT / "sw/fw/src/hw/GPIO/HW_GPIO_channels.cubemx.h"
 ADC_OUT = REPO_ROOT / "sw/fw/src/hw/ADC/HW_ADC_channels.cubemx.h"
 SPI_OUT = REPO_ROOT / "sw/fw/src/hw/SPI/HW_SPI_channels.cubemx.h"
 TIM_OUT = REPO_ROOT / "sw/fw/src/hw/TIM/HW_TIM_channels.cubemx.h"
+CUBEMX_IOC = REPO_ROOT / "sw/fw/stm32cube/g4/pcs_bldc_g4.ioc"
 
 # STM32G4 timers with a 32-bit counter; the rest are 16-bit. Used to fill
 # the SIM config's counterWidthBits (the stm32g4 side never needs it).
 TIM_32BIT_INSTANCES = {2, 5}
 
-# Timer kernel clock the SIM config's countsPerUs is derived against: HSE
-# 24 MHz (HSE_VALUE in sw/fw/src/hw/stm32g4/stm32g4xx_hal_conf.h) / PLLM 2
-# x PLLN 24 / PLLR 2 = 144 MHz, with both APB prescalers at 1 so the timer
-# clock equals HCLK. Update alongside SystemClock_Config.
-TIM_KERNEL_CLOCK_HZ = 144_000_000
+# STM32G4 timers on the APB2 kernel clock; the rest run off APB1.
+TIM_APB2_INSTANCES = {1, 8, 15, 16, 17, 20}
+
+# Timer kernel clocks come from the .ioc's own clock tree (RCC.APBnTimFreq_Value)
+# so they cannot drift from CubeMX the way a second hardcoded copy would --
+# hw/rework-log.md records exactly that trap costing a hand-fix. Used only if
+# the .ioc or the key is missing.
+TIM_KERNEL_CLOCK_FALLBACK_HZ = 144_000_000
 
 # countsPerUs values that do not follow from the prescaler. A timer whose
 # prescaled rate is not a whole number of counts per microsecond needs one
@@ -179,8 +189,12 @@ def pin_mask_hex(pin_expr: str) -> str:
 def sim_mode_enum(hal_mode: str) -> str:
     """Map a HAL GPIO_MODE_* constant to the target-independent
     HW_GPIO_MODE_* enum used by the SIM config."""
+    if hal_mode == "GPIO_MODE_IT_RISING_FALLING":
+        return "HW_GPIO_MODE_INTERRUPT_BOTH"
+    if hal_mode == "GPIO_MODE_IT_FALLING":
+        return "HW_GPIO_MODE_INTERRUPT_FALLING"
     if hal_mode.startswith("GPIO_MODE_IT_"):
-        return "HW_GPIO_MODE_INTERRUPT"
+        return "HW_GPIO_MODE_INTERRUPT_RISING"
     if hal_mode in ("GPIO_MODE_OUTPUT_PP", "GPIO_MODE_OUTPUT_OD"):
         return "HW_GPIO_MODE_OUTPUT"
     # GPIO_MODE_INPUT (and anything else) maps to input.
@@ -570,12 +584,23 @@ def sim_count_dir(counter_mode: str) -> str:
     return "HW_TIM_COUNT_UP"
 
 
+# The HAL trigger-output constants the sim models, matched exactly so an
+# unrelated constant cannot be mistaken for one of them.
+TRGO_RESET_CONSTANTS  = {"TIM_TRGO_RESET", "TIM_TRGO2_RESET"}
+TRGO_UPDATE_CONSTANTS = {"TIM_TRGO_UPDATE", "TIM_TRGO2_UPDATE"}
+
+
 def sim_trgo_source(trgo: str) -> str:
-    if trgo.endswith("_UPDATE"):
+    if trgo in TRGO_UPDATE_CONSTANTS:
         return "HW_TIM_TRGO_UPDATE"
-    if trgo.endswith("_RESET"):
+    if trgo in TRGO_RESET_CONSTANTS:
         return "HW_TIM_TRGO_NONE"
-    return "HW_TIM_TRGO_OC_MATCH"      # OC1REF / OC2REF / ... (TRGO or TRGO2)
+    if re.search(r'OC\dREF', trgo):
+        return "HW_TIM_TRGO_OC_MATCH"
+    raise GeneratorError(
+        f"trigger-output source {trgo} has no sim equivalent (the sim models "
+        f"update, OCxREF match, and none). Extend sim_trgo_source before "
+        f"regenerating.")
 
 
 def sim_trgo_oc_unit(trgo: str) -> int:
@@ -584,21 +609,51 @@ def sim_trgo_oc_unit(trgo: str) -> int:
     return int(match.group(1)) - 1 if match else 0
 
 
+@functools.lru_cache(maxsize=1)
+def ioc_apb_tim_freqs() -> dict[str, int]:
+    """RCC.APB1TimFreq_Value / RCC.APB2TimFreq_Value from the .ioc, in Hz."""
+    freqs: dict[str, int] = {}
+    if CUBEMX_IOC.is_file():
+        text = CUBEMX_IOC.read_text(encoding="utf-8", errors="replace")
+        for apb in ("APB1", "APB2"):
+            match = re.search(rf'^RCC\.{apb}TimFreq_Value=(\d+)$', text, re.MULTILINE)
+            if match:
+                freqs[apb] = int(match.group(1))
+    return freqs
+
+
+def tim_kernel_clock_hz(inum: int) -> int:
+    """The kernel clock feeding one timer, read from the .ioc's clock tree."""
+    apb = "APB2" if inum in TIM_APB2_INSTANCES else "APB1"
+    freqs = ioc_apb_tim_freqs()
+    if apb not in freqs:
+        print(f"  WARN: RCC.{apb}TimFreq_Value not found in "
+              f"{CUBEMX_IOC.name}; falling back to "
+              f"{TIM_KERNEL_CLOCK_FALLBACK_HZ} Hz for TIM{inum}.", file=sys.stderr)
+    return freqs.get(apb, TIM_KERNEL_CLOCK_FALLBACK_HZ)
+
+
 def sim_counts_per_us(inum: int, prescaler: str) -> int | None:
     """Counter counts per sim microsecond, from the timer kernel clock and the
-    CubeMX prescaler. Returns None when the rate is not a whole number of
-    counts per microsecond and no override covers the timer -- the caller
-    leaves countsPerUs out rather than emit a rounded rate the sim timebase
-    would silently drift on."""
+    CubeMX prescaler. Raises GeneratorError when the rate is not a whole number
+    of counts per microsecond and no override covers the timer: omitting the
+    field emits a config that looks valid but freezes that sim counter."""
     if inum in TIM_COUNTS_PER_US_OVERRIDE:
         return TIM_COUNTS_PER_US_OVERRIDE[inum]
+    kernel_hz = tim_kernel_clock_hz(inum)
     try:
         divider = int(prescaler) + 1
     except ValueError:
-        return None
-    tick_hz, remainder = divmod(TIM_KERNEL_CLOCK_HZ, divider)
+        raise GeneratorError(
+            f"TIM{inum} has a non-numeric prescaler {prescaler!r}, so its sim "
+            f"countsPerUs cannot be derived. Name a value in "
+            f"TIM_COUNTS_PER_US_OVERRIDE[{inum}].") from None
+    tick_hz, remainder = divmod(kernel_hz, divider)
     if remainder != 0 or tick_hz % 1_000_000 != 0:
-        return None
+        raise GeneratorError(
+            f"TIM{inum} prescaler {prescaler} does not divide {kernel_hz} Hz into "
+            f"whole counts per microsecond. A rounded rate would drift the sim "
+            f"timebase, so name a value in TIM_COUNTS_PER_US_OVERRIDE[{inum}].")
     return tick_hz // 1_000_000
 
 
@@ -610,9 +665,14 @@ def tim_trgo_constant(tim: TIMConfig) -> str:
         return "TIM_TRGO_RESET"
     master = dict(tim.master)
     trgo2 = master.get("MasterOutputTrigger2", "TIM_TRGO2_RESET")
-    if not trgo2.endswith("_RESET"):
+    if trgo2 != "TIM_TRGO2_RESET":
         return trgo2
     return master.get("MasterOutputTrigger", "TIM_TRGO_RESET")
+
+
+def tim_has_trgo(tim: TIMConfig) -> bool:
+    """True when a peripheral drives a trigger output at all."""
+    return tim_trgo_constant(tim) not in TRGO_RESET_CONSTANTS
 
 
 def gen_tim_oc_macros(name: str, tim: TIMConfig,
@@ -704,14 +764,8 @@ def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> st
         f"    .counterWidthBits = {width}U,",
         f"    .countDir         = {sim_count_dir(init.get('CounterMode', ''))},",
     ]
-    counts_per_us = sim_counts_per_us(inum, init.get('Prescaler', ''))
-    if counts_per_us is None:
-        print(f"  WARN: {tim.instance} prescaler {init.get('Prescaler', '?')} does not "
-              f"divide {TIM_KERNEL_CLOCK_HZ} Hz into whole counts per microsecond; "
-              f"its sim counter will not track sim time until "
-              f"TIM_COUNTS_PER_US_OVERRIDE names a value.", file=sys.stderr)
-    else:
-        body.append(f"    .countsPerUs      = {counts_per_us}U,")
+    body.append(f"    .countsPerUs      = "
+                f"{sim_counts_per_us(inum, init.get('Prescaler', ''))}U,")
     if "RepetitionCounter" in init:
         body.append(f"    .rcr              = {init['RepetitionCounter']}U,")
     if has_bdt:
@@ -721,7 +775,7 @@ def gen_tim_sim_peripheral_macro(name: str, tim: TIMConfig, has_bdt: bool) -> st
         body.append(f"    .deadTime               = {bdt.get('DeadTime', '0')}U,")
         body.append(f"    .hasBreakInput          = {'true' if break_on else 'false'},")
     trgo = tim_trgo_constant(tim)
-    has_trgo = not trgo.endswith("_RESET")
+    has_trgo = tim_has_trgo(tim)
     body.append(f"    .configureTrgo          = {'true' if has_trgo else 'false'},")
     if has_trgo:
         source = sim_trgo_source(trgo)
@@ -739,7 +793,7 @@ def gen_tim_macros(tims: list[TIMConfig],
         has_oc = bool(tim.oc_units)
         has_bdt = tim.bdt is not None
         has_brkin = bool(tim.break_inputs)
-        has_trgo = not tim_trgo_constant(tim).endswith("_RESET")
+        has_trgo = tim_has_trgo(tim)
 
         parts.append(f"// ----- {name} -----")
         parts.append("")
@@ -927,4 +981,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except GeneratorError as err:
+        print(f"Error: {err}", file=sys.stderr)
+        sys.exit(1)

@@ -8,6 +8,7 @@
 //! the amplifier rails, so fault-level currents saturate at full scale and negative
 //! bus current (regen) reads 0 V, matching the board's ground-referenced INA180.
 
+use crate::{observe_port, register_port};
 use voyant::{vsig_id, Cadence, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
 
 const N_PHASES: usize = 3;
@@ -70,17 +71,6 @@ impl CurrentSenseModel {
     fn port_id(&self, local: &str) -> SignalId {
         vsig_id(&self.name, local).expect("valid vsig id")
     }
-
-    /// One input port's current value by handle (`0.0` when never driven).
-    fn observe(st: &StateTable, h: Option<SigHandle>) -> f64 {
-        h.and_then(|h| st.current_f64(h)).unwrap_or(0.0)
-    }
-
-    /// Register one port and capture its handle.
-    fn reg(st: &mut StateTable, id: SignalId, unit: Option<&str>) -> Option<SigHandle> {
-        let _ = st.register(id.clone(), unit);
-        st.handle(&id)
-    }
 }
 
 impl Member for CurrentSenseModel {
@@ -95,11 +85,11 @@ impl Member for CurrentSenseModel {
 
     fn advance(&mut self, _dt_us: u64, ctx: &mut MemberCtx) {
         let i_k = [
-            Self::observe(ctx.st, self.hin[0]),
-            Self::observe(ctx.st, self.hin[1]),
-            Self::observe(ctx.st, self.hin[2]),
+            observe_port(ctx.st, self.hin[0]),
+            observe_port(ctx.st, self.hin[1]),
+            observe_port(ctx.st, self.hin[2]),
         ];
-        let i_bus = Self::observe(ctx.st, self.hin[3]);
+        let i_bus = observe_port(ctx.st, self.hin[3]);
 
         let mut i_k_vsense = [self.params.phase_bias_v; 3];
 
@@ -125,13 +115,13 @@ impl Member for CurrentSenseModel {
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
             for (i, c) in ["i_u", "i_v", "i_w", "i_bus"].iter().enumerate() {
-                self.hin[i] = Self::reg(st, self.port_id(c), Some("A"));
+                self.hin[i] = register_port(st, &self.port_id(c), Some("A"));
             }
             for (i, c) in ["i_u_vsense", "i_v_vsense", "i_w_vsense", "i_bus_vsense"]
                 .iter()
                 .enumerate()
             {
-                self.hout[i] = Self::reg(st, self.port_id(c), Some("V"));
+                self.hout[i] = register_port(st, &self.port_id(c), Some("V"));
             }
         }
     }

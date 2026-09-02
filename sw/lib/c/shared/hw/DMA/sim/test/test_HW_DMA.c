@@ -1,53 +1,14 @@
 #include "HW_DMA.h"
+#include "HW_DMA_simData.h"
 #include "SIL_irq.h"
+#include "SIL_irq_double.h"
+#include "lib_utils.h"
 #include "unity.h"
 
 // File-scope config the tests build (good baseline) and tweak per case.
 // HW_DMA_init stores a pointer to it, so it must outlive each test.
 static HW_DMA_channelConfig_S dmaChannels[HW_DMA_CHANNEL_COUNT];
 static HW_DMA_config_S        dmaConfig;
-
-// Fake SIL_irq hooks: record the pended registration (capturing the handler
-// so tests can run the completion themselves), pends, and cancels.
-static SIL_irq_handler_F pendedHandler;
-static uint32_t          pendedRegisterCalls;
-static int32_t           pendedRegisterReturn;
-static int32_t           lastPendHandle;
-static uint32_t          pendCalls;
-static int32_t           lastCancelHandle;
-static uint32_t          cancelCalls;
-
-static int32_t fakeRegisterPended(void * context, SIL_irq_handler_F handler, uint8_t priority)
-{
-    (void)context; (void)priority;
-    pendedHandler = handler;
-    pendedRegisterCalls++;
-    return pendedRegisterReturn;
-}
-
-static void fakePend(void * context, int32_t handle)
-{
-    (void)context;
-    lastPendHandle = handle;
-    pendCalls++;
-}
-
-static void fakeCancel(void * context, int32_t handle)
-{
-    (void)context;
-    lastCancelHandle = handle;
-    cancelCalls++;
-}
-
-static void installIrqDouble(void)
-{
-    const SIL_irq_hooks_S hooks = {
-        .registerPended = fakeRegisterPended,
-        .pend           = fakePend,
-        .cancel         = fakeCancel,
-    };
-    SIL_irq_setHooks(&hooks);
-}
 
 // Completion-callback observation.
 static uint32_t         cbCount;
@@ -77,7 +38,7 @@ static void buildGoodConfig(void)
 // handing the test the handler it invokes as the completion interrupt.
 static void initWithIrqDouble(void)
 {
-    installIrqDouble();
+    SIL_irq_double_install(7);
     TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
 }
 
@@ -89,16 +50,9 @@ void setUp(void)
     (void)HW_DMA_init(NULL);
     buildGoodConfig();
 
-    pendedHandler        = NULL;
-    pendedRegisterCalls  = 0U;
-    pendedRegisterReturn = 7;
-    lastPendHandle       = SIL_IRQ_HANDLE_INVALID;
-    pendCalls            = 0U;
-    lastCancelHandle     = SIL_IRQ_HANDLE_INVALID;
-    cancelCalls          = 0U;
-    cbCount              = 0U;
-    cbChannel            = HW_DMA_CHANNEL_COUNT;
-    cbContext            = NULL;
+    cbCount   = 0U;
+    cbChannel = HW_DMA_CHANNEL_COUNT;
+    cbContext = NULL;
 }
 
 void tearDown(void)
@@ -138,7 +92,7 @@ static void test_init_rejects_bad_width(void)
 static void test_reinit_rewires_completion_and_clears_state(void)
 {
     initWithIrqDouble();
-    TEST_ASSERT_EQUAL_UINT32(1U, pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
@@ -146,9 +100,9 @@ static void test_reinit_rewires_completion_and_clears_state(void)
     // Re-init: the old completion IRQ is cancelled, a fresh one registered,
     // and the in-flight transfer is gone with the rest of the state.
     TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
-    TEST_ASSERT_EQUAL_UINT32(1U, cancelCalls);
-    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastCancelHandle);
-    TEST_ASSERT_EQUAL_UINT32(2U, pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.cancelCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastCancelHandle);
+    TEST_ASSERT_EQUAL_UINT32(2U, SIL_irq_double.pendedRegisterCalls);
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_IDLE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
 
@@ -163,10 +117,53 @@ static void test_periph_to_mem_fills_in_order(void)
     // byte ramp, overwriting the sentinel bytes in order.
     uint8_t buf[4] = { 0xFFU, 0xFFU, 0xFFU, 0xFFU };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_AS5048_RX, buf, 4U));
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
 
     const uint8_t expected[4] = { 0U, 1U, 2U, 3U };
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, 4U);
+}
+
+// A mem-to-peripheral start captures the payload leaving memory, in order and
+// at the moment of the start — the engine reads it during the transfer, not at
+// completion, so a buffer firmware reuses afterwards must not change it.
+// [test->fw~hal_dma_002~1]
+static void test_mem_to_periph_captures_the_payload_at_start(void)
+{
+    initWithIrqDouble();
+    const HW_DMA_channelData_S * const cd = &HW_DMA_data.channels[HW_DMA_CHANNEL_SK6805_TX];
+
+    uint8_t buf[4] = { 0xA0U, 0xA1U, 0xA2U, 0xA3U };
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 4U));
+    TEST_ASSERT_EQUAL_size_t(4U, cd->lastMemLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(buf, cd->lastMem, 4U);
+
+    // Firmware reusing its buffer after the start leaves the capture alone.
+    const uint8_t expected[4] = { 0xA0U, 0xA1U, 0xA2U, 0xA3U };
+    buf[0] = 0xFFU;
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, cd->lastMem, 4U);
+
+    // A peripheral-to-memory channel captures nothing.
+    TEST_ASSERT_EQUAL_size_t(0U, HW_DMA_data.channels[HW_DMA_CHANNEL_AS5048_RX].lastMemLen);
+}
+
+// A payload longer than the capture buffer clamps the copy; every byte still
+// moves through the caller's buffer.
+// [test->fw~hal_dma_002~1]
+static void test_mem_to_periph_capture_is_clamped(void)
+{
+    initWithIrqDouble();
+
+    static uint8_t big[HW_DMA_SIM_MAX_BYTES + 8U];
+    for (size_t i = 0U; i < COUNTOF(big); i++)
+    {
+        big[i] = (uint8_t)i;
+    }
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, big, (uint32_t)COUNTOF(big)));
+
+    const HW_DMA_channelData_S * const cd = &HW_DMA_data.channels[HW_DMA_CHANNEL_SK6805_TX];
+    TEST_ASSERT_EQUAL_size_t(HW_DMA_SIM_MAX_BYTES, cd->lastMemLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(big, cd->lastMem, HW_DMA_SIM_MAX_BYTES);
 }
 
 // [test->fw~hal_dma_002~1]
@@ -180,7 +177,7 @@ static void test_start_rejects_bad_args(void)
     TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_COUNT, buf, 2U));      // out-of-range channel
     TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, NULL, 2U)); // null buffer
     TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 0U));  // zero count
-    TEST_ASSERT_EQUAL_UINT32(0U, pendCalls);                                     // nothing started
+    TEST_ASSERT_EQUAL_UINT32(0U, SIL_irq_double.pendCalls);                                     // nothing started
 }
 
 /* ---- fw~hal_dma_003: asynchronous transfer completion ---- */
@@ -193,8 +190,8 @@ static void test_started_transfer_reports_busy_and_pends_completion(void)
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_BUSY, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
-    TEST_ASSERT_EQUAL_UINT32(1U, pendCalls);
-    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastPendHandle);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastPendHandle);
 }
 
 // [test->fw~hal_dma_003~1]
@@ -204,7 +201,7 @@ static void test_successful_transfer_completes(void)
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_COMPLETE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
 
@@ -218,13 +215,13 @@ static void test_callback_invoked_exactly_once(void)
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
     TEST_ASSERT_EQUAL_INT(HW_DMA_CHANNEL_SK6805_TX, cbChannel);
     TEST_ASSERT_EQUAL_PTR(&ctx, cbContext);
 
     // A spurious completion with no pending transfer fires nothing more.
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
 }
 
@@ -236,7 +233,7 @@ static void test_completion_observable_by_polling_without_callback(void)
     // No callback registered: completion is still observable by polling status.
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(0U, cbCount);
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_COMPLETE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
@@ -252,6 +249,8 @@ int main(void)
     RUN_TEST(test_reinit_rewires_completion_and_clears_state);
 
     RUN_TEST(test_periph_to_mem_fills_in_order);
+    RUN_TEST(test_mem_to_periph_captures_the_payload_at_start);
+    RUN_TEST(test_mem_to_periph_capture_is_clamped);
     RUN_TEST(test_start_rejects_bad_args);
 
     RUN_TEST(test_started_transfer_reports_busy_and_pends_completion);

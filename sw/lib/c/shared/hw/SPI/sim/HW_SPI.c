@@ -39,8 +39,8 @@ typedef struct
     // transfer upcalls the linked peer for the MISO response frame.
     int32_t duplexHandle;
 
-    // Fault injection: a stalled software transfer times out; a forced error
-    // fails the non-blocking completion. SIL writes both flags by DWARF.
+    // Fault knobs, written by DWARF from SIL: a stalled software transfer times
+    // out, a forced error fails the non-blocking completion.
     bool stall;
     bool forceError;
 } HW_SPI_channelData_S;
@@ -143,10 +143,8 @@ static void HW_SPI_private_fillRx(HW_SPI_channel_E channel)
     }
     else
     {
-        // Duplex/receive: the linked peer answers with the MISO frame. TXRX
-        // hands it the captured MOSI frame (a command-aware peer parses it);
-        // RX-only sends nothing. The peer's response is bounded to the transfer
-        // length.
+        // Duplex/receive: the linked peer answers with the MISO frame, handed
+        // the MOSI frame on TXRX so a command-aware peer can parse it.
         const uint8_t * const tx = (cd->op == HW_SPI_OP_TXRX) ? cd->txData : NULL;
         const size_t txLen = (cd->op == HW_SPI_OP_TXRX) ? cd->length : 0U;
         size_t rxLen = 0U;
@@ -177,8 +175,11 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
     }
 
     bool ret = false;
+    // A start on an in-flight channel is refused, as HAL_BUSY would: overwriting
+    // the transfer would fold its pending completion into the new one.
     if ((data->initialized) &&
         (channel < HW_SPI_CHANNEL_COUNT) &&
+        (!data->channels[channel].pending) &&
         (length > 0U) &&
         (argsValid))
     {
@@ -224,18 +225,27 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
 
 // [impl->fw~hal_spi_005~1]
 // Completion interrupt: pended at transfer time, dispatched in the firmware
-// fiber's ISR bracket. Settles every pending non-blocking transfer — rx fill,
-// CS deassert, final status, and the callback exactly once.
+// fiber's ISR bracket. The pending set is snapshotted at entry so a transfer
+// started from a callback settles in the next interrupt, as hardware does.
 void HW_SPI_sim_completionDispatch(void)
 {
     if (data->initialized)
     {
+        uint32_t due = 0U;
+        for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+        {
+            if (data->channels[channel].pending)
+            {
+                data->channels[channel].pending = false;
+                due |= (1UL << channel);
+            }
+        }
+
         for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
         {
             HW_SPI_channelData_S * const cd = &data->channels[channel];
-            if (cd->pending)
+            if ((due & (1UL << channel)) != 0U)
             {
-                cd->pending = false;
                 if (cd->forceError)
                 {
                     cd->status = HW_SPI_STATUS_ERROR;
@@ -262,9 +272,8 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
 {
     bool ret = false;
 
-    // Re-entrant: every call, accepted or rejected, drops the driver back to
-    // its uninitialized state, so a second init in one process is a clean slate.
-    // The previous completion service goes with it.
+    // Re-entrant: every call, accepted or rejected, is a clean slate; the
+    // completion service goes with it.
     SIL_irq_cancel(HW_SPI_completionIrqHandle);
     HW_SPI_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
     *data = (HW_SPI_data_S){ 0 };
@@ -286,18 +295,16 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
             data->config = config;
             for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
             {
-                // Register one duplex endpoint per named channel: a transfer
-                // upcalls the linked peer for its MISO response. Null-safe — with
-                // no hooks installed the handle stays invalid and the transfer
-                // falls back to the floating-bus fill.
+                // One duplex endpoint per named channel, which a transfer upcalls
+                // for its MISO response. Unlinked, the fill is the floating bus.
                 const char * const name = config->channels[channel].channelNameStr;
                 data->channels[channel].duplexHandle = (name != NULL)
                     ? SIL_ports_registerDuplex("spi", name)
                     : SIL_PORTS_HANDLE_INVALID;
             }
 
-            // A non-blocking bus needs the completion service. Null-safe: with
-            // no hooks installed the handle stays invalid and pend is a no-op.
+            // A non-blocking bus needs the completion service. With no hooks
+            // installed the handle stays invalid and the transfer never settles.
             bool anyNonBlocking = false;
             for (HW_SPI_bus_E bus = 0U; bus < HW_SPI_BUS_COUNT; bus++)
             {

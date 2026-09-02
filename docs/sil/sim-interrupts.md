@@ -17,16 +17,18 @@ side **port dispatches** each due handler in the firmware fiber context so FreeR
 
 ## 1. The interrupt table
 
-A framework-owned table of entries. One structure serves all four registration
-paths (config/runtime × periodic/one-shot):
+A framework-owned table of entries. One structure serves every registration
+path (config/runtime × periodic/one-shot/pended):
 
 ```
 entry = {
   handler:       fn pointer (into the firmware image)
-  kind:          Periodic | OneShot
-  rate_or_delay: sim-time literal   // period (Periodic) or delay-from-now (OneShot)
+  kind:          Periodic | OneShot | Pended
+  rate_or_delay: sim-time literal   // period (Periodic), delay-from-now
+                                    // (OneShot), unused (Pended)
   priority:      u8                  // ordering only (no preemption — §6)
   enabled:       bool
+  pending:       bool                // the ISPR twin (§6)
 }
 ```
 
@@ -62,7 +64,7 @@ firmware is sim-unaware" principle holds intact:
 
 ```
 IO_AS5048            calls HW_SPI_transmit(...)          // portable, sim-unaware
-  └─ sim HW_SPI      calls sil_irq_register_oneshot(&SPI3_IRQHandler, 2_us, prio)
+  └─ sim HW_SPI      calls SIL_irq_registerOneShot(SPI3_IRQHandler, 2_us, prio)
        └─ framework  schedules the SPI-complete interrupt; dispatches it in 2 us
 ```
 
@@ -140,22 +142,13 @@ functions. We don't model memory protection, so this is a non-issue.
   stands, which an edge pend models wrongly. A claim/complete-style re-arm
   gate (the PLIC flavor) stays out until something needs it.
 
-## 7. Per-tick ordering (data timing)
+## 7. Per-step ordering (data timing)
 
-Interrupts slot into the State/Route loop's "FW step"
-([`state-route-tables.md`](state-route-tables.md) §3): inputs are propagated
-into firmware statics **before** the step, so a control ISR dispatched in the
-step reads *this* step's ADC values; outputs propagate **after**. Per base
-tick:
-
-```
-1. advance models (dt; may sub-step)
-2. propagate routes (snapshot sources → write dests) — fresh inputs into fw statics
-3. FW step: dispatch all interrupts due at this sim-time (priority order),
-            running tasks to quiescence between/after them
-4. record; asserts/injection
-5. pace (realtime: sleep · fast: now)
-```
+Interrupts slot into the State/Route loop's per-step order — see
+[`state-route-tables.md`](state-route-tables.md) §"per tick". The property that
+matters here: inputs reach firmware statics (the firmware member's in-sync)
+**before** the step's handlers dispatch, so a control ISR reads *this* step's
+values; outputs drain at out-sync.
 
 ## 8. Determinism
 

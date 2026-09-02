@@ -16,8 +16,9 @@
 use std::cell::RefCell;
 
 /// A registration handle. Returned by every registration path (C upcall or
-/// config-time by name) and accepted by cancel / enable. Handles are never reused,
-/// so a stale handle is inert rather than aliasing a later entry.
+/// config-time by name) and accepted by cancel / enable. Unique for one image
+/// lifetime — never reused, so a stale handle is inert rather than aliasing a later
+/// entry — but a reload restarts the allocator, so handles do not survive a reboot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IrqHandle(i32);
 
@@ -92,8 +93,7 @@ struct IrqEntry {
     /// member's lifetime total.
     dispatches: u64,
     /// False once cancelled or once a one-shot has fired; the entry is pruned at
-    /// the end of the step. Handles are never reused (see `next_handle`), so a
-    /// stale handle simply stops resolving and its ops are inert.
+    /// the end of the step.
     live: bool,
 }
 
@@ -159,6 +159,9 @@ impl IrqTable {
                         self.next_handle
                     ));
                 }
+                // The allocator already consumed this number, so the table must too —
+                // even on refusal, or every later op reads as out of step.
+                self.next_handle += 1;
                 if (kind == IrqKind::Periodic) && (rate_or_delay_us == 0) {
                     return Err("periodic interrupt with a zero period".to_string());
                 }
@@ -178,7 +181,6 @@ impl IrqTable {
                     dispatches: 0,
                     live: true,
                 });
-                self.next_handle += 1;
                 Ok(())
             }
             IrqOp::Cancel { handle } => {
@@ -728,6 +730,22 @@ mod tests {
         // Nothing landed in the table.
         assert_eq!(table.find_by_handler(0x10), None);
         assert!(!table.any_due(u64::MAX));
+
+        // A refused registration still consumes its handle (the allocator already
+        // did), so the next one is in step and lands.
+        assert!(table
+            .apply(
+                IrqOp::Register {
+                    handle: 1,
+                    handler: 0x20,
+                    kind: IrqKind::Periodic,
+                    rate_or_delay_us: 100,
+                    priority: 0,
+                },
+                0,
+            )
+            .is_ok());
+        assert!(table.find_by_handler(0x20).is_some());
     }
 
     #[test]

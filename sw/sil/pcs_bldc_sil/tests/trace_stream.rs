@@ -109,7 +109,7 @@ fn field_varint(fields: &[(u32, u64, Vec<u8>)], field: u32) -> u64 {
         .unwrap_or(0)
 }
 
-fn field_bytes<'a>(fields: &'a [(u32, u64, Vec<u8>)], field: u32) -> &'a [u8] {
+fn field_bytes(fields: &[(u32, u64, Vec<u8>)], field: u32) -> &[u8] {
     fields
         .iter()
         .find(|(f, _, _)| *f == field)

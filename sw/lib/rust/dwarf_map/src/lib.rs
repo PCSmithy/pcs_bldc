@@ -573,18 +573,17 @@ fn collect_unit(
                 }
             }
             gimli::DW_TAG_subprogram => {
-                // Only a defining subprogram carries a `low_pc`; declarations and
-                // abstract (inlined) instances have none and are skipped by the
-                // `die_low_pc` -> None guard. At -O2 GCC may split an inlinable
-                // function: the name stays on the abstract instance and the
-                // concrete out-of-line DIE carries only the `low_pc` plus a
-                // `DW_AT_abstract_origin` back-reference — follow it, so an
-                // address-taken handler stays resolvable by name.
+                // Only a defining subprogram carries a `low_pc`. At -O2 GCC may split
+                // an inlinable function: the name stays on the abstract instance and
+                // the concrete DIE carries only `low_pc` plus a `DW_AT_abstract_origin`
+                // — `origin_name` follows it so a handler stays resolvable by name.
+                // A directly-named DIE wins: -O2 can emit several origin-referencing
+                // clones (IPA-SRA / constprop) whose entry ABI is not the real one's.
                 if let Some(addr) = die_low_pc(dwarf, unit, entry) {
-                    let name = die_name(dwarf, unit, entry)
-                        .or_else(|| origin_name(dwarf, unit, entry));
-                    if let Some(name) = name {
+                    if let Some(name) = die_name(dwarf, unit, entry) {
                         maps.functions.insert(name, addr);
+                    } else if let Some(name) = origin_name(dwarf, unit, entry) {
+                        maps.functions.entry(name).or_insert(addr);
                     }
                 }
             }

@@ -2,8 +2,10 @@
 #
 # Dual-target:
 #   - embedded: the Cortex-M4F port (GCC/ARM_CM4F) + cmsis.
-#   - native:   our cooperative single-threaded FIBER port (Native-Fiber),
-#               validated by the D1 spike. No cmsis. See
+#   - native:   our cooperative single-threaded port. Native-Common carries the
+#               port itself; Native-Fiber (Win32 fibers) and Native-Coro (asm
+#               coroutine) supply only the context-switch backend, exactly one
+#               of which is compiled. No cmsis. See
 #               docs/sil/freertos-tick.md / performance.md.
 #
 # The CMSIS-RTOS2 wrapper (cmsis_os2.c) is intentionally NOT vendored —
@@ -21,9 +23,10 @@ if(PCS_TARGET STREQUAL "embedded")
   set(FREERTOS_PORT_INC  portable/GCC/ARM_CM4F)
   set(FREERTOS_PORT_DEPS cmsis)
 elseif(WIN32)
-  # Windows host: Win32-fiber cooperative port.
-  set(FREERTOS_PORT_SRC  portable/Native-Fiber/port.c)
-  set(FREERTOS_PORT_INC  portable/Native-Fiber)
+  # Windows host: Win32-fiber context-switch backend.
+  set(FREERTOS_PORT_SRC  portable/Native-Common/port_common.c
+                         portable/Native-Fiber/port_backend.c)
+  set(FREERTOS_PORT_INC  portable/Native-Common portable/Native-Fiber)
   set(FREERTOS_PORT_DEPS )
 else()
   # macOS / Linux host: same cooperative semantics via a hand-rolled asm
@@ -35,10 +38,11 @@ else()
   else()
     message(FATAL_ERROR "Native-Coro: no context-switch backend for ${CMAKE_SYSTEM_PROCESSOR} yet")
   endif()
-  set(FREERTOS_PORT_SRC  portable/Native-Coro/port.c
+  set(FREERTOS_PORT_SRC  portable/Native-Common/port_common.c
+                         portable/Native-Coro/port_backend.c
                          portable/Native-Coro/coro.c
                          ${FREERTOS_CORO_ASM})
-  set(FREERTOS_PORT_INC  portable/Native-Coro)
+  set(FREERTOS_PORT_INC  portable/Native-Common portable/Native-Coro)
   set(FREERTOS_PORT_DEPS )
 endif()
 

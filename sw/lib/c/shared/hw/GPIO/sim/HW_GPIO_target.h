@@ -7,15 +7,19 @@
 
 /* Typedefs */
 
+// The interrupt modes name the EXTI trigger type, so the sim's edge detector
+// accepts the same edges the HAL's GPIO_MODE_IT_* would.
 typedef enum
 {
     HW_GPIO_MODE_INPUT,
     HW_GPIO_MODE_OUTPUT,
-    HW_GPIO_MODE_INTERRUPT,
+    HW_GPIO_MODE_INTERRUPT_RISING,
+    HW_GPIO_MODE_INTERRUPT_FALLING,
+    HW_GPIO_MODE_INTERRUPT_BOTH,
 } HW_GPIO_mode_E;
 
 // One pin. The sim has no electrical configuration to apply, so a pin carries
-// its mask, its direction, and a human-readable name for trace logs.
+// only its mask, its direction, and a name for trace logs.
 typedef struct
 {
     uint32_t       pin;        // single-bit (or multi-bit) GPIO_PIN_x mask

@@ -1,6 +1,7 @@
 #include "HW_ADC.h"
 #include "HW_TIM.h"
 #include "SIL_irq.h"
+#include "SIL_irq_double.h"
 #include "unity.h"
 
 #define VREF        (3.3f)
@@ -23,47 +24,6 @@ static HW_TIM_peripheralConfig_S timPeripherals[HW_TIM_PERIPHERAL_COUNT];
 static HW_TIM_channelConfig_S    timChannels[HW_TIM_CHANNEL_COUNT];
 static HW_TIM_config_S           timConfig;
 
-// Fake SIL_irq hooks: record the pended registration (capturing the handler
-// so tests can run the completion themselves), pends, and cancels.
-static SIL_irq_handler_F pendedHandler;
-static uint32_t          pendedRegisterCalls;
-static int32_t           pendedRegisterReturn;
-static int32_t           lastPendHandle;
-static uint32_t          pendCalls;
-static int32_t           lastCancelHandle;
-static uint32_t          cancelCalls;
-
-static int32_t fakeRegisterPended(void * context, SIL_irq_handler_F handler, uint8_t priority)
-{
-    (void)context; (void)priority;
-    pendedHandler = handler;
-    pendedRegisterCalls++;
-    return pendedRegisterReturn;
-}
-
-static void fakePend(void * context, int32_t handle)
-{
-    (void)context;
-    lastPendHandle = handle;
-    pendCalls++;
-}
-
-static void fakeCancel(void * context, int32_t handle)
-{
-    (void)context;
-    lastCancelHandle = handle;
-    cancelCalls++;
-}
-
-static void installIrqDouble(void)
-{
-    const SIL_irq_hooks_S hooks = {
-        .registerPended = fakeRegisterPended,
-        .pend           = fakePend,
-        .cancel         = fakeCancel,
-    };
-    SIL_irq_setHooks(&hooks);
-}
 
 // Counting injected callbacks + the status each was handed.
 static uint32_t cbACalls;
@@ -163,7 +123,7 @@ static void buildTimConfig(void)
 // completion registers there), TIM re-seeded after (the trgo sink survives).
 static void armTriggeredEngine(void)
 {
-    installIrqDouble();
+    SIL_irq_double_install(11);
     TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
     buildTimConfig();
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
@@ -173,17 +133,12 @@ void setUp(void)
 {
     // A rejected init is the clean slate: init drops the driver to its
     // uninitialized state before it looks at the config.
+    // Install clears the double's log; the hooks go back on in armTriggeredEngine.
+    SIL_irq_double_install(11);
     SIL_irq_setHooks(NULL);
     (void)HW_ADC_init(NULL);
     buildGoodConfig();
 
-    pendedHandler        = NULL;
-    pendedRegisterCalls  = 0U;
-    pendedRegisterReturn = 11;
-    lastPendHandle       = SIL_IRQ_HANDLE_INVALID;
-    pendCalls            = 0U;
-    lastCancelHandle     = SIL_IRQ_HANDLE_INVALID;
-    cancelCalls          = 0U;
     cbACalls             = 0U;
     cbBCalls             = 0U;
     cbLastStatus         = HW_ADC_CONVERSION_STATUS_IDLE;
@@ -396,17 +351,17 @@ static void test_falling_edge_selects_the_down_crossing(void)
     makeChannel1Triggered();
     adcChannels[HW_ADC_CHANNEL_1].injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_FALLING;
     armTriggeredEngine();
-    TEST_ASSERT_EQUAL_UINT32(1U, pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);
 
     // The up-count crossing is the rejected edge: nothing pends.
     HW_TIM_advanceTime(UP_CROSS_US);
-    TEST_ASSERT_EQUAL_UINT32(0U, pendCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, SIL_irq_double.pendCalls);
 
     // The down-count crossing pends the completion; running it lands OK.
     HW_TIM_advanceTime(DOWN_CROSS_US);
-    TEST_ASSERT_EQUAL_UINT32(1U, pendCalls);
-    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastPendHandle);
-    pendedHandler();
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastPendHandle);
+    SIL_irq_double.pendedHandler();
     HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
     TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
     TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
@@ -422,7 +377,7 @@ static void test_injected_callback_last_wins_and_null_unregisters(void)
     TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbA, NULL));
     TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbB, NULL));
     HW_TIM_advanceTime(UP_CROSS_US);
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(0U, cbACalls);
     TEST_ASSERT_EQUAL_UINT32(1U, cbBCalls);
     TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, cbLastStatus);
@@ -430,7 +385,7 @@ static void test_injected_callback_last_wins_and_null_unregisters(void)
     // NULL unregisters: the next completion invokes nobody, status still walks.
     TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, NULL, NULL));
     HW_TIM_advanceTime(2U * TIM_PERIOD);
-    pendedHandler();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbBCalls);
 }
 
@@ -440,19 +395,19 @@ static void test_reinit_rewires_completion_and_clears_callback(void)
     makeChannel1Triggered();
     armTriggeredEngine();
     TEST_ASSERT_TRUE(HW_ADC_registerInjectedCallback(HW_ADC_CHANNEL_1, injectedCbA, NULL));
-    TEST_ASSERT_EQUAL_UINT32(1U, pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);
 
     // Re-init: the old completion IRQ is cancelled, a fresh one registered,
     // and the callback slot is cleared (G4 contract parity).
     TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-    TEST_ASSERT_EQUAL_UINT32(1U, cancelCalls);
-    TEST_ASSERT_EQUAL_INT32(pendedRegisterReturn, lastCancelHandle);
-    TEST_ASSERT_EQUAL_UINT32(2U, pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.cancelCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastCancelHandle);
+    TEST_ASSERT_EQUAL_UINT32(2U, SIL_irq_double.pendedRegisterCalls);
 
     TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
     HW_TIM_advanceTime(UP_CROSS_US);
-    TEST_ASSERT_EQUAL_UINT32(1U, pendCalls);
-    pendedHandler();
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(0U, cbACalls);
 
     HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;

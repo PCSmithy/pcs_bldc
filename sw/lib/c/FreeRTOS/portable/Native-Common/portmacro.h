@@ -1,13 +1,9 @@
 /*
- * Native cooperative FIBER port for FreeRTOS V10.3.1 (SIL host build).
- *
- * Single OS thread; each task is a host fiber. Cooperative: context switches
- * happen only at portYIELD / ISR-dispatch points. Validated by the spike at
- * sw/sil/spike/d1-tick — deterministic + many x realtime. See
- * docs/sil/freertos-tick.md, docs/sil/performance.md.
- *
- * Windows-first (uses Win32 fibers in port.c). A cross-platform context-switch
- * primitive (macOS ucontext / small asm) is a later roadmap item.
+ * Native cooperative port for FreeRTOS V10.3.1 (SIL host build) — the port
+ * macros, shared by the Native-Fiber (Win32) and Native-Coro (asm coroutine)
+ * backends. Single OS thread; each task runs on its own host context, and
+ * context switches happen only at portYIELD / ISR-dispatch points. See
+ * docs/sil/freertos-tick.md and docs/sil/sim-interrupts.md.
  */
 #ifndef PORTMACRO_H
 #define PORTMACRO_H
@@ -59,8 +55,8 @@ void vPortYieldFromIsr( void );
 #define portYIELD_FROM_ISR( xSwitch )     portEND_SWITCHING_ISR( xSwitch )
 
 /* Critical sections + interrupt masking — cooperative single thread, so these
- * are counters/flags. They are what holds a due simulated interrupt PENDING
- * (xSilInterruptsMasked); the framework re-attempts it on the next grid step. */
+ * are counters/flags, saved and restored with each context as the kernel expects
+ * BASEPRI/PRIMASK to be. */
 void vPortEnterCritical( void );
 void vPortExitCritical( void );
 void vPortDisableInterrupts( void );
@@ -76,12 +72,11 @@ void vPortClearInterruptMaskFromISR( UBaseType_t uxSaved );
 #define portSET_INTERRUPT_MASK_FROM_ISR()       uxPortSetInterruptMaskFromISR()
 #define portCLEAR_INTERRUPT_MASK_FROM_ISR( x )  vPortClearInterruptMaskFromISR( x )
 
-/* Simulated-interrupt dispatch: the framework runs one handler in the
- * firmware context through the ISR bracket. pdFALSE = masked, held pending.
- * The kernel tick is one such handler — the port registers it with the
- * framework at scheduler start (docs/sil/sim-interrupts.md). */
+/* Simulated-interrupt dispatch: the framework runs one handler in the firmware
+ * context through the ISR bracket, and gets pdFALSE if the port declined it. The
+ * kernel tick is one such handler — the port registers it with the framework at
+ * scheduler start (docs/sil/sim-interrupts.md). */
 BaseType_t xSilDispatchIsr( void ( * pxHandler )( void ) );
-BaseType_t xSilInterruptsMasked( void );
 void vSilSysTickHandler( void );
 
 /* Task function macros. */

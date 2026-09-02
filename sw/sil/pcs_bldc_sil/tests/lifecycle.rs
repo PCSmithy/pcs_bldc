@@ -7,12 +7,10 @@
 //! (last `Rc` gone), and the next load boots C statics from scratch, both across
 //! fresh threads and back-to-back on one thread.
 
+mod common;
+use common::SYSTICK_ISR;
 use pcs_bldc_sil::{dll_path, lock_world, TICK_US};
 use voyant::Firmware;
-
-/// The kernel-tick handler the fiber port registers with the interrupt table at
-/// scheduler start; a raw step drives the pair by hand, as the framework does.
-const SYSTICK_ISR: &str = "vSilSysTickHandler";
 
 /// Drive one raw load → start → step → read → shutdown cycle, asserting the
 /// firmware booted from reset (counters at 0, clock at 0) and that each step —

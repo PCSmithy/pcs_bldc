@@ -46,9 +46,9 @@ bool HW_GPIO_init(const HW_GPIO_config_S * const config);
 // single-bit (or multi-bit) GPIO_PIN_x mask. No-op if `port` is out of range.
 void HW_GPIO_writePin(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_level_E level);
 
-// Sample and cache every configured input pin's level. Call periodically
-// (the 1 ms task) so consumers can fetch a recent, coherent snapshot via
-// HW_GPIO_readCached without each one touching the hardware.
+// Sample and cache every configured input pin's level, and dispatch the EXTI
+// callbacks of interrupt pins whose level changed. Call periodically (the 1 ms
+// task); consumers read the snapshot through HW_GPIO_readCached.
 void HW_GPIO_run1ms(void);
 
 // Return the cached level of input `pin` (single-bit GPIO_PIN_x mask) from
@@ -56,7 +56,7 @@ void HW_GPIO_run1ms(void);
 // port or a pin that isn't a configured input.
 HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
 
-// Register `callback` to fire once per configured signal edge on the
-// interrupt-input `pin` (single-bit GPIO_PIN_x mask). `context` is passed
-// back to the callback. Returns false on an out-of-range port.
+// Register `callback` to fire once per accepted edge on the interrupt-input
+// `pin` (single-bit GPIO_PIN_x mask), passing `context` back to it. Returns
+// false on an out-of-range port.
 bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context);

@@ -107,7 +107,9 @@ pub enum Cadence {
     /// drift-free absolute due times (the IRQ-table discipline).
     Periodic { period_us: u64 },
     /// Advance only on a step where a route or scenario write changed one of this
-    /// member's inputs (for pure transforms).
+    /// member's inputs (for pure transforms). "Changed" is the destination signal's
+    /// change-detection epsilon, so a sub-epsilon step is not an event — size the
+    /// per-signal epsilon to the modelled device's resolution, not just to its noise.
     OnInputChange,
     /// Never scheduled — the bus drives it: all behavior lives in
     /// [`DuplexPeer::transfer`](crate::duplex::DuplexPeer::transfer), which samples

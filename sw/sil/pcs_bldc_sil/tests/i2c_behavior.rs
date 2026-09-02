@@ -4,9 +4,10 @@
 //! of the device slots), so the driver carries no test-only API. The gate driver's
 //! 200 ms configure + status pass is the transfer engine under test.
 
+mod common;
+use common::{bool_at, set_bool, u64_at};
 use pcs_bldc_sil::board::{board, gate_operational, GATE_BRINGUP_MS};
 use pcs_bldc_sil::{cid, Sil};
-use voyant::Value;
 
 /// The gate driver's device slot on the sim I2C register file — BUS_2 (index 1),
 /// sole device on the bus — and the CYPD3177 HPI slot on BUS_1 (index 0).
@@ -26,28 +27,9 @@ const GATE_CONFIG_REGS: [(usize, u64); 4] = [
     (0x08, 0x7F), // NFAULT
 ];
 
-/// An unsigned firmware field (a register byte, a device address).
-fn uint(sim: &Sil, path: &str) -> u64 {
-    sim.fw()
-        .read_cvar(path)
-        .as_u64()
-        .unwrap_or_else(|| panic!("{path} reads as an unsigned value"))
-}
-
-/// A `bool` firmware field.
-fn flag(sim: &Sil, path: &str) -> bool {
-    match sim.fw().read_cvar(path) {
-        Value::Bool(b) => b,
-        other => panic!("{path} reads as a bool, got {other:?}"),
-    }
-}
-
-/// Set or clear one per-bus fault knob (`stall` / `forceError`).
+/// Set or clear one per-bus fault knob (`stall` / `forceError`) on the gate bus.
 fn set_bus_fault(sim: &Sil, knob: &str, value: bool) {
-    sim.fw().write_cvar(
-        &format!("HW_I2C_data.buses[1].{knob}"),
-        &Value::Bool(value),
-    );
+    set_bool(sim, &format!("HW_I2C_data.buses[1].{knob}"), value);
 }
 
 /// The gate driver's own record of its last STATUS read attempt.
@@ -72,7 +54,7 @@ fn register_writes_land_and_reads_return_the_register_file() {
     // the addressed device's register memory (and survived its readback verify).
     for (reg, want) in GATE_CONFIG_REGS {
         assert_eq!(
-            uint(&b.sim, &format!("{GATE_DEV}.regMem[{reg}]")),
+            u64_at(&b.sim, &format!("{GATE_DEV}.regMem[{reg}]")),
             want,
             "the configure pass stores reg {reg:#04x} via memWrite"
         );
@@ -87,20 +69,20 @@ fn devices_are_addressed_independently_per_transfer() {
 
     // Both polled devices allocated their own slot, keyed by the per-transfer
     // bus + 7-bit address — no registration, first contact claims the slot.
-    assert!(flag(&b.sim, &format!("{GATE_DEV}.used")), "gate slot in use");
-    assert!(flag(&b.sim, &format!("{PD_DEV}.used")), "PD slot in use");
-    assert_eq!(uint(&b.sim, &format!("{GATE_DEV}.addr7")), GATE_ADDR7);
-    assert_eq!(uint(&b.sim, &format!("{PD_DEV}.addr7")), PD_ADDR7);
+    assert!(bool_at(&b.sim, &format!("{GATE_DEV}.used")), "gate slot in use");
+    assert!(bool_at(&b.sim, &format!("{PD_DEV}.used")), "PD slot in use");
+    assert_eq!(u64_at(&b.sim, &format!("{GATE_DEV}.addr7")), GATE_ADDR7);
+    assert_eq!(u64_at(&b.sim, &format!("{PD_DEV}.addr7")), PD_ADDR7);
 
     // The gate driver's POWMNG write reached only the device it addressed: the
     // CYPD3177's register file holds no byte at that offset.
     let (powmng_reg, powmng_val) = GATE_CONFIG_REGS[0];
     assert_eq!(
-        uint(&b.sim, &format!("{GATE_DEV}.regMem[{powmng_reg}]")),
+        u64_at(&b.sim, &format!("{GATE_DEV}.regMem[{powmng_reg}]")),
         powmng_val
     );
     assert_eq!(
-        uint(&b.sim, &format!("{PD_DEV}.regMem[{powmng_reg}]")),
+        u64_at(&b.sim, &format!("{PD_DEV}.regMem[{powmng_reg}]")),
         0,
         "a write addressed to the gate driver lands nowhere else"
     );

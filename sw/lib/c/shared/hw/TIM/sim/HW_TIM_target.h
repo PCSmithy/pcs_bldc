@@ -26,10 +26,9 @@ typedef enum
     HW_TIM_TRGO_OC_MATCH,   // counter reaches trgoOcUnit's compare value
 } HW_TIM_trgoSource_E;
 
-// Count direction at a trigger event. A center-aligned counter lands on an
-// OC compare value once per phase; the consumer (the sim ADC's edge select)
-// distinguishes the two. Update events and up-/down-counter matches report
-// the counter's direction.
+// Count direction at a trigger event, distinguishing the two OC-match landings
+// of a center-aligned counter. Update events are direction-agnostic pulses on
+// silicon, so they always report CROSS_UP.
 typedef enum
 {
     HW_TIM_TRGO_CROSS_UP,
@@ -79,26 +78,18 @@ typedef struct
 
 /* Public Function Declarations */
 
-// Advance sim time: each peripheral with countsPerUs > 0 advances its counter
-// by elapsed_us * countsPerUs. An up- or down-counter walks period + 1 counts
-// per cycle; a center-aligned one walks 2 * period, up to the period and back
-// down. The platform tick calls this once per sim tick — it is the clock behind
-// the timebase peripherals (lib_timer's 1 us source rides TIM2).
-//
-// A peripheral with a trigger output configured emits one trigger per source
-// event, so an advance spanning several cycles emits several. An update source
-// fires once per rcr + 1 reload events (a center-aligned counter reloads at
-// both extremes); an OC-match source fires on each landing on the compare
-// value. Sinks run after the counter has taken its end-of-advance value.
+// Advance sim time: each peripheral with countsPerUs > 0 advances its counter by
+// elapsed_us * countsPerUs. The platform tick calls this once per sim tick — it
+// is the clock behind the timebase peripherals (lib_timer's 1 us source rides
+// TIM2). A configured trigger output emits one event per source event, so an
+// advance spanning several cycles emits several; sinks run after the counter has
+// taken its end-of-advance value.
 void HW_TIM_advanceTime(uint32_t elapsed_us);
 
-// Register the sink for a peripheral's trigger output. Only sim-target
-// hw-layer code registers — the consumer is the sim ADC's hardware-triggered
-// conversion. One sink per peripheral: the modelled hardware routes a trigger
-// to a single consumer, so a later registration replaces the earlier one and a
-// NULL callback clears it. Independent of HW_TIM_init — the two run in either
-// order and a re-init keeps the registration, so a firmware restart re-wires
-// rather than orphans. Returns false if the peripheral is out of range.
+// Register the sink for a peripheral's trigger output (the consumer is the sim
+// ADC's hardware-triggered conversion). One sink per peripheral: a later
+// registration replaces the earlier one and a NULL callback clears it.
+// Independent of HW_TIM_init. Returns false if the peripheral is out of range.
 bool HW_TIM_registerTrgoCallback(HW_TIM_peripheral_E peripheral,
                                  HW_TIM_trgoCallback_F callback,
                                  void * context);

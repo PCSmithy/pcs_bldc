@@ -17,11 +17,8 @@
 #define BASE_PERIPH    (HW_TIM_PERIPHERAL_2)
 #define PWM_CH         (HW_TIM_CHANNEL_PWM_U)
 
-// Test-owned SIL_ports hooks double: registerSignal assigns sequential handles
-// and remembers each port's local name; writeSignal records the last value per
-// handle. Installed before HW_TIM_init so the driver's port registrations and
-// publications run through the production seam. With no hooks installed the
-// driver registers nothing and its writes no-op (the standalone-native contract).
+// Test-owned SIL_ports hooks double, installed before HW_TIM_init so the
+// driver's port registrations and publications run through the production seam.
 #define MAX_PORTS  (16)
 static char     portName[MAX_PORTS][40];
 static double   portValue[MAX_PORTS];
@@ -567,6 +564,11 @@ static void test_trgo_update_on_down_counter(void)
 
     HW_TIM_advanceTime(250U);   // two more reloads inside one advance
     TEST_ASSERT_EQUAL_UINT32(3U, trgoCount);
+
+    // An update event is a pulse, not a directional crossing: a down-counter's
+    // updates still report CROSS_UP, which is what a rising-edge sink accepts.
+    TEST_ASSERT_EQUAL_UINT32(3U, trgoUpCount);
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoDownCount);
 }
 
 // A center-aligned counter reloads at both extremes, so with rcr = 0 — an
@@ -712,6 +714,25 @@ static void test_trgo_oc_match_center_fires_on_both_crossings(void)
 
     HW_TIM_advanceTime(2U * PWM_PERIOD);   // one full cycle: both crossings again
     TEST_ASSERT_EQUAL_UINT32(4U, trgoCount);
+}
+
+// The repetition counter gates update events only: an OC-match source keeps
+// firing on both crossings of every cycle, whatever rcr is set to.
+// [test->fw~hal_tim_006~1]
+static void test_trgo_oc_match_center_ignores_repetition_counter(void)
+{
+    timPeripherals[PWM_PERIPH].countsPerUs = 1U;
+    timPeripherals[PWM_PERIPH].countDir    = HW_TIM_COUNT_CENTER;
+    timPeripherals[PWM_PERIPH].rcr         = 1U;
+    timPeripherals[PWM_PERIPH].trgoSource  = HW_TIM_TRGO_OC_MATCH;
+    timPeripherals[PWM_PERIPH].trgoOcUnit  = 0U;   // PWM_U, compare 400 of period 1000
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(PWM_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(3U * 2U * PWM_PERIOD);   // three full cycles in one advance
+    TEST_ASSERT_EQUAL_UINT32(6U, trgoCount);
+    TEST_ASSERT_EQUAL_UINT32(3U, trgoUpCount);
+    TEST_ASSERT_EQUAL_UINT32(3U, trgoDownCount);
 }
 
 // No trigger output configured, no source selected, or a counter that does not
@@ -911,6 +932,7 @@ int main(void)
     RUN_TEST(test_trgo_oc_match_fires_at_compare);
     RUN_TEST(test_trgo_oc_match_uses_configured_unit);
     RUN_TEST(test_trgo_oc_match_center_fires_on_both_crossings);
+    RUN_TEST(test_trgo_oc_match_center_ignores_repetition_counter);
     RUN_TEST(test_trgo_silent_when_not_configured);
     RUN_TEST(test_trgo_registration);
 

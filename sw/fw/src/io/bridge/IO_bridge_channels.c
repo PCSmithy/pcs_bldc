@@ -22,6 +22,10 @@
 // share TIM1, whose master output enable gates the whole bridge. Each phase
 // shunt and the DC-bus shunt land on the board's ADC inputs: phase U on ADC1
 // IN6, V on ADC2 IN7, W on ADC1 IN8, bus current on ADC2 IN11.
+//
+// U and V additionally sit in slot 0 of their ADC's TIM1-triggered injected
+// sequence (the PWM-crest sample); W is derived from them and the bus shunt has
+// no crest sample, so both carry IO_BRIDGE_INJECTED_NONE.
 static const IO_bridge_channelConfig_S IO_bridge_channelConfig[] =
 {
     [IO_BRIDGE_CHANNEL_MOTOR] =
@@ -32,11 +36,40 @@ static const IO_bridge_channelConfig_S IO_bridge_channelConfig[] =
 
         .phaseCurrent =
         {
-            [IO_BRIDGE_PHASE_U] = { HW_ADC_CHANNEL_1, 6U, BRIDGE_PHASE_I_BIAS_V, BRIDGE_PHASE_I_V_PER_A },
-            [IO_BRIDGE_PHASE_V] = { HW_ADC_CHANNEL_2, 7U, BRIDGE_PHASE_I_BIAS_V, BRIDGE_PHASE_I_V_PER_A },
-            [IO_BRIDGE_PHASE_W] = { HW_ADC_CHANNEL_1, 8U, BRIDGE_PHASE_I_BIAS_V, BRIDGE_PHASE_I_V_PER_A },
+            [IO_BRIDGE_PHASE_U] =
+            {
+                .adcChannel        = HW_ADC_CHANNEL_1,
+                .adcInput          = 6U,
+                .injectedIndex     = 0U,
+                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+            },
+            [IO_BRIDGE_PHASE_V] =
+            {
+                .adcChannel        = HW_ADC_CHANNEL_2,
+                .adcInput          = 7U,
+                .injectedIndex     = 0U,
+                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+            },
+            [IO_BRIDGE_PHASE_W] =
+            {
+                .adcChannel        = HW_ADC_CHANNEL_1,
+                .adcInput          = 8U,
+                .injectedIndex     = IO_BRIDGE_INJECTED_NONE,
+                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+            },
         },
-        .busCurrent = { HW_ADC_CHANNEL_2, 11U, BRIDGE_BUS_I_BIAS_V, BRIDGE_BUS_I_V_PER_A },
+        .busCurrent =
+        {
+            .adcChannel        = HW_ADC_CHANNEL_2,
+            .adcInput          = 11U,
+            .injectedIndex     = IO_BRIDGE_INJECTED_NONE,
+            .zeroCurrentBias_V = BRIDGE_BUS_I_BIAS_V,
+            .voltsPerAmp       = BRIDGE_BUS_I_V_PER_A,
+        },
+        .injectedPairWindow_us = 25U, // must be strictly less than 50us PWM period (20kHz)
     },
 };
 
@@ -44,4 +77,5 @@ const IO_bridge_config_S IO_bridge_config =
 {
     .channels    = IO_bridge_channelConfig,
     .numChannels = COUNTOF(IO_bridge_channelConfig),
+    .timeBasePeripheral = HW_TIM_PERIPHERAL_2,
 };
