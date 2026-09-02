@@ -8,22 +8,17 @@
 
 /* Typedefs */
 
-// One input pin on the regular conversion sequence. inputs[] in the
-// channel config is indexed by physical IN# (0..HW_ADC_INPUTS_PER_CHANNEL-1)
-// — set .enabled=true and fill .sConfig for each input that should
-// participate. .sConfig.Channel must match the slot index (e.g.
-// inputs[6] must have .sConfig.Channel == ADC_CHANNEL_6); not enforced.
+// One input pin on the regular sequence; inputs[] is indexed by physical IN#.
+// .sConfig.Channel must match the slot index (inputs[6] -> ADC_CHANNEL_6);
+// not enforced.
 typedef struct
 {
     bool enabled;
     ADC_ChannelConfTypeDef sConfig;
 } HW_ADC_inputConfig_S;
 
-// One input on the injected conversion sequence. injectedInputs[] is
-// dense, indexed by sequence position (0..3) — slot 0 becomes injected
-// rank 1, slot 1 becomes rank 2, etc. The library sets .sConfig.InjectedRank
-// and .sConfig.InjectedNbrOfConversion based on array position and
-// enabled count; user just fills .enabled and the rest of .sConfig.
+// One input on the injected sequence; injectedInputs[] is dense, indexed by
+// sequence position (slot 0 is injected rank 1).
 typedef struct
 {
     bool enabled;
@@ -37,32 +32,13 @@ typedef enum
     HW_ADC_TIMER_TRIGGER_COUNT,
 } HW_ADC_timerTrigger_E;
 
-// One ADC peripheral.
-//
-// Library-managed regular-path hadc.Init fields (whatever you put here
-// is silently overwritten by HW_ADC_init based on enabled-input count
-// and trigger/xfer modes):
-//   - NbrOfConversion       <- count of enabled regular inputs
-//   - ScanConvMode          <- ENABLE iff >1 enabled regular input
-//   - EOCSelection          <- ADC_EOC_SINGLE_CONV (polled needs per-conversion EOC)
-//   - ContinuousConvMode    <- DISABLE (single-shot per _run1ms)
-//   - LowPowerAutoWait      <- ENABLE for polled xfer (AUTDLY halts the
-//                              sequencer per conversion until DR is read, so
-//                              the per-rank poll+read can't overrun); left as-is otherwise
-//   - ExternalTrigConv      <- ADC_SOFTWARE_START iff triggerMode == HW_ADC_TRIGGER_SOFTWARE
-//
-// Library-managed injected-path injectedInputs[].sConfig fields
-// (similarly overwritten):
-//   - InjectedRank             <- derived from array position
-//   - InjectedNbrOfConversion  <- count of enabled injected inputs
-//   - ExternalTrigInjecConv    <- ADC_INJECTED_SOFTWARE_START iff
-//                                 injectedTriggerMode == HW_ADC_TRIGGER_SOFTWARE
-//
-// All other Init / sConfig fields (Resolution, DataAlign, ClockPrescaler,
-// SamplingTime, etc.) are taken as-is from this config.
-//
-// configureMultimode applies only to the master ADC of each pair
-// (e.g. ADC1 of the ADC1+2 pair); the slave's flag should be false.
+// One ADC peripheral. HW_ADC_init silently overwrites the fields it derives
+// from the enabled-input counts and the trigger/xfer modes — hadc.Init's
+// NbrOfConversion, ScanConvMode, EOCSelection, ContinuousConvMode,
+// LowPowerAutoWait, ExternalTrigConv, and injectedInputs[].sConfig's
+// InjectedRank, InjectedNbrOfConversion, ExternalTrigInjecConv(Edge). Every
+// other field is taken as-is. configureMultimode is for the master ADC of a
+// pair only (ADC1 of ADC1+2); the slave's flag stays false.
 typedef struct
 {
     ADC_HandleTypeDef hadc;

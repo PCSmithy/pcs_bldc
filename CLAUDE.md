@@ -245,11 +245,14 @@ sufficient to make the tooling aware of a new topic.
 - 173 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
   with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs). The intentional defect baseline is
-  **27**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`
+  **28**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`
   (gesture map) + `fw~mc_010` (V/f) future app methods,
   `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
-  pending); and `app~arch_001` (implemented; its test needs the live
-  Tauri core). Anything else = investigate. Both `[test->]` and
+  pending); `app~arch_001` (implemented; its test needs the live
+  Tauri core); and `fw~hal_opamp_002` (implemented, test-uncovered —
+  its acceptance criterion is an OPAMP output read back through an ADC,
+  and the sim has no internal OPAMP→ADC path to route it; see
+  `docs/sil/backlog.md`). Anything else = investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
 
 ### Decisions explicitly deferred (will become specs when made)
@@ -353,8 +356,9 @@ if (!initSuccess) Error_Handler();
 All `HW_*_init` / `IO_*_init` etc. functions return `bool`; `main.c` is
 the single place that calls `Error_Handler` (which is itself defined in
 `main.c`, always part of the executable's link). Library code never
-calls `Error_Handler` directly. See
-`memory/feedback_init_returns_bool.md`.
+calls `Error_Handler` directly — a library that aborts on its own robs
+the integrator of the choice, and it cannot link standalone or under
+Unity, where no `Error_Handler` exists.
 
 ### Channelization pattern (canonical idiom)
 
@@ -615,7 +619,7 @@ sites.
 
 | Component   | Role                                                    | Datasheet in repo |
 |-------------|---------------------------------------------------------|-------------------|
-| STM32G431VB | MCU (Cortex-M4F @170MHz, 128 KB flash / 32 KB RAM)      | Yes               |
+| STM32G431VB | MCU (Cortex-M4F @144 MHz, 170 MHz max; 128 KB flash / 32 KB RAM) | Yes     |
 | STSPIN32G4  | 3-phase gate driver (integrated)                        | Yes               |
 | CYPD3177    | USB-PD sink controller                                  | Yes               |
 | LMR50410    | 5V buck converter                                       | Yes               |

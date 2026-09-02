@@ -45,6 +45,10 @@ typedef struct
     void *                    injectedCallbackContext[HW_ADC_CHANNEL_COUNT];
     uint32_t                  pendingCompletions[HW_ADC_CHANNEL_COUNT];
 
+    // Injected error edges. No sim fault source writes it yet; SIL can drive it
+    // by DWARF the way conversionStall[] is driven.
+    uint32_t errorCount[HW_ADC_CHANNEL_COUNT];
+
     uint32_t tickCounter;
     bool initialized;
 } HW_ADC_data_S;
@@ -316,7 +320,7 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
                     bool anyEnabled = false;
                     for (uint8_t i = 0U; i < HW_ADC_INJECTED_INPUTS_PER_CHANNEL; i++)
                     {
-                        anyEnabled = anyEnabled || channelConfig->injectedInputs[i].enabled;
+                        anyEnabled = ((anyEnabled) || (channelConfig->injectedInputs[i].enabled));
                     }
                     if (anyEnabled)
                     {
@@ -508,6 +512,20 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
         // may be NULL
         data->injectedCallback[channel]        = callback;
         data->injectedCallbackContext[channel] = context;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_getErrorCount(HW_ADC_channels_E channel, uint32_t * const out)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT) &&
+        (out != NULL))
+    {
+        *out = data->errorCount[channel];
         ret = true;
     }
     return ret;

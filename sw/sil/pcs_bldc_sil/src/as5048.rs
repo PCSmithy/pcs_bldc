@@ -19,6 +19,7 @@
 //! (`docs/sil/member-cadence.md`).
 
 use prng::Prng;
+use crate::register_port;
 use voyant::{
     vsig_id, Cadence, DuplexPeer, Member, MemberCtx, SigHandle, SignalId, StateTable, Value,
 };
@@ -138,10 +139,8 @@ impl Member for As5048Model {
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
-            let _ = st.register(self.angle_id(), Some("rad"));
-            let _ = st.register(self.raw_id(), Some("counts"));
-            self.h_angle = st.handle(&self.angle_id());
-            self.h_raw = st.handle(&self.raw_id());
+            self.h_angle = register_port(st, &self.angle_id(), Some("rad"));
+            self.h_raw = register_port(st, &self.raw_id(), Some("counts"));
         }
     }
 }

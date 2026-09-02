@@ -25,7 +25,7 @@ pub use sil::{lock_world, Sil, SilOptions};
 pub use wiring::{wire_bridge, wire_current_sense, BRIDGE_PORTS};
 
 use std::path::{Path, PathBuf};
-use voyant::SignalId;
+use voyant::{SigHandle, SignalId, StateTable};
 
 /// The default engine grid: this many µs of sim time per step. Interrupts (the
 /// kernel tick included) dispatch on whichever step their due time falls. A world
@@ -59,6 +59,20 @@ pub fn dll_path() -> PathBuf {
         "native-fw-release"
     };
     root.join("build").join(flavor).join("src").join(LIBNAME)
+}
+
+/// One input port's current value by handle (`0.0` when never driven / not numeric
+/// — a dark bus reads all zeros). The models' resolve-once port-read lane.
+pub(crate) fn observe_port(st: &StateTable, h: Option<SigHandle>) -> f64 {
+    h.and_then(|h| st.current_f64(h)).unwrap_or(0.0)
+}
+
+/// Register one model port and capture its handle. A `register` error means two
+/// members claim this id with different units — a wiring bug, loud at enable rather
+/// than silently publishing into the wrong unit.
+pub(crate) fn register_port(st: &mut StateTable, id: &SignalId, unit: Option<&str>) -> Option<SigHandle> {
+    st.register(id.clone(), unit).expect("port id/unit is unique to this model");
+    st.handle(id)
 }
 
 /// A `cvar:pcs_bldc:<path>` id for this board's firmware statics.

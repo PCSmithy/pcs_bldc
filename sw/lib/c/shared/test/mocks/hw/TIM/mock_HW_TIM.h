@@ -22,6 +22,12 @@ void mock_HW_TIM_setPeripheral(HW_TIM_channels_E channel, HW_TIM_peripheral_E pe
 // AutomaticOutput disabled), and it stays clear until set again.
 void mock_HW_TIM_assertBreak(HW_TIM_peripheral_E peripheral);
 
+// Drive the free-running time base the injected callback stamps samples with.
+void mock_HW_TIM_setCounter(HW_TIM_peripheral_E peripheral, uint32_t counts);
+
+// Force HW_TIM_getCounter to fail, so a caller's no-time-source path is testable.
+void mock_HW_TIM_setGetCounterFails(bool fails);
+
 // Inspect recorded state.
 uint32_t mock_HW_TIM_getCompare(HW_TIM_channels_E channel);
 bool     mock_HW_TIM_getOutputEnabled(HW_TIM_channels_E channel);

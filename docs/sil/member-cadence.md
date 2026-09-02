@@ -64,7 +64,8 @@ enum Cadence {
   step for TIM landings/trigger emission. Its own reduction is the fw-side
   twin of `OnInputChange`: gate the per-step port-cache fill (unconditional
   since the zero-latency reorder) on `MemberCtx`'s `inputs_dirty` (or pending
-  port registrations); the cvar flush is already sparse (`take_dirty`) and
+  port registrations); the cvar flush is already sparse
+  (`take_dirty_indices`) and
   `out_sync` already gates on dispatch.
 
 ## Transfer-driven members (`OnDemand`) — the bus is the clock

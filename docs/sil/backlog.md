@@ -12,27 +12,180 @@ schematic/BOM that are stale (they say 25 MHz). As-built deviations now
 live in `hw/rework-log.md` — update the schematic/BOM to match, and log any
 future rework there.
 
-**Related fw follow-up (owner-directed):** TIM1's `.period = 4249` was
-sized for a 170 MHz clock (20 kHz center-aligned); at the real 144 MHz it
-gives 16.94 kHz. ARR 3600 restores exactly 20.000 kHz / 50 µs. Lands with
-the owner's injected-ADC CubeMX work.
+## fw: move the regular ADC path to DMA, then disable AUTDLY
 
-## Motor model: raise the ~4.5x-realtime ceiling (integrator levers)
+**When:** before anything downstream (FOC, current-loop tuning) starts trusting
+a per-period injected sample. The DMA conversion is the prerequisite — AUTDLY
+cannot come off ahead of it.
+
+**Symptom:** roughly 1 in 208 injected samples goes missing on hardware at
+20 kHz.
+
+**Mechanism:** `HW_ADC_init` forces `LowPowerAutoWait` (AUTDLY) on for both
+ADCs. AUTDLY is a per-peripheral CFGR bit, not per-group — it halts the
+sequencer until DR is read, and TIM1 TRGO2 triggers arriving in that window
+are dropped rather than queued.
+
+**Why it cannot simply be turned off:** the multi-rank polled regular read
+depends on it. With AUTDLY clear, `HAL_ADC_PollForConversion` clears EOC and
+EOS together, so ranks 2..N wait on an EOC that never re-arms — `HAL_TIMEOUT`
+per rank, stale Vbus/temp/OPAMP counts, and ~16 ms of blocking per `run1ms`
+pass inside a 1 ms task.
+
+**Fix:** move the regular path to `HAL_ADC_Start_DMA` with a completion
+callback, removing the polled-EOC dependency. AUTDLY can then be disabled.
+
+**Verify:** count JEOS ISR entries against TIM1 periods over ≥10 s of steady
+20 kHz operation with the regular path running. Expect 1:1; the current ratio
+is ~207/208.
+
+## sim: the injected dispatch sequence batches differently under a coarse grid
+
+**When:** whenever the sim ADC completion path or the engine grid is next
+touched, or before a test relies on one dispatch meaning one trigger.
+
+`HW_ADC`'s injected dispatch sequence identifies a trigger by its interrupt
+entry: stm32g4 bumps it once at the top of `HW_ADC_irqHandler` before the
+per-channel HAL loop, and the sim bumps it once at the top of
+`HW_ADC_sim_completionDispatch` before the drain, so completions serviced
+together share a value on both targets. `IO_bridge` pairs U and V on it to
+derive phase W.
+
+Two sim-only departures, neither reachable at the normal 50 us cadence:
+
+- An entry that drains nothing still consumes a sequence. Harmless — a
+  sequence identifies an entry, not a sample.
+- If `pendingCompletions[ch]` exceeds 1, the sim fires several callbacks for
+  one channel under a single sequence, where hardware would have used a
+  separate entry per trigger. This needs a dispatch deferred past a trigger,
+  i.e. a grid coarse enough to queue completions.
+
+The second one matters if a coarse-grid scenario ever pairs on the sequence:
+two triggers' samples would share an identity and pair wrongly. Either drain
+one completion per sequence, or assert the queue depth stays at 1 on the
+grids the suites use.
+
+## sim: route OPAMP output into an ADC input, so the gain spec can be covered
+
+**When:** whenever the sim ADC or OPAMP model is next touched. It is the one
+piece holding the OFT defect baseline at 28 instead of 27.
+
+**What:** `fw~hal_opamp_002~1` requires each channel to drive its amplifier's
+**internal ADC input** with the pin voltage times the configured gain, and its
+acceptance is a conversion of that internal input reading back the product. The
+sim cannot express that: `hw/ADC/sim` takes every input's voltage from a SIL
+port, and nothing reads `HW_OPAMP_data.outputVolts`. So the two models sit side
+by side with no path between them, and the spec is impl-covered but honestly
+test-uncovered — the tag was removed rather than pointed at a test that never
+touches an ADC.
+
+**Note the requirement is sound** — on silicon the STM32G4 OPAMPs feed ADC
+inputs internally, which is exactly what the spec pins down. The gap is the
+sim's, not the spec's.
+
+**Fix:** give sim `HW_ADC` a per-input source that can be an OPAMP channel
+rather than a port — the OPAMP model computes `input × gain` already, so the
+work is the selection and the wiring, not new physics. Then restore the
+`[test->]` tag on a test that converts the internal input, and drop the
+baseline back to 27 in `CLAUDE.md`.
+
+## SIL: no perf regression gate — the µs/step numbers cannot regress detectably
+
+**When:** soon. Every lever in `performance.md` is currently protected only by
+a doc paragraph.
+
+**What:** CI runs `tools/run_sil.sh`, which runs the perf binary as step 4/4
+and fails only on a non-zero exit. Every number it prints goes to stdout and is
+discarded — there is no committed baseline, no tolerance, and no machine
+record, so a 3× regression lands green.
+
+**Shape of the fix (deliberately cheap):** a normal `#[test]` in
+`sw/sil/pcs_bldc_sil/tests/` that warms up a board world on the 50 µs grid,
+times N steps, and asserts a **loose** ceiling — roughly 3× the documented
+typical, which is still well clear of shared-runner noise. It catches the
+structural class of regression (an allocation or a string key back on a hot
+path), not a few percent of drift. A tight wall-clock tolerance would flake and
+is not worth having. Worth pairing with a deterministic companion that asserts
+the *mechanism* the perf rests on — motor advances once per step, encoders zero
+times, sense only on a changed input, sweep once per `sweep_period_us` —
+which cannot flake at all; `grid.rs` already asserts the sweep half.
+
+## SIL: the per-member perf attribution instrument is invalid
+
+**When:** whenever someone next wants a per-member cost split. Until then the
+rows are informational and `performance.md` says so.
+
+**What:** `report_board_world` in `pcs_bldc_sil/src/main.rs` attributes each
+member's cost as `full − (world with that member disabled)`. That subtraction
+is only valid if disabling a member removes its cost and nothing else, which is
+false here: the encoders sit on the firmware's SPI bus, so disabling one
+changes what the firmware executes. Measured, the dial-encoder row reads
+**−11.76 µs of a 3.11 µs step** — disabling it makes the world ~5× *slower*,
+presumably because the firmware retries on the dark bus. `report_performance`
+has the same defect one report up (`of which model+route+propagate` went
+negative on the same run).
+
+**Fix, in preference order:** (a) delete the per-member loop and keep only the
+`full board world` row, which is a valid end-to-end measurement; or (b) if
+per-member attribution is genuinely wanted, take it from a scoped timer around
+each member's `advance` inside the engine — which already sequences them —
+rather than from world-vs-world subtraction, and clamp or flag a negative row
+instead of printing it as fact.
+
+## bench: `pwm_isense_sampling.ipynb` is committed with its outputs embedded
+
+**When:** hygiene — next touch of `tools/trace_analysis/`.
+
+**What:** the four other trace_analysis notebooks are committed output-stripped;
+`pwm_isense/pwm_isense_sampling.ipynb` is not — ~458 KB of its 477 KB is
+base64 PNG output. Nothing enforces the convention: there is no `nbstripout`
+config and no pre-commit hook, so the siblings' clean state is manual
+discipline that this one missed.
+
+**Fix:** either clear it (`jupyter nbconvert --clear-output`) and add an
+`nbstripout`/pre-commit config so the convention holds by construction, or
+decide deliberately that this notebook is a rendered artifact and say so in its
+own header cell. Pick one — the current state is neither.
+
+## sim: move the GPIO EXTI detector onto the SIL_irq path
+
+**When:** when anything needs an input edge faster than 1 kHz, or opportunistic
+cleanup — whichever comes first.
+
+**What:** sim `HW_GPIO` detects EXTI edges by comparing injected input levels
+inside `HW_GPIO_run1ms`, counting them in `extiEdgeCount`. Every other sim
+module that models an interrupt now registers with the framework interrupt
+table (the pended-completion pattern: ADC, SPI, DMA, USB), so GPIO is the odd
+one out — and a 1 ms poll structurally cannot represent an edge faster than
+1 kHz, nor place one anywhere but on a millisecond boundary.
+
+**Fix:** register the EXTI handler as a pended entry and pend it from the
+level-injection path, so an edge dispatches at the sim instant it happens and
+at its configured priority. The `line_asserted` level extension sketched in
+`sim-interrupts.md` §6 is the natural follow-on for level-sensitive lines
+(nFAULT/BKIN), not a prerequisite here.
+
+## Motor model: raise the integrator's realtime ceiling (remaining levers)
 
 **When:** when a long single scenario or the Phase-4 fast-mode/pytest sweeps
 actually need it; owner-led (owner physics). Not this sprint.
 
-**Why (measured 2026-08-15):** the plant costs ~220 us wall per 1 ms of sim
-time — 1000 x 1 us semi-implicit-Euler sub-steps at ~0.22 us (~700 cycles)
-each — capping any board world at ~4.5x realtime on every grid. The
-framework's own fine-grid cost is ~2.3 us/step (22x+); the plant is the
-floor. Largely hidden today by nextest's process-per-test parallelism.
+**Why (measured 2026-08-30):** the plant is the single largest member cost in
+a board world — ~2.4 us of a ~4.8-5.3 us step on the 50 us grid — and it
+scales with sim time, not step count, so it is the term that decides how much
+faster than realtime a long run can go.
+
+**Spent lever:** flat coarsening. The semi-implicit-Euler sub-step went 1 us
+-> 5 us (200 sub-steps per ms, not 1000), which is where the board world's
+9.4-10.4x realtime came from. There is no more headroom here: the accuracy
+limit is the explicitly-forced BEMF term, so error scales with omega_e*dt,
+and 10 us already drifts 30% at 2 kHz electrical against a 1 us reference
+(`performance.md` §16). Do not coarsen further without changing the scheme.
 
 **Levers, in leverage order:**
-- **Dynamic/adaptive sub-step:** the 1 us step guards the stiff diode-mode
+- **Dynamic/adaptive sub-step:** the fine step guards the stiff diode-mode
   transitions (engagement/anti-chatter), not the RL dynamics (tau_e = L/R is
-  hundreds of us). Fine steps only around diode-mode changes, coarse
-  elsewhere — or a measured flat coarsening to 5-10 us — plausibly 5-10x.
+  340 us). Fine steps only around diode-mode changes, coarse elsewhere.
   Step selection must be state-dependent only (determinism). The analytic
   `motor_dynamics.rs` asserts + MF4 diffs against 1 us runs are the accuracy
   instruments.

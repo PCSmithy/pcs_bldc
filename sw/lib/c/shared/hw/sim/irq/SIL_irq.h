@@ -21,9 +21,8 @@
 
 #define SIL_IRQ_HANDLE_INVALID  (-1)
 
-// A simulated interrupt handler: an ordinary C function the framework calls in
-// the firmware context. Not restricted to CMSIS vector names — a vector handler,
-// a HAL callback, or a sim function all qualify.
+// A simulated interrupt handler: any C function the framework calls in the
+// firmware context — a vector handler, a HAL callback, or a sim function.
 typedef void (*SIL_irq_handler_F)(void);
 
 typedef struct
@@ -31,11 +30,9 @@ typedef struct
     // Opaque framework context, passed back on every call.
     void * context;
 
-    // Register a handler firing every period_us of sim time. Returns a handle,
-    // or a negative value on failure. priority orders same-step dispatch only
-    // (lower value first, no preemption); the first firing is one period away.
-    // The ladder mirrors an NVIC: control-loop ISRs at the top, peripheral ISRs
-    // below them (sim HW_USB at 8), the FreeRTOS port's kernel tick last at 15.
+    // Register a handler firing every period_us of sim time; the first firing is
+    // one period away. priority orders same-step dispatch only, lower value
+    // first, no preemption (the board's ladder: docs/sil/sim-interrupts.md).
     int32_t (*registerPeriodic)(void * context, SIL_irq_handler_F handler,
                                 uint32_t period_us, uint8_t priority);
 
@@ -54,10 +51,8 @@ typedef struct
     // Register a handler with no time schedule: it dispatches only when pended.
     int32_t (*registerPended)(void * context, SIL_irq_handler_F handler, uint8_t priority);
 
-    // Set an entry pending — the NVIC ISPR twin. It dispatches in the current
-    // step's ISR phase and the flag clears on dispatch; pending while masked
-    // (or re-pending before dispatch) holds a single pending state, as on
-    // hardware.
+    // Set an entry pending — the NVIC ISPR twin: it dispatches in this step's
+    // ISR phase, and repeated pends before dispatch hold one pending state.
     void (*pend)(void * context, int32_t handle);
 } SIL_irq_hooks_S;
 

@@ -31,9 +31,9 @@
     },
 
 #define HW_GPIO_CUBEMX_SIM_PINS_PORT_B \
-    { .pin = 0x0004U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PB2" }, \
-    { .pin = 0x0400U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PB10" }, \
-    { .pin = 0x0040U, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "PB6" },
+    { .pin = 0x0004U, .mode = HW_GPIO_MODE_OUTPUT,           .pinNameStr = "PB2" }, \
+    { .pin = 0x0400U, .mode = HW_GPIO_MODE_INPUT,            .pinNameStr = "PB10" }, \
+    { .pin = 0x0040U, .mode = HW_GPIO_MODE_INTERRUPT_RISING, .pinNameStr = "PB6" },
 
 #define HW_GPIO_CUBEMX_PINS_PORT_C \
     { \
@@ -54,9 +54,9 @@
     },
 
 #define HW_GPIO_CUBEMX_SIM_PINS_PORT_C \
-    { .pin = 0x2000U, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "PC13" }, \
-    { .pin = 0xC000U, .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "PC14+PC15" }, \
-    { .pin = 0x0010U, .mode = HW_GPIO_MODE_OUTPUT,    .pinNameStr = "PC4" },
+    { .pin = 0x2000U, .mode = HW_GPIO_MODE_INTERRUPT_RISING, .pinNameStr = "PC13" }, \
+    { .pin = 0xC000U, .mode = HW_GPIO_MODE_INPUT,            .pinNameStr = "PC14+PC15" }, \
+    { .pin = 0x0010U, .mode = HW_GPIO_MODE_OUTPUT,           .pinNameStr = "PC4" },
 
 #define HW_GPIO_CUBEMX_PINS_PORT_E \
     { \

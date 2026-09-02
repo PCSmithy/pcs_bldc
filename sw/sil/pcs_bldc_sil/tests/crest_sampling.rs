@@ -10,6 +10,9 @@ use pcs_bldc_sil::board::{
 };
 use pcs_bldc_sil::{cid, vid, Board, CurrentSenseParams, MotorParams, Sil};
 
+mod common;
+use common::{assert_status, u64_at, ADC_OK};
+
 /// The PWM period at 20 kHz — the control-rate grid.
 const GRID_US: u64 = 50;
 
@@ -18,11 +21,7 @@ const COMPLETION_ISR: &str = "HW_ADC_sim_completionDispatch";
 
 /// One injected slot's raw counts, straight from firmware memory.
 fn injected_count(sim: &Sil, ch: usize) -> u64 {
-    let path = format!("HW_ADC_data.channelData[{ch}].injectedCounts[0]");
-    sim.fw()
-        .read_cvar(&path)
-        .as_u64()
-        .unwrap_or_else(|| panic!("{path} reads as an unsigned count"))
+    u64_at(sim, &format!("HW_ADC_data.channelData[{ch}].injectedCounts[0]"))
 }
 
 /// Decode an injected slot the way the firmware's phase decode would: counts →
@@ -85,13 +84,10 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
     tap_button(&mut sim);
     sim.run_for_ms(200); // partway into the dwell — current settled, still aligning
     let expected_a = (ALIGN_DUTY * VBUS_V) / (2.0 * MotorParams::default().r_ohm);
-    assert!(
-        port(&sim, "PWM_U_enabled") == 1.0 && ALIGN_DUTY > 0.0,
-        "alignment pattern is driving"
-    );
+    assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "alignment pattern is driving");
 
-    // The injected slots track the plant through the sense chain, per period:
-    // sample instants land on the driven current, not a stale pre-arm value.
+    // The injected slots track the plant through the sense chain: the samples
+    // carry the driven current, not a stale pre-arm value.
     for phase in [(0usize, "phase_current_u"), (1usize, "phase_current_v")] {
         let (ch, sig) = phase;
         let inj = injected_amps(&sim, ch, &params);
@@ -154,8 +150,9 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
 
     // Measurement window: every PWM period for 40 ms (~several electrical
     // cycles). Each step's injected slots are compared against the plant's
-    // winding currents at that step and at the previous one — the residual
-    // pins down where in the step the sample instant lives.
+    // winding currents at that step — the residual bounds the sense chain's
+    // error. (Where in the period the sample instant lands is asserted at the
+    // unit level, in test_HW_ADC.c::test_falling_edge_selects_the_down_crossing.)
     let completion = fw_member
         .borrow()
         .find_isr(COMPLETION_ISR)
@@ -176,8 +173,8 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
             plant(&sim, "phase_current_v"),
             plant(&sim, "phase_current_w"),
         ];
-        for ch in 0..2usize {
-            max_uv = max_uv.max((injected_amps(&sim, ch, &params) - now[ch]).abs());
+        for (ch, truth) in now.iter().take(2).enumerate() {
+            max_uv = max_uv.max((injected_amps(&sim, ch, &params) - truth).abs());
         }
         // Two-shunt derivation: the third phase reconstructed from the two
         // sampled ones, against the plant's own i_w.
@@ -188,35 +185,20 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
     eprintln!("residuals over {steps} periods: U/V {max_uv:.4} A, derived-W {max_w:.4} A");
 
     assert_eq!(cadence, steps, "one completion per PWM period through commutation");
+    // Thresholds are the measured maximum plus quantization headroom (8.06 mA per
+    // LSB at 0.1 V/A on 12 bits), so a cross-platform ULP flip cannot fail CI:
+    // U/V 13.6 mA + 1 LSB; derived-W 16.8 mA + 2 LSB (two quantized channels summed).
     assert!(max_uv < 0.025, "injected tracks the plant per period ({max_uv:.4} A)");
     assert!(max_w < 0.040, "derived W tracks the plant ({max_w:.4} A)");
 
     // Coexistence: the regular 1 ms sequencer keeps running on the shared
     // pins throughout — its per-pass status is still OK on both ADCs.
     for ch in 0..2 {
-        let path = format!("HW_ADC_data.status[{ch}]");
-        let got = match sim.fw().read_cvar(&path) {
-            voyant::Value::Enum(name) => name,
-            other => panic!("{path} reads as an enum, got {other:?}"),
-        };
-        assert!(
-            got == "HW_ADC_CONVERSION_STATUS_OK" || got == "<2>",
-            "regular path healthy beside the injected stream: {path} = {got}"
+        assert_status(
+            &sim,
+            &format!("HW_ADC_data.status[{ch}]"),
+            &ADC_OK,
+            "regular path healthy beside the injected stream",
         );
     }
-}
-
-/// Trace-generation variant: the same spin with the cvar mirror ungated, so
-/// firmware statics land in the historian at every dispatching step instead of
-/// the 1 ms sweep cadence. Not an assert suite — run it explicitly to dump a
-/// dense MDF:
-///   PCS_SIL_TRACE_DIR=build/traces cargo test --release --test crest_sampling \
-///     -- --ignored north_star_trace
-#[test]
-#[ignore = "trace generation: set PCS_SIL_TRACE_DIR and run with --ignored"]
-fn north_star_trace_ungated_mirror() {
-    let Board { mut sim, .. } =
-        board_with(Sil::options().grid_us(GRID_US).sweep_period_us(0), 0.8);
-    spin_up(&mut sim);
-    sim.run_for_ms(40); // the observation window the assert suite measures
 }

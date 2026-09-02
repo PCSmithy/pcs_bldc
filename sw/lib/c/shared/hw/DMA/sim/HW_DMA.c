@@ -1,51 +1,13 @@
 /* Includes */
 #include "HW_DMA.h"
+#include "HW_DMA_simData.h"
 #include "SIL_irq.h"
 
 /* Defines */
 
-// Largest transfer the loopback model captures/injects (bytes). Longer transfers
-// still move data through the caller's buffer, only the captured/injected copy is
-// clamped.
-#define HW_DMA_SIM_MAX_BYTES  (256U)
-
 // Completion dispatch rides the peripheral-ISR rung of the sim NVIC ladder
 // (docs/sil/sim-interrupts.md), alongside sim HW_USB.
 #define HW_DMA_IRQ_PRIORITY   (8U)
-
-/* Typedefs */
-
-typedef struct
-{
-    HW_DMA_completeCallback_F callback;
-    void * callbackContext;
-    HW_DMA_status_E status;
-
-    // In-flight transfer, settled by the pended completion interrupt.
-    void *   memory;
-    uint32_t numItems;
-    bool     pending;
-
-    // Memory-to-peripheral capture / peripheral-to-memory injection. SIL reads
-    // and writes these by DWARF; a fill slot past injectedLen takes a synthetic
-    // byte ramp (the ADC undriven-input pattern).
-    uint8_t lastMem[HW_DMA_SIM_MAX_BYTES];
-    size_t  lastMemLen;
-    uint8_t injected[HW_DMA_SIM_MAX_BYTES];
-    size_t  injectedLen;
-
-    // Fault knob, written by DWARF from SIL: the next completion lands ERROR.
-    bool     forceError;
-    uint32_t transferCount;
-} HW_DMA_channelData_S;
-
-typedef struct
-{
-    const HW_DMA_config_S * config;
-    bool initialized;
-
-    HW_DMA_channelData_S channels[HW_DMA_CHANNEL_COUNT];
-} HW_DMA_data_S;
 
 /* Private Function Declarations */
 
@@ -58,7 +20,7 @@ void HW_DMA_sim_completionDispatch(void);
 
 /* Private Data Definitions */
 
-static HW_DMA_data_S HW_DMA_data;
+HW_DMA_data_S HW_DMA_data;
 static HW_DMA_data_S * const data = &HW_DMA_data;
 
 // The completion service's framework handle. Lives outside HW_DMA_data so the
@@ -100,18 +62,27 @@ static size_t HW_DMA_private_byteLength(HW_DMA_channel_E channel)
 
 // [impl->fw~hal_dma_003~1]
 // Completion interrupt: pended by HW_DMA_startTransfer, dispatched in the same
-// step's ISR phase. Settles every pending transfer — fault knob first, then the
-// peripheral-to-memory fill — and fires the channel's callback exactly once.
+// step's ISR phase. The pending set is snapshotted at entry so a transfer started
+// from a callback settles in the next interrupt, as hardware does.
 void HW_DMA_sim_completionDispatch(void)
 {
     if (data->initialized)
     {
+        uint32_t due = 0U;
+        for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
+        {
+            if (data->channels[channel].pending)
+            {
+                data->channels[channel].pending = false;
+                due |= (1UL << channel);
+            }
+        }
+
         for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
         {
             HW_DMA_channelData_S * const cd = &data->channels[channel];
-            if (cd->pending)
+            if ((due & (1UL << channel)) != 0U)
             {
-                cd->pending = false;
                 if (cd->forceError)
                 {
                     cd->status = HW_DMA_STATUS_ERROR;
@@ -127,7 +98,7 @@ void HW_DMA_sim_completionDispatch(void)
                         uint8_t * const dst = (uint8_t *)cd->memory;
                         for (size_t i = 0U; i < byteLen; i++)
                         {
-                            dst[i] = (i < cd->injectedLen) ? cd->injected[i] : (uint8_t)i;
+                            dst[i] = (uint8_t)i;
                         }
                     }
                     cd->status = HW_DMA_STATUS_COMPLETE;
@@ -150,9 +121,8 @@ bool HW_DMA_init(const HW_DMA_config_S * const config)
 {
     bool ret = false;
 
-    // Re-entrant: every call, accepted or rejected, drops the driver back to its
-    // uninitialized state — injection, capture, faults, and pending transfers
-    // included. The previous completion service goes with it.
+    // Re-entrant: every call, accepted or rejected, is a clean slate; the
+    // completion service goes with it.
     SIL_irq_cancel(HW_DMA_completionIrqHandle);
     HW_DMA_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
     *data = (HW_DMA_data_S){ 0 };
@@ -181,8 +151,11 @@ bool HW_DMA_init(const HW_DMA_config_S * const config)
 bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numItems)
 {
     bool ret = false;
+    // A start on an in-flight channel is refused, as HAL_BUSY would: overwriting
+    // the transfer would fold its pending completion into the new one.
     if ((data->initialized) &&
         (channel < HW_DMA_CHANNEL_COUNT) &&
+        (!data->channels[channel].pending) &&
         (memory != NULL) &&
         (numItems > 0U))
     {
@@ -192,9 +165,8 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
         cd->status   = HW_DMA_STATUS_BUSY;
         cd->pending  = true;
 
-        // Memory-to-peripheral: capture the bytes leaving memory now (the
-        // engine reads them during the transfer). Peripheral-to-memory fills
-        // the buffer at completion.
+        // Capture the bytes leaving memory now: the engine reads them during the
+        // transfer, so a later completion would see a buffer firmware has reused.
         if (data->config->channels[channel].direction == HW_DMA_DIRECTION_MEM_TO_PERIPH)
         {
             const size_t byteLen = HW_DMA_private_byteLength(channel);
@@ -204,11 +176,10 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
             {
                 cd->lastMem[i] = src[i];
             }
-            cd->lastMemLen = byteLen;
+            cd->lastMemLen = copyLen;
         }
 
-        // The sim twin of the transfer-complete IRQ: completion dispatches in
-        // this step's ISR phase.
+        // The sim twin of the transfer-complete IRQ.
         SIL_irq_pend(HW_DMA_completionIrqHandle);
         ret = true;
     }

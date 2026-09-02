@@ -23,8 +23,8 @@
 //!    with `dt` = elapsed since its previous advance (a firmware member also flushes
 //!    driven cvars, ticks, and samples cvars back out). Propagation reports changed
 //!    destinations into per-member input-dirty bits (`OnInputChange`'s due test); an
-//!    `OnDemand` member is skipped outright — its bus transfers read the table
-//!    directly.
+//!    `OnDemand` member is never due — it is propagated for like any other, but only
+//!    its own bus transfers advance it.
 //!
 //! Re-running the whole zero-latency DAG per member is semantically identical to
 //! per-member resolution (routes are pure copies, `record` dedups) and far simpler;
@@ -170,6 +170,10 @@ impl Engine {
         let rc = Rc::new(RefCell::new(member));
         let name = rc.borrow().name().to_string();
         let cadence = rc.borrow().cadence();
+        assert!(
+            !self.member_idx.contains_key(&name),
+            "member name {name:?} is already registered; names are the signal <source> namespace and must be unique"
+        );
         rc.borrow_mut().set_enabled(true, &mut self.state);
         self.member_idx.insert(name.clone(), self.members.len());
         // Dirty at birth: the first scheduled advance always runs, so an
@@ -202,7 +206,7 @@ impl Engine {
     /// whether the member was found; marks the wiring dirty when it was.
     pub fn set_member_enabled(&mut self, name: &str, on: bool) -> bool {
         let now = self.now_us;
-        if let Some(i) = self.members.iter().position(|e| e.name == name) {
+        if let Some(i) = self.member_idx.get(name).copied() {
             let entry = &mut self.members[i];
             entry.enabled = on;
             if on {
@@ -333,8 +337,9 @@ impl Engine {
                 return fail(&mut self.state, format!("duplex endpoint {id:?} is not a valid id: {e}"))
             }
         };
-        let (tx_id, rx_id) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name())
-            .expect("a valid bus id yields valid tx/rx ids");
+        let Ok((tx_id, rx_id)) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name()) else {
+            return fail(&mut self.state, format!("duplex endpoint {id:?}: tx/rx id derivation failed"));
+        };
         match (self.state.resolve_index(&tx_id), self.state.resolve_index(&rx_id)) {
             (Some(ti), Some(ri)) => {
                 self.intern_txrx(handle, (ti, ri));
@@ -387,7 +392,7 @@ impl Engine {
         {
             let dirt = &mut self.inputs_dirty;
             let map = &self.member_idx;
-            self.routes.propagate_delayed_observed(&mut self.state, &mut |dst| {
+            self.routes.propagate_delayed(&mut self.state, &mut |dst| {
                 if let Some(&j) = map.get(dst.source()) {
                     dirt[j] = true;
                 }
@@ -396,26 +401,20 @@ impl Engine {
 
         // 4. Each enabled member, in registration order: re-resolve the zero-latency
         //    DAG (topo order, fresh reads) — marking input-dirty bits — then advance
-        //    if the member's cadence says it is due. An `OnDemand` member is never
-        //    scheduled (nor propagated for — later passes keep its inputs fresh for
-        //    its bus transfers). `routes`, `state`, and `zl_order` are disjoint from
-        //    `members`, so the borrows coexist. Propagation is table-only; the
-        //    member syncs its own firmware mirrors.
-        let grid = self.grid_us;
+        //    if the member's cadence says it is due (see module docs item 4).
+        //    Indexed rather than iterated so the disjoint-field borrows of routes /
+        //    state / zl_order coexist with the per-member borrow. Propagation is
+        //    table-only; the member syncs its own firmware mirrors.
         let now = self.now_us;
         for i in 0..self.members.len() {
             if !self.members[i].enabled {
                 continue;
             }
-            let member = Rc::clone(&self.members[i].member);
-            let cadence = member.borrow().cadence();
-            if cadence == Cadence::OnDemand {
-                continue;
-            }
+            let cadence = self.members[i].member.borrow().cadence();
             {
                 let dirt = &mut self.inputs_dirty;
                 let map = &self.member_idx;
-                self.routes.propagate_zero_latency_observed(
+                self.routes.propagate_zero_latency(
                     &mut self.state,
                     &self.zl_order,
                     &mut |dst| {
@@ -430,17 +429,16 @@ impl Engine {
                 Cadence::EveryStep => true,
                 Cadence::Periodic { .. } => now >= entry.next_due_us,
                 Cadence::OnInputChange => self.inputs_dirty[i],
-                Cadence::OnDemand => unreachable!("skipped above"),
+                // Advanced only by its own bus transfers; propagation above still
+                // ran, so those transfers read fresh inputs.
+                Cadence::OnDemand => false,
             };
             if !due {
                 continue;
             }
-            // dt = elapsed since the previous advance (exactly the grid step for
-            // EveryStep — a disabled gap never leaks in, see set_member_enabled).
-            let dt = match cadence {
-                Cadence::EveryStep => grid,
-                _ => now - entry.last_advance_us,
-            };
+            // dt = elapsed since the previous advance (the grid step for EveryStep on
+            // a healthy run; a disabled gap never leaks in, see set_member_enabled).
+            let dt = now - entry.last_advance_us;
             entry.last_advance_us = now;
             if let Cadence::Periodic { period_us } = cadence {
                 let period = period_us.max(1);
@@ -451,7 +449,7 @@ impl Engine {
             let dirty = std::mem::replace(&mut self.inputs_dirty[i], false);
             let mut ctx = MemberCtx::new(&mut self.state, &self.duplex);
             ctx.inputs_dirty = dirty;
-            member.borrow_mut().advance(dt, &mut ctx);
+            self.members[i].member.borrow_mut().advance(dt, &mut ctx);
         }
 
         // 5. Drain the duplex router: force-record every exchange this tick as

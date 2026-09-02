@@ -15,8 +15,8 @@ task architecture (`task_1ms` > `task_10ms` > `task_usb` > `telemetryTask`)
 running. The gate driver has **never been driven** — no motor motion yet.
 
 **Read first:**
-1. `CLAUDE.md` + `MEMORY.md` (esp. adc-autdly-hal-tick, adc-rank-constants,
-   unhandled-IRQ-wedge).
+1. `CLAUDE.md`, plus the ADC and unhandled-IRQ gotchas at the bottom of this
+   file.
 2. `specs/system/mc/motor-control.md` (`sys~mc_001`, the sprint's system
    anchor) + `specs/firmware/hal/adc.md` (`fw~hal_adc_003` / `fw~hal_adc_008`
    are the reserved timer-triggered-injected + async-completion specs).
@@ -59,9 +59,9 @@ already in place.
   `fw~hal_adc_003` / `fw~hal_adc_008`: TIM1-update-triggered injected
   conversions on ADC1 (U) and ADC2 (V) for simultaneous phase sampling,
   interrupt- or DMA-readout, NVIC priorities that keep USB from jittering the
-  loop. **Revisit the AUTDLY-vs-injected gating** — `HW_ADC` currently forces
-  AUTDLY for the polled path, and AUTDLY is ADC-wide (see MEMORY.md →
-  adc-autdly-hal-tick).
+  loop. **The regular path must move to DMA first** — AUTDLY is ADC-wide and
+  is forced on for the polled read, which drops injected triggers that arrive
+  while it holds the sequencer (`docs/sil/backlog.md`).
 - **Zero-current offset calibration** at startup (bridge disabled).
 - **Clarke / Park transforms, PI current loops (Id/Iq), SVM** output back to
   the TIM1 duty registers.
@@ -112,12 +112,14 @@ protocol decision must precede (6).
 
 ## Known gotchas carried in from the foundation sprint
 
-- **AUTDLY is ADC-wide.** Forced-on for the polled path today; the injected /
-  DMA current sampling in Milestone 2 must re-examine the gating and the
-  `EOCSelection`-drives-JEOC/JEOS poll subtlety (MEMORY.md).
+- **AUTDLY is ADC-wide.** Forced on for the polled regular read, and it stays
+  on until that read is DMA-driven: `HAL_ADC_PollForConversion` clears EOC and
+  EOS together when AUTDLY is clear, so a multi-rank poll times out on ranks
+  2..N. It costs the injected group ~1 trigger in 208 meanwhile
+  (`docs/sil/backlog.md`).
 - **Encoder RX DMA is parked** — the `HW_SPI` stm32g4 DMA path is TX-only.
   Mirror `HW_SPI_private_dmaTxComplete` for RX if the ~3.5 µs polled read
   becomes a loop-timing problem.
 - **Unhandled-IRQ wedge** — any enabled-but-unhandled interrupt hangs the CPU
   in `Default_Handler`. New TIM1/ADC/DMA interrupts need handlers wired
-  (`--whole-archive fw_hw`; see MEMORY.md).
+  and reachable through `--whole-archive fw_hw`, or the linker drops them.

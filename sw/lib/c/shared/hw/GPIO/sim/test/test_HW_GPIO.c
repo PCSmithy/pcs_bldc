@@ -1,5 +1,7 @@
 #include "HW_GPIO.h"
+#include "HW_GPIO_simData.h"
 #include "SIL_ports.h"
+#include "lib_utils.h"
 #include "unity.h"
 
 #include <stdio.h>
@@ -12,13 +14,12 @@
 // Single-bit HAL-style pin masks for the pins used by the baseline config.
 #define OUT_PIN   (0x0010U)   // line 4  -> output
 #define IN_PIN    (0x4000U)   // line 14 -> input
-#define IRQ_PIN   (0x2000U)   // line 13 -> interrupt input
+#define IN_BIT    (14U)
+#define IRQ_PIN   (0x2000U)   // line 13 -> rising-edge interrupt input
+#define IRQ_BIT   (13U)
 
-// Test-owned SIL_ports hooks double: registerSignal assigns sequential handles
-// and remembers each port's local name; writeSignal records the value and write
-// count per handle. Installed before HW_GPIO_init so the driver's registrations
-// and publications run through the production seam. With no hooks installed the
-// driver registers nothing and its writes no-op (the standalone-native contract).
+// Test-owned SIL_ports hooks double, installed before HW_GPIO_init so the
+// driver's registrations and publications run through the production seam.
 #define MAX_PORTS  (8)
 static char     portName[MAX_PORTS][24];
 static double   portValue[MAX_PORTS];
@@ -98,16 +99,33 @@ static void buildGoodConfig(void)
     portCPins[1] = (HW_GPIO_pinConfig_S){
         .pin = IN_PIN,  .mode = HW_GPIO_MODE_INPUT,     .pinNameStr = "in" };
     portCPins[2] = (HW_GPIO_pinConfig_S){
-        .pin = IRQ_PIN, .mode = HW_GPIO_MODE_INTERRUPT, .pinNameStr = "irq" };
+        .pin = IRQ_PIN, .mode = HW_GPIO_MODE_INTERRUPT_RISING, .pinNameStr = "irq" };
 
     gpioConfig = (HW_GPIO_config_S){ 0 };
     gpioConfig.ports[HW_GPIO_PORT_C].pins    = portCPins;
-    gpioConfig.ports[HW_GPIO_PORT_C].numPins = sizeof(portCPins) / sizeof(portCPins[0]);
+    gpioConfig.ports[HW_GPIO_PORT_C].numPins = COUNTOF(portCPins);
 }
+
+// EXTI dispatch observation: the callback records what it was handed.
+static uint32_t        extiCalls;
+static HW_GPIO_port_E  extiPort;
+static uint32_t        extiPin;
+static void *          extiContext;
 
 static void testExtiCallback(HW_GPIO_port_E port, uint32_t pin, void * context)
 {
-    (void)port; (void)pin; (void)context;
+    extiCalls++;
+    extiPort    = port;
+    extiPin     = pin;
+    extiContext = context;
+}
+
+// Drive one interrupt pin's injected level, then run the sampling pass that
+// edge-detects it. This is the same white-box injection point SIL writes.
+static void injectLevel(HW_GPIO_port_E port, uint32_t bit, HW_GPIO_level_E level)
+{
+    HW_GPIO_data.inputLevel[port][bit] = level;
+    HW_GPIO_run1ms();
 }
 
 void setUp(void)
@@ -119,7 +137,11 @@ void setUp(void)
         portValue[i]   = 0.0;
         portWrites[i]  = 0U;
     }
-    portCount = 0;
+    portCount   = 0;
+    extiCalls   = 0U;
+    extiPort    = HW_GPIO_PORT_COUNT;
+    extiPin     = 0U;
+    extiContext = NULL;
 
     // A rejected init is the clean slate: init drops the driver to its
     // uninitialized state before it looks at the config.
@@ -280,6 +302,59 @@ static void test_exti_register_out_of_range_port(void)
     TEST_ASSERT_FALSE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_COUNT, IRQ_PIN, testExtiCallback, &ctx));
 }
 
+// [test->fw~hal_gpio_005~1]
+static void test_exti_dispatch_fires_registered_pin_only(void)
+{
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    int ctx = 0;
+    TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, &ctx));
+
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_HIGH);
+    TEST_ASSERT_EQUAL_UINT32(1U, extiCalls);
+    TEST_ASSERT_EQUAL_INT(HW_GPIO_PORT_C, extiPort);
+    TEST_ASSERT_EQUAL_UINT32(IRQ_PIN, extiPin);
+    TEST_ASSERT_EQUAL_PTR(&ctx, extiContext);
+
+    // A second interrupt pin with no callback registered dispatches nothing:
+    // the NULL guard on the ISR path.
+    portCPins[1].mode = HW_GPIO_MODE_INTERRUPT_RISING;
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, &ctx));
+    extiCalls = 0U;
+    injectLevel(HW_GPIO_PORT_C, IN_BIT, HW_GPIO_LEVEL_HIGH);
+    TEST_ASSERT_EQUAL_UINT32(0U, extiCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_GPIO_data.extiEdgeCount[HW_GPIO_PORT_C]);
+}
+
+// A rising-edge pin fires on the rising transition only; a falling-edge pin
+// mirrors it, and a both-edges pin takes each transition.
+// [test->fw~hal_gpio_005~1]
+static void test_exti_dispatch_honours_the_trigger_edge(void)
+{
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, NULL));
+
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_HIGH);
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_LOW);
+    TEST_ASSERT_EQUAL_UINT32(1U, extiCalls);
+
+    portCPins[2].mode = HW_GPIO_MODE_INTERRUPT_FALLING;
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, NULL));
+    extiCalls = 0U;
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_HIGH);
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_LOW);
+    TEST_ASSERT_EQUAL_UINT32(1U, extiCalls);
+
+    portCPins[2].mode = HW_GPIO_MODE_INTERRUPT_BOTH;
+    TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
+    TEST_ASSERT_TRUE(HW_GPIO_registerExtiCallback(HW_GPIO_PORT_C, IRQ_PIN, testExtiCallback, NULL));
+    extiCalls = 0U;
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_HIGH);
+    injectLevel(HW_GPIO_PORT_C, IRQ_BIT, HW_GPIO_LEVEL_LOW);
+    TEST_ASSERT_EQUAL_UINT32(2U, extiCalls);
+}
+
 /* ---- output-pin observation ports ---- */
 
 // Only the named output pin registers a port; inputs and interrupt inputs don't.
@@ -341,6 +416,8 @@ int main(void)
 
     RUN_TEST(test_exti_register_valid_port);
     RUN_TEST(test_exti_register_out_of_range_port);
+    RUN_TEST(test_exti_dispatch_fires_registered_pin_only);
+    RUN_TEST(test_exti_dispatch_honours_the_trigger_edge);
 
     RUN_TEST(test_ports_registered);
     RUN_TEST(test_unnamed_pin_registers_no_ports);

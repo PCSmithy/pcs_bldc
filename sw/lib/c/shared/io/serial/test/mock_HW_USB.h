@@ -1,9 +1,8 @@
 #pragma once
 
 /*
- * Boundary mock of the HW_USB API (HW_USB.h) for IO_serial's unit tests.
- * Test-owned state: a TX capture, an RX queue, a connected flag, and a
- * TX-accepting toggle for the backpressure path. Kernel-free.
+ * Kernel-free boundary mock of HW_USB.h for IO_serial's unit tests: a TX
+ * capture, an RX queue, a connected flag, and a TX-accepting toggle.
  */
 
 #include "lib_types.h"

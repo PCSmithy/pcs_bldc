@@ -181,8 +181,9 @@ impl DuplexRouter {
         let st_ptr = self.inner.borrow().dispatch_table?;
         // SAFETY: stashed by the dispatching member from its own live `&mut
         // StateTable` strictly around the C dispatch, during which that borrow is
-        // dormant (no Rust frame touches it until the dispatch returns);
-        // single-threaded — the trampoline discipline of `backend.rs`.
+        // dormant (no Rust frame touches it until the dispatch returns); single-
+        // threaded, and no peer can re-enter here (none can call back into firmware
+        // C), so only one `&mut` derived from the stash is ever live.
         let st = unsafe { &mut *st_ptr };
         self.transfer(handle, tx, st)
     }

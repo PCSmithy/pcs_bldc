@@ -18,7 +18,7 @@ endif()
 
 # Signal to the lib/c tree that a firmware project consumer is present.
 # Channelized hw/ modules and the vendor STM32G4 HAL need consumer-provided
-# config interface libs (pcs_systemClock_config, pcs_stm32g4_hal_conf,
+# config interface libs (pcs_ADC_channels, pcs_stm32g4_hal_conf,
 # etc.) which only exist inside sw/fw. lib/c gates those modules on this
 # variable so a standalone `cmake -S sw/lib/c` build can still build the
 # cross-cutting libs (ringbuf, types, build, Unity) and run their tests.

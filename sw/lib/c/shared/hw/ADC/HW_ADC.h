@@ -6,11 +6,8 @@
 
 /* Defines */
 
-// Max input pins per ADC peripheral on the regular conversion sequence.
-// STM32G4 ADC1/2 support channels 0..18 (incl. internal Vrefint, Vts,
-// Vbat, and the VOPAMP outputs). Sized to 19 to index the highest
-// internal channel in use (VOPAMP3 = ADC2 IN18); bump if higher-numbered
-// internal channels are added.
+// Sized to index the highest internal channel in use (VOPAMP3 = ADC2 IN18);
+// bump if a higher-numbered internal channel is added.
 #define HW_ADC_INPUTS_PER_CHANNEL           (19U) // TODO - move this into g4 specific file - out of generic header
 
 // this is an MCU-architecture limit, not configurable
@@ -18,18 +15,15 @@
 
 /* Typedefs */
 
-// How an ADC peripheral is triggered. Software is "kick off from CPU on
-// demand"; Timer is hardware-triggered (e.g. TIM1 update event for FOC
-// current sampling). Used for both regular and injected paths.
+// Applies to both the regular and the injected path.
 typedef enum
 {
     HW_ADC_TRIGGER_SOFTWARE,
     HW_ADC_TRIGGER_TIMER,
 } HW_ADC_triggerMode_E;
 
-// How conversion results are extracted: polled, ISR-driven, or DMA.
-// Polled is fine for slow signals (Vbus, temp); FOC current sensing
-// will eventually need ISR (injected) or DMA (regular).
+// Polled is fine for slow signals (Vbus, temp); current sensing needs the
+// ISR-driven injected path.
 typedef enum
 {
     HW_ADC_XFER_POLLED,
@@ -37,10 +31,8 @@ typedef enum
     HW_ADC_XFER_DMA,        // not yet implemented; init() will reject
 } HW_ADC_xferMode_E;
 
-// Per-channel outcome of the most recent _run1ms sampling pass.
-// IDLE  = no pass has serviced this channel (e.g. not polled / no inputs).
-// OK    = the last pass stored every enabled input's conversion.
-// FAULT = a conversion timed out; some counts are stale.
+// Outcome of the most recent sampling pass. IDLE = the channel was never
+// serviced; FAULT = a conversion timed out, so some counts are stale.
 typedef enum
 {
     HW_ADC_CONVERSION_STATUS_IDLE,
@@ -80,17 +72,16 @@ bool HW_ADC_getCount(HW_ADC_channels_E channel, uint8_t inputIndex, uint32_t * c
 
 bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * const out);
 
-// injectedIndex is the injected sequence position 0..3 (matches
-// injectedInputs[] indexing) — NOT a physical IN#. Task-context reads of
-// ISR-written results are best-effort snapshots (values across channels or
-// calls may span trigger events); the callback is the coherent consumer.
+// injectedIndex is the injected sequence position 0..3, NOT a physical IN#.
+// Task-context reads of ISR-written results are best-effort snapshots; the
+// callback is the only coherent consumer.
 bool HW_ADC_getInjectedCount(HW_ADC_channels_E channel, uint8_t injectedIndex, uint32_t * const out);
 
 bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, float32_t * const out);
 
-// The callback runs in the injected-completion ISR, which sits ABOVE the
-// kernel's syscall ceiling (hard-real-time FOC slot): it must not call any
-// FreeRTOS API, FromISR variants included.
+// The callback runs in the injected-completion ISR, which the board places at an
+// NVIC preempt priority above configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY: it
+// and everything it reaches must make no FreeRTOS call, *FromISR included.
 bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
                                      HW_ADC_injectedCallback_F callback,
                                      void * context);

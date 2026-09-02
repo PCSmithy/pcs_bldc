@@ -8,13 +8,14 @@
 //! the same shape as the real USB ISR waking the service task. `taskUsbRuns` is that
 //! task's heartbeat, so the counter moving in a step is proof the woken task ran.
 
+mod common;
+use common::SYSTICK_ISR;
 use pcs_bldc_sil::{cid, Sil, SOURCE};
 
 /// The handler the sim USB driver registers by pointer at `HW_USB_init`.
 const USB_ISR: &str = "HW_USB_sim_irqHandler";
-/// The kernel tick, which the fiber port registers at scheduler start. Every step
-/// of a booted image dispatches it, after the USB entry — priority 15 against 8.
-const SYSTICK_ISR: &str = "vSilSysTickHandler";
+/// The sim ADC's completion service, pended once per step in a booted image.
+const ADC_ISR: &str = "HW_ADC_sim_completionDispatch";
 
 #[test]
 fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
@@ -101,13 +102,19 @@ fn a_config_time_one_shot_resolves_by_name_and_fires_on_its_grid_step() {
             step * 1_000
         );
     }
-    // THE traffic canary: the one world-total assert in the suite, kept blunt on
-    // purpose. Any new interrupt source in a full-firmware world moves this
-    // number, and that is the point — update it consciously, with the accounting.
+    // The traffic canary, stated as a decomposition: each live source on its own,
+    // then the world total against their sum plus the one-shot — whose entry is
+    // pruned when it fires, so the loop above is its only witness. An interrupt
+    // source appearing unannounced breaks the sum, and a moved term names itself.
+    let m = member.borrow();
+    let ticks = m.find_isr(SYSTICK_ISR).expect("the port's kernel tick");
+    let adc = m.find_isr(ADC_ISR).expect("the ADC completion service");
+    assert_eq!(m.isr_dispatch_count_of(ticks), 6, "one kernel tick per step");
+    assert_eq!(m.isr_dispatch_count_of(adc), 6, "one ADC completion per step");
     assert_eq!(
-        member.borrow().isr_dispatch_count(),
-        13,
-        "6 kernel ticks + 6 ADC completion interrupts + the one-shot"
+        m.isr_dispatch_count(),
+        m.isr_dispatch_count_of(ticks) + m.isr_dispatch_count_of(adc) + 1,
+        "an unaccounted-for interrupt source appeared in the world"
     );
 }
 

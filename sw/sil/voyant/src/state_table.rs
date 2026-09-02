@@ -17,7 +17,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 use thiserror::Error;
 
-/// Default float change-detection epsilon ("moved, not noise").
+/// Default float change-detection epsilon ("moved, not noise"). Absolute, so it is
+/// a resolution floor in each signal's own units — 1 mA of phase current is noise,
+/// 1e-3 rad is ~2.6 AS5048 LSB. A signal whose device resolution is finer than this
+/// needs a `StateTableConfig::signal_epsilon` override; see
+/// [`Cadence::OnInputChange`](crate::member::Cadence::OnInputChange), for which the
+/// epsilon is also the scheduling predicate.
 const DEFAULT_EPSILON: f64 = 1e-3;
 /// Default realtime retention window; fast mode overrides to `None` (unbounded).
 const DEFAULT_RETENTION: Duration = Duration::from_secs(30);
@@ -483,7 +488,7 @@ macro_rules! typed_mirror_lane {
                 Column::Empty => {}
                 // Different kind: defer to the generic path, which rejects it.
                 _ => {
-                    return self.record_inner(idx, Value::$variant(x), false);
+                    return self.record_inner(idx, Value::$variant(x), false).map(|_| ());
                 }
             }
             let t = self.current_time_us;
@@ -607,7 +612,7 @@ impl StateTable {
     /// memory each tick). Errors if not registered.
     pub fn record(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
-        self.record_inner(idx, value, true)
+        self.record_inner(idx, value, true).map(|_| ())
     }
 
     // --- string-keyed scenario API ---------------------------------------
@@ -724,7 +729,7 @@ impl StateTable {
     /// back).
     pub fn record_mirror(&mut self, id: &SignalId, value: Value) -> Result<(), TableError> {
         let idx = self.ensure(id)?;
-        self.record_inner(idx, value, false)
+        self.record_inner(idx, value, false).map(|_| ())
     }
 
     /// **Index-keyed mirror record** — the sweep hot path. Like
@@ -732,7 +737,7 @@ impl StateTable {
     /// (from [`resolve_index`](Self::resolve_index)), so the sweep never hashes a
     /// `SignalId`.
     pub(crate) fn record_mirror_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
-        self.record_inner(idx, value, false)
+        self.record_inner(idx, value, false).map(|_| ())
     }
 
     // **Typed mirror-record fast lanes** — the sweep's scalar decode path. Each takes
@@ -751,7 +756,7 @@ impl StateTable {
     /// [`record`](Self::record) but keyed by a pre-resolved dense index (from
     /// [`resolve_index`](Self::resolve_index)).
     pub(crate) fn record_at(&mut self, idx: usize, value: Value) -> Result<(), TableError> {
-        self.record_inner(idx, value, true)
+        self.record_inner(idx, value, true).map(|_| ())
     }
 
     /// [`record_at`](Self::record_at), reporting whether the value actually
@@ -759,13 +764,7 @@ impl StateTable {
     /// this into the engine's per-member input-dirty bit — an unchanged redelivery
     /// is not an input event.
     pub(crate) fn record_at_changed(&mut self, idx: usize, value: Value) -> Result<bool, TableError> {
-        self.dirty.insert(idx);
-        if let Some(cur) = &self.current[idx] {
-            if cur.approx_eq(&value, self.epsilon[idx]) {
-                return Ok(false);
-            }
-        }
-        self.append(idx, value).map(|()| true)
+        self.record_inner(idx, value, true)
     }
 
     /// Resolve a registered signal to its [`SigHandle`] (`None`: unregistered).
@@ -784,16 +783,18 @@ impl StateTable {
         self.record_at(h.0, value)
     }
 
-    fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<(), TableError> {
+    /// Reports whether the value actually changed (post-epsilon; a first sample
+    /// counts); `command` marks the signal dirty for the owning member's flush.
+    fn record_inner(&mut self, idx: usize, value: Value, command: bool) -> Result<bool, TableError> {
         if command {
             self.dirty.insert(idx);
         }
         if let Some(cur) = &self.current[idx] {
             if cur.approx_eq(&value, self.epsilon[idx]) {
-                return Ok(());
+                return Ok(false);
             }
         }
-        self.append(idx, value)
+        self.append(idx, value).map(|()| true)
     }
 
     /// Record unconditionally (bypasses change-detection). Counts as a command write
@@ -850,39 +851,13 @@ impl StateTable {
 
     /// Remove and return the dirty **indices** `keep` selects, sorted (a
     /// deterministic flush order); unselected dirt stays for its own consumer.
-    /// The index twin of [`take_dirty`](Self::take_dirty) — the per-step flush
-    /// lane, with no id clones or string compares on the scan.
+    /// The per-step flush lane: no id clones or string compares on the scan.
     pub fn take_dirty_indices(&mut self, keep: impl Fn(usize) -> bool) -> Vec<usize> {
         let mut mine: Vec<usize> = self.dirty.iter().copied().filter(|&i| keep(i)).collect();
         for i in &mine {
             self.dirty.remove(i);
         }
         mine.sort_unstable();
-        mine
-    }
-
-    /// Remove and return the dirty ids whose `<source>` segment equals `source`
-    /// (a member drains its **own** namespace; other members' dirt is left in
-    /// place for their own drain). Deterministic order (sorted by id string).
-    /// The string-keyed convenience twin of
-    /// [`take_dirty_indices`](Self::take_dirty_indices) — scenario/cold paths.
-    pub fn take_dirty(&mut self, source: &str) -> Vec<SignalId> {
-        // Dirty indices belonging to `source`, removed then materialized as ids
-        // (deterministic, sorted). The dirty set is small, so this stays cheap.
-        let mine_idx: Vec<usize> = self
-            .dirty
-            .iter()
-            .copied()
-            .filter(|&idx| self.signals.get_index(idx).is_some_and(|id| id.source() == source))
-            .collect();
-        for idx in &mine_idx {
-            self.dirty.remove(idx);
-        }
-        let mut mine: Vec<SignalId> = mine_idx
-            .iter()
-            .map(|&idx| self.signals.get_index(idx).unwrap().clone())
-            .collect();
-        mine.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         mine
     }
 
@@ -1105,41 +1080,43 @@ mod tests {
         let mut st = StateTable::new();
         let a = id("cvar:dut:a");
         st.register(a.clone(), None).unwrap();
+        let ai = st.resolve_index(&a).unwrap();
 
         // A mirror record does NOT mark dirty.
         st.set_time(1_000);
         st.record_mirror(&a, Value::U32(5)).unwrap();
-        assert!(st.take_dirty("dut").is_empty());
+        assert!(st.take_dirty_indices(|_| true).is_empty());
         assert_eq!(st.current_value(&a).unwrap(), Some(Value::U32(5)));
 
         // A command record marks dirty (drained exactly once).
         st.set_time(2_000);
         st.record(&a, Value::U32(9)).unwrap();
-        assert_eq!(st.take_dirty("dut"), vec![a.clone()]);
-        assert!(st.take_dirty("dut").is_empty());
+        assert_eq!(st.take_dirty_indices(|_| true), vec![ai]);
+        assert!(st.take_dirty_indices(|_| true).is_empty());
 
         // Even a deduped (unchanged) command re-marks dirty: the driver keeps
         // re-asserting a routed value every tick.
         st.set_time(3_000);
         st.record(&a, Value::U32(9)).unwrap(); // unchanged -> no historian append
         assert_eq!(st.changes(&a).unwrap().len(), 2);
-        assert_eq!(st.take_dirty("dut"), vec![a]);
+        assert_eq!(st.take_dirty_indices(|_| true), vec![ai]);
     }
 
     #[test]
-    fn take_dirty_is_source_scoped() {
+    fn a_drain_leaves_the_dirt_its_predicate_rejected() {
         let mut st = StateTable::new();
         let a = id("cvar:board_a:x");
         let b = id("cvar:board_b:y");
         st.register(a.clone(), None).unwrap();
         st.register(b.clone(), None).unwrap();
+        let (ai, bi) = (st.resolve_index(&a).unwrap(), st.resolve_index(&b).unwrap());
         st.set_time(1_000);
         st.record(&a, Value::U32(1)).unwrap();
         st.record(&b, Value::U32(2)).unwrap();
 
-        // Draining board_a leaves board_b's dirt in place.
-        assert_eq!(st.take_dirty("board_a"), vec![a]);
-        assert_eq!(st.take_dirty("board_b"), vec![b]);
+        // A member drains its OWN namespace; another's dirt stays for its own drain.
+        assert_eq!(st.take_dirty_indices(|i| i == ai), vec![ai]);
+        assert_eq!(st.take_dirty_indices(|i| i == bi), vec![bi]);
     }
 
     #[test]

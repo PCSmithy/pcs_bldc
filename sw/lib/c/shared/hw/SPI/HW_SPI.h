@@ -29,8 +29,18 @@ typedef struct
     HW_GPIO_level_E activeLevel; // level driven to assert (select) the device
 } HW_SPI_csGpioConfig_S;
 
+// One logical channel: a device on a bus, with its chip-select arrangement.
+// Target-independent — only the bus config differs per target.
+typedef struct
+{
+    HW_SPI_bus_E bus;
+    HW_SPI_chipSelectMode_E csMode;
+    HW_SPI_csGpioConfig_S csGpioConfig; // ignored if csMode != GPIO
+    char * channelNameStr;              // SIL port base name; unused on embedded
+} HW_SPI_channelConfig_S;
+
 /* Target Config */
-#include "HW_SPI_target.h"   // HW_SPI_busConfig_S / HW_SPI_channelConfig_S
+#include "HW_SPI_target.h"   // HW_SPI_busConfig_S
 
 typedef struct
 {

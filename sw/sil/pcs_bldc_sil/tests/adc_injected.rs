@@ -4,65 +4,39 @@
 //! the TIM advance and completions drain through the SIL_irq service, so status,
 //! counts, and cadence are all observable from firmware memory.
 
+mod common;
+use common::{assert_status, booted, u64_at, ADC_OK};
 use pcs_bldc_sil::{vid, Sil, SOURCE};
-use voyant::Value;
-
-/// `HW_ADC_conversionStatus_E` ordinals (enumerator names do not resolve in this
-/// build — see `docs/sil/backlog.md`).
-const OK: i64 = 2;
 
 const U_PIN_PORT: &str = "ADC1_IN6";
 const V_PIN_PORT: &str = "ADC2_IN7";
-
-fn booted() -> Sil {
-    let mut sim = Sil::new();
-    let fwm = sim.load_firmware(SOURCE);
-    sim.add_member(fwm);
-    sim.run_for_ms(1);
-    sim
-}
 
 /// Quantize a driven pin voltage the way the 12-bit converter model does.
 fn counts_of(volts: f64) -> u64 {
     ((volts / 3.3) * 4095.0 + 0.5) as u64
 }
 
-fn status(sim: &Sil, ch: usize) -> String {
-    let path = format!("HW_ADC_data.injectedStatus[{ch}]");
-    match sim.fw().read_cvar(&path) {
-        Value::Enum(name) => name,
-        other => panic!("{path} reads as an enum, got {other:?}"),
-    }
-}
-
 fn injected_count(sim: &Sil, ch: usize) -> u64 {
-    let path = format!("HW_ADC_data.channelData[{ch}].injectedCounts[0]");
-    sim.fw()
-        .read_cvar(&path)
-        .as_u64()
-        .unwrap_or_else(|| panic!("{path} reads as an unsigned count"))
-}
-
-fn mem_u64(sim: &Sil, path: &str) -> u64 {
-    sim.fw().read_cvar(path).as_u64().unwrap_or(0)
+    u64_at(sim, &format!("HW_ADC_data.channelData[{ch}].injectedCounts[0]"))
 }
 
 // [test->fw~hal_adc_003~1]
 #[test]
 fn injected_samples_the_shared_pin_and_completes() {
-    let mut sim = booted();
+    let mut sim = booted(1);
 
     // The status walked BUSY → OK within the first millisecond: the trigger chain
     // fired and the completion service drained it on both channels.
     for ch in 0..2 {
-        let got = status(&sim, ch);
-        assert!(
-            got == "HW_ADC_CONVERSION_STATUS_OK" || got == format!("<{OK}>"),
-            "channel {ch} injected status is {got}, expected OK"
+        assert_status(
+            &sim,
+            &format!("HW_ADC_data.injectedStatus[{ch}]"),
+            &ADC_OK,
+            &format!("channel {ch} injected conversion completed"),
         );
     }
     assert_eq!(
-        mem_u64(&sim, "HW_ADC_data.pendingCompletions[0]"),
+        u64_at(&sim, "HW_ADC_data.pendingCompletions[0]"),
         0,
         "every queued conversion has been drained"
     );
@@ -78,7 +52,7 @@ fn injected_samples_the_shared_pin_and_completes() {
     assert_eq!(injected_count(&sim, 0), counts_of(U_VOLTS), "U slot quantizes the pin");
     assert_eq!(injected_count(&sim, 1), counts_of(V_VOLTS), "V slot quantizes the pin");
     assert_eq!(
-        mem_u64(&sim, "HW_ADC_data.channelData[0].counts[6]"),
+        u64_at(&sim, "HW_ADC_data.channelData[0].counts[6]"),
         counts_of(U_VOLTS),
         "regular and injected read the same physical pin"
     );
