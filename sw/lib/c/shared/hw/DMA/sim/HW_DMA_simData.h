@@ -46,4 +46,3 @@ typedef struct
 
 /* Public Data Declarations */
 
-extern HW_DMA_data_S HW_DMA_data;

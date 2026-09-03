@@ -11,7 +11,7 @@ static void HW_GPIO_private_publishOutputs(HW_GPIO_port_E port, uint32_t pin, HW
 
 /* Private Data Definitions */
 
-HW_GPIO_data_S HW_GPIO_data;
+static HW_GPIO_data_S HW_GPIO_data;
 static HW_GPIO_data_S * const data = &HW_GPIO_data;
 
 /* Private Function Definitions */

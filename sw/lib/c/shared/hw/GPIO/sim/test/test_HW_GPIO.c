@@ -1,5 +1,7 @@
-#include "HW_GPIO.h"
-#include "HW_GPIO_simData.h"
+// White-box: include the .c directly for access to internal types and static
+// data. HW_GPIO_data stays file-scoped, which is also the shape the DWARF
+// readers resolve it through.
+#include "HW_GPIO.c"
 #include "SIL_ports.h"
 #include "lib_utils.h"
 #include "unity.h"
