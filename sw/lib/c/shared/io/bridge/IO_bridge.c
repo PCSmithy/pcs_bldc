@@ -1,4 +1,5 @@
 /* Includes */
+#include "lib_types.h"
 #include "IO_bridge.h"
 #include "HW_TIM.h"
 
@@ -10,10 +11,20 @@
 
 typedef struct
 {
+    HW_TIM_peripheral_E moePeripheral;
+
+    float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
+    uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
+    uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
+
+} IO_bridge_channelData_S;
+
+
+typedef struct
+{
     const IO_bridge_config_S * config;
-    // The HW_TIM peripheral whose master output enable gates each bridge,
-    // derived at init from the bridge's three phases (all share one peripheral).
-    HW_TIM_peripheral_E moePeripheral[IO_BRIDGE_CHANNEL_COUNT];
+
+    IO_bridge_channelData_S channels[IO_BRIDGE_CHANNEL_COUNT];
 } IO_bridge_data_S;
 
 /* Private Data Definitions */
@@ -21,13 +32,23 @@ typedef struct
 static IO_bridge_data_S IO_bridge_data;
 static IO_bridge_data_S * const data = &IO_bridge_data;
 
+static const IO_bridge_phase_E IO_bridge_complementaryPhase[IO_BRIDGE_PHASE_COUNT] =
+{
+    [IO_BRIDGE_PHASE_U] = IO_BRIDGE_PHASE_V,
+    [IO_BRIDGE_PHASE_V] = IO_BRIDGE_PHASE_U,
+    [IO_BRIDGE_PHASE_W] = IO_BRIDGE_PHASE_COUNT,
+};
+
 /* Private Function Declarations */
 
-static HW_TIM_channels_E IO_bridge_private_phaseChannel(
-    const IO_bridge_channelConfig_S * const channelConfig, IO_bridge_phase_E phase);
+static HW_TIM_channels_E IO_bridge_private_phaseChannel(const IO_bridge_channelConfig_S * const channelConfig, IO_bridge_phase_E phase);
 static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period);
-static bool IO_bridge_private_readCurrent(
-    const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out);
+static bool IO_bridge_private_decodeCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t volts, float32_t * const amps_out);
+static bool IO_bridge_private_readCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out);
+static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out);
+static void IO_bridge_private_completeInjectedPair(size_t channel, uint32_t now);
+static void IO_bridge_private_injectedComplete(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E status, void * context);
+static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const config);
 
 /* Private Function Definitions */
 
@@ -50,31 +71,145 @@ static HW_TIM_channels_E IO_bridge_private_phaseChannel(
     return timChannel;
 }
 
-// Round duty x period to the nearest count. duty is pre-validated to [0, 1], so
-// the result is bounded by period and needs no clamp. duty 1 maps to exactly
-// the period (HW_TIM accepts compare == period); center-aligned PWM1 therefore
-// falls one tick short of a true 100% at the counter peak, which the drive path
-// tolerates.
+// Round duty x period to the nearest count.
 static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period)
 {
     return (uint32_t)((duty * (float32_t)period) + 0.5f);
 }
 
-// Convert one sense front end's latest ADC volts to amps. An unconfigured
-// sense (voltsPerAmp == 0) or an ADC read failure returns false, leaving
-// *amps_out untouched — so a missing/failed reading can never masquerade as a
-// zero current to the overcurrent monitor.
-static bool IO_bridge_private_readCurrent(
-    const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out)
+static bool IO_bridge_private_decodeCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t volts, float32_t * const amps_out)
 {
     bool ret = false;
-    float32_t volts = 0.0f;
-    if ((sense->voltsPerAmp != 0.0f) &&
-        (HW_ADC_getVolts(sense->adcChannel, sense->adcInput, &volts)))
+    if (sense->voltsPerAmp != 0.0f)
     {
         *amps_out = (volts - sense->zeroCurrentBias_V) / sense->voltsPerAmp;
         ret = true;
     }
+    return ret;
+}
+
+static bool IO_bridge_private_readCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out)
+{
+    bool ret = false;
+    float32_t volts = 0.0f;
+    if (HW_ADC_getVolts(sense->adcChannel, sense->adcInput, &volts))
+    {
+        ret = IO_bridge_private_decodeCurrent(sense, volts, amps_out);
+    }
+    return ret;
+}
+
+// Same conversion off the sense's injected sequence slot (the PWM-crest sample).
+static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out)
+{
+    bool ret = false;
+    float32_t volts = 0.0f;
+    if (HW_ADC_getInjectedVolts(sense->adcChannel, sense->injectedIndex, &volts))
+    {
+        ret = IO_bridge_private_decodeCurrent(sense, volts, amps_out);
+    }
+    return ret;
+}
+
+// U and V are sampled simultaneously - derive W from them by KCL
+static void IO_bridge_private_completeInjectedPair(size_t channel, uint32_t now)
+{
+    IO_bridge_channelData_S * const channelData = &data->channels[channel];
+    channelData->current_amps[IO_BRIDGE_PHASE_W] = -(channelData->current_amps[IO_BRIDGE_PHASE_U] +
+                                                        channelData->current_amps[IO_BRIDGE_PHASE_V]);
+    channelData->updateCount[IO_BRIDGE_PHASE_W] += 1U;
+    channelData->sampleTime_us[IO_BRIDGE_PHASE_W] = now;
+
+}
+
+
+static void IO_bridge_private_injectedComplete(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status, void * context)
+{
+    (void)context;
+
+    // A failed conversion leaves the last good sample standing
+    if ((data->config != NULL) &&
+        (status == HW_ADC_CONVERSION_STATUS_OK))
+    {
+        uint32_t now_us = 0U;
+
+        // Without a time base the pair window is meaningless: every stamp would
+        // read zero and every sample would look simultaneous.
+        if (HW_TIM_getCounter(data->config->timeBasePeripheral, &now_us))
+        {
+            for (size_t channel = 0U; channel < data->config->numChannels; channel++)
+            {
+                const IO_bridge_channelConfig_S * const channelConfig = &data->config->channels[channel];
+                IO_bridge_channelData_S * const channelData = &data->channels[channel];
+
+                for (uint8_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+                {
+                    const IO_bridge_currentSenseConfig_S * const sense = &channelConfig->phaseCurrent[phase];
+                    if ((sense->adcChannel == adcChannel) &&
+                        (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE))
+                    {
+                        float32_t amps = 0.0f;
+                        if (IO_bridge_private_readInjectedCurrent(sense, &amps))
+                        {
+                            channelData->current_amps[phase] = amps;
+                            channelData->updateCount[phase] += 1U;
+                            channelData->sampleTime_us[phase] = now_us;
+
+                            const IO_bridge_phase_E partner = IO_bridge_complementaryPhase[phase];
+                            if (partner < IO_BRIDGE_PHASE_COUNT) // don't think I need this check because we're already within a `if (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE)` block
+                            {
+                                // Unsigned subtract is wrap-safe; the partner's stamp is always in the past.
+                                const uint32_t timeSincePartner_us = now_us - channelData->sampleTime_us[partner];
+                                if ((channelData->updateCount[partner] != 0U) &&
+                                    (timeSincePartner_us <= channelConfig->injectedPairWindow_us))
+                                {
+                                    IO_bridge_private_completeInjectedPair(channel, now_us);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Hang the completion callback on every ADC channel carrying an injected phase
+// sense, once per channel however many phases share it.
+static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const config)
+{
+    bool ret = true;
+    bool registered[HW_ADC_CHANNEL_COUNT] = { false };
+
+    for (size_t channel = 0U; (channel < config->numChannels) && ret; channel++)
+    {
+        const IO_bridge_channelConfig_S * const channelConfig = &config->channels[channel];
+
+        for (uint8_t phase = 0U; (phase < IO_BRIDGE_PHASE_COUNT) && ret; phase++)
+        {
+            const IO_bridge_currentSenseConfig_S * const sense = &channelConfig->phaseCurrent[phase];
+
+            if (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE)
+            {
+                if ((sense->adcChannel < HW_ADC_CHANNEL_COUNT) &&
+                    (sense->injectedIndex < HW_ADC_INJECTED_INPUTS_PER_CHANNEL))
+                {
+                    if (!registered[sense->adcChannel])
+                    {
+                        ret = HW_ADC_registerInjectedCallback(sense->adcChannel,
+                                                                IO_bridge_private_injectedComplete,
+                                                                NULL);
+                        registered[sense->adcChannel] = ret;
+                    }
+                }
+                else
+                {
+                    ret = false;
+                }
+            }
+        }
+    }
+
     return ret;
 }
 
@@ -90,9 +225,9 @@ bool IO_bridge_init(const IO_bridge_config_S * const config)
         (config->numChannels <= IO_BRIDGE_CHANNEL_COUNT))
     {
         success = true;
-        for (size_t ch = 0U; (ch < config->numChannels) && success; ch++)
+        for (size_t channel = 0U; (channel < config->numChannels) && success; channel++)
         {
-            const IO_bridge_channelConfig_S * const channelConfig = &config->channels[ch];
+            const IO_bridge_channelConfig_S * const channelConfig = &config->channels[channel];
             const HW_TIM_channels_E phaseU = channelConfig->phaseU;
             const HW_TIM_channels_E phaseV = channelConfig->phaseV;
             const HW_TIM_channels_E phaseW = channelConfig->phaseW;
@@ -110,7 +245,7 @@ bool IO_bridge_init(const IO_bridge_config_S * const config)
                 (periphU == periphV) &&
                 (periphV == periphW))
             {
-                data->moePeripheral[ch] = periphU;
+                data->channels[channel].moePeripheral = periphU;
 
                 // Enable each phase's output-compare unit up front; outputs stay
                 // dark because HW_TIM commands MOE off at init, leaving the
@@ -123,6 +258,13 @@ bool IO_bridge_init(const IO_bridge_config_S * const config)
             {
                 success = false;
             }
+        }
+
+        if (success)
+        {
+            // HW_ADC_init armed the injected group before this runs, so a few
+            // conversions complete un-consumed; the driver keeps their counts.
+            success = IO_bridge_private_registerInjected(config);
         }
 
         if (success)
@@ -186,7 +328,7 @@ bool IO_bridge_setOutputEnabled(IO_bridge_channel_E channel, bool enabled)
         (channel < IO_BRIDGE_CHANNEL_COUNT) &&
         ((size_t)channel < data->config->numChannels))
     {
-        ret = HW_TIM_setMainOutputEnabled(data->moePeripheral[channel], enabled);
+        ret = HW_TIM_setMainOutputEnabled(data->channels[channel].moePeripheral, enabled);
     }
 
     return ret;
@@ -202,7 +344,7 @@ bool IO_bridge_getOutputEnabled(IO_bridge_channel_E channel, bool * const enable
         (channel < IO_BRIDGE_CHANNEL_COUNT) &&
         ((size_t)channel < data->config->numChannels))
     {
-        ret = HW_TIM_getMainOutputEnabled(data->moePeripheral[channel], enabled);
+        ret = HW_TIM_getMainOutputEnabled(data->channels[channel].moePeripheral, enabled);
     }
 
     return ret;
@@ -216,7 +358,7 @@ bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel)
         (channel < IO_BRIDGE_CHANNEL_COUNT) &&
         ((size_t)channel < data->config->numChannels))
     {
-        ret = HW_TIM_clearBreakFlags(data->moePeripheral[channel]);
+        ret = HW_TIM_clearBreakFlags(data->channels[channel].moePeripheral);
     }
 
     return ret;
@@ -250,6 +392,41 @@ bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps
     {
         ret = IO_bridge_private_readCurrent(
             &data->config->channels[channel].busCurrent, amps_out);
+    }
+
+    return ret;
+}
+
+bool IO_bridge_getInjectedPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out)
+{
+    bool ret = false;
+
+    if ((data->config != NULL) &&
+        (amps_out != NULL) &&
+        (channel < IO_BRIDGE_CHANNEL_COUNT) &&
+        ((size_t)channel < data->config->numChannels) &&
+        (phase < IO_BRIDGE_PHASE_COUNT) &&
+        (data->channels[channel].updateCount[phase] != 0U))
+    {
+        *amps_out = data->channels[channel].current_amps[phase];
+        ret = true;
+    }
+
+    return ret;
+}
+
+bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_phase_E phase, uint32_t * const out)
+{
+    bool ret = false;
+
+    if ((data->config != NULL) &&
+        (out != NULL) &&
+        (channel < IO_BRIDGE_CHANNEL_COUNT) &&
+        ((size_t)channel < data->config->numChannels) &&
+        (phase < IO_BRIDGE_PHASE_COUNT))
+    {
+        *out = data->channels[channel].updateCount[phase];
+        ret = true;
     }
 
     return ret;

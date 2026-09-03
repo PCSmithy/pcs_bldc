@@ -1,6 +1,6 @@
 #include "IO_serial.h"
 #include "HW_USB.h"
-#include "HW_USB_sim.h"
+#include "mock_HW_USB.h"
 #include "unity.h"
 
 // File-scope config the tests build and tweak; IO_serial_init stores a pointer
@@ -17,9 +17,9 @@ static void buildGoodConfig(void)
 
 void setUp(void)
 {
-    HW_USB_sim_reset();
+    mock_HW_USB_reset();
     (void)HW_USB_init();
-    HW_USB_sim_setConnected(true);
+    mock_HW_USB_setConnected(true);
     buildGoodConfig();
 }
 
@@ -32,7 +32,7 @@ static void test_write_before_init_is_noop(void)
 {
     const uint8_t msg[1] = { 42U };
     IO_serial_write(IO_SERIAL_CHANNEL_CDC, msg, 1U);
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_USB_sim_txLen());
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_USB_txLen());
 }
 
 /* ---- fw~conn_serial_001: init + config validation ---- */
@@ -81,7 +81,7 @@ static void test_channel_addressed_transmit(void)
     IO_serial_write(IO_SERIAL_CHANNEL_CDC, msg, 3U);
 
     uint8_t captured[3] = { 0U };
-    TEST_ASSERT_EQUAL_UINT32(3U, HW_USB_sim_readTx(captured, 3U));
+    TEST_ASSERT_EQUAL_UINT32(3U, mock_HW_USB_readTx(captured, 3U));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(msg, captured, 3U);
 }
 
@@ -96,7 +96,7 @@ static void test_transmit_in_order(void)
     IO_serial_write(IO_SERIAL_CHANNEL_CDC, msg, 5U);
 
     uint8_t captured[5] = { 0U };
-    TEST_ASSERT_EQUAL_UINT32(5U, HW_USB_sim_readTx(captured, 5U));
+    TEST_ASSERT_EQUAL_UINT32(5U, mock_HW_USB_readTx(captured, 5U));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(msg, captured, 5U);
 }
 
@@ -107,11 +107,11 @@ static void test_full_transport_drops_without_blocking(void)
 
     // Transport never accepts: the write must give up (bounded retries) and
     // return rather than hang, transmitting nothing.
-    HW_USB_sim_setTxAccepting(false);
+    mock_HW_USB_setTxAccepting(false);
     const uint8_t msg[1] = { 0x55U };
     IO_serial_write(IO_SERIAL_CHANNEL_CDC, msg, 1U);
 
-    TEST_ASSERT_EQUAL_UINT32(0U, HW_USB_sim_txLen());
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_USB_txLen());
 }
 
 /* ---- fw~conn_serial_004: byte reception ---- */
@@ -123,7 +123,7 @@ static void test_receive_available_and_read(void)
     TEST_ASSERT_EQUAL_UINT32(0U, IO_serial_available(IO_SERIAL_CHANNEL_CDC));
 
     const uint8_t incoming[3] = { 0x10U, 0x20U, 0x30U };
-    HW_USB_sim_injectRx(incoming, 3U);
+    mock_HW_USB_injectRx(incoming, 3U);
     TEST_ASSERT_EQUAL_UINT32(3U, IO_serial_available(IO_SERIAL_CHANNEL_CDC));
 
     uint8_t out[3] = { 0U };
@@ -139,10 +139,10 @@ static void test_connection_status(void)
 {
     TEST_ASSERT_TRUE(IO_serial_init(&config));
 
-    HW_USB_sim_setConnected(true);
+    mock_HW_USB_setConnected(true);
     TEST_ASSERT_TRUE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
 
-    HW_USB_sim_setConnected(false);
+    mock_HW_USB_setConnected(false);
     TEST_ASSERT_FALSE(IO_serial_isConnected(IO_SERIAL_CHANNEL_CDC));
 }
 

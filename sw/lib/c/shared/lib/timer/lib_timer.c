@@ -28,6 +28,11 @@ static void lib_timer_private_update(void)
 {
     if (data->config->getTime_us != NULL)
     {
+        if (data->config->enterCritical != NULL)
+        {
+            data->config->enterCritical();
+        }
+
         const uint32_t time_u32 = data->config->getTime_us();
 
         // Accumulate the elapsed delta. Unsigned subtraction wraps modulo
@@ -36,6 +41,11 @@ static void lib_timer_private_update(void)
         const uint32_t delta_us = time_u32 - data->lastTime_u32;
         data->currentTime_us += delta_us;
         data->lastTime_u32 = time_u32;
+
+        if (data->config->exitCritical != NULL)
+        {
+            data->config->exitCritical();
+        }
     }
 }
 

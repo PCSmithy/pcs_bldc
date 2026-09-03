@@ -13,6 +13,10 @@
 // peripheral hangs.
 #define HW_ADC_POLL_TIMEOUT_MS    (2U)
 
+// Alias the HAL InjectedConvCpltCallback onto our canonical naming convention
+#define HW_ADC_private_injectedConversionSequenceCompleteCallback HAL_ADCEx_InjectedConvCpltCallback
+#define HW_ADC_private_errorCallback HAL_ADC_ErrorCallback
+
 /* Typedefs */
 
 typedef struct
@@ -45,6 +49,15 @@ typedef struct
 
     // Outcome of the most recent _run1ms pass on this channel.
     HW_ADC_conversionStatus_E status;
+
+    HW_ADC_conversionStatus_E injectedConversionStatus;
+    HW_ADC_injectedCallback_F injectedConversionCompleteCallback;
+    void * injectedConversionCompleteCallbackContext;
+
+    // Total HAL error-callback edges on this channel; never latches, never
+    // clears except at init.
+    uint32_t errorCount;
+
 } HW_ADC_channelData_S;
 
 typedef struct
@@ -52,6 +65,7 @@ typedef struct
     const HW_ADC_config_S * config;
 
     HW_ADC_channelData_S channelData[HW_ADC_CHANNEL_COUNT];
+
     bool initialized;
 } HW_ADC_data_S;
 
@@ -59,21 +73,23 @@ typedef struct
 
 static uint8_t HW_ADC_private_resolutionToNumBits(uint32_t resolution);
 static bool    HW_ADC_private_rankToOrdinal(uint32_t rankConstant, uint8_t * const ordinal);
-static bool    HW_ADC_private_initOneChannel(HW_ADC_channels_E ch);
+static bool    HW_ADC_private_initOneChannel(HW_ADC_channels_E channel);
+static bool    HW_ADC_private_armTriggeredChannels(void);
+static HW_ADC_channels_E HW_ADC_private_channelFromHandle(ADC_HandleTypeDef * hadc);
 
 /* Private Data Definitions */
 
 static HW_ADC_data_S HW_ADC_data;
 static HW_ADC_data_S * const data = &HW_ADC_data;
 
-// Injected ranks, like regular ranks, are JSQR register-field encodings
-// (ADC_INJECTED_RANK_1 == 9, not 1), so the driver indexes the HAL
-// constants by dense sequence position rather than using a literal ordinal.
-// Used both to configure (HAL_ADCEx_InjectedConfigChannel) and to read back
-// (HAL_ADCEx_InjectedGetValue).
 static const uint32_t HW_ADC_injectedRankConstants[HW_ADC_INJECTED_INPUTS_PER_CHANNEL] =
 {
     ADC_INJECTED_RANK_1, ADC_INJECTED_RANK_2, ADC_INJECTED_RANK_3, ADC_INJECTED_RANK_4,
+};
+
+static const uint32_t HW_ADC_injectedExternalTriggerMapping[HW_ADC_TIMER_TRIGGER_COUNT] =
+{
+    [HW_ADC_TIMER_TRIGGER_TIM1_TRGO2] = ADC_EXTERNALTRIGINJEC_T1_TRGO2,
 };
 
 /* Private Function Definitions */
@@ -118,32 +134,36 @@ static bool HW_ADC_private_rankToOrdinal(uint32_t rankConstant, uint8_t * const 
     return found;
 }
 
-static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
+static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
 {
     bool ret = true;
-    const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[ch];
+    const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
 
-    // Interim guard: only software-triggered + polled is built, so reject
-    // any other trigger/xfer mode at init rather than silently producing
-    // empty count buffers. This is not a spec behavior — fw~hal_adc_003
-    // requires every mode to initialize — so the guard carries no impl
-    // tag and falls away as the timer, interrupt, and DMA paths land.
-    if ((channelConfig->triggerMode         != HW_ADC_TRIGGER_SOFTWARE) ||
-        (channelConfig->xferMode            != HW_ADC_XFER_POLLED)      ||
-        (channelConfig->injectedTriggerMode != HW_ADC_TRIGGER_SOFTWARE) ||
-        (channelConfig->injectedXferMode    != HW_ADC_XFER_POLLED))
+    data->channelData[channel].errorCount = 0U;
+
+    // Feature guard: reject trigger/transfer combinations the driver has not
+    // built, rather than silently misconfiguring. Regular: software + polled
+    // only. Injected: software + polled, or the timer-triggered interrupt
+    // path with a mapped trigger source.
+    if ((channelConfig->triggerMode != HW_ADC_TRIGGER_SOFTWARE) ||
+        (channelConfig->xferMode    != HW_ADC_XFER_POLLED))
+    {
+        ret = false;
+    }
+
+    const bool injectedPolled    = ((channelConfig->injectedTriggerMode == HW_ADC_TRIGGER_SOFTWARE) &&
+                                    (channelConfig->injectedXferMode    == HW_ADC_XFER_POLLED));
+    const bool injectedTriggered = ((channelConfig->injectedTriggerMode == HW_ADC_TRIGGER_TIMER) &&
+                                    (channelConfig->injectedXferMode    == HW_ADC_XFER_INTERRUPT) &&
+                                    (channelConfig->injectedTimerTrigger < HW_ADC_TIMER_TRIGGER_COUNT));
+    if ((!injectedPolled) && (!injectedTriggered))
     {
         ret = false;
     }
 
     // [impl->fw~hal_adc_002~1]
     // Walk the sparse regular inputs[] array, count enabled inputs, and
-    // build the rank-ordered IN# list. Each enabled input carries a HAL
-    // rank constant (sConfig.Rank) that we map to its 1..N ordinal. The
-    // enabled ordinals must form a contiguous 1..N with no gaps or
-    // duplicates, else the HAL sequence (NbrOfConversion = N) and our
-    // rankOrder[] mapping silently disagree. rankOrder[o-1] = the IN# slot
-    // that occupies sequence ordinal o.
+    // build the rank-ordered IN# list. Channel rank list must be contiguous
     uint8_t numEnabledRegular = 0U;
     uint8_t rankOrder[HW_ADC_INPUTS_PER_CHANNEL] = { 0 };
     bool    ordinalSeen[HW_ADC_INPUTS_PER_CHANNEL + 1U] = { false };
@@ -210,8 +230,8 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
     const bool needsHALInit = ((ret) && ((numEnabledRegular > 0U) || (numEnabledInjected > 0U)));
     if ((ret) && (!needsHALInit))
     {
-        data->channelData[ch].numEnabledInputs         = 0U;
-        data->channelData[ch].numEnabledInjectedInputs = 0U;
+        data->channelData[channel].numEnabledInputs         = 0U;
+        data->channelData[channel].numEnabledInjectedInputs = 0U;
     }
 
     // Copy hadc to mutable storage; apply library-managed Init overrides
@@ -219,32 +239,33 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
     // those overrides happen per-input via HAL_ADCEx_InjectedConfigChannel.)
     if ((ret) && (needsHALInit))
     {
-        data->channelData[ch].hadc = channelConfig->hadc;
+        data->channelData[channel].hadc = channelConfig->hadc;
         if (numEnabledRegular > 0U)
         {
-            data->channelData[ch].hadc.Init.NbrOfConversion    = numEnabledRegular;
-            data->channelData[ch].hadc.Init.ScanConvMode       = ((numEnabledRegular > 1U)) ? ADC_SCAN_ENABLE : ADC_SCAN_DISABLE;
-            data->channelData[ch].hadc.Init.EOCSelection       = ADC_EOC_SINGLE_CONV;
-            data->channelData[ch].hadc.Init.ContinuousConvMode = DISABLE;
+            data->channelData[channel].hadc.Init.NbrOfConversion    = numEnabledRegular;
+            data->channelData[channel].hadc.Init.ScanConvMode       = ((numEnabledRegular > 1U)) ? ADC_SCAN_ENABLE : ADC_SCAN_DISABLE;
+            data->channelData[channel].hadc.Init.EOCSelection       = ADC_EOC_SINGLE_CONV;
+            data->channelData[channel].hadc.Init.ContinuousConvMode = DISABLE;
 
-            // Polled multi-rank scans read DR one rank at a time from a task
-            // loop far slower than the back-to-back conversions. Auto-delayed
-            // conversion (AUTDLY) halts the sequencer after each conversion
-            // until HAL_ADC_GetValue reads DR, so EOC can't coalesce and later
-            // ranks can't overrun the preserved DR — the per-rank poll+read
-            // stays correct at any CPU/poll speed. Without it the 2nd poll
-            // waits on an EOC that never fires again (sequence already done).
+            // AUTDLY holds the sequencer until DR is read: without it the HAL clears
+            // EOC and EOS together and a preempted rank reads its successor's value.
             if (channelConfig->xferMode == HW_ADC_XFER_POLLED)
             {
-                data->channelData[ch].hadc.Init.LowPowerAutoWait = ENABLE;
+                data->channelData[channel].hadc.Init.LowPowerAutoWait = ENABLE;
             }
         }
-        if (channelConfig->triggerMode == HW_ADC_TRIGGER_SOFTWARE)
+        switch (channelConfig->triggerMode)
         {
-            data->channelData[ch].hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-        }
+            case HW_ADC_TRIGGER_SOFTWARE:
+                data->channelData[channel].hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+                break;
+            case HW_ADC_TRIGGER_TIMER:
+            default:
+                // TODO - support TIM trigger for regular conversions - map HW_ADC_timerTrigger_E to EXTSEL[4:0] to set ExternalTrigConv
+                break;
 
-        if (HAL_ADC_Init(&data->channelData[ch].hadc) != HAL_OK)
+        }
+        if (HAL_ADC_Init(&data->channelData[channel].hadc) != HAL_OK)
         {
             ret = false;
         }
@@ -254,7 +275,7 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
     // (calibration is a peripheral-level operation on STM32G4).
     if ((ret) && (needsHALInit))
     {
-        if (HAL_ADCEx_Calibration_Start(&data->channelData[ch].hadc, ADC_SINGLE_ENDED) != HAL_OK)
+        if (HAL_ADCEx_Calibration_Start(&data->channelData[channel].hadc, ADC_SINGLE_ENDED) != HAL_OK)
         {
             ret = false;
         }
@@ -266,7 +287,7 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
         // HAL signature is non-const; the user's multimode struct is
         // const, hence the cast. Read-only access in practice.
         if (HAL_ADCEx_MultiModeConfigChannel(
-                &data->channelData[ch].hadc,
+                &data->channelData[channel].hadc,
                 (ADC_MultiModeTypeDef *)&channelConfig->multimode) != HAL_OK)
         {
             ret = false;
@@ -281,7 +302,7 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
             if (channelConfig->inputs[input].enabled)
             {
                 ADC_ChannelConfTypeDef sConfig = channelConfig->inputs[input].sConfig;
-                if (HAL_ADC_ConfigChannel(&data->channelData[ch].hadc, &sConfig) != HAL_OK)
+                if (HAL_ADC_ConfigChannel(&data->channelData[channel].hadc, &sConfig) != HAL_OK)
                 {
                     ret = false;
                     break;
@@ -298,10 +319,6 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
     // Reference: ODrive uses these same HAL_ADCEx_Injected* APIs for
     // FOC current sensing on STM32F405 — see
     //   https://github.com/odriverobotics/ODrive
-    // (Firmware/MotorControl/ contains the timer-triggered + ISR setup
-    // we'd model the eventual TIMER+INTERRUPT path on.) ST's MC SDK
-    // (X-CUBE-MCSDK) is the other canonical reference but its source
-    // isn't on a public GitHub.
     if ((ret) && (numEnabledInjected > 0U))
     {
         for (uint8_t r = 0U; r < numEnabledInjected; r++)
@@ -309,31 +326,154 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
             ADC_InjectionConfTypeDef iConfig = channelConfig->injectedInputs[r].sConfig;
             iConfig.InjectedRank            = HW_ADC_injectedRankConstants[r];
             iConfig.InjectedNbrOfConversion = numEnabledInjected;
-            if (channelConfig->injectedTriggerMode == HW_ADC_TRIGGER_SOFTWARE)
+
+            // [impl->fw~hal_adc_003~1]
+            switch (channelConfig->injectedTriggerMode)
             {
-                iConfig.ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START;
+                default:
+                case HW_ADC_TRIGGER_SOFTWARE:
+                    iConfig.ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START;
+                    break;
+                case HW_ADC_TRIGGER_TIMER:
+                    iConfig.ExternalTrigInjecConv = HW_ADC_injectedExternalTriggerMapping[channelConfig->injectedTimerTrigger];
+                    break;
             }
-            if (HAL_ADCEx_InjectedConfigChannel(&data->channelData[ch].hadc, &iConfig) != HAL_OK)
+
+            iConfig.ExternalTrigInjecConvEdge = (channelConfig->injectedTriggerEdge == HW_ADC_TRIGGER_EDGE_RISING)
+                                                    ? ADC_EXTERNALTRIGINJECCONV_EDGE_RISING
+                                                    : ADC_EXTERNALTRIGINJECCONV_EDGE_FALLING;
+
+            if (HAL_ADCEx_InjectedConfigChannel(&data->channelData[channel].hadc, &iConfig) != HAL_OK)
             {
                 ret = false;
                 break;
             }
         }
+        data->channelData[channel].injectedConversionCompleteCallback = NULL;
     }
 
     // Cache derived state for run-time use.
     if ((ret) && (needsHALInit))
     {
-        data->channelData[ch].numEnabledInputs         = numEnabledRegular;
-        data->channelData[ch].numEnabledInjectedInputs = numEnabledInjected;
+        data->channelData[channel].numEnabledInputs         = numEnabledRegular;
+        data->channelData[channel].numEnabledInjectedInputs = numEnabledInjected;
         for (uint8_t r = 0U; r < numEnabledRegular; r++)
         {
-            data->channelData[ch].rankOrder[r] = rankOrder[r];
+            data->channelData[channel].rankOrder[r] = rankOrder[r];
         }
-        data->channelData[ch].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
+        data->channelData[channel].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
     }
 
     return ret;
+}
+
+// [impl->fw~hal_adc_003~1]
+// Arm the timer-triggered injected path. Runs only once the driver is in
+// service, so a trigger landing immediately is serviced rather than dropped by
+// the ISR's initialized guard. Software + polled injected is run1ms's job.
+static bool HW_ADC_private_armTriggeredChannels(void)
+{
+    bool ret = true;
+    for (size_t channel = 0U; channel < data->config->numChannels; channel++)
+    {
+        const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
+        if ((ret) &&
+            (data->channelData[channel].numEnabledInjectedInputs > 0U) &&
+            (channelConfig->injectedXferMode == HW_ADC_XFER_INTERRUPT))
+        {
+            data->channelData[channel].injectedConversionStatus = HW_ADC_CONVERSION_STATUS_BUSY;
+            ret = (HAL_ADCEx_InjectedStart_IT(&data->channelData[channel].hadc) == HAL_OK);
+            if (ret)
+            {
+                // Start_IT arms per-conversion JEOC when EOCSelection is
+                // SINGLE_CONV (the regular path's setting); this driver's
+                // contract is sequence-complete, so arm JEOS instead.
+                __HAL_ADC_DISABLE_IT(&data->channelData[channel].hadc, ADC_IT_JEOC);
+                __HAL_ADC_ENABLE_IT(&data->channelData[channel].hadc, ADC_IT_JEOS);
+            }
+        }
+    }
+    return ret;
+}
+
+static HW_ADC_channels_E HW_ADC_private_channelFromHandle(ADC_HandleTypeDef * hadc)
+{
+    HW_ADC_channels_E channel = HW_ADC_CHANNEL_COUNT;
+    for (size_t ch = 0U; ch < data->config->numChannels; ch++)
+    {
+        if (data->channelData[ch].hadc.Instance == hadc->Instance)
+        {
+            channel = ch;
+            break;
+        }
+    }
+    return channel;
+}
+
+// Called by HAL
+// [impl->fw~hal_adc_008~1]
+void HW_ADC_private_injectedConversionSequenceCompleteCallback(ADC_HandleTypeDef * hadc)
+{
+    if (data->initialized)
+    {
+        const HW_ADC_channels_E channel = HW_ADC_private_channelFromHandle(hadc);
+        if (channel < HW_ADC_CHANNEL_COUNT)
+        {
+            HW_ADC_channelData_S * const channelData = &data->channelData[channel];
+
+            for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
+            {
+                channelData->injectedCounts[i] = HAL_ADCEx_InjectedGetValue(hadc, HW_ADC_injectedRankConstants[i]);
+            }
+            channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_OK;
+
+            if (channelData->injectedConversionCompleteCallback != NULL)
+            {
+                channelData->injectedConversionCompleteCallback(channel,
+                                                                channelData->injectedConversionStatus,
+                                                                channelData->injectedConversionCompleteCallbackContext);
+            }
+        }
+    }
+}
+
+// [impl->fw~hal_adc_008~1]
+void HW_ADC_private_errorCallback(ADC_HandleTypeDef * hadc)
+{
+    if (data->initialized)
+    {
+        const HW_ADC_channels_E channel = HW_ADC_private_channelFromHandle(hadc);
+        if (channel < HW_ADC_CHANNEL_COUNT)
+        {
+            HW_ADC_channelData_S * const channelData = &data->channelData[channel];
+
+            channelData->errorCount++;
+            channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_FAULT;
+
+            if (channelData->injectedConversionCompleteCallback != NULL)
+            {
+                channelData->injectedConversionCompleteCallback(channel,
+                                                                channelData->injectedConversionStatus,
+                                                                channelData->injectedConversionCompleteCallbackContext);
+            }
+        }
+    }
+}
+
+void HW_ADC_irqHandler(void)
+{
+    if (data->initialized)
+    {
+        for (size_t channel = 0U; channel < data->config->numChannels; channel++)
+        {
+            // Only handles HAL_ADC_Init ran on (a channel with no enabled
+            // inputs never gets one; its Instance stays NULL).
+            if (data->channelData[channel].hadc.Instance != NULL)
+            {
+                HAL_ADC_IRQHandler(&data->channelData[channel].hadc);
+            }
+        }
+    }
 }
 
 /* Public Function Definitions */
@@ -342,6 +482,11 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E ch)
 bool HW_ADC_init(const HW_ADC_config_S * const config)
 {
     bool ret = false;
+
+    // Drop out of service before touching config or handles: the injected ISR
+    // guards on initialized and would otherwise run against half-swapped state.
+    *data = (HW_ADC_data_S){ 0 };
+
     if ((config != NULL) &&
         (config->channels != NULL) &&
         (config->numChannels <= HW_ADC_CHANNEL_COUNT))
@@ -349,9 +494,9 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
         data->config = config;
 
         bool success = true;
-        for (size_t ch = 0U; ch < config->numChannels; ch++)
+        for (size_t channel = 0U; channel < config->numChannels; channel++)
         {
-            if (!HW_ADC_private_initOneChannel((HW_ADC_channels_E)ch))
+            if (!HW_ADC_private_initOneChannel((HW_ADC_channels_E)channel))
             {
                 success = false;
                 break;
@@ -361,7 +506,14 @@ bool HW_ADC_init(const HW_ADC_config_S * const config)
         if (success)
         {
             data->initialized = true;
-            ret = true;
+            if (HW_ADC_private_armTriggeredChannels())
+            {
+                ret = true;
+            }
+            else
+            {
+                data->initialized = false;
+            }
         }
     }
     return ret;
@@ -371,32 +523,40 @@ void HW_ADC_run1ms(void)
 {
     if (data->initialized)
     {
-        for (size_t ch = 0U; ch < data->config->numChannels; ch++)
+        for (size_t channel = 0U; channel < data->config->numChannels; channel++)
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[ch];
+            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
             HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
 
             // Regular-sequence path. DMA / interrupt-driven channels
             // populate counts[] outside of _run1ms; only POLLED needs
             // per-tick service.
             // [impl->fw~hal_adc_004~1]
-            const uint8_t numEnabledRegular = data->channelData[ch].numEnabledInputs;
+            const uint8_t numEnabledRegular = data->channelData[channel].numEnabledInputs;
             if ((channelConfig->xferMode == HW_ADC_XFER_POLLED) &&
                 (numEnabledRegular > 0U))
             {
                 status = HW_ADC_CONVERSION_STATUS_OK;
-                if (HAL_ADC_Start(&data->channelData[ch].hadc) == HAL_OK)
+
+                // The injected JEOS ISR read-modify-writes State/ErrorCode on
+                // this same handle and takes no HAL lock; BASEPRI cannot mask
+                // it, so bracket the start's own read-modify-write.
+                __disable_irq();
+                const HAL_StatusTypeDef startStatus = HAL_ADC_Start(&data->channelData[channel].hadc);
+                __enable_irq();
+
+                if (startStatus == HAL_OK)
                 {
                     for (uint8_t r = 0U; r < numEnabledRegular; r++)
                     {
-                        if (HAL_ADC_PollForConversion(&data->channelData[ch].hadc, HW_ADC_POLL_TIMEOUT_MS) != HAL_OK)
+                        if (HAL_ADC_PollForConversion(&data->channelData[channel].hadc, HW_ADC_POLL_TIMEOUT_MS) != HAL_OK)
                         {
                             // Timed out: record the fault, leave remaining counts stale.
                             status = HW_ADC_CONVERSION_STATUS_FAULT;
                             break;
                         }
-                        const uint8_t input = data->channelData[ch].rankOrder[r];
-                        data->channelData[ch].counts[input] = HAL_ADC_GetValue(&data->channelData[ch].hadc);
+                        const uint8_t input = data->channelData[channel].rankOrder[r];
+                        data->channelData[channel].counts[input] = HAL_ADC_GetValue(&data->channelData[channel].hadc);
                     }
                     // ContinuousConvMode is DISABLE, so the peripheral stops itself
                     // when the sequence completes. No HAL_ADC_Stop needed.
@@ -412,7 +572,7 @@ void HW_ADC_run1ms(void)
             // run them sequentially here that's a non-issue. ISR/DMA
             // injected (the FOC use case) won't go through _run1ms.
             // [impl->fw~hal_adc_006~1]
-            const uint8_t numEnabledInjected = data->channelData[ch].numEnabledInjectedInputs;
+            const uint8_t numEnabledInjected = data->channelData[channel].numEnabledInjectedInputs;
             if ((channelConfig->injectedXferMode == HW_ADC_XFER_POLLED) &&
                 (numEnabledInjected > 0U))
             {
@@ -420,17 +580,22 @@ void HW_ADC_run1ms(void)
                 {
                     status = HW_ADC_CONVERSION_STATUS_OK;
                 }
-                if (HAL_ADCEx_InjectedStart(&data->channelData[ch].hadc) == HAL_OK)
+                __disable_irq();
+                const HAL_StatusTypeDef injectedStartStatus =
+                    HAL_ADCEx_InjectedStart(&data->channelData[channel].hadc);
+                __enable_irq();
+
+                if (injectedStartStatus == HAL_OK)
                 {
                     // HAL_ADCEx_InjectedPollForConversion waits for the
                     // entire injected sequence to complete (JEOS), then
                     // we read all values from the JDR registers.
-                    if (HAL_ADCEx_InjectedPollForConversion(&data->channelData[ch].hadc, HW_ADC_POLL_TIMEOUT_MS) == HAL_OK)
+                    if (HAL_ADCEx_InjectedPollForConversion(&data->channelData[channel].hadc, HW_ADC_POLL_TIMEOUT_MS) == HAL_OK)
                     {
                         for (uint8_t r = 0U; r < numEnabledInjected; r++)
                         {
-                            data->channelData[ch].injectedCounts[r] =
-                                HAL_ADCEx_InjectedGetValue(&data->channelData[ch].hadc, HW_ADC_injectedRankConstants[r]);
+                            data->channelData[channel].injectedCounts[r] =
+                                HAL_ADCEx_InjectedGetValue(&data->channelData[channel].hadc, HW_ADC_injectedRankConstants[r]);
                         }
                     }
                     else
@@ -444,7 +609,7 @@ void HW_ADC_run1ms(void)
                 }
             }
 
-            data->channelData[ch].status = status;
+            data->channelData[channel].status = status;
         }
     }
 }
@@ -515,6 +680,52 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
             *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
             ret = true;
         }
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
+                                     HW_ADC_injectedCallback_F callback,
+                                     void * context)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT))
+    {
+        // may be NULL
+        data->channelData[channel].injectedConversionCompleteCallback = callback;
+        data->channelData[channel].injectedConversionCompleteCallbackContext = context;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
+                              HW_ADC_conversionStatus_E * const out)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT) &&
+        (out != NULL))
+    {
+        *out = data->channelData[channel].injectedConversionStatus;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_adc_008~1]
+bool HW_ADC_getErrorCount(HW_ADC_channels_E channel, uint32_t * const out)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_ADC_CHANNEL_COUNT) &&
+        (out != NULL))
+    {
+        *out = data->channelData[channel].errorCount;
+        ret = true;
     }
     return ret;
 }

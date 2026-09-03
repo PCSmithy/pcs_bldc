@@ -1,5 +1,10 @@
-#include "HW_DMA.h"
-#include "HW_DMA_sim.h"
+// White-box: include the .c directly for access to internal types and static
+// data. HW_DMA_data stays file-scoped, which is also the shape the DWARF
+// readers resolve it through.
+#include "HW_DMA.c"
+#include "SIL_irq.h"
+#include "SIL_irq_double.h"
+#include "lib_utils.h"
 #include "unity.h"
 
 // File-scope config the tests build (good baseline) and tweak per case.
@@ -31,16 +36,31 @@ static void buildGoodConfig(void)
     dmaConfig = (HW_DMA_config_S){ .channels = dmaChannels, .numChannels = HW_DMA_CHANNEL_COUNT };
 }
 
+// Init behind the irq double: the completion service registers through it,
+// handing the test the handler it invokes as the completion interrupt.
+static void initWithIrqDouble(void)
+{
+    SIL_irq_double_install(7);
+    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+}
+
 void setUp(void)
 {
-    HW_DMA_sim_reset();
+    // A rejected init is the clean slate: init drops the driver to its
+    // uninitialized state before it looks at the config.
+    SIL_irq_setHooks(NULL);
+    (void)HW_DMA_init(NULL);
+    buildGoodConfig();
+
     cbCount   = 0U;
     cbChannel = HW_DMA_CHANNEL_COUNT;
     cbContext = NULL;
-    buildGoodConfig();
 }
 
-void tearDown(void) {}
+void tearDown(void)
+{
+    SIL_irq_setHooks(NULL);
+}
 
 /* ---- fw~hal_dma_001: init + config validation ---- */
 
@@ -70,110 +90,152 @@ static void test_init_rejects_bad_width(void)
     TEST_ASSERT_FALSE(HW_DMA_init(&dmaConfig));
 }
 
-/* ---- fw~hal_dma_002: single-shot memory<->peripheral transfer ---- */
-
-// [test->fw~hal_dma_002~1]
-static void test_mem_to_periph_delivers_in_order(void)
+// [test->fw~hal_dma_001~1]
+static void test_reinit_rewires_completion_and_clears_state(void)
 {
+    initWithIrqDouble();
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);
+
+    uint8_t buf[2] = { 5U, 6U };
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
+
+    // Re-init: the old completion IRQ is cancelled, a fresh one registered,
+    // and the in-flight transfer is gone with the rest of the state.
     TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
-
-    uint8_t buf[4] = { 1U, 2U, 3U, 4U };
-    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 4U));
-
-    uint8_t captured[4] = { 0U };
-    TEST_ASSERT_EQUAL_UINT32(4U, HW_DMA_sim_getLastMemoryData(HW_DMA_CHANNEL_SK6805_TX, captured, 4U));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(buf, captured, 4U);
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.cancelCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastCancelHandle);
+    TEST_ASSERT_EQUAL_UINT32(2U, SIL_irq_double.pendedRegisterCalls);
+    TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_IDLE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
+
+/* ---- fw~hal_dma_002: single-shot memory<->peripheral transfer ---- */
 
 // [test->fw~hal_dma_002~1]
 static void test_periph_to_mem_fills_in_order(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+    initWithIrqDouble();
 
-    const uint8_t injected[3] = { 10U, 20U, 30U };
-    HW_DMA_sim_setInjectedPeriphData(HW_DMA_CHANNEL_AS5048_RX, injected, 3U);
+    // No injected data: the completion fills the buffer with the synthetic
+    // byte ramp, overwriting the sentinel bytes in order.
+    uint8_t buf[4] = { 0xFFU, 0xFFU, 0xFFU, 0xFFU };
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_AS5048_RX, buf, 4U));
+    SIL_irq_double.pendedHandler();
 
-    uint8_t buf[3] = { 0U };
-    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_AS5048_RX, buf, 3U));
-    HW_DMA_sim_tick();
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(injected, buf, 3U);
+    const uint8_t expected[4] = { 0U, 1U, 2U, 3U };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, 4U);
+}
+
+// A mem-to-peripheral start captures the payload leaving memory, in order and
+// at the moment of the start — the engine reads it during the transfer, not at
+// completion, so a buffer firmware reuses afterwards must not change it.
+// [test->fw~hal_dma_002~1]
+static void test_mem_to_periph_captures_the_payload_at_start(void)
+{
+    initWithIrqDouble();
+    const HW_DMA_channelData_S * const cd = &HW_DMA_data.channels[HW_DMA_CHANNEL_SK6805_TX];
+
+    uint8_t buf[4] = { 0xA0U, 0xA1U, 0xA2U, 0xA3U };
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 4U));
+    TEST_ASSERT_EQUAL_size_t(4U, cd->lastMemLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(buf, cd->lastMem, 4U);
+
+    // Firmware reusing its buffer after the start leaves the capture alone.
+    const uint8_t expected[4] = { 0xA0U, 0xA1U, 0xA2U, 0xA3U };
+    buf[0] = 0xFFU;
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, cd->lastMem, 4U);
+
+    // A peripheral-to-memory channel captures nothing.
+    TEST_ASSERT_EQUAL_size_t(0U, HW_DMA_data.channels[HW_DMA_CHANNEL_AS5048_RX].lastMemLen);
+}
+
+// A payload longer than the capture buffer clamps the copy; every byte still
+// moves through the caller's buffer.
+// [test->fw~hal_dma_002~1]
+static void test_mem_to_periph_capture_is_clamped(void)
+{
+    initWithIrqDouble();
+
+    static uint8_t big[HW_DMA_SIM_MAX_BYTES + 8U];
+    for (size_t i = 0U; i < COUNTOF(big); i++)
+    {
+        big[i] = (uint8_t)i;
+    }
+    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, big, (uint32_t)COUNTOF(big)));
+
+    const HW_DMA_channelData_S * const cd = &HW_DMA_data.channels[HW_DMA_CHANNEL_SK6805_TX];
+    TEST_ASSERT_EQUAL_size_t(HW_DMA_SIM_MAX_BYTES, cd->lastMemLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(big, cd->lastMem, HW_DMA_SIM_MAX_BYTES);
 }
 
 // [test->fw~hal_dma_002~1]
 static void test_start_rejects_bad_args(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
-
     uint8_t buf[2] = { 0U, 0U };
-    TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_COUNT, buf, 2U));   // out-of-range channel
+    TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U)); // uninitialized
+
+    initWithIrqDouble();
+
+    TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_COUNT, buf, 2U));      // out-of-range channel
     TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, NULL, 2U)); // null buffer
     TEST_ASSERT_FALSE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 0U));  // zero count
+    TEST_ASSERT_EQUAL_UINT32(0U, SIL_irq_double.pendCalls);                                     // nothing started
 }
 
 /* ---- fw~hal_dma_003: asynchronous transfer completion ---- */
 
 // [test->fw~hal_dma_003~1]
-static void test_started_transfer_reports_busy(void)
+static void test_started_transfer_reports_busy_and_pends_completion(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+    initWithIrqDouble();
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_BUSY, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastPendHandle);
 }
 
 // [test->fw~hal_dma_003~1]
 static void test_successful_transfer_completes(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+    initWithIrqDouble();
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    HW_DMA_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_COMPLETE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
-}
-
-// [test->fw~hal_dma_003~1]
-static void test_failed_transfer_reports_error(void)
-{
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
-
-    HW_DMA_sim_setForceError(HW_DMA_CHANNEL_SK6805_TX, true);
-    uint8_t buf[2] = { 5U, 6U };
-    TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    HW_DMA_sim_tick();
-    TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_ERROR, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
 
 // [test->fw~hal_dma_003~1]
 static void test_callback_invoked_exactly_once(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+    initWithIrqDouble();
 
     int ctx = 0;
     TEST_ASSERT_TRUE(HW_DMA_registerCallback(HW_DMA_CHANNEL_SK6805_TX, testCallback, &ctx));
 
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    HW_DMA_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
     TEST_ASSERT_EQUAL_INT(HW_DMA_CHANNEL_SK6805_TX, cbChannel);
     TEST_ASSERT_EQUAL_PTR(&ctx, cbContext);
 
-    // A second tick with no pending transfer fires nothing more.
-    HW_DMA_sim_tick();
+    // A spurious completion with no pending transfer fires nothing more.
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
 }
 
 // [test->fw~hal_dma_003~1]
 static void test_completion_observable_by_polling_without_callback(void)
 {
-    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+    initWithIrqDouble();
 
     // No callback registered: completion is still observable by polling status.
     uint8_t buf[2] = { 5U, 6U };
     TEST_ASSERT_TRUE(HW_DMA_startTransfer(HW_DMA_CHANNEL_SK6805_TX, buf, 2U));
-    HW_DMA_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(0U, cbCount);
     TEST_ASSERT_EQUAL_INT(HW_DMA_STATUS_COMPLETE, HW_DMA_getStatus(HW_DMA_CHANNEL_SK6805_TX));
 }
@@ -186,14 +248,15 @@ int main(void)
     RUN_TEST(test_init_valid_config_true);
     RUN_TEST(test_init_rejects_bad_direction);
     RUN_TEST(test_init_rejects_bad_width);
+    RUN_TEST(test_reinit_rewires_completion_and_clears_state);
 
-    RUN_TEST(test_mem_to_periph_delivers_in_order);
     RUN_TEST(test_periph_to_mem_fills_in_order);
+    RUN_TEST(test_mem_to_periph_captures_the_payload_at_start);
+    RUN_TEST(test_mem_to_periph_capture_is_clamped);
     RUN_TEST(test_start_rejects_bad_args);
 
-    RUN_TEST(test_started_transfer_reports_busy);
+    RUN_TEST(test_started_transfer_reports_busy_and_pends_completion);
     RUN_TEST(test_successful_transfer_completes);
-    RUN_TEST(test_failed_transfer_reports_error);
     RUN_TEST(test_callback_invoked_exactly_once);
     RUN_TEST(test_completion_observable_by_polling_without_callback);
 

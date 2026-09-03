@@ -47,6 +47,16 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         .channelNameStr = "PWM_W",
 #endif
     },
+    [HW_TIM_CHANNEL_INJ_TRIG] =
+    {
+        .peripheral = HW_TIM_PERIPHERAL_1,
+        .role       = HW_TIM_ROLE_OUTPUT_COMPARE,
+        .ocUnit     = 3U,
+        HW_TIM_CUBEMX_OC_TIM1_CH4
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+        .channelNameStr = "INJ_TRIG",
+#endif
+    },
 };
 
 const HW_TIM_config_S HW_TIM_config =

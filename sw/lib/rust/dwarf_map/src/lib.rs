@@ -573,13 +573,18 @@ fn collect_unit(
                 }
             }
             gimli::DW_TAG_subprogram => {
-                // Only a defining subprogram carries a `low_pc`; declarations and
-                // abstract (inlined) instances have none and are skipped by the
-                // `die_low_pc` -> None guard. name+low_pc is all the anchor needs.
-                if let (Some(name), Some(addr)) =
-                    (die_name(dwarf, unit, entry), die_low_pc(dwarf, unit, entry))
-                {
-                    maps.functions.insert(name, addr);
+                // Only a defining subprogram carries a `low_pc`. At -O2 GCC may split
+                // an inlinable function: the name stays on the abstract instance and
+                // the concrete DIE carries only `low_pc` plus a `DW_AT_abstract_origin`
+                // — `origin_name` follows it so a handler stays resolvable by name.
+                // A directly-named DIE wins: -O2 can emit several origin-referencing
+                // clones (IPA-SRA / constprop) whose entry ABI is not the real one's.
+                if let Some(addr) = die_low_pc(dwarf, unit, entry) {
+                    if let Some(name) = die_name(dwarf, unit, entry) {
+                        maps.functions.insert(name, addr);
+                    } else if let Some(name) = origin_name(dwarf, unit, entry) {
+                        maps.functions.entry(name).or_insert(addr);
+                    }
                 }
             }
             gimli::DW_TAG_member => {
@@ -683,6 +688,26 @@ fn die_name(
     let attr = entry.attr_value(gimli::DW_AT_name).ok().flatten()?;
     let s = dwarf.attr_string(unit, attr).ok()?;
     Some(s.to_string_lossy().into_owned())
+}
+
+/// Name of the DIE a concrete instance refers back to (`DW_AT_abstract_origin`,
+/// or `DW_AT_specification` for a definition-of-declaration), same unit only —
+/// GCC keeps these unit-local for C.
+fn origin_name(
+    dwarf: &gimli::Dwarf<Slice>,
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<String> {
+    for at in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
+        if let Some(gimli::AttributeValue::UnitRef(off)) = entry.attr_value(at).ok().flatten() {
+            if let Ok(origin) = unit.entry(off) {
+                if let Some(name) = die_name(dwarf, unit, &origin) {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// A static's memory location from its `DW_AT_location` exprloc; anything

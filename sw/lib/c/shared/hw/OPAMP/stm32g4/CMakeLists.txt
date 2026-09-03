@@ -1,5 +1,5 @@
 add_library(hw_OPAMP STATIC HW_OPAMP.c)
-target_include_directories(hw_OPAMP PUBLIC .)
+target_include_directories(hw_OPAMP PUBLIC . ..)
 target_link_libraries(hw_OPAMP
   PUBLIC
     lib_types

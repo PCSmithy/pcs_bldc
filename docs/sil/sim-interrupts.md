@@ -6,7 +6,8 @@ EXTI, …) fire in sim time. Generalizes the D1 tick source into a framework-
 owned **interrupt controller**.
 
 **Decision:** the framework owns an **interrupt table** of handler entries.
-Sources are **periodic or one-shot**, registered either **at config time**
+Sources are **periodic, one-shot, or pended** (no schedule; a driver raises it
+with `SIL_irq_pend`, the NVIC ISPR twin), registered either **at config time**
 (framework-side, by handler name) or **at runtime** (by the sim HW-layer code,
 by handler pointer, via a C→Rust upcall). The framework schedules; the firmware-
 side **port dispatches** each due handler in the firmware fiber context so FreeRTOS
@@ -16,16 +17,18 @@ side **port dispatches** each due handler in the firmware fiber context so FreeR
 
 ## 1. The interrupt table
 
-A framework-owned table of entries. One structure serves all four registration
-paths (config/runtime × periodic/one-shot):
+A framework-owned table of entries. One structure serves every registration
+path (config/runtime × periodic/one-shot/pended):
 
 ```
 entry = {
   handler:       fn pointer (into the firmware image)
-  kind:          Periodic | OneShot
-  rate_or_delay: sim-time literal   // period (Periodic) or delay-from-now (OneShot)
+  kind:          Periodic | OneShot | Pended
+  rate_or_delay: sim-time literal   // period (Periodic), delay-from-now
+                                    // (OneShot), unused (Pended)
   priority:      u8                  // ordering only (no preemption — §6)
   enabled:       bool
+  pending:       bool                // the ISPR twin (§6)
 }
 ```
 
@@ -39,6 +42,7 @@ or masks it (a periodic timer the firmware stops must be removable).
 | **Config, periodic** | framework / scenario | handler **name** → resolved to a pointer via DWARF/dlsym | systick, control-loop timer |
 | **Runtime, periodic** | sim HW-layer driver | handler **pointer** | a timer the firmware starts at runtime |
 | **Runtime, one-shot** | sim HW-layer driver | handler **pointer** | SPI/UART/DMA-complete after a transfer |
+| **Runtime, pended** | sim HW-layer driver | handler **pointer** | ADC injected completion: queue result, pend the IRQ |
 | (Config one-shot) | framework / scenario | name | rare; e.g. a scripted fault at T |
 
 - **Handlers are plain function pointers** — *not* restricted to CMSIS vector
@@ -60,7 +64,7 @@ firmware is sim-unaware" principle holds intact:
 
 ```
 IO_AS5048            calls HW_SPI_transmit(...)          // portable, sim-unaware
-  └─ sim HW_SPI      calls sil_irq_register_oneshot(&SPI3_IRQHandler, 2_us, prio)
+  └─ sim HW_SPI      calls SIL_irq_registerOneShot(SPI3_IRQHandler, 2_us, prio)
        └─ framework  schedules the SPI-complete interrupt; dispatches it in 2 us
 ```
 
@@ -100,6 +104,13 @@ functions. We don't model memory protection, so this is a non-issue.
 - **Event-driven timeline** (a next-fire-time queue, exact aperiodic latency,
   variable model step) is the future upgrade if grid quantization of aperiodic
   interrupts ever distorts timing that matters. Fixed-grid is the start.
+- **The grid is chosen per world**, not globally: a scenario that needs
+  sub-millisecond resolution builds on it explicitly (`Sil::options().grid_us(50)`),
+  everything else stays on the default. Due times are absolute sim-µs, so refining
+  the grid only tightens quantization — a 1 ms kernel tick keeps its millisecond and
+  the steps in between are where a faster interrupt lands. The cost a fine grid adds
+  is the whole-namespace cvar mirror, which runs on its own sim-time cadence
+  ([`performance.md`](performance.md) §15).
 
 ## 6. Masking, enable, priority, nesting
 
@@ -113,23 +124,31 @@ functions. We don't model memory protection, so this is a non-issue.
 - **Priority is ordering only.** When several are due at the same step, run them
   in priority order; **no nesting / no ISR-preempts-ISR** — each handler runs to
   completion. Document the limitation; revisit only if firmware needs it.
+- **Pended sources are edge notifications.** `SIL_irq_pend` models the NVIC
+  ISPR bit: acceptance clears it (hardware behavior), and the *peripheral*
+  flag lives in the driver's own state (its JEOS/SR twin), re-pended by the
+  source when new work arrives. Convention: a handler that can legitimately
+  leave work behind re-pends itself before returning — the framework will not
+  re-dispatch an edge on its own.
+- **Future upgrade — interrupt lines (level-triggered sources).** Give an
+  entry a `line_asserted` level beside the pend pulse (`setLine(handle, bool)`),
+  and include it in the due predicate: an asserted line simply *stays due*,
+  dispatching once per step until the driver deasserts it — level sensitivity
+  with no re-pend logic, and the "unserviced flag" bug becomes a visible
+  bounded re-dispatch instead of being unmodelable. Removes the re-pend
+  convention above for drivers that adopt it (drain ⇒ deassert). Target
+  consumer and likely prerequisite: **nFAULT/BKIN modeling** — the gate
+  driver's open-drain fault line is held asserted for as long as the fault
+  stands, which an edge pend models wrongly. A claim/complete-style re-arm
+  gate (the PLIC flavor) stays out until something needs it.
 
-## 7. Per-tick ordering (data timing)
+## 7. Per-step ordering (data timing)
 
-Interrupts slot into the State/Route loop's "FW step"
-([`state-route-tables.md`](state-route-tables.md) §3): inputs are propagated
-into firmware statics **before** the step, so a control ISR dispatched in the
-step reads *this* step's ADC values; outputs propagate **after**. Per base
-tick:
-
-```
-1. advance models (dt; may sub-step)
-2. propagate routes (snapshot sources → write dests) — fresh inputs into fw statics
-3. FW step: dispatch all interrupts due at this sim-time (priority order),
-            running tasks to quiescence between/after them
-4. record; asserts/injection
-5. pace (realtime: sleep · fast: now)
-```
+Interrupts slot into the State/Route loop's per-step order — see
+[`state-route-tables.md`](state-route-tables.md) §"per tick". The property that
+matters here: inputs reach firmware statics (the firmware member's in-sync)
+**before** the step's handlers dispatch, so a control ISR reads *this* step's
+values; outputs drain at out-sync.
 
 ## 8. Determinism
 

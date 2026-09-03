@@ -124,7 +124,7 @@ fn bridge_route_suspension_injects_faults() {
     // Resume: the firmware's dark bridge takes the inputs back. The plant rings down
     // first (the injection swung the rotor), and this world's historian carries the
     // default 1e-3 deadband, so a decaying tail's last sub-epsilon sample lingers in
-    // the table — per D7, assertions here cannot be tighter than that deadband.
+    // the table — assertions here cannot be tighter than that deadband.
     const PARKED_TOL: f64 = 2.0e-3;
     bridge
         .resume_all(&mut sim)

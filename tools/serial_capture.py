@@ -10,7 +10,8 @@ entry in the same format the trace_analysis notebooks load:
 with `signalName` = `serial:<PORT>/<name>`, `t` the board's ms timestamp, and
 `tWall` the host's epoch ms. Rows are flushed each second, so a crash or
 Ctrl+C loses at most a second. Malformed / non-numeric entries are skipped and
-counted.
+counted. A board reset mid-capture (USB CDC re-enumeration) is survived: the
+script re-attaches when the port returns and keeps appending to the same CSV.
 
 Usage:
     python tools/serial_capture.py COM8
@@ -65,15 +66,36 @@ def main() -> int:
     started = time.monotonic()
     last_status = started
 
-    with serial.Serial(args.port, args.baud, timeout=1) as sp, \
-            open(out_path, "w", newline="", encoding="utf-8") as f:
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["signalName", "t", "tWall", "value", "unit"])
+        sp = serial.Serial(args.port, args.baud, timeout=1)   # fail fast on a bad port
         print(f"logging {args.port} -> {out_path}  (Ctrl+C to stop)", file=sys.stderr)
         try:
             buf = b""
             while True:
-                chunk = sp.read(4096)
+                try:
+                    chunk = sp.read(4096)
+                except serial.SerialException:
+                    # A board reset re-enumerates USB CDC and kills the handle:
+                    # drop the partial line, keep the CSV, re-attach when the
+                    # port comes back.
+                    print(f"  {args.port} dropped (board reset?) — reattaching",
+                          file=sys.stderr)
+                    try:
+                        sp.close()
+                    except serial.SerialException:
+                        pass
+                    buf = b""
+                    while True:
+                        time.sleep(0.5)
+                        try:
+                            sp = serial.Serial(args.port, args.baud, timeout=1)
+                            break
+                        except serial.SerialException:
+                            continue
+                    print(f"  {args.port} reattached", file=sys.stderr)
+                    continue
                 if chunk:
                     buf += chunk
                     *lines, buf = buf.split(b"\n")
@@ -101,6 +123,11 @@ def main() -> int:
                         last_status = now
         except KeyboardInterrupt:
             pass
+        finally:
+            try:
+                sp.close()
+            except serial.SerialException:
+                pass
 
     dur = time.monotonic() - started
     print(f"\nstopped after {dur:.1f} s: {rows} rows, {skipped} skipped -> {out_path}",

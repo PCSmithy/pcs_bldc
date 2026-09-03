@@ -7,6 +7,8 @@ static bool                mockOutputEnabled[HW_TIM_CHANNEL_COUNT];
 static HW_TIM_peripheral_E mockPeripheral[HW_TIM_CHANNEL_COUNT];
 static bool                mockMoe[HW_TIM_PERIPHERAL_COUNT];
 static uint32_t            mockBreakFlagsClearCount[HW_TIM_PERIPHERAL_COUNT];
+static uint32_t            mockCounter[HW_TIM_PERIPHERAL_COUNT];
+static bool                mockGetCounterFails;
 
 void mock_HW_TIM_reset(uint32_t period)
 {
@@ -24,7 +26,9 @@ void mock_HW_TIM_reset(uint32_t period)
     {
         mockMoe[p] = false;
         mockBreakFlagsClearCount[p] = 0U;
+        mockCounter[p] = 0U;
     }
+    mockGetCounterFails = false;
 }
 
 void mock_HW_TIM_setPeriod(HW_TIM_channels_E channel, uint32_t period)
@@ -113,6 +117,30 @@ bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out)
         ret = true;
     }
     return ret;
+}
+
+bool HW_TIM_getCounter(HW_TIM_peripheral_E peripheral, uint32_t * const out)
+{
+    bool ret = false;
+    if ((out != NULL) && (peripheral < HW_TIM_PERIPHERAL_COUNT) && (!mockGetCounterFails))
+    {
+        *out = mockCounter[peripheral];
+        ret = true;
+    }
+    return ret;
+}
+
+void mock_HW_TIM_setCounter(HW_TIM_peripheral_E peripheral, uint32_t counts)
+{
+    if (peripheral < HW_TIM_PERIPHERAL_COUNT)
+    {
+        mockCounter[peripheral] = counts;
+    }
+}
+
+void mock_HW_TIM_setGetCounterFails(bool fails)
+{
+    mockGetCounterFails = fails;
 }
 
 bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts)

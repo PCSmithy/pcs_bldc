@@ -58,6 +58,11 @@ void coro_init( coro_t * c, void * stackMem, size_t stackBytes,
     c->sp = ( void * ) frame;
 }
 
+coro_t * coro_current( void )
+{
+    return coro_running;
+}
+
 void coro_switch( coro_t * to )
 {
     coro_t * from = coro_running;
