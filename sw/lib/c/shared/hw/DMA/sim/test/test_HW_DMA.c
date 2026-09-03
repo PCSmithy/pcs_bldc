@@ -1,5 +1,7 @@
-#include "HW_DMA.h"
-#include "HW_DMA_simData.h"
+// White-box: include the .c directly for access to internal types and static
+// data. HW_DMA_data stays file-scoped, which is also the shape the DWARF
+// readers resolve it through.
+#include "HW_DMA.c"
 #include "SIL_irq.h"
 #include "SIL_irq_double.h"
 #include "lib_utils.h"

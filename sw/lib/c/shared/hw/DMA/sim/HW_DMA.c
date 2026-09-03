@@ -20,7 +20,7 @@ void HW_DMA_sim_completionDispatch(void);
 
 /* Private Data Definitions */
 
-HW_DMA_data_S HW_DMA_data;
+static HW_DMA_data_S HW_DMA_data;
 static HW_DMA_data_S * const data = &HW_DMA_data;
 
 // The completion service's framework handle. Lives outside HW_DMA_data so the

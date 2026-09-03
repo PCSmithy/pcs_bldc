@@ -45,4 +45,3 @@ typedef struct
 
 /* Public Data Declarations */
 
-extern HW_GPIO_data_S HW_GPIO_data;
