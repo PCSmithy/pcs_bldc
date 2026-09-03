@@ -5,16 +5,12 @@
 //! per period with it.
 
 use pcs_bldc_sil::board::{
-    board_with, fault_latched, gate_operational, port, ALIGN_DUTY, ALIGN_DWELL_MS, DIAL,
-    GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW, INPUT_LEVEL_PB10, MOTOR, VBUS_V,
+    board_with, fault_latched, gate_operational, port, ALIGN_DUTY, GATE_BRINGUP_MS, VBUS_V,
 };
-use pcs_bldc_sil::{cid, vid, Board, CurrentSenseParams, MotorParams, Sil};
+use pcs_bldc_sil::{Board, CurrentSenseParams, MotorParams, Sil};
 
 mod common;
-use common::{assert_status, u64_at, ADC_OK};
-
-/// The PWM period at 20 kHz — the control-rate grid.
-const GRID_US: u64 = 50;
+use common::{assert_status, plant, spin_up, tap_button, u64_at, ADC_OK, GRID_US};
 
 /// The sim ADC's completion interrupt, resolved by name off the image's DWARF.
 const COMPLETION_ISR: &str = "HW_ADC_sim_completionDispatch";
@@ -31,17 +27,6 @@ fn injected_amps(sim: &Sil, ch: usize, params: &CurrentSenseParams) -> f64 {
     (volts - params.phase_bias_v) / params.phase_gain_v_per_a
 }
 
-fn plant(sim: &Sil, local: &str) -> f64 {
-    sim.read_f64(&vid(MOTOR, local))
-}
-
-fn tap_button(sim: &mut Sil) {
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_LOW).expect("button press");
-    sim.run_for_ms(30);
-    sim.write(&cid(INPUT_LEVEL_PB10), GPIO_LEVEL_HIGH).expect("button release");
-    sim.run_for_ms(30);
-    sim.run_for_ms(320); // APP_USERCONTROLS_DOUBLE_TAP_WINDOW_MS plus slack
-}
 
 // [test->fw~hal_adc_003~1]
 // [test->fw~hal_adc_008~1]
@@ -118,27 +103,6 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
     );
 }
 
-/// Boot, arm, let the alignment dwell finish, ramp the dial to half command,
-/// and settle into closed-loop commutation.
-fn spin_up(sim: &mut Sil) {
-    sim.run_for_ms(GATE_BRINGUP_MS);
-    tap_button(sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 100);
-    assert!(
-        sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned")),
-        "alignment latched before the spin"
-    );
-    let mut deg = 0.0;
-    while deg < 90.0 {
-        deg += 10.0;
-        sim.write(&vid(DIAL, "angle[deg]"), deg).expect("turn the dial");
-        sim.run_for_ms(20);
-    }
-    sim.run_for_ms(300);
-    let velocity = plant(sim, "velocity");
-    assert!(velocity.abs() > 2.0, "the shaft is spinning, got {velocity:.2} rad/s");
-    assert!(!fault_latched(sim), "no fault through the spin-up");
-}
 
 // [test->fw~hal_adc_003~1]
 // [test->fw~hal_adc_008~1]
