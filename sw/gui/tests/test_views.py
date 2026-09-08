@@ -126,6 +126,14 @@ def widget_cfgs(page, fields):
     )
 
 
+# A cursor write coalesces into a rAF still in flight from the previous
+# one, so its notify — and the synchronous re-render that rides on it —
+# can land a frame after the call returns. Await this before reading the
+# marks back out of the DOM.
+SETTLE_CURSOR_JS = (
+    "await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));"
+)
+
 # Nearest sample-y of `p` around window-time `t` (px space) — the shared
 # probe idiom for placing real-mouse targets on a rendered trace.
 NEAREST_Y_JS = (
@@ -148,51 +156,65 @@ ENUM_S = "IO_AS5048_data.channels[0].status"
 U32_S = "task1msRuns"
 
 
-def probe_target_on(page, wid, path, frac):
-    """A real-mouse point 6 px under `path`'s trace at window fraction
-    `frac` on widget `wid`, only where every other trace is at least 22 px
-    away (the pointed rule must resolve to `path`), or None."""
+# The window fractions a probe sweeps. Dense, because the devmock's two
+# velocity sinusoids have near-equal periods and beat in and out of
+# coincidence: the fractions that clear the separation rule survive as
+# bands a few px wide that drift with the beat, and a handful of fixed
+# fractions lands between them often enough to flake. Capped below 0.7,
+# where the anchor gestures' zoom-past-the-anchor selectRange runs out of
+# the 30 %-of-window headroom it needs to its right and the paused-span
+# clamp leaves the vertical line on-canvas instead of off it.
+PROBE_FRACS = tuple(round(0.05 + 0.0025 * i, 4) for i in range(241))
+
+
+def probe_targets_on(page, wid, path, fracs):
+    """Every real-mouse point 6 px under `path`'s trace at one of `fracs`
+    on widget `wid` where every other trace is at least 22 px away (the
+    pointed rule must resolve to `path`), widest separation first."""
     return widget_eval(
         page, wid,
-        """(w, [path, frac]) => {
+        """(w, [path, fracs]) => {
           w.el.scrollIntoView({ block: 'center' });
           w.refresh();
           const canvas = w.el.querySelector('.plot-canvas');
           const rect = canvas.getBoundingClientRect();
-          const px = rect.width * frac;
-          const t = w.tickAtPx(px, rect.width);
           """ + NEAREST_Y_JS + """
-          const yOf = (p) => nearestY(w, p, t, rect);
-          const yT = yOf(path);
-          if (yT === null) return null;
-          for (const p of w.cfg.signals) {
-            if (p === path) continue;
-            const y = yOf(p);
-            if (y !== null && Math.abs(y - yT) < 22) return null;
+          const out = [];
+          for (const frac of fracs) {
+            const px = rect.width * frac;
+            const t = w.tickAtPx(px, rect.width);
+            const yOf = (p) => nearestY(w, p, t, rect);
+            const yT = yOf(path);
+            if (yT === null) continue;
+            let sep = rect.height;
+            for (const p of w.cfg.signals) {
+              if (p === path) continue;
+              const y = yOf(p);
+              if (y !== null) sep = Math.min(sep, Math.abs(y - yT));
+            }
+            if (sep < 22) continue;
+            const cy = Math.min(rect.height - 3, Math.max(3, yT + 6));
+            const at = [rect.left + px, rect.top + cy];
+            if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) continue;
+            // The exact resolver the click will run: only a target the
+            // pointed rule already resolves to `path` is a valid probe
+            // (nearest-sample y and interpolated y can diverge).
+            if (w.computePointed(at[0], at[1], canvas) !== path) continue;
+            out.push({ at, clickTick: t, sep });
           }
-          const cy = Math.min(rect.height - 3, Math.max(3, yT + 6));
-          const at = [rect.left + px, rect.top + cy];
-          if (document.elementFromPoint(...at)?.closest('.plot-canvas') !== canvas) return null;
-          // The exact resolver the click will run: only a target the
-          // pointed rule already resolves to `path` is a valid probe
-          // (nearest-sample y and interpolated y can diverge).
-          if (w.computePointed(at[0], at[1], canvas) !== path) return null;
-          return { at, clickTick: t };
+          out.sort((a, b) => b.sep - a.sep);
+          return out;
         }""",
-        [path, frac],
+        [path, list(fracs)],
     )
 
 
 def find_target_on(page, wid, path):
-    # Bounded retry: on a starved host the fraction sweep can run before
-    # the paused plot's geometry settles; healthy hosts resolve first round.
-    for _ in range(10):
-        for frac in (0.5, 0.35, 0.65, 0.25, 0.75, 0.45, 0.55):
-            tgt = probe_target_on(page, wid, path, frac)
-            if tgt:
-                return tgt
-        page.wait_for_timeout(500)
-    return None
+    # One dense pass, keeping the widest-separation hit: the plot is paused
+    # while probing, so its geometry is frozen and a repeat sweep can only
+    # see what this one already saw.
+    hits = probe_targets_on(page, wid, path, PROBE_FRACS)
+    return hits[0] if hits else None
 
 
 def require_target_on(page, wid, path, label):
@@ -369,8 +391,9 @@ def run(page):
     page.evaluate(f"() => __cockpit.setCursorTick({gap_tick})")
     readout = page.locator(".plot-widget .cursor-readout").first.inner_text()
     check("views_005 in-gap tick reads 'no sample'", "no sample" in readout, readout[:80])
-    # Pointer-leave clears every mark.
-    page.evaluate("() => __cockpit.clearCursor()")
+    # Pointer-leave clears every mark — views_005 asks that they clear, not
+    # that they clear in the same turn.
+    page.evaluate("async () => { __cockpit.clearCursor(); " + SETTLE_CURSOR_JS + " }")
     visible_lines = page.eval_on_selector_all(
         ".plot-widget .cursor-line", "els => els.filter(e => !e.hidden).length"
     )
@@ -2063,8 +2086,8 @@ def run(page):
         """widget_eval against the comparison widget."""
         return widget_eval(page, cwid, expr, arg)
 
-    def probe_target(path, frac):
-        return probe_target_on(page, cwid, path, frac)
+    def probe_targets(path):
+        return probe_targets_on(page, cwid, path, PROBE_FRACS)
 
     def find_target(path):
         return find_target_on(page, cwid, path)
@@ -2146,13 +2169,10 @@ def run(page):
     )
 
     # ── [test->app~views_017~1] a second ctrl+click replaces the anchor ──
-    tgt_b = None
     a0_tick = a0["tick"] if a0 else 0
-    for frac in (0.2, 0.8, 0.3, 0.7, 0.6, 0.4):
-        cand = probe_target(VEL_M, frac)
-        if cand and abs(cand["clickTick"] - a0_tick) >= 500:
-            tgt_b = cand
-            break
+    tgt_b = next(
+        (c for c in probe_targets(VEL_M) if abs(c["clickTick"] - a0_tick) >= 500), None
+    )
     check("views_017 probe found a second distinct spot", tgt_b is not None, tgt_b)
     if tgt_b is None:
         tgt_b = tgt_a  # same-spot fallback: dependent checks fail honestly
@@ -2297,7 +2317,7 @@ def run(page):
     # ── [test->app~views_018~1] no value delta: other axis, enum, or a
     #    cursor time with no sample ──
     gates = cwidget_eval(
-        f"""(w, [U32, ENUM, VELS]) => {{
+        f"""async (w, [U32, ENUM, VELS]) => {{
           const has = (p) => !!w.el.querySelector(`[data-path="${{p}}"] [data-delta-v]`);
           w.applyPointed(U32);
           const otherAxis = has(U32);
@@ -2311,6 +2331,7 @@ def run(page):
           if (gt < w.window[0]) return {{ gapUnreachable: true }};
           w.applyPointed(VELS);
           __cockpit.setCursorTick(gt);
+          """ + SETTLE_CURSOR_JS + f"""
           const row = w.el.querySelector(`[data-path="${{VELS}}"]`);
           return {{ otherAxis, enumRow,
                     gapAbsent: row ? row.textContent.includes('no sample') : null,
@@ -2959,12 +2980,9 @@ def run(page):
     )
 
     # ── [test->app~views_019~1] the mark follows the pointer ──
-    tgt2 = None
-    for frac in (0.65, 0.3, 0.75, 0.2):
-        c = probe_target(VEL_M, frac)
-        if c and abs(c["clickTick"] - tgt["clickTick"]) > 4:
-            tgt2 = c
-            break
+    tgt2 = next(
+        (c for c in probe_targets(VEL_M) if abs(c["clickTick"] - tgt["clickTick"]) > 4), None
+    )
     check("views_019 second probe spot found", tgt2 is not None, tgt2)
     if tgt2 is None:
         tgt2 = tgt  # same-spot fallback: dependent checks fail honestly
