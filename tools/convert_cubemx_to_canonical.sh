@@ -120,15 +120,14 @@ cp "${SRC}/Core/Src/sysmem.c"           "${LIB_HW}/"
 # Board-specific generated code -> sw/fw/src/hw/stm32g4/
 # ---------------------------------------------------------------------------
 echo "==> Refreshing ${FW_HW}/ (vendor files only — board.c, CMakeLists.txt left alone)"
-rm -f "${FW_HW}/main.h"
-rm -f "${FW_HW}/stm32g4xx_hal_conf.h"
-rm -f "${FW_HW}/stm32g4xx_hal_msp.c"
-rm -f "${FW_HW}/stm32g4xx_it.c"
-rm -f "${FW_HW}/stm32g4xx_it.h"
-rm -f "${FW_HW}/STM32G431VBTX_FLASH.ld"
-rm -f "${FW_HW}/startup_stm32g431vbtx.s"
-rm -f "${FW_HW}/FreeRTOSConfig.h"
-rm -f "${FW_HW}/stm32g4xx_hal_timebase_tim.c"
+# An IDE/indexer can hold one of these open on Windows; a busy rm is only a
+# warning (the cp below overwrites), while a failed cp still aborts loudly.
+for f in main.h stm32g4xx_hal_conf.h stm32g4xx_hal_msp.c stm32g4xx_it.c \
+         stm32g4xx_it.h STM32G431VBTX_FLASH.ld startup_stm32g431vbtx.s \
+         FreeRTOSConfig.h stm32g4xx_hal_timebase_tim.c; do
+  rm -f "${FW_HW}/${f}" \
+    || echo "  WARN: ${f} is in use; overwriting in place" >&2
+done
 
 mkdir -p "${FW_HW}"
 cp "${SRC}/Core/Src/stm32g4xx_hal_msp.c"          "${FW_HW}/"
@@ -180,3 +179,31 @@ echo "If SystemClock_Config changed in CubeMX, diff"
 echo "  ${SRC}/Core/Src/main.c"
 echo "against HW_systemClock_init / clock_init() and hand-merge."
 echo "(GPIO / ADC / SPI channel configs auto-update via the .cubemx.h headers.)"
+
+# ---------------------------------------------------------------------------
+# CubeMX rewrites every file it touches, flipping line endings; git then
+# lists dozens of "modified" files whose content is unchanged. For each such
+# file (empty diff under --ignore-cr-at-eol), git add refreshes the index
+# entry with the identical blob: the file drops out of git status and
+# nothing lands staged.
+# ---------------------------------------------------------------------------
+echo "==> Clearing line-ending-only churn from git status"
+# git status lists the churned files; git diff shows them empty (the
+# line-ending limbo), so enumerate from status and add only the diff-empty
+# ones — the add re-hashes to the identical blob, so nothing lands staged.
+# That identical-blob premise needs core.autocrlf=true; without it (typical
+# macOS clone) the add would stage real CRLF bytes, so skip instead.
+if [ "$(git -C "${REPO_ROOT}" config --get core.autocrlf)" != "true" ]; then
+  echo "  core.autocrlf != true; skipping (churn would stage as real changes)"
+else
+git -C "${REPO_ROOT}" status --porcelain -- \
+    sw/fw/stm32cube sw/lib/c/CMSIS sw/lib/c/STM32G4xx_HAL_Driver \
+    sw/lib/c/FreeRTOS sw/lib/c/shared/hw/stm32g4 sw/fw/src/hw \
+  | sed -n 's/^ M //p' \
+  | while read -r f; do
+      if git -C "${REPO_ROOT}" diff --ignore-cr-at-eol --quiet -- "$f"; then
+        git -C "${REPO_ROOT}" add -- "$f"
+      fi
+    done
+fi
+echo "==> Done"

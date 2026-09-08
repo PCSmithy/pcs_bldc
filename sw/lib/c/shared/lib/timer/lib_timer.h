@@ -33,6 +33,12 @@ typedef struct
 typedef struct
 {
     uint32_t (*getTime_us)(void);
+
+    // Optional. The 64-bit extension is a read-modify-write on shared state, so
+    // a preempting caller can double-count it; these make it atomic. NULL where
+    // nothing preempts (the native test build).
+    void (*enterCritical)(void);
+    void (*exitCritical)(void);
 } lib_timer_config_S;
 
 /* Public Function Declarations (defined in lib_timer.c) */

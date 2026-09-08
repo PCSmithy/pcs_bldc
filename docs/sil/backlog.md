@@ -3,6 +3,206 @@
 Deferred cleanup tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 
+## hw: sync the design files with the as-built board (Y1 = 24 MHz)
+
+**When:** next hardware-design touch. Owner confirmed 2026-08-16: the
+assembled board carries a 24 MHz crystal at Y1 (assembly-time substitution)
+— `HSE_VALUE = 24000000` is CORRECT and silicon runs 144 MHz; it is the
+schematic/BOM that are stale (they say 25 MHz). As-built deviations now
+live in `hw/rework-log.md` — update the schematic/BOM to match, and log any
+future rework there.
+
+## fw: move the regular ADC path to DMA, then disable AUTDLY
+
+**When:** before anything downstream (FOC, current-loop tuning) starts trusting
+a per-period injected sample. The DMA conversion is the prerequisite — AUTDLY
+cannot come off ahead of it.
+
+**Symptom:** roughly 1 in 208 injected samples goes missing on hardware at
+20 kHz.
+
+**Mechanism:** `HW_ADC_init` forces `LowPowerAutoWait` (AUTDLY) on for both
+ADCs. AUTDLY is a per-peripheral CFGR bit, not per-group — it halts the
+sequencer until DR is read, and TIM1 TRGO2 triggers arriving in that window
+are dropped rather than queued.
+
+**Why it cannot simply be turned off:** the multi-rank polled regular read
+depends on it. With AUTDLY clear, `HAL_ADC_PollForConversion` clears EOC and
+EOS together, so ranks 2..N wait on an EOC that never re-arms — `HAL_TIMEOUT`
+per rank, stale Vbus/temp/OPAMP counts, and ~16 ms of blocking per `run1ms`
+pass inside a 1 ms task.
+
+**Fix:** move the regular path to `HAL_ADC_Start_DMA` with a completion
+callback, removing the polled-EOC dependency. AUTDLY can then be disabled.
+
+**Verify:** count JEOS ISR entries against TIM1 periods over ≥10 s of steady
+20 kHz operation with the regular path running. Expect 1:1; the current ratio
+is ~207/208.
+
+## sim: the injected dispatch sequence batches differently under a coarse grid
+
+**When:** whenever the sim ADC completion path or the engine grid is next
+touched, or before a test relies on one dispatch meaning one trigger.
+
+`HW_ADC`'s injected dispatch sequence identifies a trigger by its interrupt
+entry: stm32g4 bumps it once at the top of `HW_ADC_irqHandler` before the
+per-channel HAL loop, and the sim bumps it once at the top of
+`HW_ADC_sim_completionDispatch` before the drain, so completions serviced
+together share a value on both targets. `IO_bridge` pairs U and V on it to
+derive phase W.
+
+Two sim-only departures, neither reachable at the normal 50 us cadence:
+
+- An entry that drains nothing still consumes a sequence. Harmless — a
+  sequence identifies an entry, not a sample.
+- If `pendingCompletions[ch]` exceeds 1, the sim fires several callbacks for
+  one channel under a single sequence, where hardware would have used a
+  separate entry per trigger. This needs a dispatch deferred past a trigger,
+  i.e. a grid coarse enough to queue completions.
+
+The second one matters if a coarse-grid scenario ever pairs on the sequence:
+two triggers' samples would share an identity and pair wrongly. Either drain
+one completion per sequence, or assert the queue depth stays at 1 on the
+grids the suites use.
+
+## sim: route OPAMP output into an ADC input, so the gain spec can be covered
+
+**When:** whenever the sim ADC or OPAMP model is next touched. It is the one
+piece holding the OFT defect baseline at 28 instead of 27.
+
+**What:** `fw~hal_opamp_002~1` requires each channel to drive its amplifier's
+**internal ADC input** with the pin voltage times the configured gain, and its
+acceptance is a conversion of that internal input reading back the product. The
+sim cannot express that: `hw/ADC/sim` takes every input's voltage from a SIL
+port, and nothing reads `HW_OPAMP_data.outputVolts`. So the two models sit side
+by side with no path between them, and the spec is impl-covered but honestly
+test-uncovered — the tag was removed rather than pointed at a test that never
+touches an ADC.
+
+**Note the requirement is sound** — on silicon the STM32G4 OPAMPs feed ADC
+inputs internally, which is exactly what the spec pins down. The gap is the
+sim's, not the spec's.
+
+**Fix:** give sim `HW_ADC` a per-input source that can be an OPAMP channel
+rather than a port — the OPAMP model computes `input × gain` already, so the
+work is the selection and the wiring, not new physics. Then restore the
+`[test->]` tag on a test that converts the internal input, and drop the
+baseline back to 27 in `CLAUDE.md`.
+
+## SIL: no perf regression gate — the µs/step numbers cannot regress detectably
+
+**When:** soon. Every lever in `performance.md` is currently protected only by
+a doc paragraph.
+
+**What:** CI runs `tools/run_sil.sh`, which runs the perf binary as step 4/4
+and fails only on a non-zero exit. Every number it prints goes to stdout and is
+discarded — there is no committed baseline, no tolerance, and no machine
+record, so a 3× regression lands green.
+
+**Shape of the fix (deliberately cheap):** a normal `#[test]` in
+`sw/sil/pcs_bldc_sil/tests/` that warms up a board world on the 50 µs grid,
+times N steps, and asserts a **loose** ceiling — roughly 3× the documented
+typical, which is still well clear of shared-runner noise. It catches the
+structural class of regression (an allocation or a string key back on a hot
+path), not a few percent of drift. A tight wall-clock tolerance would flake and
+is not worth having. Worth pairing with a deterministic companion that asserts
+the *mechanism* the perf rests on — motor advances once per step, encoders zero
+times, sense only on a changed input, sweep once per `sweep_period_us` —
+which cannot flake at all; `grid.rs` already asserts the sweep half.
+
+## SIL: the per-member perf attribution instrument is invalid
+
+**When:** whenever someone next wants a per-member cost split. Until then the
+rows are informational and `performance.md` says so.
+
+**What:** `report_board_world` in `pcs_bldc_sil/src/main.rs` attributes each
+member's cost as `full − (world with that member disabled)`. That subtraction
+is only valid if disabling a member removes its cost and nothing else, which is
+false here: the encoders sit on the firmware's SPI bus, so disabling one
+changes what the firmware executes. Measured, the dial-encoder row reads
+**−11.76 µs of a 3.11 µs step** — disabling it makes the world ~5× *slower*,
+presumably because the firmware retries on the dark bus. `report_performance`
+has the same defect one report up (`of which model+route+propagate` went
+negative on the same run).
+
+**Fix, in preference order:** (a) delete the per-member loop and keep only the
+`full board world` row, which is a valid end-to-end measurement; or (b) if
+per-member attribution is genuinely wanted, take it from a scoped timer around
+each member's `advance` inside the engine — which already sequences them —
+rather than from world-vs-world subtraction, and clamp or flag a negative row
+instead of printing it as fact.
+
+## bench: `pwm_isense_sampling.ipynb` is committed with its outputs embedded
+
+**When:** hygiene — next touch of `tools/trace_analysis/`.
+
+**What:** the four other trace_analysis notebooks are committed output-stripped;
+`pwm_isense/pwm_isense_sampling.ipynb` is not — ~458 KB of its 477 KB is
+base64 PNG output. Nothing enforces the convention: there is no `nbstripout`
+config and no pre-commit hook, so the siblings' clean state is manual
+discipline that this one missed.
+
+**Fix:** either clear it (`jupyter nbconvert --clear-output`) and add an
+`nbstripout`/pre-commit config so the convention holds by construction, or
+decide deliberately that this notebook is a rendered artifact and say so in its
+own header cell. Pick one — the current state is neither.
+
+## sim: move the GPIO EXTI detector onto the SIL_irq path
+
+**When:** when anything needs an input edge faster than 1 kHz, or opportunistic
+cleanup — whichever comes first.
+
+**What:** sim `HW_GPIO` detects EXTI edges by comparing injected input levels
+inside `HW_GPIO_run1ms`, counting them in `extiEdgeCount`. Every other sim
+module that models an interrupt now registers with the framework interrupt
+table (the pended-completion pattern: ADC, SPI, DMA, USB), so GPIO is the odd
+one out — and a 1 ms poll structurally cannot represent an edge faster than
+1 kHz, nor place one anywhere but on a millisecond boundary.
+
+**Fix:** register the EXTI handler as a pended entry and pend it from the
+level-injection path, so an edge dispatches at the sim instant it happens and
+at its configured priority. The `line_asserted` level extension sketched in
+`sim-interrupts.md` §6 is the natural follow-on for level-sensitive lines
+(nFAULT/BKIN), not a prerequisite here.
+
+## Motor model: raise the integrator's realtime ceiling (remaining levers)
+
+**When:** when a long single scenario or the Phase-4 fast-mode/pytest sweeps
+actually need it; owner-led (owner physics). Not this sprint.
+
+**Why (measured 2026-08-30):** the plant is the single largest member cost in
+a board world — ~2.4 us of a ~4.8-5.3 us step on the 50 us grid — and it
+scales with sim time, not step count, so it is the term that decides how much
+faster than realtime a long run can go.
+
+**Spent lever:** flat coarsening. The semi-implicit-Euler sub-step went 1 us
+-> 5 us (200 sub-steps per ms, not 1000), which is where the board world's
+9.4-10.4x realtime came from. There is no more headroom here: the accuracy
+limit is the explicitly-forced BEMF term, so error scales with omega_e*dt,
+and 10 us already drifts 30% at 2 kHz electrical against a 1 us reference
+(`performance.md` §16). Do not coarsen further without changing the scheme.
+
+**Levers, in leverage order:**
+- **Dynamic/adaptive sub-step:** the fine step guards the stiff diode-mode
+  transitions (engagement/anti-chatter), not the RL dynamics (tau_e = L/R is
+  340 us). Fine steps only around diode-mode changes, coarse elsewhere.
+  Step selection must be state-dependent only (determinism). The analytic
+  `motor_dynamics.rs` asserts + MF4 diffs against 1 us runs are the accuracy
+  instruments.
+- **Per-sub-step cost:** ~700 cycles for 3-phase electrical + mechanics +
+  diode logic; maybe 2-3x from optimization (branch shape, layout, math).
+- **Integrator configuration:** a stiffly-stable scheme (exponential /
+  implicit) for the linear RL part tolerates much larger steps; biggest
+  rewrite, same accuracy questions, composes with the adaptive lever.
+
+## One API header per module — io layer (owner scoping TBD)
+
+**When:** owner call. The `hw/` layer is done (2026-08-15): each dual-target
+module now has one `hw/<Module>/HW_<Module>.h` carrying the API + shared
+types, with `<target>/HW_<Module>_target.h` holding only the config shape
+(see the channelization section of `c-coding-conventions.md`). Whether the
+io-layer modules want the same treatment is unscoped.
+
 ## Current sense: model the low-side-shunt duty visibility (bench-confirmed)
 
 **When:** before matching sim phase-current traces against bench captures at
@@ -189,8 +389,6 @@ drivers grew `HW_<Module>_sim.h` headers exposing `HW_<Module>_sim_*`
 inject/inspect functions (set pin state, inject SPI RX, read USB TX, stall
 ADC, ...). Files, as of 2026-07-04:
 
-- `sw/lib/c/shared/hw/ADC/sim/HW_ADC_sim.h` (plus `_sim_` decls that leaked
-  into `sw/lib/c/shared/hw/ADC/sim/HW_ADC.h`)
 - `sw/lib/c/shared/hw/DMA/sim/HW_DMA_sim.h`
 - `sw/lib/c/shared/hw/GPIO/sim/HW_GPIO_sim.h`
 - `sw/lib/c/shared/hw/OPAMP/sim/HW_OPAMP_sim.h`
@@ -198,7 +396,6 @@ ADC, ...). Files, as of 2026-07-04:
   gone — DuplexTransfer replaced it and the Unity suite was rewritten against a
   test-owned hooks double; the remaining `_sim_*` getters here still apply)
 - `sw/lib/c/shared/hw/TIM/sim/HW_TIM_sim.h`
-- `sw/lib/c/shared/hw/USB/sim/HW_USB_sim.h`
 
 **Why it goes:** the SIL (voyant) has white-box DWARF read/write access to all
 firmware memory, plus Route Table suspend/resume + direct destination writes for
@@ -217,11 +414,11 @@ A driver's box is checked ONLY when its `HW_<Module>_sim.h` is deleted. Each
 conversion = replacement seam on the production path + Unity suite rewritten
 against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
 
-- ◐ **SPI** — `setInjectedRx` + loopback replaced by DuplexTransfer (sprint
-  stage 2, suite rewritten against a test-owned hooks double), but
-  `HW_SPI_sim.h` still exists: `getLastTx` / CS inspection / tick remain in
-  Unity use. Final sweep: assert TX via the hooks double's own capture, find
-  the CS-observation replacement, then delete the header.
+- ☑ **SPI** — DONE 2026-08-30: non-blocking completion rides the pended-IRQ
+  seam (`HW_SPI_sim_completionDispatch`, the ADC pattern); `stall`/`forceError`
+  are DWARF-written data-struct knobs (`tests/spi_faults.rs`); Unity keeps
+  structural/seam coverage via SIL_irq + ports hooks doubles; `HW_SPI_sim.h`
+  deleted.
 - ☑ **TIM** — sprint stage 4 (PWM/bridge observation ports): duty/enable/MOE
   output ports replace the `_sim_` waveform inspection; break injection is a
   table write to the DWARF-visible MOE static. `HW_TIM_sim.h` and the whole
@@ -233,19 +430,40 @@ against test-owned doubles (the SPI injectedRx pattern) + the header deleted:
   `SIL_ports_hooks_S` double (registration + duty/enable/MOE publication); the
   waveform/complementary/dead-time/TRGO/`assertBreak`/counter-direction tests
   are retired (the stage-7 closed loop is their replacement coverage).
-- ☐ **GPIO** — sprint stage 6 (button gestures): drive the DWARF-visible input
-  statics via `st.write` (policy already forbids `setInputLevel`); decide the
-  EXTI-trigger seam; delete `HW_GPIO_sim.h`.
-- ☐ **USB** (+ `io/serial` test usage) — with the `usb_cdc`/`teleplot`
-  sig_type item above: comms-entry TX capture replaces the capture getters;
-  delete `HW_USB_sim.h`.
-- ☐ **ADC** (conversion-stall), **DMA**, **OPAMP** — final sweep after sprint
-  stage 7: pick per-capability replacements (test-owned hooks double or DWARF
-  write), rewrite/retire the suites, delete the headers.
-- ☐ **Exit criterion / enforcement:** no `*_sim.h` files remain under
-  `sw/lib/c/shared/hw/`, and a grep for `_sim_` there comes back empty —
-  worth a CI lint line once the last header falls, so the crutch can't grow
-  back.
+- ☑ **GPIO** — DONE 2026-08-30: inputs are DWARF writes to
+  `HW_GPIO_data.inputLevel` (the board world's existing path); EXTI edges are
+  detected by `HW_GPIO_run1ms` from injected-level transitions (per-port
+  `extiEdgeCount` is the observable; `tests/gpio_behavior.rs`); re-entrant
+  init is the clean slate; `HW_GPIO_sim.h` deleted.
+- ◐ **USB** — partial: `io/serial` tests run on a boundary `mock_HW_USB`
+  (2026-08-13), but the protocol sprint (PR #6) rebuilt the sim USB — RX,
+  `writeAvailable`, a fresh Unity suite — on the `_sim` API, so
+  `HW_USB_sim.h` is back with live consumers. Redo the removal against the
+  protocol-era driver (the pended-completion + DWARF-knob pattern) in a
+  later sweep.
+- ☑ **ADC** — DONE 2026-08-18: conversion-stall injection and multimode
+  inspection move to SIL DWARF write/read (`tests/adc_faults.rs`); sim
+  `HW_ADC_init` is re-entrant, so the Unity suite's clean slate is a rejected
+  init and the config-rejection / readout-guard tests stay there;
+  `HW_ADC_sim.h` deleted.
+- ☑ **DMA** — DONE 2026-08-30: completion rides the pended-IRQ seam
+  (`HW_DMA_sim_completionDispatch`); fault/injection/capture state are plain
+  DWARF-visible `HW_DMA_data` fields (`tests/dma_behavior.rs`); re-entrant
+  init; `HW_DMA_sim.h` deleted.
+- ☑ **OPAMP** — DONE 2026-08-30: `inputVolts`/`outputVolts` are DWARF-visible
+  data-struct fields computed at init (`tests/opamp_behavior.rs`); re-entrant
+  init; `HW_OPAMP_sim.h` deleted.
+- ☑ **I2C** — DONE 2026-08-30 (post-dated the 2026-07-04 list): register
+  file/captures/injection/fault knobs are DWARF-visible `HW_I2C_data` fields
+  (`tests/i2c_behavior.rs`; the board world already drove `regMem` by DWARF);
+  re-entrant init; `HW_I2C_sim.h` deleted.
+- ◐ **Exit criterion — one holdout (2026-08-31):** `HW_USB_sim.h` alone
+  remains under `sw/lib/c/shared/hw/` (the protocol sprint re-adopted it —
+  see the USB row). Every other `*_sim.h` is gone. The surviving `_sim_`
+  symbols elsewhere are the sim drivers' own pended completion ISR entries
+  (`HW_<M>_sim_completionDispatch` — external linkage so the fiber dispatch
+  can name them), not inject/inspect APIs; the eventual CI lint should
+  assert "no `*_sim.h` files" rather than grep `_sim_`.
 
 **Policy, effective immediately:** do NOT add new consumers of the `_sim_*`
 APIs (in C, Rust, or scripts). SIL-side injection/inspection goes through the

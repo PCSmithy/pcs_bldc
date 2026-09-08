@@ -15,7 +15,7 @@ struct DialResponder {
 }
 
 impl DuplexPeer for DialResponder {
-    fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+    fn transfer(&mut self, _tx: &[u8], _ctx: &mut MemberCtx) -> Vec<u8> {
         (self.angle & 0x3FFF).to_be_bytes().to_vec()
     }
 }

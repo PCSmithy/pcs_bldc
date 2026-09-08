@@ -1,17 +1,28 @@
 # SIL bring-up — handover
 
-Last updated: 2026-08-10. Orientation for picking up the SIL (software-in-the-
+Last updated: 2026-08-30. Orientation for picking up the SIL (software-in-the-
 loop) effort in a fresh session. Read this first, then `README.md` +
 `roadmap.md` in this folder. (`docs/handoff.md`, untracked, carries the
 current session-to-session state.)
 
 ## TL;DR
 
-**The commutation sprint is complete and up for merge: PR #4 (sil -> main),
-CI green on all three platforms.** The firmware's six-step drive commutates a
-simulated motor end to end — button tap -> alignment physically swings the
-rotor -> offset captured from the plant -> dial demand -> closed-loop spin —
-driven and asserted purely through the State Table (`tests/north_star.rs`).
+**The injected-ADC / current-sense sprint is complete and up for merge
+(sil -> main).** The sim now runs the timer-triggered injected ADC engine
+against the fine-grid (50 µs) board world: one crest sample set per PWM
+period at the CCR4 instant, injected U/V within 13.6 mA of the plant and
+derived W within 16.8 mA (the 8 mA quantization floor), 800 consecutive
+periods exact (`tests/crest_sampling.rs`). Members declare their own
+**cadence** (`EveryStep`/`Periodic`/`OnInputChange`/`OnDemand` — encoders are
+bus-driven: `DuplexPeer::transfer` carries a `MemberCtx` and samples the table
+at the transaction instant), and after the perf pass the board world runs at
+**4.8–5.3 µs/step, 9.4–10.4× realtime** (typical ~9.8×; `performance.md`
+§16–§18).
+
+The previous sprint's six-step commutation loop stands: button tap ->
+alignment physically swings the rotor -> offset captured from the plant ->
+dial demand -> closed-loop spin, driven and asserted purely through the State
+Table (`tests/north_star.rs`).
 
 The plant is bench-parameterized (iPower GM6208-150T, measured with the board
 as the only instrument — see `tools/trace_analysis/*`): sinusoidal BEMF (it's
@@ -26,8 +37,9 @@ Models (owner-implemented physics, never edit without asking): `motor.rs`
 `IO_bridge_channels.c`). Port convention: models declare all ports in their
 own namespace; `wiring.rs` (`wire_bridge` 7 delayed routes,
 `wire_current_sense` 8 zero-latency routes) binds them; suspend-and-write on
-a bundle is the fault-injection seam. Harness: 47 SIL tests + 174 workspace,
-per-test MF4 drops (`PCS_SIL_TRACE_DIR=build/traces`).
+a bundle is the fault-injection seam. Harness: the `pcs_bldc_sil` behavioral
+suite plus voyant's unit tests, with per-test MF4 drops
+(`PCS_SIL_TRACE_DIR=build/traces`).
 
 Hardware findings this sprint (details in `backlog.md`): low-side-shunt
 (1−duty) current visibility (six-step protection is safe; FOC needs the
@@ -68,13 +80,13 @@ comes out in the telemetry text captured by the sim USB driver. All
 injection/inspection is white-box DWARF access (never the deprecated `_sim_*`
 C APIs — see `backlog.md`).
 
-Rust unit tests: `cd sw/sil && cargo test -p voyant` (59 tests).
+Rust unit tests run with the suite (`run_sil.sh` tests the whole workspace);
+standalone: `cd sw/sil && cargo test -p voyant`.
 
 **Rust toolchain gotcha:** it's `stable-x86_64-pc-windows-gnu` (matches MinGW),
 installed at `~/.cargo/bin`. The Bash tool's shell does NOT source `~/.bashrc`,
 so prefix cargo commands with `export PATH="$HOME/.cargo/bin:$PATH"`. (The
-user's own terminals get it via `~/.bash_profile`.) See
-`memory/reference_rust_toolchain.md`.
+user's own terminals get it via `~/.bash_profile`.)
 
 ## Code map
 
@@ -87,20 +99,22 @@ sw/sil/
                             + retention. Pure data, no FFI. One-shot,
                             last-writer-wins writes (no override/pin).
     src/backend.rs          Firmware (public handle): control ABI + cvar
-                            sample-resolver (start/shutdown/advance_tick +
-                            read_cvar/write_cvar; the only unsafe/DWARF part).
-                            An internal pub(crate) Backend trait is the
-                            execution/test-double seam FirmwareMember drives.
-                            Auto-derives the ASLR anchor from export∩DWARF (no
-                            hardcoded symbol). Also FirmwareMember: a firmware
-                            instance wrapped as a Member — AUTO-mirrors the whole
-                            traceable cvar namespace (enumerated from DWARF at
-                            enable, array-size exclusion policy + exclude/include),
-                            flushing fresh cvars into fw memory + sweeping the
-                            whole mirror back out around advance_tick; the ONLY thing
-                            that touches fw memory (routes never do). dwarf.rs gained
-                            leaf enumeration; state_table.rs a dirty set +
-                            record_mirror/take_dirty.
+                            sample-resolver (start/shutdown/advance_time/
+                            dispatch_isr + read_cvar/write_cvar; the only
+                            unsafe/DWARF part). An internal pub(crate) Backend
+                            trait is the execution/test-double seam
+                            FirmwareMember drives. Auto-derives the ASLR anchor
+                            from export∩DWARF (no hardcoded symbol). Also
+                            FirmwareMember: a firmware instance wrapped as a
+                            Member — AUTO-mirrors the whole traceable cvar
+                            namespace (enumerated from DWARF at enable,
+                            array-size exclusion policy + skip/register), and
+                            brackets each step's dispatch with an in-sync flush
+                            of fresh cvars and an out-sync sweep of the whole
+                            mirror; the ONLY thing that touches fw memory
+                            (routes never do). dwarf.rs carries leaf
+                            enumeration; state_table.rs a dirty set +
+                            record_mirror/take_dirty_indices.
     src/member.rs           Member trait (the one seam the engine drives everything
                             through: name/advance(dt,st)/set_enabled) + vsig_id +
                             RampModel reference model member. Members register their
@@ -116,15 +130,23 @@ sw/sil/
                             StateTable stamps with sim time (st.log/take_logs).
     src/dwarf.rs            DwarfMap: resolve var.member/arr[i] paths -> Leaf
                             (Scalar | Enum), incl. enum value->name
-  pcs_bldc_sil/           THE INSTANTIATION (board-specific driver/demo)
-    src/main.rs             loads the DLL, builds a StateTable, runs the demo
+  pcs_bldc_sil/           THE INSTANTIATION (board-specific)
+    src/main.rs             the perf report binary (phase-isolated + board rows)
+    src/sil.rs              Sil harness: owns an Engine (Deref), loads firmware
+    src/board.rs            the board world: fw + plant + encoders + sense, wired
+    src/motor.rs            plant (owner physics: PMSM + ideal-diode legs + Coulomb)
+    src/as5048.rs           AS5048 model (OnDemand duplex peer, measured noise)
+    src/current_sense.rs    sense front end (OnInputChange affine chain)
+    src/wiring.rs           route bundles (bridge, sense) = fault-injection seams
+    tests/                  the behavioral suite (north_star, crest_sampling, ...)
   spike/d1-tick/          standalone D1 spike: cooperative fiber FreeRTOS port
                             determinism + throughput test (throwaway scaffolding)
 
 sw/lib/c/FreeRTOS/portable/Native-Fiber/   the native cooperative fiber port
 sw/lib/c/shared/hw/sim/ports/              SIL_ports: the null-safe C helper sim
                                             drivers use to register/read/write ports
-sw/fw/src/sil_fw.h                          the control ABI (setHooks/start/advance/shutdown)
+sw/fw/src/sil_fw.h                          the control ABI (setHooks/setIrqHooks/start/
+                                            advance_time/dispatch_isr/shutdown)
 sw/fw/src/main.c                            SIM path: fiber-port bring-up + ABI impl
 sw/fw/src/hw/sim/FreeRTOSConfig.h           native FreeRTOS config
 tools/run_sil.sh                            one-command build + run
@@ -140,248 +162,122 @@ docs/sil/*.md            the design (see "Design docs" below)
   Table + Route Table** with the State Table *being* the historian; comms
   captured as state via sim-HW upcalls; generic **`voyant`** framework +
   `pcs_bldc_sil` instantiation.
-- **Phase 1 — firmware on the SIM target (done):** FreeRTOS runs on native via
-  the hand-written cooperative fiber port; the firmware builds as
-  `libpcs_bldc_fw.dll` exporting the `sil_fw_*` control ABI; both native and
-  ARM targets build green. (D1 spike proved determinism + ~5000× realtime.)
-- **Phase 2 core — Rust drives + introspects (done):**
-  - `voyant::Firmware` loads the DLL, calls the control ABI, and reads/writes
-    **any** firmware `static` by DWARF path — scalars, struct members, **array
-    elements**, and **enums by symbolic name**.
-  - **State Table** implemented: `SignalId`, logical `Value`, per-signal
-    change-logged history (dedup + per-signal epsilon, default 1e-3), current
-    cache (O(1)), `value_at` ZOH (O(log n)), time-based retention (`None` =
-    unbounded for fast mode).
-- **Rebased onto current `main` + firmware/SIL build unified (2026-07-04):**
-  the SIM target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`,
-  `task_usb`, `telemetryTask`) and the same io/dev/app init as embedded, via
-  shared `prvHwInit`/`prvAppInit`/`prvCreateTasks` in `main.c`. Target gating
-  survives only at the hw-layer seam plus `HAL_Init`/timebase/`__io_putchar`
-  and the per-target entry points. All io/dev/app modules link on both targets
-  against real sim hw drivers; sim `HW_USB_run()` yields via `vTaskDelay(1)`
-  (interim until D8). Per-task heartbeat counters + the sanity suite (above)
-  prove the real code runs natively. Embedded ELF impact: +~80 B flash,
-  +16 B bss.
+- **Firmware on the SIM target:** FreeRTOS runs on native via the hand-written
+  cooperative fiber port; the firmware builds as `libpcs_bldc_fw.dll` exporting
+  the `sil_fw_*` control ABI; both native and ARM targets build green. The SIM
+  target runs the SAME four FreeRTOS tasks (`task_1ms`, `task_10ms`, `task_usb`,
+  `telemetryTask`) and the same io/dev/app init as embedded, via shared
+  `prvHwInit`/`prvAppInit`/`prvCreateTasks` in `main.c`; target gating survives
+  only at the hw-layer seam plus `HAL_Init`/timebase/`__io_putchar` and the
+  per-target entry points. Embedded ELF impact of the whole SIL seam: +~80 B
+  flash, +16 B bss.
+- **`Member` is THE public framework seam** (`name`/`cadence`/`advance(dt,st)`/
+  `set_enabled(on,st)`). Plant models and the firmware (via `FirmwareMember`)
+  are both members; the engine holds a `Vec<Box<dyn Member>>` and advances in
+  registration order, which is therefore an explicit design surface. `Backend`
+  and `PortDef` are `pub(crate)` execution/test-double plumbing behind it.
+- **The State Table is dumb data** — signals + per-signal change-logged history,
+  one-shot **last-writer-wins** writes, per-signal epsilon (default 1e-3), O(1)
+  current cache, O(log n) `value_at` ZOH, time-based retention (`None` =
+  unbounded fast mode). A value persists exactly when nothing else writes it;
+  persistence is the *absence of writers*, not a framework hold, so fault
+  injection is **suspend the route, then write its destination directly**.
+  History is **columnar** (per-signal typed scalar columns, kind fixed at first
+  record; a boxed column for `Enum`/`Bytes`), so a later type mismatch is a bug
+  and is rejected rather than migrated — see `signal-trace.md` §1.
+- **Routes are a pure table operation** — `propagate` takes no `Backend`; it
+  records source entries into destination entries and nothing else, with any
+  registered signal of any `sig_type` legal as a destination. Per-route
+  `latency` splits them: **delayed** (snapshot-then-write once at step start,
+  from end-of-previous-step values) and **zero-latency** (fresh reads in cached
+  topological order, re-run before each member, so a chain `a→b→c` resolves in
+  one step). `RouteTable::validate` enforces single-driver, acyclic
+  zero-latency graph, and forward-flow; the engine caches the verdict + topo
+  order behind a wiring-dirty flag and re-raises a bad one at every `step`.
+- **Ports are the driver-facing seam** — signals the sim HW drivers register at
+  runtime in **native format** (volts stay volts; the driver owns conversion),
+  through the `SIL_ports` null-safe C helper over the `sil_fw_setHooks` vtable.
+  With no hooks installed the drivers behave exactly as standalone, so Unity
+  runs are untouched.
+- **The cvar mirror is automatic** — at enable a `FirmwareMember` enumerates
+  every traceable DWARF leaf (recurse structs, expand arrays, array-size
+  threshold to drop stacks/buffers, multi-dim/pointer skip) and registers
+  `cvar:<member>:<leaf>`. Out-sync **sweeps** them memory→table via a
+  shadow-snapshot `memcmp` over 64 B chunks (cost O(changed bytes), on a
+  sim-time cadence); in-sync **flush is sparse**, drained from the table's dirty
+  set by integer index. `skip_cvar_registration_by_prefix` /
+  `register_cvar_in_state_table` tune the policy. The firmware member is the
+  ONLY thing that touches firmware memory — routes never do.
+- **Members declare their own cadence** (`EveryStep`/`Periodic`/`OnInputChange`/
+  `OnDemand`), so cost tracks events rather than the grid — `member-cadence.md`.
+- **Interrupts are a framework-owned table** (D8): periodic, one-shot, and
+  pended entries, registered at config time by name or at runtime by pointer
+  through the `sil_fw_setIrqHooks` upcall vtable; priority-then-registration
+  ordering, per-entry enable, masked-holds-pending. Dispatch runs in the
+  firmware fiber inside the port's ISR entry/exit bracket, so `...FromISR`
+  wakeups and `portYIELD_FROM_ISR` behave as on hardware. The kernel tick is a
+  plain table entry, as on silicon — `sim-interrupts.md`.
+- **Unified log** (`log.rs`): `LogLevel`/`LogEntry` + a drop-oldest `LogRing`
+  the State Table owns and stamps with sim time (`st.log`/`take_logs`).
 
-- **Member-model refactor (chunk A, 2026-07-05):** the `Model` trait folded into a
-  single **`Member`** seam (`name`/`advance(dt,st)`/`set_enabled(on,st)`) that the
-  engine drives everything through; it now holds a `Vec<Box<dyn Member>>` and
-  advances in registration order. `RampModel` and the firmware (via the new
-  **`FirmwareMember`**) are both members; members register their own signals on the
-  table and push records each advance (no `signals()`/`read()`). `StateTable::register`
-  is now idempotent (identical re-registration is a no-op; conflicting unit errors).
-  The ASLR anchor is **auto-derived** (export∩DWARF) — no board symbol in voyant.
-  Deleted: `Model`/`ModelSignal`/`register_model`/`record_model`, `Firmware::read_u32`,
-  the engine's pull-based vsig cache + `Engine::sample_cvar`.
+- **Commutation sprint (merged as PR #4, 2026-08-10):** duplex SPI seam +
+  AS5048/motor/current-sense models + `wiring.rs` bundles + the six-step
+  closed-loop north star (`tests/north_star.rs`); plant bench-parameterized
+  (see TL;DR ¶2–3).
 
-- **Table-mediated routing + log system (chunk A follow-up, 2026-07-05):** routes
-  are now a **pure State Table operation** — `RouteTable::propagate(&mut StateTable)`
-  takes **no `Backend`**; it records source entries into destination entries and
-  nothing else. A destination is **any registered signal of any `sig_type`** (the
-  `cvar`-only restriction and `RouteError::UnsupportedDest` are gone), so `vsig`
-  destinations (model inputs) work with no new seam. Added
-  `RouteTable::remove`; both endpoints are existence-checked at propagate
-  (symmetric). The firmware member gained **`drive_cvar`** — the mirror of
-  `sample_cvar`: per firmware tick it flushes driven cvars (table -> fw memory) ->
-  `advance_tick` -> samples sampled cvars (fw memory -> table). The **`Engine`
-  dropped its `&dyn Backend`** entirely (`Engine::new(tick_period_us)` /
-  `with_state(tick_period_us, st)`) — it touches only members/routes/table; each
-  firmware member drives its own backend, so multi-firmware is just multiple
-  `FirmwareMember`s. Added the **unified log system** (`log.rs`: `LogLevel`/`LogEntry`
-  + drop-oldest `LogRing`; the `StateTable` owns the sink and stamps sim time via
-  `st.log`/`take_logs`); the swallowed-`record`-error sites now log a `Warning`.
-  Sanity-suite **check 6 moved onto the engine** and now exercises the real
-  production path (model vsig -> route table->table -> FirmwareMember flush -> fw
-  memory), asserting against the SPI sim's `injectedRx[0]` — a firmware input the
-  firmware *reads* but never *writes*, so a flushed value survives `advance_tick`.
-  voyant unit tests 34 -> 43; sanity suite all PASS.
-
-- **Route latency + step-time validation (settled "B with annotations", 2026-07-05):**
-  routes gained a **per-route `latency`** (0 = same-tick forward dataflow, 1 = the
-  delayed ZOH sample/actuation cut; `u32`, `>1` rejected). `RouteTable::propagate`
-  split into **`propagate_delayed`** (snapshot-then-write, once at tick start, from
-  end-of-previous-tick values) and **`propagate_zero_latency`** (fresh reads in
-  cached topological order, re-run before each member so a chain `a→b→c` resolves the
-  SAME tick — the old one-hop-per-tick defect is gone). New **`RouteTable::validate`**
-  (given member names in registration order) enforces: single-driver (enabled routes;
-  suspended exempt), zero-latency-graph acyclic, and forward-flow (availability-index
-  along member order) — errors `MultiDriver`/`Cycle`/`BackwardRoute`/`UnsupportedLatency`.
-  The **`Engine` caches the verdict + topo order behind a dirty flag** set by every
-  wiring mutation; a bad verdict is raised at the next `step` and re-raised until
-  fixed (rewire-at-runtime stays legal). API sugar: `Engine::add_delayed_route`.
-  **Member registration order is now an explicit design surface.** Sanity-suite
-  **check 7** added: a genuine two-member feedback loop (model `out` → firmware
-  `injectedRx[0]` zero-latency; firmware `task1msRuns` → model `in` delayed) — the
-  validator rejects the loop until the backward edge is declared delayed, then the
-  loop steps to an exact predicted sequence. voyant unit tests 43 -> 53; sanity suite
-  all PASS.
-
-- **Port registration seam (chunk B, 2026-07-05):** firmware members now expose
-  **ports** — signals their sim HW drivers register with voyant at runtime, in
-  **native format** (volts stay volts; the driver owns conversion to its C
-  representation). The control ABI gained **`sil_fw_setHooks`** (installed by
-  `Firmware::load`, before `start`): a vtable of `registerSignal` /
-  `readSignal` / `writeSignal` trampolines targeting a RefCell'd port state
-  inside the `Firmware`. The C side wraps it in the **null-safe `SIL_ports`
-  helper** (`sw/lib/c/shared/hw/sim/ports/`, target `hw_SIL_ports`; no hooks →
-  register invalid / read false / write no-op, so standalone + Unity runs are
-  untouched). Port I/O is **cache-mediated like the cvar mirror lists** — per
-  firmware tick the `FirmwareMember` runs three fixed phases over its signal
-  bindings (ports, driven/sampled cvars): **in-sync** (apply pending
-  registrations, id = `{sig_type}:{member}:{local}` — C never knows its instance
-  name; fill every port's input cache from the table, never-driven → C read
-  false → driver fallback; flush driven cvars in) → **`advance_tick`** →
-  **out-sync** (drain the port-write buffer into the table; sample sampled
-  cvars out). Registrations become visible at
-  `set_enabled(true)` (= `add_member`) or the next firmware tick. First user:
-  **sim `HW_ADC`** registers one input port per enabled regular input
-  (`inputNameStr`, unit V) and converts a driven port's volts → counts via its
-  own numBits/vref; undriven inputs keep the synthetic ramp. Sanity-suite
-  **check 8**: model volts → route → `vsig:pcs_bldc:ADC1_IN6` → exact
-  quantized counts by DWARF, with a neighboring input still ramping. ARM build
-  byte-identical (SIM-only C). voyant unit tests 53 -> 58; sanity suite all
-  PASS. The `_sim_*` removal (backlog) now has its input-injection replacement.
-
-- **Route-validation fix + Backend demotion (2026-07-05):** fixed a forward-flow
-  validation bug — availability now folds through the zero-latency DAG in
-  *topological* route order (was insertion order, which under-propagated through
-  chains of ≥2 unowned intermediates and let a transitively-backward route pass
-  validation). Demoted the `Backend` trait and `PortDef` to `pub(crate)`:
-  **`Member` is THE public seam**, `FirmwareMember` wraps the concrete public
-  `Firmware` handle, and `Backend` is internal execution/test-double plumbing
-  (lifecycle `start`/`shutdown` are now inherent `Firmware` methods, off the
-  trait). voyant unit tests 58 -> 59; sanity suite all PASS.
-
-- **Whole-namespace cvar mirror (2026-07-07):** collapsed the explicit
-  `drive_cvar`/`sample_cvar` declarations (both **deleted**) into **automatic
-  whole-namespace cvar mirroring** — the documented D12 end-state. At enable a
-  `FirmwareMember` enumerates every traceable leaf from DWARF (`dwarf.rs`
-  `enumerate_leaves`: recurse structs, expand arrays, **default array-size
-  threshold 32** to drop stacks/heap/512-byte buffers, multi-dim/pointer skip,
-  depth/leaf cap) and registers `cvar:<member>:<leaf>` for each, caching a resolved
-  address/type handle per leaf. Out-sync **sweeps** them all memory→table
-  (`record_mirror`) each tick; in-sync **flush is sparse** — a State Table **dirty
-  set** (`record`/`force_record` mark dirty, `record_mirror` does not) drained
-  per-source (`take_dirty`), filtered to `cvar`.
-  `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
-  tune the policy (the suite registers the one 256-byte-buffer SPI MISO byte it
-  drives; renamed from `exclude`/`include` 2026-07-16). Sweep
-  cost on the pcs_bldc DLL: **~430 leaves/tick** (Lever-4 dirty-page-scan
-  workload). voyant unit tests 59 -> 70; sanity suite 10 checks all PASS (added a
-  mirror-accuracy check on `HW_ADC_data.tickCounter` — no declaration).
-
-- **Sweep perf — Tier 1 + Tier 2 (2026-07-09):** the whole-namespace mirror sweep
-  went from a naive per-leaf scan to a **shadow-snapshot `memcmp` sweep** (Tier 1:
-  resolved leaves grouped into address ranges → 64 B chunks with per-range shadow
-  buffers; per tick each range is `memcmp`d against live memory and only changed
-  chunks re-decode their leaves — O(changed bytes)) over a **dense-index State
-  Table fast lane** (Tier 2: hot per-signal storage is index-keyed `Vec`/`usize`
-  sets; sweep/route/port hot paths resolve their index once and use
-  `record_mirror_at`/`record_at`/`current_value_at`, so no hot path hashes a
-  `SignalId` — public string API unchanged). **Full engine step 54 → ~9.3 µs
-  (18× → ~107× realtime)**, meeting the owner target (≤10 µs). voyant unit tests
-  70 → 74 (4 shadow-sweep tests); sanity suite (release + debug) all PASS, behavior
-  identical. See `performance.md` §5 (levers marked implemented) + §12 (after
-  table).
-
-- **Columnar historian — D12 storage end-state (2026-07-09):** the per-signal
-  change-log moved from `VecDeque<(u64, Value)>` to **per-signal typed columns**
-  (`times` + a native scalar deque, kind fixed at first record) with a **boxed
-  `(u64, Value)` column** for `Enum`/`Bytes` signals (strict per structured
-  variant). A signal has exactly one `Value` type for its lifetime, so a later
-  variant mismatch is a **bug**: it is rejected with `TableError::TypeMismatch`
-  (no migration) — a mis-typed route fails `step()` via `RouteError::Table`, a
-  mirror sweep logs a Warning and continues. The sweep's changed scalar leaves
-  record through **typed fast lanes**
-  (`record_mirror_<t>_at` + a native `read_cvar_scalar` decode) that compare the
-  column tail natively — no `Value` on the hot path. Per-sample footprint dropped
-  ~2.5–3.3× (f64 40→16 B, u32 40→12 B); full step ~8.9 µs (~112×), sweep+flush
-  ~3.1→~2.8 µs. **One public ripple (owner-accepted):** `current_value`/`value_at`
-  return `Option<Value>` **by value**, `changes` returns `Option<Vec<(u64, Value)>>`
-  (materializing). voyant unit tests 76 → 83 (7 columnar tests). See
-  `signal-trace.md` §1 + `performance.md` §6/§13.
-
-- **Override/pin mechanic removed (2026-07-12):** the State Table is dumb —
-  signals + history, one-shot **last-writer-wins** writes. A value persists
-  exactly when nothing else writes that signal (model disabled, route suspended,
-  or no author by construction); persistence is the **absence of writers**, not a
-  framework hold. If firmware overwrites a user's cvar write it *should* be
-  clobbered — users own their write targets. **Fault injection = suspend the
-  route, then write directly into the route's destination signal.** Deleted the
-  `overrides` set, `set_override`/`pinned`, the `record`/mirror pin branches, and
-  the pinned half of the `FirmwareMember` flush union (flush is now
-  command-dirtied only). voyant unit tests 89 → 85 (owner ruling — the mechanic
-  earned no keep).
+- **Injected-ADC / current-sense sprint (2026-08-10 → 2026-08-30, this
+  merge):** in stage order —
+  - Sim TIM trigger seam carries crossing direction; TIM1 on TRGO2/OC4; the
+    **timer-triggered injected ADC engine** (closes `fw~hal_adc_003/_008`):
+    one TRGO sink fans out per channel, slots sample their pin's port at the
+    trigger instant, completion is a **NVIC-style pended interrupt** drained
+    in the firmware fiber. Per-entry dispatch counts
+    (`isr_dispatch_count_of`); one world-total canary assert stays deliberate.
+  - **Fine-grid board world north star** (50 µs grid): crest sampling
+    U/V/derived-W against the plant, 800 periods exact, regular path intact
+    beside it. Bench matrix A/B/C1–C3 + JEOS re-check all verified on
+    hardware; ADC IRQ at priority 4 with an RTOS-free callback contract.
+  - **Zero-latency delivery**: port `in_sync` runs before `advance_time`, so
+    trigger-instant sampling reads the same step's routed values; the north
+    star is retightened to same-step.
+  - **Perf pass** (25.0 → 4.8–5.3 µs/step, 2.0× → **9.4–10.4× realtime**,
+    typical ~9.8×): motor
+    integrator sub-step 1 → 5 µs (owner constant, measured-identical);
+    `SigHandle` resolve-once model IO; **member-declared cadence**
+    (`member-cadence.md`: `Cadence` on the `Member` trait, encoders
+    `OnDemand`/bus-driven with `MemberCtx` in `DuplexPeer::transfer` — a
+    dispatch-window table stash carries it across the C frame — sense
+    `OnInputChange` on post-epsilon input-dirty bits, fw port-fill gated,
+    dirty-at-birth rule); duplex `:tx`/`:rx` interning + the index-keyed
+    cvar flush drain (`take_dirty_indices`). Ledger: `performance.md`
+    §16–§18. Engine `tick_period_us` → `grid_us`; `run_sil.sh` tests the
+    whole workspace in release by default.
 
 ## What's next (prioritized)
 
-> **Current sprint (2026-07-12): full-loop motor commutation** — see
-> `roadmap.md` § "Current sprint" for the staged plan (string-keyed table
-> write API → SPI comms seam → encoder model → PWM ports → motor/inverter →
-> harness → closed-loop scenario). D8 is deferred to the following
-> (interrupt-driven-control) sprint; `usb_cdc`/`teleplot` telemetry capture
-> is filed near the top of `backlog.md`.
+> **Next sprint (likely): the FOC current loop.** The open design call ahead of
+> it is whether `IO_bridge` owns the fast (injected) phase currents with
+> counter-equalization pairing (owner leaning yes, not decided). The
+> engine-side next-event queue (`sim-interrupts.md` §5) and the deferred
+> cleanups remain parked in `backlog.md`.
 
-1. ~~**`Model` trait + `vsig` backing**~~ — **DONE (2026-07-04).** `voyant::model`
-   adds the minimal `Model` trait (`name`/`signals`/`advance(dt_us)`/`read`), the
-   `ModelSignal` descriptor, and `register_model`/`record_model` glue that samples
-   a model into the State Table exactly like cvars (StateTable stays pure data).
-   `RampModel` is the reference impl; the sanity suite check 5 demonstrates
-   register → advance-with-time → historian record. Plant models come later
-   (Phase 3, instantiation-side).
-2. ~~**Route Table**~~ — **DONE (2026-07-04).** `voyant::route` adds `RouteTable`
-   (`add`/`suspend`/`resume`/`propagate`): a flat list of `source → destination`
-   routes propagated in one **snapshot-then-write** pass per tick (snapshot all
-   enabled sources from the State Table's current cache, then write all dests), so
-   a chain `x→y→z` advances one hop per tick. Sources are any State Table entry
-   (`vsig`/`cvar`); destinations are `cvar`s driven via `Backend::write_cvar` (the
-   DWARF path is the id's `name` segment — no separate mapping). Per-route
-   `suspend`/`resume` gates driving for fault injection. A `vsig`
-   destination (model input) needs a `Model::write` seam and
-   is rejected at `add` for now. 8 unit tests (add/propagate/suspend/resume/
-   snapshot-consistency + a RampModel→cvar route); sanity-suite check 6 routes a
-   model's `vsig` into a firmware `cvar` and proves suspend/resume gating.
-3. ~~**Sim clock / step loop**~~ — **DONE (2026-07-04).** `voyant::engine` adds
-   `Engine`: it owns the State Table / Route Table / models, borrows a `Backend`,
-   and `step()`s the canonical order per tick — advance sim time (`now +=
-   tick_period`, monotonic/wall-clock-free) → advance models in registration order
-   + record their `vsig`s → propagate routes → `advance_tick` → sample registered
-   firmware `cvar`s into the historian. Sampled-cvar registry via `sample_cvar`;
-   models via `add_model`; routes via `add_route`/`suspend_route`/`resume_route`.
-   Perf seams baked in: each model's vsig ids + the sampled-cvar list are resolved
-   once, so the hot loop never calls `Model::signals()` (no per-tick alloc); the
-   remaining per-tick allocs (route `pending`, enum/bytes `Value`) sit behind seams
-   owned elsewhere and don't touch the engine API. 7 unit tests (step ordering via
-   a call-order mock backend, time advance, multi-model determinism, sampled-cvar
-   + vsig recording, empty step, unregistered-source error). The **sanity suite now
-   drives through the engine** for checks 2/3/4/5 (tasks, historian/ZOH,
-   end-to-end, model vsig); checks 1/6/7 stay below it (backend lifecycle; and 6
-   reads the route-written cvar *between* propagate and advance_tick, a
-   finer-than-step granularity).
-4. **Formalize the trait seams** — `Backend` and `Model` **DONE (2026-07-04):**
-   `voyant::Backend` (lifecycle `start`/`advance_tick`/`shutdown` + `cvar`
-   read/write) is extracted, with `Firmware` as its first impl; `Model` above.
-   `Transport` / `Scenario` remain (later chunks).
-5. **D8 interrupt controller** — the C→Rust upcall registration + port dispatch
-   shim; needed before the fast control ISR / comms fire.
-6. **Comms** — the `Transport` trait + sim-HW upcall capture (logical payloads),
+1. **Comms** — the `Transport` trait + sim-HW upcall capture (logical payloads),
    routed to peer models (external transport / desktop app later, D5).
-7. **Run modes** (fast/realtime pacing) + **Python bindings** (pytest, D3) +
+2. **Run modes** (fast/realtime pacing) + **Python bindings** (pytest, D3) +
    **dashboard** (D4). **Perf seams** from `performance.md` (zero-alloc hot loop,
    gated discrete work, dirty-page historian scan) — bake in as the loop grows.
 
 ## Open threads / pending decisions
 
-- **Trait seams — `Backend` + `Model` done; `Transport` + `Scenario` remain.**
-  `voyant::Backend` (with `Firmware` as first impl) and `voyant::Model` (with
-  `RampModel` reference impl) are formalized (2026-07-04). The generic-framework
+- **Trait seams — `Transport` + `Scenario` remain.** The generic-framework
   vision (`architecture.md` §7) still wants `Transport` (comms) and `Scenario`
-  (wiring), which land with their chunks (#6 / run-config).
+  (wiring), which land with their chunks (#1 / run-config). `Member` is the
+  public seam everything else already goes through.
 - **Coercion follow-ups (low priority, accepted):** `i64` firmware fields narrow
   to `Value::I32` (rare; user OK with it); unknown enumerators read as `<n>`.
-- **Deferred cleanups live in `backlog.md`** — notably: remove the
-  `HW_<Module>_sim.h` inject/inspect layer (redundant once SIL white-box
-  injection is feature-complete) and rework the unit tests that lean on it.
+- **Deferred cleanups live in `backlog.md`** — notably `HW_USB_sim.h`, the one
+  surviving `HW_<Module>_sim.h` inject/inspect header (the protocol sprint
+  rebuilt the sim USB on it), and the unit tests that lean on it.
 
 ## Design docs (source of truth)
 

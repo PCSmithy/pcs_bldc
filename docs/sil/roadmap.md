@@ -7,13 +7,65 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
+## Interrupt-driven sampling sprint ☑ (2026-08-13 → 2026-08-30)
+
+**North star achieved:** phase currents are sampled at the PWM-period center,
+hardware-triggered from TIM1's trigger output, landed in firmware statics by
+the injected-EOC interrupt — on **both targets**. Bench telemetry shows
+mid-window samples while six-step drives the motor; in SIL the interrupt table
+dispatches the ISR on the 50 µs grid and `tests/crest_sampling.rs` asserts one
+sample set per PWM period at the CCR4 instant against the plant. No control law
+consumes the samples yet — the FOC current loop is its own sprint.
+
+**Why it was next:** the low-side shunts only see phase current during the
+1−duty window (campaign finding), so FOC needs center-of-period injected
+sampling. Closes `fw~hal_tim_006`, `fw~hal_adc_003`, `fw~hal_adc_008`; the
+OFT defect baseline lands at 28 (`CLAUDE.md` carries the composition).
+
+Stages, all ☑ (current-state detail lives in the design docs + tests):
+
+1. D8 interrupt controller — the framework interrupt table
+   ([`sim-interrupts.md`](sim-interrupts.md)) plus the fiber port's ISR
+   entry/exit dispatch bracket.
+2. Systick onto that table, then the sub-ms grid: `sil_fw_advance_time(us)`
+   splits the timebase out of the step ABI, the per-world grid is opt-in
+   (`Sil::options().grid_us(50)`, 1 ms default), and the mirror sweep runs on
+   a sim-time cadence — [`performance.md`](performance.md) §15.
+3. Sim TRGO seam (`fw~hal_tim_006`) — `HW_TIM_registerTrgoCallback` plus
+   wrap- and direction-aware crossing detection in `HW_TIM_advanceTime`.
+4. Embedded injected ADC (`fw~hal_adc_003/008`) — injected group on the
+   phase-current inputs, TIM1-TRGO2/OC4-triggered, JEOS completion callback +
+   pollable status, NVIC/MSP/IT wiring at priority 4 with an RTOS-free
+   callback contract.
+5. Sim injected ADC mirror — the TRGO sink starts the injected conversion from
+   the driven port volts; completion arrives as a pended interrupt through the
+   same callback/status surface as embedded.
+6. Firmware consumer + fine-grid north star — `IO_bridge` registers an
+   injected-completion callback and publishes signed crest phase currents
+   (`IO_bridge_getInjectedPhaseCurrent`). U and V pair on `HW_ADC`'s
+   dispatch sequence — one interrupt entry is one trigger — and W is derived
+   as `-(U+V)` only when both land under the same sequence;
+   `tests/crest_sampling.rs` pins cadence, instant, and values against the
+   plant (800 consecutive periods exact). The overcurrent latch still reads
+   the 1 ms regular path — moving it needs a staleness guard, since the
+   injected accessor holds its last good sample rather than failing.
+7. Docs + re-baseline — `sim-interrupts.md` implementation notes and the
+   `performance.md` §16–§18 perf pass.
+
+**Explicitly left out** (deferred): the FOC current loop (own sprint);
+`usb_cdc`/`teleplot` capture (owner call 2026-08-13); dead-time /
+injectable-break seams; encoder frame-fault injection + `fw~safety_002`
+scenario; event-driven timeline + ISR nesting (D8 §10).
+
+---
+
 ## Commutation sprint — full-loop motor commutation ☑ (2026-07-12 → 2026-08-10)
 
 **North star achieved:** the firmware's six-step drive commutates a simulated
 motor end to end — button tap → alignment physically swings the rotor →
 offset captured from the plant → dial demand → closed-loop spin — driven and
-asserted purely through the State Table (`tests/north_star.rs`). Up for
-merge as PR #4.
+asserted purely through the State Table (`tests/north_star.rs`). Merged as
+PR #4 (2026-08-13).
 
 Stages, all ☑ (current-state detail lives in the design docs + tests):
 
@@ -82,12 +134,13 @@ synthetic ADC ramp advances under the scheduler.
   binary boots FreeRTOS, the task runs each tick, the ADC ramp advances**
   (Phase-1 exit met); embedded ARM `.elf` unaffected.
 - ☑ **Control ABI seam** (`sw/fw/src/sil_fw.h`): `sil_fw_start` /
-  `sil_fw_advance_tick` / `sil_fw_shutdown` (D2). `main.c` is now a thin driver
-  over it (embedded entry / SIM smoke driver); Phase-2 Rust drives the same
-  three calls. Pacing (fast vs realtime) is the driver's choice.
+  `sil_fw_advance_time` / `sil_fw_dispatch_isr` / `sil_fw_shutdown`, plus the
+  two hook installers (D2). `main.c` is a thin driver over it (embedded entry /
+  SIM smoke driver); Rust drives the same calls. Pacing (fast vs realtime) is
+  the driver's choice.
 - ☐ Ungate the rest of io/dev/app in `main.c` for SIM (the real tasks)
 - ☐ Cross-platform context-switch primitive (macOS ucontext / small asm)
-- ☐ Realtime-paced driver (wall-clock pacing of `sil_fw_advance_tick`)
+- ☐ Realtime-paced driver (wall-clock pacing of the engine step)
 - ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
 - ☐ `HW_time` module (stm32g4 + sim) + audit drivers for direct
@@ -106,13 +159,14 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
 - ☑ Cargo workspace `sw/sil/` (`sil-sys` raw FFI, `sil-core` driver) — rustup
   `*-windows-gnu` toolchain installed.
 - ☑ **Proof-of-life loop in Rust:** `sil-core` loads `libpcs_bldc_fw.dll`, drives
-  it over the control ABI (`start`/`advance_tick`/`shutdown`), and reads
-  `sim_task1msRuns` live by symbol (1→20). Full stack proven: Rust → ABI →
-  fiber scheduler → task → white-box read.
+  it over the control ABI (`start`/`advance_time`/`dispatch_isr`/`shutdown`),
+  and reads `sim_task1msRuns` live by symbol (1→20). Full stack proven:
+  Rust → ABI → fiber scheduler → task → white-box read.
 - ☑ **`Backend` trait + `Firmware` impl** — the execution-backend seam
   (architecture.md §3.2) formalized: `voyant::Backend` (lifecycle
-  `start`/`advance_tick`/`shutdown` + `cvar` read/write by path), with `Firmware`
-  as its first impl. (An ARM-emu backend could be a later impl.)
+  `start`/`advance_time`/`dispatch_isr`/`shutdown` + `cvar` read/write by
+  path), with `Firmware` as its first impl. (An ARM-emu backend could be a
+  later impl.)
 - ☑ DWARF reader (`object`+`gimli`) — `sil-sys::DwarfMap` resolves
   `var.member`, `arr[i]`, nested paths → link address + scalar leaf kind
   (members, array indexing, typedef/const/volatile pass-through, base/enum
@@ -155,16 +209,17 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   with was removed 2026-07-12); `vsig` dests deferred to
   a `Model::write` seam. 8 unit tests + sanity-suite check 6 (model `vsig` →
   firmware `cvar`, suspend/resume gating).
-- ☐ **Interrupt controller** (D8): table of periodic + one-shot entries;
-  config-time registration by name; C→Rust upcall vtable for runtime
-  registration; port dispatch shim (ISR entry/exit, FromISR/yield) —
-  **deferred** (owner, 2026-07-12) to the interrupt-driven-control sprint;
-  the current firmware control path is fully cooperative in `task_1ms`
+- ☑ **Interrupt controller** (D8, `voyant::irq`): table of periodic + one-shot
+  entries; config-time registration by name (DWARF `low_pc` + slide); C→Rust
+  upcall vtable (`SIL_irq`) for runtime registration; port dispatch bracket
+  (ISR entry/exit, deferred FromISR yield, per-context critical nesting).
+  Landed in the interrupt-driven-sampling sprint, stage 1; the sim `HW_USB`
+  driver is its first consumer (its device interrupt wakes `task_usb`)
 - ☑ **Sim clock + step loop** (`voyant::engine`): `Engine` owns the State Table /
   Route Table / models, borrows a `Backend`, and `step()`s the canonical order —
   advance sim time (monotonic, wall-clock-free) → advance models (registration
-  order) + record vsigs → propagate routes → `advance_tick` → sample registered
-  cvars into the historian. `add_model`/`add_route`/`sample_cvar` registration;
+  order) + record vsigs → propagate routes → dispatch due interrupts → sample
+  registered cvars into the historian. `add_model`/`add_route`/`sample_cvar` registration;
   model vsig ids + sampled list resolved once (hot loop skips `Model::signals()`).
   7 unit tests; the sanity suite drives checks 2/3/4/5 through the engine. (The
   historian itself — the change-logged per-signal series — is the State Table,

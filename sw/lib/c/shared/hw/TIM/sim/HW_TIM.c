@@ -16,7 +16,11 @@
 
 typedef struct
 {
-    uint32_t counter;
+    // Position within one counting cycle; the counter value follows from it and
+    // the direction. A center-aligned counter reads the same value twice a cycle.
+    uint64_t position;
+    // Reload events still to come before the next update event.
+    uint32_t repetitionRemaining;
     uint32_t compare[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     bool     outputEnabled[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     // MOE latch gating every enabled output. Commanded OFF at init; a break
@@ -27,8 +31,18 @@ typedef struct
 
 typedef struct
 {
+    HW_TIM_trgoCallback_F callback;
+    void *                context;
+} HW_TIM_trgoSink_S;
+
+typedef struct
+{
     const HW_TIM_config_S * config;
     HW_TIM_peripheralData_S peripheralData[HW_TIM_PERIPHERAL_COUNT];
+
+    // Trigger-output sinks, one per peripheral. HW_TIM_init leaves them alone
+    // so registration order against init does not matter.
+    HW_TIM_trgoSink_S trgoSink[HW_TIM_PERIPHERAL_COUNT];
 
     // SIL output-port handles (SIL_PORTS_HANDLE_INVALID when unregistered): the
     // commanded bridge state a motor model consumes — normalized per-phase duty
@@ -55,6 +69,15 @@ static bool HW_TIM_private_validateChannel(const HW_TIM_config_S * const config,
 static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel);
 static void HW_TIM_private_publishEnabled(HW_TIM_channels_E channel);
 static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral);
+static uint64_t HW_TIM_private_cycleCounts(const HW_TIM_peripheralConfig_S * const peripheralConfig);
+static uint32_t HW_TIM_private_counterAt(const HW_TIM_peripheralConfig_S * const peripheralConfig,
+                                         uint64_t position);
+static uint64_t HW_TIM_private_landings(uint64_t from, uint64_t counts, uint64_t span, uint64_t target);
+static uint64_t HW_TIM_private_reloadEvents(const HW_TIM_peripheralConfig_S * const peripheralConfig,
+                                            uint64_t from, uint64_t counts);
+static uint64_t HW_TIM_private_consumeRepetition(HW_TIM_peripheral_E peripheral, uint64_t reloads);
+static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts,
+                                    uint64_t updates);
 
 /* Private Function Definitions */
 
@@ -103,8 +126,7 @@ static bool HW_TIM_private_validateChannel(const HW_TIM_config_S * const config,
 }
 
 // Publish a logical channel's normalized duty (compare / period ∈ [0,1]) on its
-// output port. Null-safe: an unnamed channel's handle stays invalid and the
-// write no-ops. Raw counts never cross the boundary.
+// output port. Raw counts never cross the boundary.
 static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel)
 {
     const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
@@ -128,6 +150,170 @@ static void HW_TIM_private_publishMoe(HW_TIM_peripheral_E peripheral)
 {
     const bool enabled = data->peripheralData[peripheral].mainOutputEnabled;
     SIL_ports_write(data->moeHandle[peripheral], enabled ? 1.0 : 0.0);
+}
+
+// Counter positions in one counting cycle: an up- or down-counter walks
+// period + 1 of them, a center-aligned counter 2 * period. Zero period, one
+// position.
+static uint64_t HW_TIM_private_cycleCounts(const HW_TIM_peripheralConfig_S * const peripheralConfig)
+{
+    const uint64_t period = peripheralConfig->period;
+    return ((peripheralConfig->countDir == HW_TIM_COUNT_CENTER) && (period > 0U))
+        ? (2U * period)
+        : (period + 1U);
+}
+
+// Counter value at a cycle position: an up-counter reads the position straight,
+// a down-counter its mirror about the period, a center-aligned one either by phase.
+static uint32_t HW_TIM_private_counterAt(const HW_TIM_peripheralConfig_S * const peripheralConfig,
+                                         uint64_t position)
+{
+    const uint64_t period = peripheralConfig->period;
+    uint64_t counter = position;
+    if (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+    {
+        counter = period - position;
+    }
+    else if ((peripheralConfig->countDir == HW_TIM_COUNT_CENTER) && (position > period))
+    {
+        counter = (2U * period) - position;
+    }
+    else
+    {
+        // Up-counting, or the up phase of a center-aligned cycle.
+    }
+    return (uint32_t)counter;
+}
+
+// How many times a position advancing `counts` ticks from `from` takes the
+// value `target`, modulo `span`. A position already sitting on the target takes
+// it again a full lap later, so an advance landing exactly on the target counts
+// once whichever side of it the advance started.
+static uint64_t HW_TIM_private_landings(uint64_t from, uint64_t counts, uint64_t span, uint64_t target)
+{
+    uint64_t landings = 0U;
+    uint64_t first = ((span + target) - from) % span;   // ticks to the first landing
+    if (first == 0U)
+    {
+        first = span;
+    }
+    if (counts >= first)
+    {
+        landings = ((counts - first) / span) + 1U;
+    }
+    return landings;
+}
+
+// Reload events one advance of `counts` positions from `from` crosses. Position
+// zero reloads every counter; a center-aligned one also reloads at the period.
+static uint64_t HW_TIM_private_reloadEvents(const HW_TIM_peripheralConfig_S * const peripheralConfig,
+                                            uint64_t from, uint64_t counts)
+{
+    const uint64_t cycle = HW_TIM_private_cycleCounts(peripheralConfig);
+    uint64_t reloads = HW_TIM_private_landings(from, counts, cycle, 0U);
+    if ((peripheralConfig->countDir == HW_TIM_COUNT_CENTER) && (peripheralConfig->period > 0U))
+    {
+        reloads += HW_TIM_private_landings(from, counts, cycle, peripheralConfig->period);
+    }
+    return reloads;
+}
+
+// Run `reloads` reload events through a peripheral's repetition countdown and
+// report the update events they produce: one every rcr + 1 reloads. The
+// countdown starts at rcr, so with rcr = 1 on a center-aligned counter started
+// at zero the crest spends the countdown and the valley expires it.
+static uint64_t HW_TIM_private_consumeRepetition(HW_TIM_peripheral_E peripheral, uint64_t reloads)
+{
+    const uint64_t span = (uint64_t)data->config->peripherals[peripheral].rcr + 1U;
+    const uint64_t remaining = data->peripheralData[peripheral].repetitionRemaining;
+
+    uint64_t updates = 0U;
+    if (reloads > remaining)
+    {
+        updates = (((reloads - remaining) - 1U) / span) + 1U;
+    }
+    data->peripheralData[peripheral].repetitionRemaining =
+        (uint32_t)(((remaining + span) - (reloads % span)) % span);
+    return updates;
+}
+
+// Emit a peripheral's trigger events for one advance of `counts` positions from
+// `from`, which produced `updates` update events: an update source emits one per
+// update event, an OC-match source one per landing on the compare value.
+static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts,
+                                    uint64_t updates)
+{
+    const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[peripheral];
+    const HW_TIM_trgoSink_S * const sink = &data->trgoSink[peripheral];
+    if ((peripheralConfig->configureTrgo) && (sink->callback != NULL))
+    {
+        const uint64_t period = peripheralConfig->period;
+        const uint64_t cycle  = HW_TIM_private_cycleCounts(peripheralConfig);
+
+        uint64_t upTriggers   = 0U;
+        uint64_t downTriggers = 0U;
+        if (peripheralConfig->trgoSource == HW_TIM_TRGO_UPDATE)
+        {
+            // TRGO-on-update is a pulse on silicon: the consumer's edge select
+            // sees a rising edge whichever way the counter was going.
+            upTriggers = updates;
+        }
+        else if ((peripheralConfig->trgoSource == HW_TIM_TRGO_OC_MATCH) &&
+                 (peripheralConfig->trgoOcUnit < HW_TIM_OC_UNITS_PER_PERIPHERAL))
+        {
+            // No CCR shadow modelled: a compare written between advances applies
+            // to the whole of the next one.
+            const uint64_t compare = data->peripheralData[peripheral].compare[peripheralConfig->trgoOcUnit];
+            const uint64_t match = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+                ? (period - compare)
+                : compare;
+            if (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+            {
+                downTriggers = HW_TIM_private_landings(from, counts, cycle, match);
+            }
+            else
+            {
+                upTriggers = HW_TIM_private_landings(from, counts, cycle, match);
+            }
+
+            if (peripheralConfig->countDir == HW_TIM_COUNT_CENTER)
+            {
+                // The down phase takes the same compare value at the mirrored
+                // position, except at either extreme where the two coincide.
+                const uint64_t mirror = ((2U * period) - compare) % cycle;
+                if (mirror != match)
+                {
+                    downTriggers = HW_TIM_private_landings(from, counts, cycle, mirror);
+                }
+                else if (compare == 0U)
+                {
+                    // The extremes collapse to one landing; the counter arrives
+                    // at the valley falling, at the crest rising.
+                    downTriggers = upTriggers;
+                    upTriggers   = 0U;
+                }
+                else
+                {
+                    // Crest: one landing, arrived at counting up.
+                }
+            }
+        }
+        else
+        {
+            // HW_TIM_TRGO_NONE, or an OC unit outside the peripheral's units.
+        }
+
+        // Batched per advance (up-phase landings, then down-phase). Ordering
+        // within one advance is undefined; a sink must not depend on it.
+        for (uint64_t n = 0U; n < upTriggers; n++)
+        {
+            sink->callback(peripheral, HW_TIM_TRGO_CROSS_UP, sink->context);
+        }
+        for (uint64_t n = 0U; n < downTriggers; n++)
+        {
+            sink->callback(peripheral, HW_TIM_TRGO_CROSS_DOWN, sink->context);
+        }
+    }
 }
 
 /* Public Function Definitions */
@@ -171,8 +357,11 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             for (size_t p = 0U; p < config->numPeripherals; p++)
             {
                 const HW_TIM_peripheralConfig_S * const peripheralConfig = &config->peripherals[p];
-                data->peripheralData[p].counter =
-                    (peripheralConfig->countDir == HW_TIM_COUNT_DOWN) ? peripheralConfig->period : 0U;
+                // Every direction starts its cycle at position zero — the
+                // counter reads zero, or the period on a down-counter — with a
+                // full repetition countdown ahead of the first update event.
+                data->peripheralData[p].position = 0U;
+                data->peripheralData[p].repetitionRemaining = peripheralConfig->rcr;
 
                 // The advanced-control peripheral (the one with a break input,
                 // hence an MOE latch) publishes a master-output-enable port,
@@ -221,6 +410,7 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
     return ret;
 }
 
+// [impl->fw~hal_tim_006~1]
 void HW_TIM_advanceTime(uint32_t elapsed_us)
 {
     if (data->initialized)
@@ -230,16 +420,32 @@ void HW_TIM_advanceTime(uint32_t elapsed_us)
             const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[p];
             if (peripheralConfig->countsPerUs > 0U)
             {
-                const uint64_t span   = (uint64_t)peripheralConfig->period + 1U;
+                const uint64_t cycle  = HW_TIM_private_cycleCounts(peripheralConfig);
                 const uint64_t counts = (uint64_t)elapsed_us * peripheralConfig->countsPerUs;
-                const uint64_t cur    = data->peripheralData[p].counter;
-                const uint64_t next   = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
-                    ? ((cur + span) - (counts % span)) % span
-                    : (cur + counts) % span;
-                data->peripheralData[p].counter = (uint32_t)next;
+                const uint64_t from   = data->peripheralData[p].position;
+                data->peripheralData[p].position = (from + counts) % cycle;
+
+                const uint64_t reloads = HW_TIM_private_reloadEvents(peripheralConfig, from, counts);
+                const uint64_t updates = HW_TIM_private_consumeRepetition((HW_TIM_peripheral_E)p, reloads);
+                HW_TIM_private_emitTrgo((HW_TIM_peripheral_E)p, from, counts, updates);
             }
         }
     }
+}
+
+// [impl->fw~hal_tim_006~1]
+bool HW_TIM_registerTrgoCallback(HW_TIM_peripheral_E peripheral,
+                                 HW_TIM_trgoCallback_F callback,
+                                 void * context)
+{
+    bool ret = false;
+    if (peripheral < HW_TIM_PERIPHERAL_COUNT)
+    {
+        data->trgoSink[peripheral].callback = callback;
+        data->trgoSink[peripheral].context  = context;
+        ret = true;
+    }
+    return ret;
 }
 
 // [impl->fw~hal_tim_003~1]
@@ -251,7 +457,8 @@ bool HW_TIM_getCounter(HW_TIM_peripheral_E peripheral, uint32_t * const out)
         (peripheral < HW_TIM_PERIPHERAL_COUNT) &&
         ((size_t)peripheral < data->config->numPeripherals))
     {
-        *out = data->peripheralData[peripheral].counter;
+        *out = HW_TIM_private_counterAt(&data->config->peripherals[peripheral],
+                                        data->peripheralData[peripheral].position);
         ret = true;
     }
     return ret;

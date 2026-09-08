@@ -2,7 +2,7 @@
 //!
 //! Owned by the [`StateTable`](crate::state_table::StateTable), which stamps each
 //! entry with the current sim time — members can't fake a timestamp or perturb
-//! behaviour (pure observation; determinism D7 untouched). The backing [`LogRing`]
+//! behaviour (pure observation; determinism untouched). The backing [`LogRing`]
 //! is drop-oldest with a running dropped-count, so truncation under a log storm is
 //! visible rather than silent.
 

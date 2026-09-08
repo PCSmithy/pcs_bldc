@@ -1,5 +1,5 @@
 add_library(hw_SPI STATIC HW_SPI.c)
-target_include_directories(hw_SPI PUBLIC .)
+target_include_directories(hw_SPI PUBLIC . ..)
 target_link_libraries(hw_SPI
   PUBLIC
     lib_types
@@ -7,6 +7,7 @@ target_link_libraries(hw_SPI
     hw_GPIO                 # chip-select drive + SIL pin inspection
     hw_SPI_common           # target-independent timeout formula
     hw_SIL_ports            # duplex transaction seam (null-safe when no hooks installed)
+    hw_SIL_irq              # pended non-blocking completion dispatch (null-safe)
 )
 
 # Unit tests run only on the native target.

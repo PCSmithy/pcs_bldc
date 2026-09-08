@@ -164,12 +164,12 @@ exist.
 - **Mirror-sync / cache mediation — no re-entrancy.** C never touches the
   State Table mid-tick. Per firmware tick the member runs **three fixed phases**
   over its signal *bindings* (ports, cvars — each an optional in-half and/or
-  out-half): **in-sync → `advance_tick` → out-sync**. In-sync (table → firmware):
+  out-half): **in-sync → dispatch → out-sync**. In-sync (table → firmware):
   apply pending port registrations then fill **every** port's *input cache* from
   the entry's current value (never driven → `None` → C read returns false →
-  driver fallback), and flush the **fresh** cvars in (below). `advance_tick` (C
-  reads caches, buffers writes). Out-sync (firmware → table): drain the *output
-  buffer* into the table, and **sweep the whole cvar leaf list** back into the
+  driver fallback), and flush the **fresh** cvars in (below). Dispatch runs the
+  step's due handlers (C reads caches, buffers writes). Out-sync (firmware →
+  table): drain the *output buffer* into the table, and **sweep the whole cvar leaf list** back into the
   mirror. A future transport `sig_type` is a new binding with its own halves —
   the phase sequence never changes, and direction stays on the binding mechanism,
   never on a signal.
@@ -185,8 +185,8 @@ exist.
 - **In-sync flush is sparse — only the *fresh* cvars.** The State Table marks a
   **dirty set**: `record` / `force_record` (route, test, model output) mark the id
   dirty; the mirror sweep (`record_mirror`) does **not**. Each tick the member
-  flushes its namespace's dirty ids (`take_dirty`, source-scoped), filtered to
-  `cvar`. This is sound because the sim is single-threaded: between one tick's
+  flushes its namespace's dirty entries (`take_dirty_indices`, filtered by
+  integer membership against its own interned cvar leaves). This is sound because the sim is single-threaded: between one tick's
   sweep and the next tick's flush no firmware code runs, so a table entry differs
   from memory **iff** the framework command-wrote it — "flush fresh" ≡ "flush
   all", done cheaply. Writes are one-shot, last-writer-wins: if firmware
@@ -340,16 +340,19 @@ is `add_with_latency(src, dst, 1)` (voyant) / `Engine::add_delayed_route(src, ds
 
 ```
 per tick:
-  1. now += tick_period; set_time(now)
+  1. now += grid_us; set_time(now)
   2. if wiring dirty: validate (below); cache the verdict + zero-latency topo order
   3. propagate DELAYED routes once — from a snapshot taken BEFORE any member
      advances (each delayed dst gets its source's end-of-previous-tick value)
   4. for each ENABLED member, in registration order:
        a. evaluate the enabled ZERO-latency routes in topological order with FRESH
           reads (a→b→c resolves fully, reading values produced earlier this tick)
-       b. member.advance(dt)   (a firmware member: flush fresh cvars →
-                                advance_tick → sweep the whole cvar mirror out; a
-                                model: read inputs, step, push outputs)
+       b. if the member's Cadence says it is due: member.advance(dt)
+                               (a firmware member: flush fresh cvars →
+                                dispatch due interrupts → sweep the whole cvar
+                                mirror out; a
+                                model: read inputs, step, push outputs; OnDemand
+                                members skip a+b — the bus drives them)
   5. record signals; asserts/injection; pace (realtime: sleep · fast: now)
 ```
 

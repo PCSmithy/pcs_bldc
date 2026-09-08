@@ -79,11 +79,14 @@ static void buildConfigs(void)
         .phaseV = HW_TIM_CHANNEL_PWM_V,
         .phaseW = HW_TIM_CHANNEL_PWM_W,
         .phaseCurrent = {
-            [IO_BRIDGE_PHASE_U] = { phaseSense[0].ch, phaseSense[0].in, PHASE_BIAS_V, PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_V] = { phaseSense[1].ch, phaseSense[1].in, PHASE_BIAS_V, PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_W] = { phaseSense[2].ch, phaseSense[2].in, PHASE_BIAS_V, PHASE_V_PER_A },
+            [IO_BRIDGE_PHASE_U] = { phaseSense[0].ch, phaseSense[0].in,
+                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
+            [IO_BRIDGE_PHASE_V] = { phaseSense[1].ch, phaseSense[1].in,
+                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
+            [IO_BRIDGE_PHASE_W] = { phaseSense[2].ch, phaseSense[2].in,
+                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
         },
-        .busCurrent = { BUS_CH, BUS_IN, 0.0f, BUS_V_PER_A } };
+        .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A } };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN] = (app_motorControl_channelConfig_S){

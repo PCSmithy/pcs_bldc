@@ -1,4 +1,4 @@
-//! BLDC motor + averaged-duty inverter (D6) — the plant that closes the commutation loop.
+//! BLDC motor + averaged-duty inverter — the plant that closes the commutation loop.
 //!
 //! All ports live in the model's own namespace; the sim wiring routes the board's
 //! bridge signals into them. Inputs: `vsig:<name>:{duty,enable}_{u,v,w}`, `moe`,
@@ -16,13 +16,10 @@
 
 use std::f64::consts::{PI, TAU};
 
-use voyant::{vsig_id, Member, MemberCtx, SignalId, StateTable, Value};
+use crate::{observe_port, register_port};
+use voyant::{vsig_id, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
 
-pub const MOTOR_MODEL_STEP_PERIOD_US: u16 = 1000;
-pub const MOTOR_INTEGRATOR_STEP_PERIOD_US: u16 = 1;
-// The integrator step must evenly divide the model tick (u16 division truncates).
-#[allow(clippy::modulo_one)] // the divisor is a placeholder; the guard exists for when it changes
-const _: () = assert!(MOTOR_MODEL_STEP_PERIOD_US.is_multiple_of(MOTOR_INTEGRATOR_STEP_PERIOD_US));
+pub const MOTOR_INTEGRATOR_STEP_PERIOD_US: u16 = 5;
 
 const DIODE_ENGAGE_MARGIN_V: f64 = 0.005;
 
@@ -96,6 +93,27 @@ pub struct MotorModel {
     torque_nm: f64,
 
     modes: [LegMode; 3],
+
+    ports: MotorPorts,
+}
+
+/// Pre-resolved port handles (resolve-once; [`StateTable::handle`]), filled at
+/// enable. `None` until then — a dark read stays 0.0, a write no-ops.
+#[derive(Default, Clone, Copy)]
+struct MotorPorts {
+    v_bus: Option<SigHandle>,
+    duty: [Option<SigHandle>; 3],
+    enable: [Option<SigHandle>; 3],
+    moe: Option<SigHandle>,
+
+    angle: Option<SigHandle>,
+    velocity: Option<SigHandle>,
+    torque: Option<SigHandle>,
+    phase_current: [Option<SigHandle>; 3],
+    terminal_voltage: [Option<SigHandle>; 3],
+    bemf: [Option<SigHandle>; 3],
+    bus_current: Option<SigHandle>,
+    neutral_voltage: Option<SigHandle>,
 }
 
 const N_PHASES: usize = 3;
@@ -121,6 +139,7 @@ impl MotorModel {
             phase_current_a: [0.0; 3],
             torque_nm: 0.0,
             modes: [LegMode::Open; 3],
+            ports: MotorPorts::default(),
         }
     }
 
@@ -134,14 +153,11 @@ impl MotorModel {
         vsig_id(&self.name, local).expect("valid vsig id")
     }
 
-    /// One input port's current value (`0.0` when never driven / not numeric — a
-    /// dark bridge reads all zeros).
-    fn observe(st: &StateTable, source: &str, local: &str) -> f64 {
-        SignalId::new("vsig", source, local, None)
-            .ok()
-            .and_then(|id| st.current_value(&id).ok().flatten())
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
+    /// Record one output by handle.
+    fn emit(st: &mut StateTable, h: Option<SigHandle>, x: f64) {
+        if let Some(h) = h {
+            let _ = st.record_by(h, Value::F64(x));
+        }
     }
 }
 
@@ -151,23 +167,25 @@ impl Member for MotorModel {
     }
 
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
-        debug_assert_eq!(dt_us, MOTOR_MODEL_STEP_PERIOD_US as u64);
-
         // Input ports: the bridge command + bus voltage the sim wiring routed in.
-        let v_bus = Self::observe(ctx.st, &self.name, "v_bus");
+        let v_bus = observe_port(ctx.st, self.ports.v_bus);
         let mut i_bus = 0.0;
 
-        let ob = |local: &str| Self::observe(ctx.st, &self.name, local);
-        let duty = ["duty_u", "duty_v", "duty_w"].map(&ob);
-        let enabled = ["enable_u", "enable_v", "enable_w"].map(|s| ob(s) != 0.0);
-        let master_output_enabled = ob("moe") != 0.0;
+        let duty = self.ports.duty.map(|h| observe_port(ctx.st, h));
+        let enabled = self.ports.enable.map(|h| observe_port(ctx.st, h) != 0.0);
+        let master_output_enabled = observe_port(ctx.st, self.ports.moe) != 0.0;
 
         let mut v: [f64; 3] = [0.0; 3]; // terminal voltage
         let mut e: [f64; 3] = [0.0; 3]; // back emf
         let mut v_n = 0.0;
 
-        let n = MOTOR_MODEL_STEP_PERIOD_US / MOTOR_INTEGRATOR_STEP_PERIOD_US; // number of integrator sub-steps per model step
-        let dt_s = f64::from(MOTOR_INTEGRATOR_STEP_PERIOD_US) * 1e-6;
+        // Sub-steps of at most MOTOR_INTEGRATOR_STEP_PERIOD_US, splitting the tick
+        // evenly. Ceiling, not truncation: a grid finer than the integrator step
+        // would otherwise round to zero sub-steps and freeze the plant silently.
+        let n = dt_us
+            .div_ceil(u64::from(MOTOR_INTEGRATOR_STEP_PERIOD_US))
+            .max(1);
+        let dt_s = (dt_us as f64) * 1e-6 / (n as f64);
 
         // per integrator sub-step
         for _ in 0..n {
@@ -323,66 +341,42 @@ impl Member for MotorModel {
         }
 
         // Record the tick's outputs (last sub-step sample).
-        let _ = ctx
-            .st
-            .record(&self.port_id("angle"), Value::F64(self.angle_rad));
-        let _ = ctx
-            .st
-            .record(&self.port_id("velocity"), Value::F64(self.velocity_rad_s));
-        let _ = ctx
-            .st
-            .record(&self.port_id("torque"), Value::F64(self.torque_nm));
-
-        for (c, i) in [("u", 0), ("v", 1), ("w", 2)] {
-            let _ = ctx.st.record(
-                &self.port_id(&format!("phase_current_{c}")),
-                Value::F64(self.phase_current_a[i]),
-            );
-            let _ = ctx.st.record(
-                &self.port_id(&format!("terminal_voltage_{c}")),
-                Value::F64(v[i]),
-            );
-            let _ = ctx
-                .st
-                .record(&self.port_id(&format!("bemf_{c}")), Value::F64(e[i]));
+        Self::emit(ctx.st, self.ports.angle, self.angle_rad);
+        Self::emit(ctx.st, self.ports.velocity, self.velocity_rad_s);
+        Self::emit(ctx.st, self.ports.torque, self.torque_nm);
+        for i in 0..N_PHASES {
+            Self::emit(ctx.st, self.ports.phase_current[i], self.phase_current_a[i]);
+            Self::emit(ctx.st, self.ports.terminal_voltage[i], v[i]);
+            Self::emit(ctx.st, self.ports.bemf[i], e[i]);
         }
-
-        let _ = ctx
-            .st
-            .record(&self.port_id("bus_current"), Value::F64(i_bus));
-
-        let _ = ctx
-            .st
-            .record(&self.port_id("neutral_voltage"), Value::F64(v_n));
+        Self::emit(ctx.st, self.ports.bus_current, i_bus);
+        Self::emit(ctx.st, self.ports.neutral_voltage, v_n);
     }
 
     fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
         if on {
+            const PH: [&str; 3] = ["u", "v", "w"];
             // inputs
-            let _ = st.register(self.port_id("v_bus"), Some("V"));
-            let _ = st.register(self.port_id("duty_u"), None);
-            let _ = st.register(self.port_id("duty_v"), None);
-            let _ = st.register(self.port_id("duty_w"), None);
-            let _ = st.register(self.port_id("enable_u"), None);
-            let _ = st.register(self.port_id("enable_v"), None);
-            let _ = st.register(self.port_id("enable_w"), None);
-            let _ = st.register(self.port_id("moe"), None);
+            self.ports.v_bus = register_port(st, &self.port_id("v_bus"), Some("V"));
+            for (i, c) in PH.iter().enumerate() {
+                self.ports.duty[i] = register_port(st, &self.port_id(&format!("duty_{c}")), None);
+                self.ports.enable[i] = register_port(st, &self.port_id(&format!("enable_{c}")), None);
+            }
+            self.ports.moe = register_port(st, &self.port_id("moe"), None);
 
             // outputs
-            let _ = st.register(self.port_id("angle"), Some("rad"));
-            let _ = st.register(self.port_id("velocity"), Some("rad/s"));
-            let _ = st.register(self.port_id("phase_current_u"), Some("A"));
-            let _ = st.register(self.port_id("phase_current_v"), Some("A"));
-            let _ = st.register(self.port_id("phase_current_w"), Some("A"));
-            let _ = st.register(self.port_id("bus_current"), Some("A"));
-            let _ = st.register(self.port_id("torque"), Some("Nm"));
-            let _ = st.register(self.port_id("terminal_voltage_u"), Some("V"));
-            let _ = st.register(self.port_id("terminal_voltage_v"), Some("V"));
-            let _ = st.register(self.port_id("terminal_voltage_w"), Some("V"));
-            let _ = st.register(self.port_id("neutral_voltage"), Some("V"));
-            let _ = st.register(self.port_id("bemf_u"), Some("V"));
-            let _ = st.register(self.port_id("bemf_v"), Some("V"));
-            let _ = st.register(self.port_id("bemf_w"), Some("V"));
+            self.ports.angle = register_port(st, &self.port_id("angle"), Some("rad"));
+            self.ports.velocity = register_port(st, &self.port_id("velocity"), Some("rad/s"));
+            self.ports.torque = register_port(st, &self.port_id("torque"), Some("Nm"));
+            for (i, c) in PH.iter().enumerate() {
+                self.ports.phase_current[i] =
+                    register_port(st, &self.port_id(&format!("phase_current_{c}")), Some("A"));
+                self.ports.terminal_voltage[i] =
+                    register_port(st, &self.port_id(&format!("terminal_voltage_{c}")), Some("V"));
+                self.ports.bemf[i] = register_port(st, &self.port_id(&format!("bemf_{c}")), Some("V"));
+            }
+            self.ports.bus_current = register_port(st, &self.port_id("bus_current"), Some("A"));
+            self.ports.neutral_voltage = register_port(st, &self.port_id("neutral_voltage"), Some("V"));
         }
     }
 }

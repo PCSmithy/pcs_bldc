@@ -1,8 +1,8 @@
 #include "HW_SPI.h"
-#include "HW_SPI_sim.h"
 #include "HW_SPI_timeout.h"
 #include "HW_GPIO.h"
-#include "HW_GPIO_sim.h"
+#include "SIL_irq.h"
+#include "SIL_irq_double.h"
 #include "SIL_ports.h"
 #include "unity.h"
 
@@ -14,11 +14,8 @@
 #define CS2_PIN    (0x02U)   // AS5048_2 -> port B
 
 // Test-owned SIL_ports hooks double, installed for every test so both drivers
-// bind to the production seam: registerSignal hands out sequential handles and
-// remembers each port's local name, writeSignal records the level sequence the
-// sim GPIO publishes (how CS activity is observed), and duplexTransfer answers
-// a transfer with a canned frame once a peer is linked — unlinked, it declines
-// and the driver falls back to the floating-bus all-ones fill.
+// bind to the production seam. duplexTransfer answers with a canned frame once
+// a peer is linked; unlinked it declines, and the fill is the floating bus.
 #define MAX_PORTS   (8)
 #define MAX_WRITES  (4)
 static char     portName[MAX_PORTS][16];
@@ -186,6 +183,11 @@ static void buildGoodConfig(void)
 
 void setUp(void)
 {
+    // A rejected init is the clean slate: init drops the driver to its
+    // uninitialized state before it looks at the config.
+    SIL_irq_setHooks(NULL);
+    (void)HW_SPI_init(NULL);
+
     for (int32_t i = 0; i < MAX_PORTS; i++)
     {
         portName[i][0] = '\0';
@@ -195,7 +197,9 @@ void setUp(void)
     cannedLen = 0U; // unlinked bus by default; per-test peer opts in
     installHooks();
 
-    HW_GPIO_sim_reset();
+    SIL_irq_double_install(11);
+
+    // Re-entrant GPIO init is the clean slate (no _sim reset).
     buildGpioConfig();
     TEST_ASSERT_TRUE(HW_GPIO_init(&gpioConfig));
 
@@ -208,6 +212,7 @@ void setUp(void)
 void tearDown(void)
 {
     SIL_ports_setHooks(NULL);
+    SIL_irq_setHooks(NULL);
 }
 
 /* ---- fw~hal_spi_001: init + config validation ---- */
@@ -324,17 +329,6 @@ static void test_transmitReceive_unlinked_bus_reads_ones(void)
 }
 
 // [test->fw~hal_spi_003~1]
-static void test_software_transfer_timeout_returns_false(void)
-{
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    HW_SPI_sim_setStall(HW_SPI_CHANNEL_AS5048_1, true);
-    uint8_t tx[2] = { 0U, 0U };
-    TEST_ASSERT_FALSE(HW_SPI_transmit(HW_SPI_CHANNEL_AS5048_1, tx, 2U));
-    TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_ERROR, HW_SPI_getStatus(HW_SPI_CHANNEL_AS5048_1));
-}
-
-// [test->fw~hal_spi_003~1]
 static void test_timeout_formula(void)
 {
     // ceil(8800*N / f_bit) + 1ms.
@@ -403,7 +397,7 @@ static void test_cs_none_mode_drives_no_gpio(void)
 
     uint8_t tx[2] = { 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
-    HW_SPI_sim_tick();
+    SIL_irq_double.pendedHandler();
     // The CS-less device drives no chip-select at all.
     TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs1]);
     TEST_ASSERT_EQUAL_UINT32(0U, portWrites[cs2]);
@@ -421,35 +415,20 @@ static void test_async_busy_then_complete_with_callback(void)
     uint8_t tx[2] = { 0x11U, 0x22U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
 
-    // Returns immediately; completion is pending.
+    // Returns immediately; the completion interrupt is pended.
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_BUSY, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastPendHandle);
     TEST_ASSERT_EQUAL_UINT32(0U, cbCount);
 
-    HW_SPI_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
     TEST_ASSERT_EQUAL_INT(HW_SPI_CHANNEL_SK6805_STRING, cbChannel);
     TEST_ASSERT_EQUAL_PTR(&ctx, cbContext);
 
     // Callback fires exactly once.
-    HW_SPI_sim_tick();
-    TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
-}
-
-// [test->fw~hal_spi_005~1]
-static void test_async_error_completion(void)
-{
-    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
-
-    int ctx = 0;
-    TEST_ASSERT_TRUE(HW_SPI_registerCallback(HW_SPI_CHANNEL_SK6805_STRING, testCallback, &ctx));
-    HW_SPI_sim_setForceError(HW_SPI_CHANNEL_SK6805_STRING, true);
-
-    uint8_t tx[2] = { 0U, 0U };
-    TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
-    HW_SPI_sim_tick();
-
-    TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_ERROR, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_UINT32(1U, cbCount);
 }
 
@@ -462,9 +441,30 @@ static void test_async_observable_by_polling_only(void)
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_BUSY, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
 
-    HW_SPI_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
     TEST_ASSERT_EQUAL_UINT32(0U, cbCount); // no callback registered
+}
+
+// [test->fw~hal_spi_005~1]
+static void test_reinit_rewires_completion_and_clears_callback(void)
+{
+    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    TEST_ASSERT_TRUE(HW_SPI_registerCallback(HW_SPI_CHANNEL_SK6805_STRING, testCallback, NULL));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);
+
+    // Re-init: the old completion IRQ is cancelled, a fresh one registered,
+    // and the callback slot is cleared.
+    TEST_ASSERT_TRUE(HW_SPI_init(&spiConfig));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.cancelCalls);
+    TEST_ASSERT_EQUAL_INT32(SIL_irq_double.pendedRegisterReturn, SIL_irq_double.lastCancelHandle);
+    TEST_ASSERT_EQUAL_UINT32(2U, SIL_irq_double.pendedRegisterCalls);
+
+    uint8_t tx[2] = { 0U, 0U };
+    TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
+    TEST_ASSERT_EQUAL_UINT32(0U, cbCount);
 }
 
 /* ---- fw~hal_spi_006: transfer-mode taxonomy ---- */
@@ -486,7 +486,7 @@ static void test_mode_dma_completes(void)
     uint8_t tx[2] = { 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_BUSY, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
-    HW_SPI_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
 }
 
@@ -499,7 +499,7 @@ static void test_mode_interrupt_completes(void)
     uint8_t tx[2] = { 0U, 0U };
     TEST_ASSERT_TRUE(HW_SPI_transmit(HW_SPI_CHANNEL_SK6805_STRING, tx, 2U));
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_BUSY, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
-    HW_SPI_sim_tick();
+    SIL_irq_double.pendedHandler();
     TEST_ASSERT_EQUAL_INT(HW_SPI_STATUS_COMPLETE, HW_SPI_getStatus(HW_SPI_CHANNEL_SK6805_STRING));
 }
 
@@ -522,7 +522,6 @@ int main(void)
 
     RUN_TEST(test_receive_returns_linked_peer_frame);
     RUN_TEST(test_transmitReceive_unlinked_bus_reads_ones);
-    RUN_TEST(test_software_transfer_timeout_returns_false);
     RUN_TEST(test_timeout_formula);
 
     RUN_TEST(test_cs_active_low_polarity);
@@ -531,8 +530,8 @@ int main(void)
     RUN_TEST(test_cs_none_mode_drives_no_gpio);
 
     RUN_TEST(test_async_busy_then_complete_with_callback);
-    RUN_TEST(test_async_error_completion);
     RUN_TEST(test_async_observable_by_polling_only);
+    RUN_TEST(test_reinit_rewires_completion_and_clears_callback);
 
     RUN_TEST(test_mode_software_completes);
     RUN_TEST(test_mode_dma_completes);

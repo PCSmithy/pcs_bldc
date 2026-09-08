@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "HW_DMA.h"   // HW_DMA_irqHandler + HW_DMA_CHANNEL_* (DMA IRQ dispatch)
 #include "HW_I2C.h"   // HW_I2C_irqHandlerEv/Er + HW_I2C_BUS_* (I2C IRQ dispatch)
+#include "HW_ADC.h"   // HW_ADC_irqHandler (ADC1/2 shared-vector dispatch)
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,6 +58,8 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern ADC_HandleTypeDef hadc1;
+extern ADC_HandleTypeDef hadc2;
 extern DAC_HandleTypeDef hdac1;
 extern TIM_HandleTypeDef htim6;
 
@@ -161,6 +164,19 @@ void DebugMon_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32g4xx.s).                    */
 /******************************************************************************/
+
+/**
+  * @brief This function handles ADC1 and ADC2 global interrupt.
+  */
+void ADC1_2_IRQHandler(void)
+{
+  /* USER CODE BEGIN ADC1_2_IRQn 0 */
+  HW_ADC_irqHandler();
+  /* USER CODE END ADC1_2_IRQn 0 */
+  /* USER CODE BEGIN ADC1_2_IRQn 1 */
+
+  /* USER CODE END ADC1_2_IRQn 1 */
+}
 
 /**
   * @brief This function handles TIM6 global interrupt, DAC1 and DAC3 channel underrun error interrupts.

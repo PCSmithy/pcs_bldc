@@ -2,7 +2,7 @@
  * FreeRTOS application-hook stubs for native (host) unit tests.
  *
  * A unit test that links `freertos` transitively (e.g. hw_USB / io_serial pull
- * it via HW_USB_run's vTaskDelay) drags in tasks.c, which references
+ * it via HW_USB_run's kernel calls) drags in tasks.c, which references
  * vApplicationIdleHook (configUSE_IDLE_HOOK) and vApplicationGetIdleTaskMemory
  * (configSUPPORT_STATIC_ALLOCATION). The firmware image gets the real ones from
  * main.c — the idle hook there is the SIL quiescence handoff — but a test never

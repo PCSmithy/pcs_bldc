@@ -15,7 +15,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::member::MemberCtx;
 use crate::signal::{ParseError, SignalId};
+use crate::state_table::StateTable;
 
 /// The `:tx` / `:rx` event-entry ids of a duplex endpoint, built from the endpoint's
 /// own segments — the one place that pair is spelled.
@@ -33,12 +35,16 @@ pub(crate) fn tx_rx_ids(
 /// synchronously: the peer consumes `tx`, updates its own internal state, and returns
 /// the `rx` frame the initiator reads back before the call returns.
 ///
-/// A peer runs inside the initiator's advance, where the State Table is off-limits;
-/// anything table-worthy surfaces through the framework's `:tx`/`:rx` records or the
-/// peer's own advance if it is also a [`Member`](crate::member::Member).
+/// A peer runs inside the initiator's advance with the same [`MemberCtx`] surface an
+/// advance gets — a mid-step view of the table, which is exactly what a physical bus
+/// exchange samples. The member discipline holds unchanged: a peer reads its routed
+/// inputs and writes its registered outputs, nothing foreign
+/// (`docs/sil/member-cadence.md`). A [`Cadence::OnDemand`](crate::member::Cadence)
+/// member lives entirely here.
 pub trait DuplexPeer {
-    /// Answer a transfer: consume the `tx` frame, return the `rx` frame.
-    fn transfer(&mut self, tx: &[u8]) -> Vec<u8>;
+    /// Answer a transfer: consume the `tx` frame, return the `rx` frame. `ctx` is the
+    /// transaction-instant table view (plus onward bus access for a bridge peer).
+    fn transfer(&mut self, tx: &[u8], ctx: &mut MemberCtx) -> Vec<u8>;
 }
 
 /// A dense handle for a declared duplex endpoint. An initiator resolves it once at
@@ -46,6 +52,13 @@ pub trait DuplexPeer {
 /// passes it to every transfer — no per-transfer string hashing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DuplexHandle(usize);
+
+impl DuplexHandle {
+    /// The dense index (the engine's `:tx`/`:rx` intern cache is keyed by it).
+    pub(crate) fn idx(self) -> usize {
+        self.0
+    }
+}
 
 /// The shared endpoint registry coupling initiators to peers. Cloneable (an `Rc`
 /// handle over the shared inner): the [`Engine`](crate::engine::Engine) keeps one, and
@@ -69,6 +82,11 @@ struct DuplexInner {
     transactions: Vec<(DuplexHandle, Vec<u8>, Vec<u8>)>,
     /// Pending-link endpoint ids already reported as dangling (warn once).
     warned: HashSet<String>,
+    /// The dispatching member's table, stashed strictly around a C `dispatch_isr`
+    /// so a firmware-initiated transfer can build the peer's [`MemberCtx`] (a C
+    /// stack frame cannot carry a Rust borrow). `None` outside that window — a
+    /// transfer then answers as a floating bus.
+    dispatch_table: Option<*mut StateTable>,
 }
 
 impl DuplexRouter {
@@ -113,13 +131,19 @@ impl DuplexRouter {
 
     /// Run a synchronous transfer: clone the linked peer's `Rc` and drop the router
     /// borrow **before** the upcall, so a nested transfer may legally re-enter (a bus
-    /// bridge peer forwarding onward), then re-borrow to buffer the exchange. Returns
+    /// bridge peer forwarding onward), then re-borrow to buffer the exchange. The
+    /// peer's [`MemberCtx`] is built here from the initiator's table borrow. Returns
     /// `None` for an unlinked or unknown endpoint.
     ///
     /// A true cycle — a peer transferring back onto the same peer while its own
     /// `RefCell` is borrowed — panics on that `RefCell`; that is a wiring bug by
     /// construction.
-    pub(crate) fn transfer(&self, handle: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn transfer(
+        &self,
+        handle: DuplexHandle,
+        tx: &[u8],
+        st: &mut StateTable,
+    ) -> Option<Vec<u8>> {
         let peer = {
             let inner = self.inner.borrow();
             match inner.links.get(handle.0) {
@@ -127,7 +151,10 @@ impl DuplexRouter {
                 _ => return None,
             }
         };
-        let rx = peer.borrow_mut().transfer(tx);
+        let rx = {
+            let mut ctx = MemberCtx::new(st, self);
+            peer.borrow_mut().transfer(tx, &mut ctx)
+        };
         self.inner
             .borrow_mut()
             .transactions
@@ -135,13 +162,43 @@ impl DuplexRouter {
         Some(rx)
     }
 
-    /// Drain the completed transactions as `(endpoint_id, tx, rx)`, in transfer order.
-    pub(crate) fn drain(&self) -> Vec<(String, Vec<u8>, Vec<u8>)> {
-        let mut inner = self.inner.borrow_mut();
-        let txns = std::mem::take(&mut inner.transactions);
-        txns.into_iter()
-            .map(|(h, tx, rx)| (inner.ids[h.0].clone(), tx, rx))
-            .collect()
+    /// Stash the dispatching member's table for the duration of a C `dispatch_isr`
+    /// (cleared with [`clear_dispatch_table`](Self::clear_dispatch_table)); a
+    /// firmware SPI upcall lands in [`transfer_from_dispatch`](Self::transfer_from_dispatch).
+    pub(crate) fn set_dispatch_table(&self, st: *mut StateTable) {
+        self.inner.borrow_mut().dispatch_table = Some(st);
+    }
+
+    pub(crate) fn clear_dispatch_table(&self) {
+        self.inner.borrow_mut().dispatch_table = None;
+    }
+
+    /// A firmware-initiated transfer (the C SPI upcall path): rematerialize the
+    /// stashed dispatch table and forward to [`transfer`](Self::transfer). No stash
+    /// (firmware executing outside a dispatch window, e.g. `start`) = a floating
+    /// bus, `None`.
+    pub(crate) fn transfer_from_dispatch(&self, handle: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
+        let st_ptr = self.inner.borrow().dispatch_table?;
+        // SAFETY: stashed by the dispatching member from its own live `&mut
+        // StateTable` strictly around the C dispatch, during which that borrow is
+        // dormant (no Rust frame touches it until the dispatch returns); single-
+        // threaded, and no peer can re-enter here (none can call back into firmware
+        // C), so only one `&mut` derived from the stash is ever live.
+        let st = unsafe { &mut *st_ptr };
+        self.transfer(handle, tx, st)
+    }
+
+    /// Drain the completed transactions as `(handle, tx, rx)`, in transfer order —
+    /// handles, not id strings, so the engine's per-step record pass stays off the
+    /// string path (resolve via [`id_of`](Self::id_of) on the cold path only).
+    pub(crate) fn drain(&self) -> Vec<(DuplexHandle, Vec<u8>, Vec<u8>)> {
+        std::mem::take(&mut self.inner.borrow_mut().transactions)
+    }
+
+    /// A declared endpoint's id string (`None` for an unknown handle). Cold path:
+    /// the engine calls this once per endpoint to intern its `:tx`/`:rx` entries.
+    pub(crate) fn id_of(&self, handle: DuplexHandle) -> Option<String> {
+        self.inner.borrow().ids.get(handle.0).cloned()
     }
 
     /// Endpoint ids with a peer still waiting on a never-declared endpoint (a dangling
@@ -171,7 +228,7 @@ mod tests {
     }
 
     impl DuplexPeer for RecordingPeer {
-        fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
+        fn transfer(&mut self, tx: &[u8], _ctx: &mut MemberCtx) -> Vec<u8> {
             self.seen.push(tx.to_vec());
             self.resp.clone()
         }
@@ -183,6 +240,11 @@ mod tests {
             resp,
             seen: Vec::new(),
         }))
+    }
+
+    /// Transfer against a throwaway table (peers here never touch it).
+    fn xfer(r: &DuplexRouter, h: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
+        r.transfer(h, tx, &mut StateTable::new())
     }
 
     #[test]
@@ -203,12 +265,13 @@ mod tests {
         let h = r.declare("spi:enc:cs");
         r.link("spi:enc:cs", p.clone());
 
-        let rx = r.transfer(h, &[0xFF, 0xFF]);
+        let rx = xfer(&r, h, &[0xFF, 0xFF]);
         assert_eq!(rx, Some(vec![0x90, 0x00])); // synchronous response
         assert_eq!(p.borrow().seen, vec![vec![0xFF, 0xFF]]); // peer saw the tx
 
         let drained = r.drain();
-        assert_eq!(drained, vec![("spi:enc:cs".to_string(), vec![0xFF, 0xFF], vec![0x90, 0x00])]);
+        assert_eq!(drained, vec![(h, vec![0xFF, 0xFF], vec![0x90, 0x00])]);
+        assert_eq!(r.id_of(h).as_deref(), Some("spi:enc:cs")); // cold-path resolution
         assert!(r.drain().is_empty()); // drained once
     }
 
@@ -216,8 +279,8 @@ mod tests {
     fn unlinked_or_unknown_endpoint_transfers_to_none() {
         let r = DuplexRouter::new();
         let h = r.declare("spi:enc:cs"); // declared but no peer
-        assert_eq!(r.transfer(h, &[0x00]), None);
-        assert_eq!(r.transfer(DuplexHandle(99), &[0x00]), None); // unknown handle
+        assert_eq!(xfer(&r, h, &[0x00]), None);
+        assert_eq!(xfer(&r, DuplexHandle(99), &[0x00]), None); // unknown handle
         assert!(r.drain().is_empty()); // nothing buffered
     }
 
@@ -229,7 +292,7 @@ mod tests {
         assert_eq!(r.handle_of("spi:enc:cs"), None);
         // Declaring the endpoint attaches the pending peer.
         let h = r.declare("spi:enc:cs");
-        assert_eq!(r.transfer(h, &[0xAA]), Some(vec![0x12]));
+        assert_eq!(xfer(&r, h, &[0xAA]), Some(vec![0x12]));
     }
 
     #[test]
@@ -245,31 +308,24 @@ mod tests {
 
     #[test]
     fn nested_transfer_through_a_bridge_peer_is_legal() {
-        // A bridge peer forwards its transfer onto a second endpoint on the same
-        // router — legal because `transfer` drops its borrow before the upcall.
+        // A bridge peer forwards its transfer onto a second endpoint through its
+        // ctx — legal because `transfer` drops the router borrow before the upcall.
         let r = DuplexRouter::new();
         let back = r.declare("spi:back:cs");
         r.link("spi:back:cs", peer(vec![0xBE, 0xEF]));
 
         struct Bridge {
-            router: DuplexRouter,
             onward: DuplexHandle,
         }
         impl DuplexPeer for Bridge {
-            fn transfer(&mut self, tx: &[u8]) -> Vec<u8> {
-                self.router.transfer(self.onward, tx).unwrap_or_default()
+            fn transfer(&mut self, tx: &[u8], ctx: &mut MemberCtx) -> Vec<u8> {
+                ctx.duplex_transfer(self.onward, tx).unwrap_or_default()
             }
         }
         let front = r.declare("spi:front:cs");
-        r.link(
-            "spi:front:cs",
-            Rc::new(RefCell::new(Bridge {
-                router: r.clone(),
-                onward: back,
-            })),
-        );
+        r.link("spi:front:cs", Rc::new(RefCell::new(Bridge { onward: back })));
 
-        assert_eq!(r.transfer(front, &[0x01]), Some(vec![0xBE, 0xEF]));
+        assert_eq!(xfer(&r, front, &[0x01]), Some(vec![0xBE, 0xEF]));
         // Both legs buffered (front then back — front's push runs after the nested one).
         let drained = r.drain();
         assert_eq!(drained.len(), 2);

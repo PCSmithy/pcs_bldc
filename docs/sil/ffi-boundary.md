@@ -10,9 +10,9 @@ introspection** — there are **no sim-specific getter/setter functions in the
 firmware**. That introspection is the substrate for the framework's **State
 Table**; data movement between firmware and models is expressed as routes over
 that table (see [`state-route-tables.md`](state-route-tables.md)). The only
-hand-written C surface is a tiny **control ABI** (lifecycle + tick advance),
-plus a small set of **C→Rust upcalls** the sim HW layer uses to register
-interrupts (D8, §6). Fast-mode parallelism is process-level (`pytest -n`).
+hand-written C surface is a tiny **control ABI** (hook installation, lifecycle,
+timebase advance, ISR dispatch), plus a small set of **C→Rust upcalls** the sim
+HW layer uses to register interrupts (D8, §6). Fast-mode parallelism is process-level (`pytest -n`).
 
 ---
 
@@ -52,27 +52,41 @@ carry the decision.
 
 ## 3. The control ABI (the only hand-written C surface)
 
-Lifecycle + the D1 advance. This is **control, not data** — you cannot "advance
-the scheduler" by poking a variable, so these stay functions. `advance_tick`
-internally swaps into the firmware fibers and returns when the firmware yields to
-quiescence (D1), so Rust sees a plain synchronous call and the fiber machinery
-stays hidden in the port layer.
+Lifecycle + the per-step advance. This is **control, not data** — you cannot
+"advance the scheduler" by poking a variable, so these stay functions.
+`dispatch_isr` internally swaps into the firmware fibers and returns when the
+firmware yields to quiescence (D1), so Rust sees a plain synchronous call and the
+fiber machinery stays hidden in the port layer.
 
 ```c
-// sil_fw.h — the entire stable Rust<->C surface
-bool sil_fw_start(void);        // HW init + create tasks + run scheduler to first quiescence
-void sil_fw_advance_tick(void); // advance one tick; return at quiescence (D1)
+// sil_fw.h — the stable Rust<->C surface
+void sil_fw_setHooks(const SIL_ports_hooks_S *hooks);  // port seam, BEFORE start
+void sil_fw_setIrqHooks(const SIL_irq_hooks_S *hooks); // interrupt seam, BEFORE start
+bool sil_fw_start(void);                        // HW init + tasks + scheduler to first quiescence
+void sil_fw_advance_time(uint32_t elapsed_us);  // move the hardware timebase; runs no firmware
+bool sil_fw_dispatch_isr(SIL_irq_handler_F h);  // run one handler in the ISR bracket (D8)
 void sil_fw_shutdown(void);
 ```
 
+The two installers gate execution rather than decorate it: with no interrupt
+hooks installed nothing registers a handler, so nothing is ever due and no
+firmware advances. Both are called before `sil_fw_start`, both copy the struct,
+and both are null-safe on the C side, so a hookless standalone or Unity run
+behaves exactly as it did before the seam existed.
+
+Firmware execution is entirely interrupt-driven, the kernel tick included: the
+port registers its systick with the framework's interrupt table at scheduler
+start ([`sim-interrupts.md`](sim-interrupts.md)) and it arrives back through
+`sil_fw_dispatch_isr` like any other handler.
+
 `sil_fw_start` returns `false` on init/task-creation failure (the framework
 reports it — the firmware never calls `Error_Handler` in SIL). **Pacing is the
-driver's choice:** because the driver *calls* `sil_fw_advance_tick` (rather than
-the port running its own tick loop), realtime-vs-fast is just whether the caller
-paces to wall-clock or runs flat out — the firmware exposes only the per-tick
-primitive. There are **no sim-specific data functions** beyond this; the firmware
-is otherwise unaware it is being simulated. (Implemented + driven by a stand-in C
-loop today in `sw/fw/src/main.c`; Phase 2 has Rust drive the same three calls.)
+driver's choice:** because the driver *drives* the step (rather than the port
+running its own tick loop), realtime-vs-fast is just whether the caller paces to
+wall-clock or runs flat out — the firmware exposes only the per-step
+primitives. There are **no sim-specific data functions** beyond this; the firmware
+is otherwise unaware it is being simulated. (The Rust framework is the driver;
+`sw/fw/src/main.c`'s SIM `main()` is a boot smoke check only.)
 
 ## 4. DWARF introspection — the State Table substrate
 
@@ -115,7 +129,7 @@ The boundary is mostly Rust→C (the control ABI, §3) plus direct memory access
 (§4). One direction goes the other way: **C→Rust upcalls**, used by the
 simulated-interrupt model (D8, [`sim-interrupts.md`](sim-interrupts.md)) so the
 sim HW-layer drivers can register interrupts with the framework
-(`sil_irq_register_oneshot(&handler, delay, prio)`, etc.).
+(`SIL_irq_registerOneShot(handler, delay_us, priority)`, etc.).
 
 - **Mechanism:** at init, Rust passes C a struct of `extern "C"` function
   pointers; the sim drivers call through it. (No global function-pointer
@@ -142,12 +156,12 @@ sim HW-layer drivers can register interrupts with the framework
 ## 8. Build integration
 
 - CMake gains a native **SHARED** firmware target (`-fPIC`, default-hidden
-  visibility with the ~3 `sil_*` ABI functions exported). Globals need no
+  visibility with the six `sil_fw_*` ABI functions exported). Globals need no
   export — DWARF/symtab carries them regardless.
 - Rust locates the built artifact by path (decoupled builds in dev; CI chains
   `tools/build_native.sh` → cargo). A `build.rs` can optionally drive/locate
   the firmware build.
-- Binding generation: the ~3 ABI functions are hand-declared (trivial). No
+- Binding generation: the six ABI functions are hand-declared (trivial). No
   data API to bind — data is all DWARF-driven.
 
 ## 9. Portability

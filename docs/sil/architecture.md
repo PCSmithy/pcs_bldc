@@ -31,7 +31,7 @@ white-box access to firmware state, in two modes:
                               │  │    ROUTE TABLE    │  │  src→dst transport each tick
                               │  └───────────────────┘  │
                               └────────────┬────────────┘
-        control ABI (start / advance_tick) │  direct memory R/W via DWARF + ASLR slide
+  control ABI (start / advance_time / dispatch_isr) │  direct memory R/W via DWARF
                                            ▼  (NO sim getters/setters in firmware)
            ┌─────────────── native firmware (BUILD_TARGET_SIM) ──────────────────┐
            │  app · dev · io   (mode FSM, control, estimator, IO, USB)   in SIM   │
@@ -92,7 +92,8 @@ narrow execution seam the member drives *around each tick*:
 
 ```rust
 pub(crate) trait Backend {
-    fn advance_tick(&self);                    // let firmware run one tick of sim time
+    fn advance_time(&self, elapsed_us: u64);   // move the firmware's hardware timebase
+    fn dispatch_isr(&self, handler: usize) -> bool; // run one handler in the ISR bracket
     fn read_cvar(&self, path: &str) -> Value;  // white-box read
     fn write_cvar(&self, path: &str, v: &Value); // white-box write / injection
     // + the port registration seam (defaults to no-ops)
@@ -202,13 +203,13 @@ members ever change the trust model).
 the internal, crate-private `Backend` seam (§3.2) — which demotes from "the
 firmware seam" to internal plumbing behind the member. It is constructed with an
 explicit instance **`name`** (not derived from the DLL — two boards may run the
-same image as distinct members) and a firmware tick period; its `advance`
-accumulates sim time and, per elapsed firmware-tick period, **flushes** the *fresh*
-(route-/test-written) `cvar`s in its namespace into firmware memory, runs one
-`advance_tick`, then **sweeps** its whole cvar leaf list back out into the table
+same image as distinct members); its `advance` moves the firmware's timebase,
+**flushes** the *fresh* (route-/test-written) `cvar`s in its namespace into
+firmware memory, dispatches every interrupt due at this sim time, then
+**sweeps** its whole cvar leaf list back out into the table
 (`record_mirror`). The cvar mirror is **automatic** — the member enumerates the
 firmware's traceable namespace from DWARF at enable (minus a built-in
-array-size/pointer exclusion policy; `exclude`/`include` tune it) and mirrors it
+array-size/pointer exclusion policy; skip/register calls tune it) and mirrors it
 with **no per-signal declarations** (the D12 end-state). The flush is sparse (a
 State Table **dirty set** tracks command writes; writes are one-shot,
 last-writer-wins). It is the **only** thing that touches firmware memory — routes never do
@@ -225,8 +226,9 @@ over the control ABI (`sil_fw_setHooks`, before `sil_fw_start`; the null-safe
 unchanged). Ports carry **native-format** values (volts stay volts; the driver
 owns conversion to its C representation), and their I/O is **cache-mediated**
 exactly like the cvar mirror — the member fills every port's input cache
-from the table before each `advance_tick` and drains the port-write buffer back
-into the table after it, so C never touches the State Table mid-tick. The C side
+from the table before the step's handlers dispatch and drains the port-write
+buffer back into the table after them, so C never touches the State Table
+mid-step. The C side
 names only `{sig_type, local, unit}`; the member prefixes its instance name. The
 sim `HW_ADC` (one input port per enabled input, volts→counts in the driver,
 synthetic-ramp fallback when undriven) is the first user. See
@@ -279,8 +281,8 @@ latency model). Each step:
    zero added latency), then advance the member. This is **table-only**: routes move
    values between entries and never touch a backend; the firmware member flushes the
    fresh (route-written) `cvar` destinations into firmware memory and sweeps its
-   whole cvar mirror back out inside its own advance (`sil_fw_advance_tick` runs to
-   quiescence — race-free, the firmware is quiescent here, D1).
+   whole cvar mirror back out inside its own advance (each `sil_fw_dispatch_isr`
+   runs to quiescence — race-free, the firmware is quiescent here, D1).
 4. Append changed signals to the State Table historian (change-logged,
    per-signal timeseries — D12); run test asserts/injection (ad-hoc State
    Table reads/writes). The `Engine` holds **no backend handle** — it touches

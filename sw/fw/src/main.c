@@ -380,8 +380,8 @@ static bool prvCreateTasks(void)
 #include "sil_fw.h"
 
 // Native fiber-port primitives (provided by the cooperative fiber port).
-extern void vSilAdvanceTick(void);
 extern void vPortYieldToScheduler(void);
+extern BaseType_t xSilDispatchIsr(void (*pxHandler)(void));
 
 // Quiescence handoff: when every task is blocked the idle task runs and hands
 // control back to the driver (framework) fiber.
@@ -390,7 +390,7 @@ void vApplicationIdleHook(void)
     vPortYieldToScheduler();
 }
 
-// --- SIL control ABI (D2) --------------------------------------------------
+// --- SIL control ABI (sil_fw.h) --------------------------------------------
 // The framework drives these; pacing (fast vs realtime) is the driver's choice.
 // The bring-up path is identical to the embedded main() below (minus HAL_Init):
 // the SAME HW/app init and the SAME four tasks. The fiber port runs the
@@ -399,6 +399,11 @@ void vApplicationIdleHook(void)
 void sil_fw_setHooks(const SIL_ports_hooks_S * const hooks)
 {
     SIL_ports_setHooks(hooks);
+}
+
+void sil_fw_setIrqHooks(const SIL_irq_hooks_S * const hooks)
+{
+    SIL_irq_setHooks(hooks);
 }
 
 bool sil_fw_start(void)
@@ -414,11 +419,16 @@ bool sil_fw_start(void)
     return ok;
 }
 
-void sil_fw_advance_tick(void)
+void sil_fw_advance_time(uint32_t elapsed_us)
 {
-    // Hardware time first, so tasks waking this tick read a fresh timebase.
-    HW_TIM_advanceTime(1000000U / configTICK_RATE_HZ);
-    vSilAdvanceTick();
+    // Called every engine step BEFORE any interrupt is dispatched, so a handler
+    // (the kernel tick included) reads the timebase of the step it runs in.
+    HW_TIM_advanceTime(elapsed_us);
+}
+
+bool sil_fw_dispatch_isr(SIL_irq_handler_F handler)
+{
+    return (xSilDispatchIsr(handler) != pdFALSE);
 }
 
 void sil_fw_shutdown(void)
@@ -454,51 +464,16 @@ int main(void)
 #endif
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-// Standalone SIL smoke driver over the control ABI (sil_fw.h). Unused inside the
-// DLL (the Rust framework drives the same three calls and owns pacing); this
-// loop is a temporary in-process stand-in. It runs the SAME bring-up path as
-// sil_fw_start — no duplicated init — and watches the ADC sim ramp advance
-// tick-over-tick to confirm the real tasks run.
+// Standalone boot smoke check over the control ABI (sil_fw.h). Unused inside the
+// DLL — the Rust framework is the driver. It boots and tears down, nothing more:
+// with no framework hooks installed nothing registers an interrupt, so no kernel
+// tick fires and the firmware cannot advance (docs/sil/sim-interrupts.md).
 int main(void)
 {
     if (!sil_fw_start())
     {
         return 1;
     }
-
-    // Find the first enabled ADC (channel, input) to watch the sim ramp on.
-    HW_ADC_channels_E watchCh = (HW_ADC_channels_E)0;
-    uint8_t watchIn = 0U;
-    for (uint32_t ch = 0U; ch < (uint32_t)HW_ADC_CHANNEL_COUNT; ch++)
-    {
-        bool found = false;
-        for (uint8_t in = 0U; in < HW_ADC_INPUTS_PER_CHANNEL; in++)
-        {
-            uint32_t tmp = 0U;
-            if (HW_ADC_getCount((HW_ADC_channels_E)ch, in, &tmp))
-            {
-                watchCh = (HW_ADC_channels_E)ch;
-                watchIn = in;
-                found = true;
-                break;
-            }
-        }
-        if (found)
-        {
-            break;
-        }
-    }
-
-    for (uint32_t tick = 1U; tick <= 20U; tick++)
-    {
-        sil_fw_advance_tick();
-
-        uint32_t counts = 0U;
-        (void)HW_ADC_getCount(watchCh, watchIn, &counts);
-        printf("tick %2u  adc[ch%u,in%u]=%u\n",
-               tick, (unsigned)watchCh, watchIn, counts);
-    }
-
     sil_fw_shutdown();
     return 0;
 }

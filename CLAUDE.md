@@ -245,13 +245,14 @@ sufficient to make the tooling aware of a new topic.
 - 173 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
   with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs). The intentional defect baseline is
-  **30**: the 22 `sys~` anchors; 7 reserved `fw~` specs —
-  `fw~hal_adc_003`/`fw~hal_adc_008` (timer-triggered injected + async
-  completion) + `fw~hal_tim_006` (TRGO) for the interrupt-driven-control
-  sprint, `fw~mc_007` (gesture map) + `fw~mc_010` (V/f) future app
-  methods, `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
-  pending); and `app~arch_001` (implemented; its test needs the live
-  Tauri core). Anything else = investigate. Both `[test->]` and
+  **28**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`
+  (gesture map) + `fw~mc_010` (V/f) future app methods,
+  `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
+  pending); `app~arch_001` (implemented; its test needs the live
+  Tauri core); and `fw~hal_opamp_002` (implemented, test-uncovered —
+  its acceptance criterion is an OPAMP output read back through an ADC,
+  and the sim has no internal OPAMP→ADC path to route it; see
+  `docs/sil/backlog.md`). Anything else = investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
 
 ### Decisions explicitly deferred (will become specs when made)
@@ -293,6 +294,7 @@ tools/build_native.sh                # native firmware build (default: sw/fw) + 
 tools/build_native.sh --clean        # wipe build dir first
 tools/build_arm.sh                   # cross-compile firmware (.elf/.bin/.hex)
 tools/build_native.sh sw/lib/c       # standalone lib-only native build (cross-cutting libs + tests)
+tools/run_sil.sh                     # SIL: release firmware DLL + Rust workspace tests + perf report
 ```
 
 Default source dir for both scripts is `sw/fw` (the firmware project,
@@ -354,23 +356,28 @@ if (!initSuccess) Error_Handler();
 All `HW_*_init` / `IO_*_init` etc. functions return `bool`; `main.c` is
 the single place that calls `Error_Handler` (which is itself defined in
 `main.c`, always part of the executable's link). Library code never
-calls `Error_Handler` directly. See
-`memory/feedback_init_returns_bool.md`.
+calls `Error_Handler` directly — a library that aborts on its own robs
+the integrator of the choice, and it cannot link standalone or under
+Unity, where no `Error_Handler` exists.
 
 ### Channelization pattern (canonical idiom)
 
 Every HW-layer (and most IO-layer) module is split into two halves:
 
-**Library side — `sw/lib/c/shared/hw/<Module>/<target>/`** (one subdir
-per target: `stm32g4/`, `sim/`, ...):
-- `HW_<Module>.h` defines `HW_<Module>_channelConfig_S` (or `_config_S`)
-  with target-specific fields, plus `bool HW_<Module>_init(...)`.
-- `HW_<Module>.c` implements `HW_<Module>_init` against the target.
-- The header `#include "HW_<Module>_<channels|config>.h"` — the
-  consumer-extension seam.
+**Library side — `sw/lib/c/shared/hw/<Module>/`**, with one subdir per
+target (`stm32g4/`, `sim/`, ...):
+- `HW_<Module>.h` at the module root is the one header consumers
+  include: shared types, `HW_<Module>_config_S`, and every API
+  declaration. It `#include`s `HW_<Module>_<channels|config>.h` (the
+  consumer-extension seam) and `HW_<Module>_target.h`.
+- `<target>/HW_<Module>_target.h` holds only what genuinely differs per
+  target: `HW_<Module>_channelConfig_S` (or `_config_S`) and any
+  target-only declaration. Never included directly.
+- `<target>/HW_<Module>.c` implements the API against the target.
 - All target subdirs define a library named `hw_<Module>` (lowercase
-  `hw_`, original module-case name); `<Module>/CMakeLists.txt` does the
-  conditional `add_subdirectory(stm32g4|sim)`.
+  `hw_`, original module-case name) exposing both `.` and `..` as
+  include dirs; `<Module>/CMakeLists.txt` does the conditional
+  `add_subdirectory(stm32g4|sim)`.
 
 **Project side — `sw/fw/src/hw/<Module>/`**:
 - `HW_<Module>_channels.h` (multi-instance, e.g. ADC) or
@@ -612,7 +619,7 @@ sites.
 
 | Component   | Role                                                    | Datasheet in repo |
 |-------------|---------------------------------------------------------|-------------------|
-| STM32G431VB | MCU (Cortex-M4F @170MHz, 128 KB flash / 32 KB RAM)      | Yes               |
+| STM32G431VB | MCU (Cortex-M4F @144 MHz, 170 MHz max; 128 KB flash / 32 KB RAM) | Yes     |
 | STSPIN32G4  | 3-phase gate driver (integrated)                        | Yes               |
 | CYPD3177    | USB-PD sink controller                                  | Yes               |
 | LMR50410    | 5V buck converter                                       | Yes               |

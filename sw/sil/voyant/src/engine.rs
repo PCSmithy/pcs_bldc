@@ -9,7 +9,7 @@
 //! one tick of separation — a **delayed (latency-1) route** is that explicit ZOH cut,
 //! while forward (zero-latency) dataflow has no added latency. Each [`step`](Engine::step):
 //!
-//! 1. **Advance sim time** — `now += tick_period` (monotonic, wall-clock-free, D7/D9);
+//! 1. **Advance sim time** — `now += grid_us` (monotonic, wall-clock-free);
 //!    [`StateTable::set_time`] stamps every record this tick.
 //! 2. **Validate the wiring if dirty** (below); a cached invalid verdict re-raises
 //!    each step until fixed.
@@ -18,8 +18,13 @@
 //!    end-of-previous-tick value.
 //! 4. **Each enabled member, in registration order:** re-resolve the zero-latency
 //!    routes in topo order with fresh reads ([`RouteTable::propagate_zero_latency`]) —
-//!    a chain `a→b→c` resolves this same tick — then `member.advance(dt, st)` (a
-//!    firmware member also flushes driven cvars, ticks, and samples cvars back out).
+//!    a chain `a→b→c` resolves this same tick — then, **if its
+//!    [`Cadence`](crate::member::Cadence) says it is due**, `member.advance(dt, st)`
+//!    with `dt` = elapsed since its previous advance (a firmware member also flushes
+//!    driven cvars, ticks, and samples cvars back out). Propagation reports changed
+//!    destinations into per-member input-dirty bits (`OnInputChange`'s due test); an
+//!    `OnDemand` member is never due — it is propagated for like any other, but only
+//!    its own bus transfers advance it.
 //!
 //! Re-running the whole zero-latency DAG per member is semantically identical to
 //! per-member resolution (routes are pure copies, `record` dedups) and far simpler;
@@ -45,12 +50,13 @@
 
 use crate::duplex::{tx_rx_ids, DuplexHandle, DuplexPeer, DuplexRouter};
 use crate::log::{LogEntry, LogLevel};
-use crate::member::{Member, MemberCtx};
+use crate::member::{Cadence, Member, MemberCtx};
 use crate::route::{RouteError, RouteTable};
 use crate::signal::{is_duplex_bus, SignalId, Value};
 use crate::state_table::{AccessError, StateTable};
 use crate::unit::UnitError;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
 
@@ -64,6 +70,13 @@ struct MemberEntry {
     member: Rc<RefCell<dyn Member>>,
     name: String,
     enabled: bool,
+    /// Sim time of this member's last advance — the `dt` baseline for the
+    /// non-`EveryStep` cadences. Reset on (re-)enable: a disabled gap is frozen
+    /// time, never integrated through.
+    last_advance_us: u64,
+    /// Next absolute due time for [`Cadence::Periodic`] (drift-free; unused
+    /// otherwise).
+    next_due_us: u64,
 }
 
 /// Errors from engine setup and stepping.
@@ -86,7 +99,9 @@ pub struct Engine {
     /// The shared duplex router any initiating member (firmware or model) couples
     /// through; the engine drains + records its transactions each `step`.
     duplex: DuplexRouter,
-    tick_period_us: u64,
+    /// Sim time advanced per step — the engine **grid** (an implementation
+    /// detail of time resolution, never part of any member's identity).
+    grid_us: u64,
     now_us: u64,
     /// Wiring changed since the last validation → revalidate at the next `step`.
     dirty: bool,
@@ -95,32 +110,47 @@ pub struct Engine {
     verdict: Option<RouteError>,
     /// Cached enabled zero-latency route order (topological), rebuilt on validate.
     zl_order: Vec<usize>,
+    /// Per-member input-dirty bit (indexed like `members`): a route or scenario
+    /// write changed a signal in that member's namespace since its last advance.
+    /// [`Cadence::OnInputChange`]'s due test; every advance consumes it.
+    inputs_dirty: Vec<bool>,
+    /// Member name (= signal `<source>` namespace) → `members` index, for the
+    /// input-dirty mapping. The table stays dumb — the engine owns this.
+    member_idx: HashMap<String, usize>,
+    /// Per-endpoint interned `(tx, rx)` dense table indices, keyed by
+    /// [`DuplexHandle`] index — resolved once, so the per-step transaction drain
+    /// never parses an id (`None` = not yet resolved; indices are append-only in
+    /// the engine's one table, so a `Some` never goes stale).
+    duplex_txrx: Vec<Option<(usize, usize)>>,
 }
 
 impl Engine {
-    /// A new engine advancing `tick_period_us` of sim time per [`step`](Self::step)
-    /// (e.g. 1000 for a 1 kHz cadence). Sim time starts at 0; the first `step`
-    /// records at `tick_period_us`.
-    pub fn new(tick_period_us: u64) -> Self {
+    /// A new engine advancing `grid_us` of sim time per [`step`](Self::step)
+    /// (e.g. 1000 for a 1 kHz grid). Sim time starts at 0; the first `step`
+    /// records at `grid_us`.
+    pub fn new(grid_us: u64) -> Self {
         Self {
             state: StateTable::new(),
             routes: RouteTable::new(),
             members: Vec::new(),
             duplex: DuplexRouter::new(),
-            tick_period_us,
+            grid_us,
             now_us: 0,
             dirty: true,
             verdict: None,
             zl_order: Vec::new(),
+            inputs_dirty: Vec::new(),
+            member_idx: HashMap::new(),
+            duplex_txrx: Vec::new(),
         }
     }
 
     /// A new engine with a caller-configured [`StateTable`] (retention / epsilon /
     /// log capacity).
-    pub fn with_state(tick_period_us: u64, state: StateTable) -> Self {
+    pub fn with_state(grid_us: u64, state: StateTable) -> Self {
         Self {
             state,
-            ..Self::new(tick_period_us)
+            ..Self::new(grid_us)
         }
     }
 
@@ -130,7 +160,7 @@ impl Engine {
     /// coerces to `Rc<RefCell<dyn DuplexPeer>>` for [`link_duplex`](Self::link_duplex)).
     /// Members **start enabled**: the engine calls
     /// [`Member::set_enabled(true)`](Member::set_enabled) now (where it registers its
-    /// signals) and caches the name. Advance order is registration order (D7) — a design
+    /// signals) and caches the name. Advance order is registration order — a design
     /// surface for forward flow. Marks the wiring dirty.
     ///
     /// The engine steps each member through `borrow_mut`; holding a `borrow_mut` on the
@@ -139,14 +169,35 @@ impl Engine {
     pub fn add_member<M: Member + 'static>(&mut self, member: M) -> Rc<RefCell<M>> {
         let rc = Rc::new(RefCell::new(member));
         let name = rc.borrow().name().to_string();
+        let cadence = rc.borrow().cadence();
+        assert!(
+            !self.member_idx.contains_key(&name),
+            "member name {name:?} is already registered; names are the signal <source> namespace and must be unique"
+        );
         rc.borrow_mut().set_enabled(true, &mut self.state);
+        self.member_idx.insert(name.clone(), self.members.len());
+        // Dirty at birth: the first scheduled advance always runs, so an
+        // OnInputChange member publishes its resting outputs (a sense chain's
+        // bias volts) even in a world where nothing ever drives it.
+        self.inputs_dirty.push(true);
         self.members.push(MemberEntry {
             member: rc.clone() as Rc<RefCell<dyn Member>>,
             name,
             enabled: true,
+            last_advance_us: self.now_us,
+            next_due_us: Self::first_due(cadence, self.now_us),
         });
         self.dirty = true;
         rc
+    }
+
+    /// The first [`Cadence::Periodic`] due time from `now` (0 for other cadences —
+    /// unused there).
+    fn first_due(cadence: Cadence, now_us: u64) -> u64 {
+        match cadence {
+            Cadence::Periodic { period_us } => now_us + period_us.max(1),
+            _ => 0,
+        }
     }
 
     /// Enable or disable a member by name. A disabled member's advance is skipped
@@ -154,8 +205,18 @@ impl Engine {
     /// [`Member::set_enabled(true)`](Member::set_enabled) idempotently. Returns
     /// whether the member was found; marks the wiring dirty when it was.
     pub fn set_member_enabled(&mut self, name: &str, on: bool) -> bool {
-        if let Some(entry) = self.members.iter_mut().find(|e| e.name == name) {
+        let now = self.now_us;
+        if let Some(i) = self.member_idx.get(name).copied() {
+            let entry = &mut self.members[i];
             entry.enabled = on;
+            if on {
+                // A disabled gap is frozen time: re-baseline rather than hand the
+                // next advance a dt spanning the gap. Inputs count as dirty again
+                // (the same "first advance always runs" rule as add_member).
+                entry.last_advance_us = now;
+                entry.next_due_us = Self::first_due(entry.member.borrow().cadence(), now);
+                self.inputs_dirty[i] = true;
+            }
             entry.member.borrow_mut().set_enabled(on, &mut self.state);
             self.dirty = true;
             true
@@ -232,12 +293,63 @@ impl Engine {
         }
         let handle = self.duplex.declare(endpoint_id);
         self.duplex.link(endpoint_id, peer);
-        // Register the `:tx` / `:rx` event entries (idempotent with a firmware declare).
+        // Register the `:tx` / `:rx` event entries (idempotent with a firmware
+        // declare) and intern their dense indices while the ids are in hand.
         let (tx_id, rx_id) =
             tx_rx_ids(sid.sig_type(), sid.source(), sid.name()).map_err(|e| bad(&e.to_string()))?;
-        let _ = self.state.register(tx_id, None);
-        let _ = self.state.register(rx_id, None);
+        let _ = self.state.register(tx_id.clone(), None);
+        let _ = self.state.register(rx_id.clone(), None);
+        if let (Some(ti), Some(ri)) =
+            (self.state.resolve_index(&tx_id), self.state.resolve_index(&rx_id))
+        {
+            self.intern_txrx(handle, (ti, ri));
+        }
         Ok(handle)
+    }
+
+    /// Store an endpoint's interned `(tx, rx)` indices under its handle.
+    fn intern_txrx(&mut self, handle: DuplexHandle, txrx: (usize, usize)) {
+        let i = handle.idx();
+        if self.duplex_txrx.len() <= i {
+            self.duplex_txrx.resize(i + 1, None);
+        }
+        self.duplex_txrx[i] = Some(txrx);
+    }
+
+    /// An endpoint's `(tx, rx)` dense indices, resolving + interning on first sight
+    /// (a firmware-declared endpoint registers its entries at the member's first
+    /// in-sync, before any transaction can drain). `None` — with a logged Warning —
+    /// for an endpoint whose entries never registered.
+    fn resolve_txrx(&mut self, handle: DuplexHandle) -> Option<(usize, usize)> {
+        if let Some(&Some(p)) = self.duplex_txrx.get(handle.idx()) {
+            return Some(p);
+        }
+        let fail = |state: &mut StateTable, why: String| {
+            state.log(LogLevel::Warning, "duplex", why);
+            None
+        };
+        let Some(id) = self.duplex.id_of(handle) else {
+            return fail(&mut self.state, format!("duplex handle {handle:?} is unknown"));
+        };
+        let sid = match SignalId::parse(&id) {
+            Ok(s) => s,
+            Err(e) => {
+                return fail(&mut self.state, format!("duplex endpoint {id:?} is not a valid id: {e}"))
+            }
+        };
+        let Ok((tx_id, rx_id)) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name()) else {
+            return fail(&mut self.state, format!("duplex endpoint {id:?}: tx/rx id derivation failed"));
+        };
+        match (self.state.resolve_index(&tx_id), self.state.resolve_index(&rx_id)) {
+            (Some(ti), Some(ri)) => {
+                self.intern_txrx(handle, (ti, ri));
+                Some((ti, ri))
+            }
+            _ => fail(
+                &mut self.state,
+                format!("duplex endpoint {id:?}: :tx/:rx entries never registered"),
+            ),
+        }
     }
 
     /// Advance the whole system one tick (the canonical order — see the module
@@ -245,8 +357,8 @@ impl Engine {
     /// [`EngineError::Route`] if the wiring is invalid (raised at this step, and
     /// re-raised each step until fixed).
     pub fn step(&mut self) -> Result<(), EngineError> {
-        // 1. Sim time advances (monotonic, deterministic — no wall-clock, D7/D9).
-        self.now_us += self.tick_period_us;
+        // 1. Sim time advances (monotonic, deterministic — no wall-clock).
+        self.now_us += self.grid_us;
         self.state.set_time(self.now_us);
 
         // A duplex link that still names an undeclared endpoint is dangling — warn
@@ -276,57 +388,114 @@ impl Engine {
         }
 
         // 3. Delayed routes: previous-tick values, before any member advances.
-        self.routes.propagate_delayed(&mut self.state)?;
+        //    Changed destinations feed the per-member input-dirty bits.
+        {
+            let dirt = &mut self.inputs_dirty;
+            let map = &self.member_idx;
+            self.routes.propagate_delayed(&mut self.state, &mut |dst| {
+                if let Some(&j) = map.get(dst.source()) {
+                    dirt[j] = true;
+                }
+            })?;
+        }
 
         // 4. Each enabled member, in registration order: re-resolve the zero-latency
-        //    DAG (topo order, fresh reads), then advance. `routes`, `state`, and
-        //    `zl_order` are disjoint from `members`, so these borrows coexist with
-        //    the iterator. Propagation is table-only; the member syncs its own
-        //    firmware mirrors.
-        let dt = self.tick_period_us;
-        for entry in &self.members {
-            if !entry.enabled {
+        //    DAG (topo order, fresh reads) — marking input-dirty bits — then advance
+        //    if the member's cadence says it is due (see module docs item 4).
+        //    Indexed rather than iterated so the disjoint-field borrows of routes /
+        //    state / zl_order coexist with the per-member borrow. Propagation is
+        //    table-only; the member syncs its own firmware mirrors.
+        let now = self.now_us;
+        for i in 0..self.members.len() {
+            if !self.members[i].enabled {
                 continue;
             }
-            self.routes
-                .propagate_zero_latency(&mut self.state, &self.zl_order)?;
+            let cadence = self.members[i].member.borrow().cadence();
+            {
+                let dirt = &mut self.inputs_dirty;
+                let map = &self.member_idx;
+                self.routes.propagate_zero_latency(
+                    &mut self.state,
+                    &self.zl_order,
+                    &mut |dst| {
+                        if let Some(&j) = map.get(dst.source()) {
+                            dirt[j] = true;
+                        }
+                    },
+                )?;
+            }
+            let entry = &mut self.members[i];
+            let due = match cadence {
+                Cadence::EveryStep => true,
+                Cadence::Periodic { .. } => now >= entry.next_due_us,
+                Cadence::OnInputChange => self.inputs_dirty[i],
+                // Advanced only by its own bus transfers; propagation above still
+                // ran, so those transfers read fresh inputs.
+                Cadence::OnDemand => false,
+            };
+            if !due {
+                continue;
+            }
+            // dt = elapsed since the previous advance (the grid step for EveryStep on
+            // a healthy run; a disabled gap never leaks in, see set_member_enabled).
+            let dt = now - entry.last_advance_us;
+            entry.last_advance_us = now;
+            if let Cadence::Periodic { period_us } = cadence {
+                let period = period_us.max(1);
+                while entry.next_due_us <= now {
+                    entry.next_due_us += period;
+                }
+            }
+            let dirty = std::mem::replace(&mut self.inputs_dirty[i], false);
             let mut ctx = MemberCtx::new(&mut self.state, &self.duplex);
-            entry.member.borrow_mut().advance(dt, &mut ctx);
+            ctx.inputs_dirty = dirty;
+            self.members[i].member.borrow_mut().advance(dt, &mut ctx);
         }
 
         // 5. Drain the duplex router: force-record every exchange this tick as
         //    `<endpoint>:tx` / `:rx` event entries — identical for firmware- and
         //    model-initiated transfers. (Same-tick transactions share a timestamp;
-        //    finer event stamps arrive with the D8 interrupt work.)
+        //    finer event stamps arrive with the sub-tick grid work.)
         self.record_duplex_transactions();
         Ok(())
     }
 
     /// Drain the duplex router and force-record each `(endpoint, tx, rx)` exchange
-    /// into the endpoint's `:tx` / `:rx` event entries. Events are never deduped
-    /// (consecutive identical polls are distinct transactions).
+    /// into the endpoint's interned `:tx` / `:rx` event entries — no id parsing or
+    /// hashing per transaction. Events are never deduped (consecutive identical
+    /// polls are distinct transactions).
     fn record_duplex_transactions(&mut self) {
-        for (endpoint, tx, rx) in self.duplex.drain() {
-            let sid = match SignalId::parse(&endpoint) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.state.log(
-                        LogLevel::Warning,
-                        "duplex",
-                        format!("duplex endpoint {endpoint:?} is not a valid id: {e}"),
-                    );
-                    continue;
-                }
+        for (handle, tx, rx) in self.duplex.drain() {
+            let Some((ti, ri)) = self.resolve_txrx(handle) else {
+                continue; // resolve_txrx logged the wiring bug
             };
-            let (tx_id, rx_id) = tx_rx_ids(sid.sig_type(), sid.source(), sid.name())
-                .expect("a valid bus id yields valid tx/rx ids");
-            if let Err(e) = self.state.force_record(&tx_id, Value::Bytes(tx)) {
+            if let Err(e) = self.state.force_record_at(ti, Value::Bytes(tx)) {
                 self.state
-                    .log(LogLevel::Warning, "duplex", format!("duplex tx record {tx_id} failed: {e}"));
+                    .log(LogLevel::Warning, "duplex", format!("duplex tx record failed: {e}"));
             }
-            if let Err(e) = self.state.force_record(&rx_id, Value::Bytes(rx)) {
+            if let Err(e) = self.state.force_record_at(ri, Value::Bytes(rx)) {
                 self.state
-                    .log(LogLevel::Warning, "duplex", format!("duplex rx record {rx_id} failed: {e}"));
+                    .log(LogLevel::Warning, "duplex", format!("duplex rx record failed: {e}"));
+            }
+        }
+    }
+
+    /// Scenario-side duplex transfer: act as the initiator on `handle` (a bench
+    /// master exercising a peer between steps). Same synchronous exchange a member
+    /// runs via [`MemberCtx::duplex_transfer`]; the transaction is buffered and
+    /// force-recorded at the next [`step`](Self::step)'s drain.
+    pub fn duplex_transfer(&mut self, handle: DuplexHandle, tx: &[u8]) -> Option<Vec<u8>> {
+        self.duplex.transfer(handle, tx, &mut self.state)
+    }
+
+    /// Mirror every enabled member's outbound state into the table at the current sim
+    /// time ([`Member::mirror`]), advancing nothing. A scenario calls this before
+    /// asserting on a signal whose member mirrors on a cadence of its own.
+    pub fn mirror_now(&mut self) {
+        for entry in &self.members {
+            if entry.enabled {
+                let mut ctx = MemberCtx::new(&mut self.state, &self.duplex);
+                entry.member.borrow_mut().mirror(&mut ctx);
             }
         }
     }
@@ -336,9 +505,9 @@ impl Engine {
         self.now_us
     }
 
-    /// The tick period (microseconds).
-    pub fn tick_period_us(&self) -> u64 {
-        self.tick_period_us
+    /// The engine grid: sim time advanced per step (microseconds).
+    pub fn grid_us(&self) -> u64 {
+        self.grid_us
     }
 
     /// The State Table / historian, for assertions and inspection.
@@ -363,9 +532,14 @@ impl Engine {
 
     /// String-keyed table write. Delegates to [`StateTable::write`]. A driven `cvar`
     /// reaches firmware memory at the owning member's in-sync flush on the next
-    /// [`step`](Self::step) — not immediately.
+    /// [`step`](Self::step) — not immediately. A write into a member's namespace
+    /// marks that member input-dirty (a scenario write is an input event).
     pub fn write(&mut self, id: &str, value: impl Into<Value>) -> Result<(), AccessError> {
-        self.state.write(id, value)
+        self.state.write(id, value)?;
+        if let Some(&j) = id.split(':').nth(1).and_then(|src| self.member_idx.get(src)) {
+            self.inputs_dirty[j] = true;
+        }
+        Ok(())
     }
 
     /// String-keyed current-value read. Delegates to [`StateTable::read`].
@@ -398,6 +572,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::backend::{Backend, CvarEnumeration, FirmwareMember};
+    use crate::irq::{IrqKind, IrqOp, IrqRendezvous};
     use crate::member::{vsig_id, RampModel};
     use crate::signal::Value;
     use crate::state_table::TableError;
@@ -405,31 +580,57 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    /// Stand-in handler address for the kernel tick a firmware's port registers.
+    const MOCK_SYSTICK: usize = 0x5157;
+
     /// A pure-Rust [`Backend`] that records the order of its calls, so a test can
-    /// prove *when* in a step a route write vs `advance_tick` happens. Reads return
-    /// a stored value if written, else a `U32` of the tick count (a firmware-less
-    /// ramp for the sampling tests).
-    #[derive(Default)]
+    /// prove *when* in a step a route write vs the firmware's own execution happens.
+    /// Its "port" registers a periodic systick the way the real fiber port does, so a
+    /// member has something due each step; the tick is all the firmware it runs. Reads
+    /// return a stored value if written, else a `U32` of the tick count (a
+    /// firmware-less ramp for the sampling tests).
     struct MockBackend {
         log: RefCell<Vec<String>>,
         ticks: Cell<u32>,
         cvars: RefCell<HashMap<String, Value>>,
         leaves: Vec<String>,
+        irq: IrqRendezvous,
     }
 
     impl MockBackend {
-        fn with_leaves(leaves: &[&str]) -> Self {
+        /// A backend whose systick comes due every `period_us`, with no cvar leaves.
+        fn new(period_us: u64) -> Self {
+            let irq = IrqRendezvous::default();
+            irq.register(MOCK_SYSTICK, IrqKind::Periodic, period_us, 15);
+            Self {
+                log: RefCell::new(Vec::new()),
+                ticks: Cell::new(0),
+                cvars: RefCell::new(HashMap::new()),
+                leaves: Vec::new(),
+                irq,
+            }
+        }
+
+        fn with_leaves(period_us: u64, leaves: &[&str]) -> Self {
             Self {
                 leaves: leaves.iter().map(|s| (*s).to_string()).collect(),
-                ..Default::default()
+                ..Self::new(period_us)
             }
         }
     }
 
     impl Backend for MockBackend {
-        fn advance_tick(&self) {
+        fn advance_time(&self, _elapsed_us: u64) {}
+        fn dispatch_isr(&self, _handler: usize) -> bool {
             self.ticks.set(self.ticks.get() + 1);
-            self.log.borrow_mut().push("advance_tick".into());
+            self.log.borrow_mut().push("tick".into());
+            true
+        }
+        fn irq_register(&self, handler: usize, kind: IrqKind, rate: u64, priority: u8) -> i32 {
+            self.irq.register(handler, kind, rate, priority)
+        }
+        fn irq_ops_since(&self, from: usize) -> Vec<IrqOp> {
+            self.irq.ops_since(from)
         }
         fn read_cvar(&self, path: &str) -> Value {
             self.log.borrow_mut().push(format!("read:{path}"));
@@ -517,16 +718,16 @@ mod tests {
     }
 
     #[test]
-    fn step_flushes_driven_dest_before_advance_tick() {
+    fn step_flushes_driven_dest_before_the_firmware_runs() {
         // A model member's output routed to a firmware member's DRIVEN cvar must
-        // reach firmware memory BEFORE its advance_tick in the same step. Member
-        // order [model, firmware] makes it hold — the model records its vsig, the
-        // firmware member's pre-advance zero-latency pass records it into the cvar
-        // entry, and the firmware member flushes it.
-        let be = Rc::new(MockBackend::with_leaves(&["sensor_in"]));
+        // reach firmware memory BEFORE any of that firmware's code runs in the same
+        // step. Member order [model, firmware] makes it hold — the model records its
+        // vsig, the firmware member's pre-advance zero-latency pass records it into
+        // the cvar entry, and the firmware member flushes it at in-sync.
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["sensor_in"]));
         let mut eng = Engine::new(1_000);
         eng.add_member(RampModel::new("ramp", 1000.0, None));
-        let fw = FirmwareMember::with_backend("fw", be.clone(), 1_000);
+        let fw = FirmwareMember::with_backend("fw", be.clone());
         eng.add_member(fw);
         // The auto-mirrored cvar is registered under the member's own name ("fw").
         let sensor_in = SignalId::new("cvar", "fw", "sensor_in", None).unwrap();
@@ -537,17 +738,17 @@ mod tests {
 
         let log = be.log.borrow();
         let w = log.iter().position(|e| e == "write:sensor_in").unwrap();
-        let t = log.iter().position(|e| e == "advance_tick").unwrap();
-        assert!(w < t, "driven flush must precede advance_tick, got {log:?}");
+        let t = log.iter().position(|e| e == "tick").unwrap();
+        assert!(w < t, "driven flush must precede the kernel tick, got {log:?}");
         assert_eq!(be.cvars.borrow().get("sensor_in"), Some(&Value::F64(1.0)));
     }
 
     #[test]
-    fn time_advances_by_tick_period() {
-        let be = Rc::new(MockBackend::with_leaves(&["counter"]));
+    fn time_advances_by_the_grid_step() {
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         assert_eq!(eng.now_us(), 0);
         for tick in 1..=4u64 {
@@ -582,10 +783,10 @@ mod tests {
 
     #[test]
     fn samples_registered_cvars_into_historian() {
-        let be = Rc::new(MockBackend::with_leaves(&["ramp_counter"]));
+        let be = Rc::new(MockBackend::with_leaves(1_000, &["ramp_counter"]));
         let mut eng = Engine::new(1_000);
         let id = SignalId::new("cvar", "fw", "ramp_counter", None).unwrap();
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         for _ in 0..3 {
             eng.step().unwrap();
@@ -611,24 +812,24 @@ mod tests {
 
     #[test]
     fn empty_step_advances_firmware_and_time() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(2_000));
         let mut eng = Engine::new(2_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 2_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
         eng.step().unwrap();
         eng.step().unwrap();
         assert_eq!(eng.now_us(), 4_000);
         assert_eq!(be.ticks.get(), 2);
-        assert_eq!(*be.log.borrow(), vec!["advance_tick", "advance_tick"]);
+        assert_eq!(*be.log.borrow(), vec!["tick", "tick"]);
     }
 
     #[test]
     fn disabled_member_is_skipped_then_resumes() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(1_000));
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
 
         assert!(eng.set_member_enabled("fw", false));
-        eng.step().unwrap(); // skipped: no advance_tick
+        eng.step().unwrap(); // skipped: the member never advances
         assert_eq!(be.ticks.get(), 0);
         assert_eq!(eng.now_us(), 1_000); // but sim time still flows
 
@@ -641,9 +842,9 @@ mod tests {
 
     #[test]
     fn route_source_unregistered_errors() {
-        let be = Rc::new(MockBackend::default());
+        let be = Rc::new(MockBackend::new(1_000));
         let mut eng = Engine::new(1_000);
-        eng.add_member(FirmwareMember::with_backend("fw", be.clone(), 1_000));
+        eng.add_member(FirmwareMember::with_backend("fw", be.clone()));
         eng.add_route(cvar("ghost"), cvar("dst")).unwrap();
         assert!(matches!(
             eng.step(),
@@ -804,7 +1005,7 @@ mod tests {
         next: u8,
     }
     impl DuplexPeer for SpiResponder {
-        fn transfer(&mut self, _tx: &[u8]) -> Vec<u8> {
+        fn transfer(&mut self, _tx: &[u8], _ctx: &mut MemberCtx) -> Vec<u8> {
             vec![self.next, 0x00]
         }
     }
@@ -919,6 +1120,126 @@ mod tests {
             Some(Value::F64(x)) => assert!((x - 0.25).abs() < 1e-9), // 90 deg == 0.25 turn
             other => panic!("expected converted F64, got {other:?}"),
         }
+    }
+
+    // --- member cadence ---------------------------------------------------
+
+    use crate::member::Cadence;
+
+    /// A member that records each advance's `(dt, ctx.inputs_dirty)` and registers
+    /// one `in` signal — the probe for the cadence scheduling tests.
+    struct CadencedProbe {
+        name: String,
+        cadence: Cadence,
+        log: Rc<RefCell<Vec<(u64, bool)>>>,
+    }
+
+    impl CadencedProbe {
+        fn new(name: &str, cadence: Cadence) -> (Self, Rc<RefCell<Vec<(u64, bool)>>>) {
+            let log = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    name: name.to_string(),
+                    cadence,
+                    log: log.clone(),
+                },
+                log,
+            )
+        }
+    }
+
+    impl Member for CadencedProbe {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn cadence(&self) -> Cadence {
+            self.cadence
+        }
+        fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
+            self.log.borrow_mut().push((dt_us, ctx.inputs_dirty()));
+        }
+        fn set_enabled(&mut self, on: bool, st: &mut StateTable) {
+            if on {
+                let _ = st.register(vsig_id(&self.name, "in").unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_cadence_fires_on_absolute_due_times_with_elapsed_dt() {
+        // Grid 1000, period 2500: due times are 2500/5000/7500/10000 — the member
+        // fires at the first step at-or-after each (3000, 5000, 8000, 10000) with
+        // dt = elapsed since its previous advance. Absolute due times never drift.
+        let mut eng = Engine::new(1_000);
+        let (probe, log) = CadencedProbe::new("probe", Cadence::Periodic { period_us: 2_500 });
+        eng.add_member(probe);
+        for _ in 0..10 {
+            eng.step().unwrap();
+        }
+        let dts: Vec<u64> = log.borrow().iter().map(|(dt, _)| *dt).collect();
+        assert_eq!(dts, vec![3_000, 2_000, 3_000, 2_000]);
+    }
+
+    #[test]
+    fn on_input_change_cadence_follows_routed_changes_and_scenario_writes() {
+        // ramp (EveryStep) drives probe:in zero-latency: the probe advances every
+        // step the delivery changes its input, stops when the route is suspended,
+        // and a scenario write is an input event.
+        let mut eng = Engine::new(1_000);
+        eng.add_member(RampModel::new("ramp", 1000.0, None)); // changes every step
+        let (probe, log) = CadencedProbe::new("probe", Cadence::OnInputChange);
+        eng.add_member(probe);
+        let src = vsig_id("ramp", "value").unwrap();
+        let dst = vsig_id("probe", "in").unwrap();
+        eng.add_route(src.clone(), dst.clone()).unwrap();
+
+        for _ in 0..3 {
+            eng.step().unwrap();
+        }
+        assert_eq!(log.borrow().len(), 3, "a changing routed input is due every step");
+        assert!(log.borrow().iter().all(|(_, dirty)| *dirty), "advance sees its dirty flag");
+
+        eng.suspend_route(&src, &dst).unwrap();
+        for _ in 0..3 {
+            eng.step().unwrap();
+        }
+        assert_eq!(log.borrow().len(), 3, "no delivery, no advance");
+
+        eng.write("vsig:probe:in", 42.0).unwrap();
+        eng.step().unwrap();
+        assert_eq!(log.borrow().len(), 4, "a scenario write is an input event");
+        // dt spans the quiet interval: last advance at 3000, write lands at 7000.
+        assert_eq!(log.borrow().last().copied(), Some((4_000, true)));
+    }
+
+    #[test]
+    fn on_demand_member_is_never_scheduled() {
+        let mut eng = Engine::new(1_000);
+        let (probe, log) = CadencedProbe::new("probe", Cadence::OnDemand);
+        eng.add_member(probe);
+        eng.write("vsig:probe:in", 1.0).unwrap(); // even a dirty input schedules nothing
+        for _ in 0..5 {
+            eng.step().unwrap();
+        }
+        assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn every_step_dt_is_the_grid_step_even_across_a_disabled_gap() {
+        // The zero-migration guarantee: an EveryStep member's dt is exactly the
+        // grid step — a disabled gap is frozen time, never handed to advance.
+        let mut eng = Engine::new(1_000);
+        let (probe, log) = CadencedProbe::new("probe", Cadence::EveryStep);
+        eng.add_member(probe);
+        eng.step().unwrap();
+        eng.set_member_enabled("probe", false);
+        for _ in 0..3 {
+            eng.step().unwrap();
+        }
+        eng.set_member_enabled("probe", true);
+        eng.step().unwrap();
+        let dts: Vec<u64> = log.borrow().iter().map(|(dt, _)| *dt).collect();
+        assert_eq!(dts, vec![1_000, 1_000]);
     }
 
     // --- test-only helpers on the engine ---------------------------------

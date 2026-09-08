@@ -259,10 +259,57 @@ A "channel" implies one of N independent peripheral instances. When
 there's only one (system clock), calling it a "channel" misleads —
 it's just the configuration.
 
-The library-side header (under
-`sw/lib/c/shared/hw/<Module>/<target>/`) `#include`s the consumer's
-extension header by the matching name —
+The library-side header (`sw/lib/c/shared/hw/<Module>/HW_<Module>.h`)
+`#include`s the consumer's extension header by the matching name —
 `#include "HW_<Module>_channels.h"` or `#include "HW_<Module>_config.h"`.
+
+### One API header per module; the target header carries only the config shape
+
+A dual-target module has one public *API* header,
+`sw/lib/c/shared/hw/<Module>/HW_<Module>.h`, at the module root. It
+carries the module doc, the shared types, and every API declaration —
+so the interface both targets implement is guaranteed by construction
+rather than by mirroring two copies.
+
+What genuinely differs per target is the config struct the project
+fills in (`HW_<Module>_channelConfig_S` / `_config_S`): the stm32g4
+shape carries HAL handles, the sim shape carries scalars and trace
+names. That shape lives in `<target>/HW_<Module>_target.h`, which the
+module header includes. Target-only declarations (e.g.
+`HW_DMA_irqHandler`, `HW_TIM_advanceTime`) live there too. Nothing
+includes `HW_<Module>_target.h` directly.
+
+Order inside the module header matters, because the target config
+struct references the shared types:
+
+```c
+#include "HW_ADC_channels.h"     // consumer-extension seam
+/* Defines */                    // shared
+/* Typedefs */                   // shared enums/structs
+#include "HW_ADC_target.h"       // target config struct
+                                 // aggregates over the target struct
+/* Public Function Declarations */
+```
+
+Target dispatch is include-path selection, nothing else: each
+`hw_<Module>` CMake target exposes both its target subdir and the
+module root (`target_include_directories(hw_<Module> PUBLIC . ..)`), so
+consumers keep writing `#include "HW_<Module>.h"`.
+
+Single-instance modules with no per-target config skip the target
+header entirely.
+
+Two shapes sit beside the API header and are deliberate, not
+exceptions to work around:
+
+- **A second module-root header** when a genuinely shared,
+  target-independent unit is split out for reuse —
+  `HW_SPI_timeout.h`, `HW_I2C_timeout.h`. Both targets' `.c` and both
+  test suites include it. The rule is one header per *API surface*,
+  not one file per module.
+- **`sim/HW_USB_sim.h`**, the one surviving inject/inspect header. The
+  protocol suite is built on it (`docs/sil/backlog.md` tracks its
+  removal); do not add new ones.
 
 ### Where the channels enum lives: library-side vs project-side
 

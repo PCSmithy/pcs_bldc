@@ -1,6 +1,6 @@
 /* Includes */
 #include "HW_SPI.h"
-#include "HW_SPI_sim.h"
+#include "SIL_irq.h"
 #include "SIL_ports.h"
 
 /* Defines */
@@ -8,6 +8,10 @@
 // Single-bit pin mask range mirroring the stm32g4 GPIO_PIN_x encoding,
 // so CS validation matches the embedded target without pulling in HAL.
 #define HW_SPI_SIM_PIN_MAX     (0x8000U)
+
+// Completion dispatch rides the peripheral-ISR rung of the sim NVIC ladder
+// (docs/sil/sim-interrupts.md), alongside sim HW_USB and HW_ADC.
+#define HW_SPI_IRQ_PRIORITY    (8U)
 
 /* Typedefs */
 typedef enum
@@ -23,8 +27,8 @@ typedef struct
     void * callbackContext;
     HW_SPI_status_E status;
 
-    // Parameters of the in-flight / last transfer (used to settle a
-    // deferred non-blocking transfer at HW_SPI_sim_tick()).
+    // Parameters of the in-flight / last transfer (a deferred non-blocking
+    // transfer settles in the pended completion interrupt).
     HW_SPI_op_E op;
     uint8_t * txData;
     uint8_t * rxData;
@@ -35,7 +39,8 @@ typedef struct
     // transfer upcalls the linked peer for the MISO response frame.
     int32_t duplexHandle;
 
-    // Fault injection.
+    // Fault knobs, written by DWARF from SIL: a stalled software transfer times
+    // out, a forced error fails the non-blocking completion.
     bool stall;
     bool forceError;
 } HW_SPI_channelData_S;
@@ -51,16 +56,22 @@ typedef struct
 /* Private Function Declarations */
 
 static bool HW_SPI_private_channelConfigValid(const HW_SPI_config_S * const config, HW_SPI_channel_E channel);
-static void HW_SPI_private_clearChannel(HW_SPI_channel_E channel);
 static void HW_SPI_private_assertCs(HW_SPI_channel_E channel);
 static void HW_SPI_private_deassertCs(HW_SPI_channel_E channel);
 static void HW_SPI_private_fillRx(HW_SPI_channel_E channel);
 static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, uint8_t * txData, uint8_t * rxData, size_t length);
+// External linkage (the HW_USB_sim_irqHandler pattern): SIL scenarios resolve
+// the completion ISR by name, which -O2 strips from a static.
+void HW_SPI_sim_completionDispatch(void);
 
 /* Private Data Definitions */
 
 static HW_SPI_data_S HW_SPI_data;
 static HW_SPI_data_S * const data = &HW_SPI_data;
+
+// The completion service's framework handle. Lives outside HW_SPI_data so the
+// re-entrant init's clean slate can still cancel the previous registration.
+static int32_t HW_SPI_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
 
 /* Private Function Definitions */
 
@@ -100,21 +111,6 @@ static bool HW_SPI_private_channelConfigValid(const HW_SPI_config_S * const conf
     return (busValid && csValid);
 }
 
-static void HW_SPI_private_clearChannel(HW_SPI_channel_E channel)
-{
-    HW_SPI_channelData_S * const cd = &data->channels[channel];
-    cd->callback        = NULL;
-    cd->callbackContext = NULL;
-    cd->status          = HW_SPI_STATUS_IDLE;
-    cd->op              = HW_SPI_OP_TX;
-    cd->txData          = NULL;
-    cd->rxData          = NULL;
-    cd->length          = 0U;
-    cd->pending         = false;
-    cd->stall           = false;
-    cd->forceError      = false;
-}
-
 // [impl->fw~hal_spi_004~1]
 static void HW_SPI_private_assertCs(HW_SPI_channel_E channel)
 {
@@ -147,10 +143,8 @@ static void HW_SPI_private_fillRx(HW_SPI_channel_E channel)
     }
     else
     {
-        // Duplex/receive: the linked peer answers with the MISO frame. TXRX
-        // hands it the captured MOSI frame (a command-aware peer parses it);
-        // RX-only sends nothing. The peer's response is bounded to the transfer
-        // length.
+        // Duplex/receive: the linked peer answers with the MISO frame, handed
+        // the MOSI frame on TXRX so a command-aware peer can parse it.
         const uint8_t * const tx = (cd->op == HW_SPI_OP_TXRX) ? cd->txData : NULL;
         const size_t txLen = (cd->op == HW_SPI_OP_TXRX) ? cd->length : 0U;
         size_t rxLen = 0U;
@@ -181,8 +175,11 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
     }
 
     bool ret = false;
+    // A start on an in-flight channel is refused, as HAL_BUSY would: overwriting
+    // the transfer would fold its pending completion into the new one.
     if ((data->initialized) &&
         (channel < HW_SPI_CHANNEL_COUNT) &&
+        (!data->channels[channel].pending) &&
         (length > 0U) &&
         (argsValid))
     {
@@ -215,14 +212,58 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
         }
         else
         {
-            // Non-blocking: leave the transfer in flight; completion (rx
-            // fill, CS deassert, callback) happens at HW_SPI_sim_tick().
+            // Non-blocking: leave the transfer in flight and pend the
+            // completion interrupt, as the real DMA/IT hardware would.
             cd->status  = HW_SPI_STATUS_BUSY;
             cd->pending = true;
+            SIL_irq_pend(HW_SPI_completionIrqHandle);
             ret = true;
         }
     }
     return ret;
+}
+
+// [impl->fw~hal_spi_005~1]
+// Completion interrupt: pended at transfer time, dispatched in the firmware
+// fiber's ISR bracket. The pending set is snapshotted at entry so a transfer
+// started from a callback settles in the next interrupt, as hardware does.
+void HW_SPI_sim_completionDispatch(void)
+{
+    if (data->initialized)
+    {
+        uint32_t due = 0U;
+        for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+        {
+            if (data->channels[channel].pending)
+            {
+                data->channels[channel].pending = false;
+                due |= (1UL << channel);
+            }
+        }
+
+        for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+        {
+            HW_SPI_channelData_S * const cd = &data->channels[channel];
+            if ((due & (1UL << channel)) != 0U)
+            {
+                if (cd->forceError)
+                {
+                    cd->status = HW_SPI_STATUS_ERROR;
+                }
+                else
+                {
+                    HW_SPI_private_fillRx(channel);
+                    cd->status = HW_SPI_STATUS_COMPLETE;
+                }
+                HW_SPI_private_deassertCs(channel);
+
+                if (cd->callback != NULL)
+                {
+                    cd->callback(channel, cd->callbackContext);
+                }
+            }
+        }
+    }
 }
 
 /* Public Function Definitions */
@@ -230,6 +271,17 @@ static bool HW_SPI_private_transfer(HW_SPI_channel_E channel, HW_SPI_op_E op, ui
 bool HW_SPI_init(const HW_SPI_config_S * const config)
 {
     bool ret = false;
+
+    // Re-entrant: every call, accepted or rejected, is a clean slate; the
+    // completion service goes with it.
+    SIL_irq_cancel(HW_SPI_completionIrqHandle);
+    HW_SPI_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
+    *data = (HW_SPI_data_S){ 0 };
+    for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
+    {
+        data->channels[channel].duplexHandle = SIL_PORTS_HANDLE_INVALID;
+    }
+
     if (config != NULL)
     {
         bool success = true;
@@ -243,16 +295,28 @@ bool HW_SPI_init(const HW_SPI_config_S * const config)
             data->config = config;
             for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
             {
-                HW_SPI_private_clearChannel(channel);
-
-                // Register one duplex endpoint per named channel: a transfer
-                // upcalls the linked peer for its MISO response. Null-safe — with
-                // no hooks installed the handle stays invalid and the transfer
-                // falls back to the floating-bus fill.
+                // One duplex endpoint per named channel, which a transfer upcalls
+                // for its MISO response. Unlinked, the fill is the floating bus.
                 const char * const name = config->channels[channel].channelNameStr;
                 data->channels[channel].duplexHandle = (name != NULL)
                     ? SIL_ports_registerDuplex("spi", name)
                     : SIL_PORTS_HANDLE_INVALID;
+            }
+
+            // A non-blocking bus needs the completion service. With no hooks
+            // installed the handle stays invalid and the transfer never settles.
+            bool anyNonBlocking = false;
+            for (HW_SPI_bus_E bus = 0U; bus < HW_SPI_BUS_COUNT; bus++)
+            {
+                anyNonBlocking = (anyNonBlocking) ||
+                                 ((config->buses[bus].enabled) &&
+                                  (config->buses[bus].transferMode != HW_SPI_TRANSFERMODE_SW));
+            }
+            if (anyNonBlocking)
+            {
+                HW_SPI_completionIrqHandle = SIL_irq_registerPended(
+                    HW_SPI_sim_completionDispatch,
+                    HW_SPI_IRQ_PRIORITY);
             }
             data->initialized = true;
             ret = true;
@@ -301,53 +365,4 @@ HW_SPI_status_E HW_SPI_getStatus(HW_SPI_channel_E channel)
         status = data->channels[channel].status;
     }
     return status;
-}
-
-/* SIL control + inspection (HW_SPI_sim.h) */
-
-// [impl->fw~hal_spi_005~1]
-void HW_SPI_sim_tick(void)
-{
-    if (data->initialized)
-    {
-        for (HW_SPI_channel_E channel = 0U; channel < HW_SPI_CHANNEL_COUNT; channel++)
-        {
-            HW_SPI_channelData_S * const cd = &data->channels[channel];
-            if (cd->pending)
-            {
-                cd->pending = false;
-                if (cd->forceError)
-                {
-                    cd->status = HW_SPI_STATUS_ERROR;
-                }
-                else
-                {
-                    HW_SPI_private_fillRx(channel);
-                    cd->status = HW_SPI_STATUS_COMPLETE;
-                }
-                HW_SPI_private_deassertCs(channel);
-
-                if (cd->callback != NULL)
-                {
-                    cd->callback(channel, cd->callbackContext);
-                }
-            }
-        }
-    }
-}
-
-void HW_SPI_sim_setStall(HW_SPI_channel_E channel, bool stall)
-{
-    if (channel < HW_SPI_CHANNEL_COUNT)
-    {
-        data->channels[channel].stall = stall;
-    }
-}
-
-void HW_SPI_sim_setForceError(HW_SPI_channel_E channel, bool forceError)
-{
-    if (channel < HW_SPI_CHANNEL_COUNT)
-    {
-        data->channels[channel].forceError = forceError;
-    }
 }
