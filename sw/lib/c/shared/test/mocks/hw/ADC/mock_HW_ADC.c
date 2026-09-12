@@ -11,7 +11,7 @@ static bool      mockReadable[HW_ADC_CHANNEL_COUNT][MOCK_ADC_INPUTS];
 static float32_t mockInjectedVolts[HW_ADC_CHANNEL_COUNT][HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
 static bool      mockInjectedReadable[HW_ADC_CHANNEL_COUNT][HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
 
-static HW_ADC_injectedCallback_F mockCallback[HW_ADC_CHANNEL_COUNT];
+static HW_ADC_callback_F mockCallback[HW_ADC_CHANNEL_COUNT];
 static void *                    mockCallbackContext[HW_ADC_CHANNEL_COUNT];
 static uint32_t                  mockRegistrations[HW_ADC_CHANNEL_COUNT];
 static bool                      mockRegistrationFails[HW_ADC_CHANNEL_COUNT];
@@ -112,7 +112,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
 }
 
 bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
-                                     HW_ADC_injectedCallback_F callback,
+                                     HW_ADC_callback_F callback,
                                      void * context)
 {
     bool ret = false;

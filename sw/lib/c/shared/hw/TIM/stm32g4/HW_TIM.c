@@ -350,14 +350,23 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
         }
         else
         {
-            ok = (HAL_TIM_PWM_Stop(htim, channelConfig->channel) == HAL_OK);
-            if (ok && channelConfig->complementary)
+            // Disable the CCx units directly. HAL_TIM_PWM(N)_Stop's tail clears
+            // CR1.CEN once CCER empties, freezing the counter — and with it the
+            // TRGO/TRGO2 timebase — for ~2 µs per call; this path leaves CEN alone.
+            TIM_CCxChannelCmd(htim->Instance, channelConfig->channel, TIM_CCx_DISABLE);
+            if (channelConfig->complementary)
             {
-                ok = (HAL_TIMEx_PWMN_Stop(htim, channelConfig->channel) == HAL_OK);
+                CLEAR_BIT(htim->Instance->CCER,
+                          (uint32_t)TIM_CCER_CC1NE << (channelConfig->channel & 0x1FU));
             }
-            // HAL_TIM_PWM(N)_Stop clears CEN once no CCx unit is enabled; the
-            // counter is a free-running timebase (TRGO/TRGO2), so re-assert it.
-            __HAL_TIM_ENABLE(htim);
+            if (IS_TIM_BREAK_INSTANCE(htim->Instance) != RESET)
+            {
+                __HAL_TIM_MOE_DISABLE(htim);
+            }
+            // Keep the HAL's channel bookkeeping consistent so a later
+            // HAL_TIM_PWM(N)_Start's READY-state gate passes.
+            TIM_CHANNEL_STATE_SET(htim, channelConfig->channel, HAL_TIM_CHANNEL_STATE_READY);
+            TIM_CHANNEL_N_STATE_SET(htim, channelConfig->channel, HAL_TIM_CHANNEL_STATE_READY);
         }
         ret = ok;
     }

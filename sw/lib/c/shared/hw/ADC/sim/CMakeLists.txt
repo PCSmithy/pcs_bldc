@@ -6,7 +6,8 @@ target_link_libraries(hw_ADC
     pcs_ADC_channels   # consumer-provided HW_ADC_channels.h path
     hw_SIL_ports       # SIL input ports (null-safe when no hooks installed)
     hw_SIL_irq         # deferred injected-completion dispatch (null-safe)
-    hw_TIM             # TRGO sink for timer-triggered injected conversions
+    hw_DMA             # regular-sequence DMA transfers, as on silicon
+    hw_TIM             # TRGO sink: the sim's injected trigger sources are TIM events
 )
 
 # Unit tests run only on the native target.

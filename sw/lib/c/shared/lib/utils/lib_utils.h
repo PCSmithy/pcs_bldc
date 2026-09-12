@@ -48,3 +48,6 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 #define MAX_OF(a, b) ((a) > (b) ? (a) : (b))
 
 #define SIGN(a) ((a) > 0U ? (1) : (-1))
+
+#define SET_BIT_U32(num_ptr, bit) (*(num_ptr) |= (1UL << (bit)))
+#define GET_BIT_U32(num, bit)     (((num) & (1UL << (bit))) != 0UL)

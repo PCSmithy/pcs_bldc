@@ -186,7 +186,7 @@ Dependency-ordered. Each step is a full spec→impl→test cycle, native SIL bui
 
 0. **`sys~pd_001`** anchor spec (`/pcs_spec`). Quick; unblocks the `fw~pd` tree.
 1. **`HW_I2C`** (bus) — specs → scaffold module (both targets + native/sim
-   model, no HAL) → Unity tests. Wire `HW_I2C_init` into `main.c` `prvHwInit()`.
+   model, no HAL) → Unity tests. Wire `HW_I2C_init` into `main.c` `main_private_hwInit()`.
 2. **`IO_i2c`** (generic device) — specs → generic per-device register
    read/write over `HW_I2C` → Unity tests. Depends on step 1.
 3. **`lib_CYPD3177`** — specs → register header + pure decoders → golden-vector

@@ -5,6 +5,7 @@
 /* Includes */
 #include "lib_types.h"
 #include "stm32g4xx_hal.h"
+#include "HW_DMA.h"              // HW_DMA_channel_E (DMA-backed transfer mode)
 
 /* Typedefs */
 
@@ -25,20 +26,22 @@ typedef struct
     ADC_InjectionConfTypeDef sConfig;
 } HW_ADC_injectedInputConfig_S;
 
+// Injected-sequence hardware trigger source (a JEXTSEL entry: timer events,
+// EXTI line 15, HRTIM, LPTIM). Expand from Table 167 in the stm32g4 RM as needed.
 typedef enum
 {
-    HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
-    // expand with other entries from Table 167 in stm32g4 RM as needed
-    HW_ADC_TIMER_TRIGGER_COUNT,
-} HW_ADC_timerTrigger_E;
+    HW_ADC_INJECTED_TRIGGER_TIM1_TRGO2,
+    HW_ADC_INJECTED_TRIGGER_COUNT,
+} HW_ADC_injectedTrigger_E;
 
 // One ADC peripheral. HW_ADC_init silently overwrites the fields it derives
-// from the enabled-input counts and the trigger/xfer modes — hadc.Init's
-// NbrOfConversion, ScanConvMode, EOCSelection, ContinuousConvMode,
-// LowPowerAutoWait, ExternalTrigConv, and injectedInputs[].sConfig's
-// InjectedRank, InjectedNbrOfConversion, ExternalTrigInjecConv(Edge). Every
-// other field is taken as-is. configureMultimode is for the master ADC of a
-// pair only (ADC1 of ADC1+2); the slave's flag stays false.
+// from the enabled-input counts, the regular trigger/xfer modes, and the
+// injected trigger — hadc.Init's NbrOfConversion, ScanConvMode, EOCSelection,
+// ContinuousConvMode, LowPowerAutoWait, ExternalTrigConv, and
+// injectedInputs[].sConfig's InjectedRank, InjectedNbrOfConversion,
+// ExternalTrigInjecConv(Edge). Every other field is taken as-is.
+// configureMultimode is for the master ADC of a pair only (ADC1 of ADC1+2);
+// the slave's flag stays false.
 typedef struct
 {
     ADC_HandleTypeDef hadc;
@@ -49,8 +52,7 @@ typedef struct
     HW_ADC_triggerMode_E triggerMode;
     HW_ADC_xferMode_E    xferMode;
 
-    HW_ADC_triggerMode_E injectedTriggerMode;
-    HW_ADC_xferMode_E    injectedXferMode;
+    HW_DMA_channel_E dmaChannel;
 
     // Reference voltage at the analog supply rail (full-scale of the
     // ADC). Used by HW_ADC_getVolts / getInjectedVolts for counts ->
@@ -60,10 +62,11 @@ typedef struct
     // Regular sequence inputs, indexed by physical IN# (sparse).
     HW_ADC_inputConfig_S inputs[HW_ADC_INPUTS_PER_CHANNEL];
 
-    // Injected sequence inputs, indexed by sequence position (dense).
+    // Injected sequence inputs, indexed by sequence position (dense). Always
+    // hardware-triggered with interrupt completion; any enabled slot arms it.
     HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
 
-    HW_ADC_timerTrigger_E injectedTimerTrigger;
+    HW_ADC_injectedTrigger_E injectedTrigger;
     HW_ADC_triggerEdge_E  injectedTriggerEdge;
 
 } HW_ADC_channelConfig_S;

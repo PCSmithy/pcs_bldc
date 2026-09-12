@@ -5,4 +5,5 @@ target_link_libraries(hw_ADC
     lib_types
     stm32g4_hal        # for ADC_HandleTypeDef + HAL_ADC_* prototypes
     pcs_ADC_channels   # consumer-provided HW_ADC_channels.h path
+    hw_DMA
 )

@@ -38,13 +38,13 @@ static void HW_DMA_private_complete(DMA_HandleTypeDef * hdma, HW_DMA_status_E st
 {
     for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
     {
-        HW_DMA_channelData_S * const cd = &data->channels[channel];
-        if (&cd->hdma == hdma)
+        HW_DMA_channelData_S * const channelData = &data->channels[channel];
+        if (&channelData->hdma == hdma)
         {
-            cd->status = status;
-            if (cd->callback != NULL)
+            channelData->status = status;
+            if (channelData->callback != NULL)
             {
-                cd->callback(channel, cd->callbackContext);
+                channelData->callback(channel, channelData->callbackContext);
             }
             break;
         }
@@ -84,15 +84,15 @@ bool HW_DMA_init(const HW_DMA_config_S * const config)
             ret = true;
             for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
             {
-                HW_DMA_channelData_S * const cd = &data->channels[channel];
-                cd->hdma            = config->channels[channel].hdma;   // working copy
-                cd->callback        = NULL;
-                cd->callbackContext = NULL;
-                cd->status          = HW_DMA_STATUS_IDLE;
+                HW_DMA_channelData_S * const channelData = &data->channels[channel];
+                channelData->hdma            = config->channels[channel].hdma;   // working copy
+                channelData->callback        = NULL;
+                channelData->callbackContext = NULL;
+                channelData->status          = HW_DMA_STATUS_IDLE;
 
-                ret &= (HAL_DMA_Init(&cd->hdma) == HAL_OK);
-                ret &= (HAL_DMA_RegisterCallback(&cd->hdma, HAL_DMA_XFER_CPLT_CB_ID, HW_DMA_private_xferCplt) == HAL_OK);
-                ret &= (HAL_DMA_RegisterCallback(&cd->hdma, HAL_DMA_XFER_ERROR_CB_ID, HW_DMA_private_xferError) == HAL_OK);
+                ret &= (HAL_DMA_Init(&channelData->hdma) == HAL_OK);
+                ret &= (HAL_DMA_RegisterCallback(&channelData->hdma, HAL_DMA_XFER_CPLT_CB_ID, HW_DMA_private_xferCplt) == HAL_OK);
+                ret &= (HAL_DMA_RegisterCallback(&channelData->hdma, HAL_DMA_XFER_ERROR_CB_ID, HW_DMA_private_xferError) == HAL_OK);
 
                 // Arm the channel's NVIC line (priority 5 = FreeRTOS-safe, per
                 // the EXTI/USB convention). The board DMA IRQ handlers in
@@ -117,12 +117,12 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
         (memory != NULL) &&
         (numItems > 0U))
     {
-        HW_DMA_channelData_S * const cd = &data->channels[channel];
+        HW_DMA_channelData_S * const channelData = &data->channels[channel];
         const uint32_t periphAddress = data->config->channels[channel].periphAddress;
 
         uint32_t srcAddress = 0U;
         uint32_t dstAddress = 0U;
-        if (cd->hdma.Init.Direction == DMA_MEMORY_TO_PERIPH)
+        if (channelData->hdma.Init.Direction == DMA_MEMORY_TO_PERIPH)
         {
             srcAddress = (uint32_t)memory;
             dstAddress = periphAddress;
@@ -133,15 +133,31 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
             dstAddress = (uint32_t)memory;
         }
 
-        cd->status = HW_DMA_STATUS_BUSY;
-        if (HAL_DMA_Start_IT(&cd->hdma, srcAddress, dstAddress, numItems) == HAL_OK)
+        channelData->status = HW_DMA_STATUS_BUSY;
+        if (HAL_DMA_Start_IT(&channelData->hdma, srcAddress, dstAddress, numItems) == HAL_OK)
         {
             ret = true;
         }
         else
         {
-            cd->status = HW_DMA_STATUS_ERROR;
+            channelData->status = HW_DMA_STATUS_ERROR;
         }
+    }
+    return ret;
+}
+
+// [impl->fw~hal_dma_004~1]
+bool HW_DMA_abortTransfer(HW_DMA_channel_E channel)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_DMA_CHANNEL_COUNT))
+    {
+        HW_DMA_channelData_S * const channelData = &data->channels[channel];
+
+        (void)HAL_DMA_Abort(&channelData->hdma);
+        channelData->status = HW_DMA_STATUS_IDLE;
+        ret = true;
     }
     return ret;
 }

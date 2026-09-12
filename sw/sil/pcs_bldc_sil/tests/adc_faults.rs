@@ -1,14 +1,18 @@
 //! ADC conversion faults and dual-ADC multimode, asserted white-box against the real
-//! firmware: the sim driver's own statics are the injection point (DWARF write of the
-//! per-channel stall flag) and the observation point (DWARF read of the per-channel
-//! status and multimode flags), so the driver carries no test-only API.
+//! firmware: the sim drivers' own statics are the injection point (DWARF write of the
+//! DMA channel's stall knob) and the observation point (DWARF read of the ADC's
+//! per-channel status and multimode flags), so the drivers carry no test-only API.
 
 mod common;
-use common::{assert_status, bool_at, booted, set_bool, u64_at, ADC_FAULT, ADC_OK};
+use common::{assert_status, bool_at, booted, set_bool, u64_at, ADC_BUSY, ADC_FAULT};
 use pcs_bldc_sil::Sil;
 
 /// ADC peripherals the board configures — `HW_ADC_CHANNEL_COUNT`.
 const CHANNELS: usize = 2;
+
+/// The DMA channel each ADC's regular sequence transfers over —
+/// `HW_DMA_CHANNEL_ADC1_REG_CONVERSIONS` / `_ADC2_` in the board config.
+const DMA_CHANNEL: [usize; CHANNELS] = [2, 3];
 
 /// A regular input enabled on ADC1 in the sim board config, undriven in a bare world
 /// so it ramps once per sampling pass.
@@ -22,55 +26,71 @@ fn count(sim: &Sil, ch: usize) -> u64 {
     )
 }
 
-/// Stall or un-stall one channel's conversions.
+/// Wedge or release one channel's DMA transfers: a transfer started while the
+/// knob is set never completes.
 fn set_stall(sim: &Sil, ch: usize, stall: bool) {
-    set_bool(sim, &format!("HW_ADC_data.conversionStall[{ch}]"), stall);
+    set_bool(
+        sim,
+        &format!("HW_DMA_data.channels[{}].stall", DMA_CHANNEL[ch]),
+        stall,
+    );
 }
 
 /// One channel's conversion status path.
 fn status_path(ch: usize) -> String {
-    format!("HW_ADC_data.status[{ch}]")
+    format!("HW_ADC_data.channelData[{ch}].status")
 }
 
-// [test->fw~hal_adc_004~1]
+// [test->fw~hal_adc_009~1]
+// [test->fw~hal_dma_004~1]
+// At an exact-tick step boundary the DMA pass is deterministically in flight
+// (the task sampled + started it; the completion dispatches at the next step's
+// ISR phase), so a healthy channel observes BUSY here with counts valid from
+// the previous completed pass. FAULT is the distinguishable failure signal.
+// The wedged transfer is aborted by the pass that finds it, and its late
+// completion, if any, is discarded.
 #[test]
-fn a_stalled_channel_faults_alone_and_recovers() {
-    let mut sim = booted(1);
-    assert_status(&sim, &status_path(0), &ADC_OK, "channel 0 samples cleanly at boot");
-    assert_status(&sim, &status_path(1), &ADC_OK, "channel 1 samples cleanly at boot");
-    let before = count(&sim, 0);
+fn a_held_dma_completion_wedges_to_a_fault_and_recovers() {
+    let mut sim = booted(2);
+    assert_status(&sim, &status_path(0), &ADC_BUSY, "channel 0 healthy: pass in flight at the boundary");
+    assert_status(&sim, &status_path(1), &ADC_BUSY, "channel 1 healthy: pass in flight at the boundary");
+    assert_ne!(count(&sim, 0), 0, "boot passes have landed real counts");
 
-    // Stalled: the pass faults and leaves the counts where they were, while the
-    // neighboring channel keeps sampling.
+    // Stalled: the pass in flight is the one wedged — its completion never
+    // arrives, and the next pass records the overlap fault and aborts it.
     set_stall(&sim, 0, true);
     sim.run_for_ms(1);
-    assert_status(&sim, &status_path(0), &ADC_FAULT, "a stalled channel reports the fault");
-    assert_status(&sim, &status_path(1), &ADC_OK, "the neighboring channel is unaffected");
-    assert_eq!(
-        count(&sim, 0),
-        before,
-        "a faulted pass retains the prior count"
+    assert_status(
+        &sim,
+        &status_path(0),
+        &ADC_FAULT,
+        "a pass starting over the incomplete one records the fault",
     );
+    let held = count(&sim, 0);
 
-    // A second stalled pass holds the fault rather than aging out of it.
-    sim.run_for_ms(1);
+    // While the stall holds, every fresh start wedges and the pass after it
+    // faults again; counts stay at the last completed pass's values; the
+    // neighboring channel keeps cycling.
+    sim.run_for_ms(2);
     assert_status(&sim, &status_path(0), &ADC_FAULT, "the fault holds while the stall does");
+    assert_status(&sim, &status_path(1), &ADC_BUSY, "the neighboring channel is unaffected");
     assert_eq!(
         count(&sim, 0),
-        before,
-        "counts stay stale for as long as the stall"
+        held,
+        "a faulted pass retains the last completed pass's count"
     );
 
-    // Cleared: sampling resumes and the counts move again. The synthetic ramp is
-    // driven by a tick counter that runs through the stall, so the resumed value
-    // is fresh but not `before + 1`.
+    // Cleared: the next pass pends normally, its completion lands at the
+    // following step, and fresh counts land. The synthetic ramp is driven by a
+    // tick counter that runs through the stall, so the resumed value is fresh
+    // but not `held + 1`.
     set_stall(&sim, 0, false);
-    sim.run_for_ms(1);
-    assert_status(&sim, &status_path(0), &ADC_OK, "clearing the stall resumes sampling");
+    sim.run_for_ms(2);
+    assert_status(&sim, &status_path(0), &ADC_BUSY, "recovered: back to the healthy in-flight cycle");
     assert_ne!(
         count(&sim, 0),
-        before,
-        "a resumed pass stores a fresh count"
+        held,
+        "a recovered pass stores a fresh count"
     );
 }
 
@@ -83,7 +103,7 @@ fn multimode_is_applied_exactly_where_the_config_flags_a_master() {
         .map(|ch| bool_at(&sim, &format!("HW_ADC_channelConfig[{ch}].configureMultimode")))
         .collect();
     let applied: Vec<bool> = (0..CHANNELS)
-        .map(|ch| bool_at(&sim, &format!("HW_ADC_data.multimodeApplied[{ch}]")))
+        .map(|ch| bool_at(&sim, &format!("HW_ADC_data.channelData[{ch}].multimodeApplied")))
         .collect();
 
     assert_eq!(

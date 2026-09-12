@@ -1,13 +1,52 @@
 /* Includes */
 #include "HW_DMA.h"
-#include "HW_DMA_simData.h"
 #include "SIL_irq.h"
+
+#include "lib_utils.h"
 
 /* Defines */
 
 // Completion dispatch rides the peripheral-ISR rung of the sim NVIC ladder
 // (docs/sil/sim-interrupts.md), alongside sim HW_USB.
 #define HW_DMA_IRQ_PRIORITY   (8U)
+
+// Largest mem-to-periph payload the capture buffer holds. A longer transfer
+// still moves every byte through the caller's buffer; only the copy is clamped.
+#define HW_DMA_SIM_MAX_BYTES  (256U)
+
+/* Typedefs */
+
+typedef struct
+{
+    HW_DMA_completeCallback_F callback;
+    void * callbackContext;
+    HW_DMA_status_E status;
+
+    // In-flight transfer, settled by the pended completion interrupt.
+    void *   memory;
+    uint32_t numItems;
+    bool     pending;
+
+    // The bytes a mem-to-periph transfer handed the engine, the observation
+    // point for what firmware put on the wire. No framework consumer yet.
+    uint8_t lastMem[HW_DMA_SIM_MAX_BYTES];
+    size_t  lastMemLen;
+
+    // Fault knobs, written by DWARF from SIL: forceError lands the next
+    // completion ERROR; stall holds the in-flight transfer's completion for as
+    // long as it is set (BUSY, never completing), as a hung channel would.
+    bool     forceError;
+    bool     stall;
+    uint32_t transferCount;
+} HW_DMA_channelData_S;
+
+typedef struct
+{
+    const HW_DMA_config_S * config;
+    bool initialized;
+
+    HW_DMA_channelData_S channels[HW_DMA_CHANNEL_COUNT];
+} HW_DMA_data_S;
 
 /* Private Function Declarations */
 
@@ -55,9 +94,9 @@ static size_t HW_DMA_private_widthBytes(HW_DMA_width_E width)
 
 static size_t HW_DMA_private_byteLength(HW_DMA_channel_E channel)
 {
-    const HW_DMA_channelData_S * const cd = &data->channels[channel];
+    const HW_DMA_channelData_S * const channelData = &data->channels[channel];
     const HW_DMA_width_E width = data->config->channels[channel].width;
-    return (size_t)cd->numItems * HW_DMA_private_widthBytes(width);
+    return (size_t)channelData->numItems * HW_DMA_private_widthBytes(width);
 }
 
 // [impl->fw~hal_dma_003~1]
@@ -68,46 +107,48 @@ void HW_DMA_sim_completionDispatch(void)
 {
     if (data->initialized)
     {
+        // A stalled channel's transfer stays pending: its completion never
+        // arrives, whichever channel raised this interrupt.
         uint32_t due = 0U;
         for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
         {
-            if (data->channels[channel].pending)
+            if ((data->channels[channel].pending) && (!data->channels[channel].stall))
             {
                 data->channels[channel].pending = false;
-                due |= (1UL << channel);
+                SET_BIT_U32(&due, channel);
             }
         }
 
         for (HW_DMA_channel_E channel = 0U; channel < HW_DMA_CHANNEL_COUNT; channel++)
         {
-            HW_DMA_channelData_S * const cd = &data->channels[channel];
-            if ((due & (1UL << channel)) != 0U)
+            HW_DMA_channelData_S * const channelData = &data->channels[channel];
+            if (GET_BIT_U32(due, channel))
             {
-                if (cd->forceError)
+                if (channelData->forceError)
                 {
-                    cd->status = HW_DMA_STATUS_ERROR;
+                    channelData->status = HW_DMA_STATUS_ERROR;
                 }
                 else
                 {
                     // memory is never NULL from startTransfer; a SIL-fabricated
                     // transfer may leave it unset.
                     if ((data->config->channels[channel].direction == HW_DMA_DIRECTION_PERIPH_TO_MEM) &&
-                        (cd->memory != NULL))
+                        (channelData->memory != NULL))
                     {
                         const size_t byteLen = HW_DMA_private_byteLength(channel);
-                        uint8_t * const dst = (uint8_t *)cd->memory;
+                        uint8_t * const dst = (uint8_t *)channelData->memory;
                         for (size_t i = 0U; i < byteLen; i++)
                         {
                             dst[i] = (uint8_t)i;
                         }
                     }
-                    cd->status = HW_DMA_STATUS_COMPLETE;
+                    channelData->status = HW_DMA_STATUS_COMPLETE;
                 }
-                cd->transferCount++;
+                channelData->transferCount++;
 
-                if (cd->callback != NULL)
+                if (channelData->callback != NULL)
                 {
-                    cd->callback(channel, cd->callbackContext);
+                    channelData->callback(channel, channelData->callbackContext);
                 }
             }
         }
@@ -159,11 +200,11 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
         (memory != NULL) &&
         (numItems > 0U))
     {
-        HW_DMA_channelData_S * const cd = &data->channels[channel];
-        cd->memory   = memory;
-        cd->numItems = numItems;
-        cd->status   = HW_DMA_STATUS_BUSY;
-        cd->pending  = true;
+        HW_DMA_channelData_S * const channelData = &data->channels[channel];
+        channelData->memory   = memory;
+        channelData->numItems = numItems;
+        channelData->status   = HW_DMA_STATUS_BUSY;
+        channelData->pending  = true;
 
         // Capture the bytes leaving memory now: the engine reads them during the
         // transfer, so a later completion would see a buffer firmware has reused.
@@ -174,13 +215,29 @@ bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numI
             const uint8_t * const src = (const uint8_t *)memory;
             for (size_t i = 0U; i < copyLen; i++)
             {
-                cd->lastMem[i] = src[i];
+                channelData->lastMem[i] = src[i];
             }
-            cd->lastMemLen = copyLen;
+            channelData->lastMemLen = copyLen;
         }
 
         // The sim twin of the transfer-complete IRQ.
         SIL_irq_pend(HW_DMA_completionIrqHandle);
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_dma_004~1]
+bool HW_DMA_abortTransfer(HW_DMA_channel_E channel)
+{
+    bool ret = false;
+    if ((data->initialized) &&
+        (channel < HW_DMA_CHANNEL_COUNT))
+    {
+        HW_DMA_channelData_S * const channelData = &data->channels[channel];
+
+        channelData->pending  = false;
+        channelData->status = HW_DMA_STATUS_IDLE;
         ret = true;
     }
     return ret;

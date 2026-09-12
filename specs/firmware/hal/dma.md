@@ -61,6 +61,25 @@ Covers:
 
 Needs: impl, test
 
+### Transfer abort
+`fw~hal_dma_004~1`
+
+The driver shall abort a channel's in-flight transfer on request, returning the
+channel to idle with no completion reported for the aborted transfer; an abort
+on an idle channel succeeds with no effect, and an abort on an uninitialized
+driver or an out-of-range channel returns false.
+
+Acceptance:
+- Aborting a started transfer leaves the channel's status idle, and neither its
+  completion callback nor a complete/error status is ever reported for it.
+- Aborting an idle channel returns true and leaves it idle.
+- An abort before initialization or on an out-of-range channel returns false.
+
+Covers:
+- sys~arch_005~1
+
+Needs: impl, test
+
 ## Completion and error reporting
 
 ### Asynchronous transfer completion
