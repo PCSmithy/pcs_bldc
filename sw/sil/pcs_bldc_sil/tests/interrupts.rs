@@ -14,8 +14,13 @@ use pcs_bldc_sil::{cid, Sil, SOURCE};
 
 /// The handler the sim USB driver registers by pointer at `HW_USB_init`.
 const USB_ISR: &str = "HW_USB_sim_irqHandler";
-/// The sim ADC's completion service, pended once per step in a booted image.
+/// The sim ADC's injected completion service, pended once per step in a
+/// booted image.
 const ADC_ISR: &str = "HW_ADC_sim_completionDispatch";
+/// The sim DMA's completion service: the ADC's regular passes start a transfer
+/// on each ADC every 1 ms, both pending this one service, dispatched at the
+/// following step's ISR phase.
+const DMA_ISR: &str = "HW_DMA_sim_completionDispatch";
 
 #[test]
 fn a_driver_registered_interrupt_wakes_a_real_task_every_step() {
@@ -109,11 +114,20 @@ fn a_config_time_one_shot_resolves_by_name_and_fires_on_its_grid_step() {
     let m = member.borrow();
     let ticks = m.find_isr(SYSTICK_ISR).expect("the port's kernel tick");
     let adc = m.find_isr(ADC_ISR).expect("the ADC completion service");
+    let dma = m.find_isr(DMA_ISR).expect("the DMA completion service");
     assert_eq!(m.isr_dispatch_count_of(ticks), 6, "one kernel tick per step");
     assert_eq!(m.isr_dispatch_count_of(adc), 6, "one ADC completion per step");
     assert_eq!(
+        m.isr_dispatch_count_of(dma),
+        5,
+        "each pass's DMA completion lands the following step; step 6's is still pending"
+    );
+    assert_eq!(
         m.isr_dispatch_count(),
-        m.isr_dispatch_count_of(ticks) + m.isr_dispatch_count_of(adc) + 1,
+        m.isr_dispatch_count_of(ticks)
+            + m.isr_dispatch_count_of(adc)
+            + m.isr_dispatch_count_of(dma)
+            + 1,
         "an unaccounted-for interrupt source appeared in the world"
     );
 }

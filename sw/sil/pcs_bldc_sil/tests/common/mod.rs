@@ -113,8 +113,14 @@ pub const ADC_OK: Status = Status {
     name: "HW_ADC_CONVERSION_STATUS_OK",
     ordinal: 2,
 };
+/// `HW_ADC_conversionStatus_E` — a DMA regular pass in flight, its completion
+/// not yet dispatched.
+pub const ADC_BUSY: Status = Status {
+    name: "HW_ADC_CONVERSION_STATUS_BUSY",
+    ordinal: 1,
+};
 /// `HW_ADC_conversionStatus_E` — a stalled channel's pass, the sim stand-in for a
-/// poll timeout.
+/// poll timeout or a lost DMA completion.
 pub const ADC_FAULT: Status = Status {
     name: "HW_ADC_CONVERSION_STATUS_FAULT",
     ordinal: 3,

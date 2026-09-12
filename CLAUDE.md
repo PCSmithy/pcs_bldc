@@ -242,7 +242,7 @@ sufficient to make the tooling aware of a new topic.
   needs the live Tauri core). `[impl->]`/`[test->]` tags live in `.js`
   and `.py` files too, and the UI verification surface is the playwright
   suite `sw/gui/tests/test_views.py` (over the devmock).
-- 173 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
+- 176 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
   with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs). The intentional defect baseline is
   **28**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`

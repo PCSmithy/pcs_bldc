@@ -151,6 +151,14 @@ static volatile uint32_t task200msRuns;
 static volatile uint32_t taskUsbRuns;
 static volatile uint32_t serverRuns;
 
+/* Private Function Declarations */
+
+// Init helpers shared by both targets' entry paths; main.c stays the only
+// caller of Error_Handler.
+static bool main_private_hwInit(void);
+static bool main_private_appInit(void);
+static bool main_private_createTasks(void);
+
 // Fold one body execution's duration into the task's window max.
 static void profileUpdate(profileTask_E task, uint32_t durationUs)
 {
@@ -321,14 +329,14 @@ int __io_putchar(int ch)
 #endif
 
 // HW-layer init, shared by both targets' entry paths.
-static bool prvHwInit(void)
+static bool main_private_hwInit(void)
 {
     bool ok = true;
     ok &= HW_systemClock_init(&HW_systemClock_config);
     ok &= HW_GPIO_init(&HW_GPIO_config);
     ok &= HW_OPAMP_init(&HW_OPAMP_config);   // before ADC: op-amps must be calibrated and running before the ADC samples their internal outputs
+    ok &= HW_DMA_init(&HW_DMA_config);   // must run before SPI and ADC init()
     ok &= HW_ADC_init(&HW_ADC_config);
-    ok &= HW_DMA_init(&HW_DMA_config);   // before SPI: SPI registers DMA completion callbacks
     ok &= HW_SPI_init(&HW_SPI_config);
     ok &= HW_I2C_init(&HW_I2C_config);
     ok &= HW_TIM_init(&HW_TIM_config);
@@ -336,9 +344,8 @@ static bool prvHwInit(void)
 }
 
 // IO/dev/app-layer init, shared by both targets' entry paths. Aggregates each
-// module's bool the same way prvHwInit does; main.c stays the only caller of
-// Error_Handler.
-static bool prvAppInit(void)
+// module's bool the same way main_private_hwInit does.
+static bool main_private_appInit(void)
 {
     bool ok = true;
     ok &= IO_AS5048_init(&IO_AS5048_config);
@@ -361,7 +368,7 @@ static bool prvAppInit(void)
 // Spawn the periodic tasks. Same names/priorities/stacks on both targets; each
 // allocates from the FreeRTOS heap, so a failure here (e.g. heap exhaustion) is
 // surfaced to the caller to halt loudly rather than silently drop a task.
-static bool prvCreateTasks(void)
+static bool main_private_createTasks(void)
 {
     bool ok = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
                            NULL, TASK_PRIORITY_1MS, NULL) == pdPASS);
@@ -408,9 +415,9 @@ void sil_fw_setIrqHooks(const SIL_irq_hooks_S * const hooks)
 
 bool sil_fw_start(void)
 {
-    bool ok = prvHwInit();
-    ok = ok && prvAppInit();
-    ok = ok && prvCreateTasks();
+    bool ok = main_private_hwInit();
+    ok = ok && main_private_appInit();
+    ok = ok && main_private_createTasks();
     if (ok)
     {
         // Fiber port: runs to first quiescence (all tasks blocked) and returns.
@@ -444,8 +451,8 @@ int main(void)
     // need a target-specific include. For now, gate it.
     HAL_Init();
 
-    bool initSuccess = prvHwInit();
-    initSuccess &= prvAppInit();
+    bool initSuccess = main_private_hwInit();
+    initSuccess &= main_private_appInit();
     if (!initSuccess)
     {
         Error_Handler();
@@ -453,7 +460,7 @@ int main(void)
 
     // Spawn the periodic tasks and hand control to the scheduler.
     // vTaskStartScheduler() does not return.
-    if (!prvCreateTasks())
+    if (!main_private_createTasks())
     {
         Error_Handler();
     }

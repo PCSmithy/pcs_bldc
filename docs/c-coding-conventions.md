@@ -68,7 +68,7 @@ descriptive name — e.g.
 ### Enum values
 
 `UPPER_SNAKE_CASE` with the enum's name as prefix (drop the `_E`):
-- `HW_ADC_TRIGGER_SOFTWARE`, `HW_ADC_TRIGGER_TIMER`
+- `HW_ADC_TRIGGER_SOFTWARE`, `HW_ADC_TRIGGER_HARDWARE`
 - `HW_ADC_XFER_POLLED`, `HW_ADC_XFER_DMA`
 - `HW_ADC_CHANNEL_1`, `HW_ADC_CHANNEL_COUNT`
 
@@ -130,19 +130,21 @@ one return.
 ### Explicit parens on compound boolean logic
 
 Never rely on operator precedence in compound `&&` / `||`
-expressions. Every operand gets its own parens, even simple
-identifiers:
+expressions. Every operand that contains an operator gets its own
+parens. A bare boolean identifier, or its `!` negation, has no
+precedence to protect and takes none:
 
 ```c
 // WRONG
 if (config == NULL || config->channels == NULL) ...
 if (rank < 1U || rank > MAX) ...
-if (a && b) ...
+if ((ret) && (!needsHALInit)) ...     // superfluous
 
 // RIGHT
 if ((config == NULL) || (config->channels == NULL)) ...
 if ((rank < 1U) || (rank > MAX)) ...
-if ((a) && (b)) ...
+if (ret && !needsHALInit) ...
+if (ret && (numEnabledRegular > 0U)) ...
 ```
 
 Multi-line formatting for readability when the chain gets long:

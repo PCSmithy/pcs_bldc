@@ -1,4 +1,5 @@
 #include "HW_ADC.h"
+#include "HW_DMA.h"
 #include "HW_TIM.h"
 #include "SIL_irq.h"
 #include "SIL_irq_double.h"
@@ -24,6 +25,9 @@ static HW_TIM_peripheralConfig_S timPeripherals[HW_TIM_PERIPHERAL_COUNT];
 static HW_TIM_channelConfig_S    timChannels[HW_TIM_CHANNEL_COUNT];
 static HW_TIM_config_S           timConfig;
 
+static HW_DMA_channelConfig_S dmaChannels[HW_DMA_CHANNEL_COUNT];
+static HW_DMA_config_S        dmaConfig;
+
 
 // Counting injected callbacks + the status each was handed.
 static uint32_t cbACalls;
@@ -44,9 +48,8 @@ static void injectedCbB(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E sta
     cbLastStatus = status;
 }
 
-// Good baseline: two channels, software + polled on both sequences. Channel 1
-// has regular inputs 3 and 7 and injected slots 0 and 1 enabled; channel 2 has
-// regular input 0.
+// Good baseline: two channels, software + polled regular, no injected slots.
+// Channel 1 has regular inputs 3 and 7 enabled; channel 2 has regular input 0.
 static void buildGoodConfig(void)
 {
     for (size_t ch = 0U; ch < HW_ADC_CHANNEL_COUNT; ch++)
@@ -54,32 +57,26 @@ static void buildGoodConfig(void)
         adcChannels[ch] = (HW_ADC_channelConfig_S){
             .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
             .xferMode            = HW_ADC_XFER_POLLED,
-            .injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE,
-            .injectedXferMode    = HW_ADC_XFER_POLLED,
             .vref                = VREF,
             .numBits             = NUM_BITS,
             .configureMultimode  = false };
     }
-    adcChannels[HW_ADC_CHANNEL_1].inputs[3].enabled         = true;
-    adcChannels[HW_ADC_CHANNEL_1].inputs[7].enabled         = true;
-    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].enabled = true;
-    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled = true;
-    adcChannels[HW_ADC_CHANNEL_2].inputs[0].enabled         = true;
+    adcChannels[HW_ADC_CHANNEL_1].inputs[3].enabled = true;
+    adcChannels[HW_ADC_CHANNEL_1].inputs[7].enabled = true;
+    adcChannels[HW_ADC_CHANNEL_2].inputs[0].enabled = true;
 
     adcConfig = (HW_ADC_config_S){
         .channels = adcChannels, .numChannels = HW_ADC_CHANNEL_COUNT };
 }
 
-// Channel 1 rewired to the timer-triggered interrupt path: one injected slot
-// sampling pin 3 (shared with the enabled regular input), rising edge.
+// Channel 1 gains the hardware-triggered injected path: slot 0 sampling pin 3
+// (shared with the enabled regular input), rising edge.
 static void makeChannel1Triggered(void)
 {
-    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode         = HW_ADC_TRIGGER_TIMER;
-    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode            = HW_ADC_XFER_INTERRUPT;
-    adcChannels[HW_ADC_CHANNEL_1].injectedTimerTrigger        = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO;
+    adcChannels[HW_ADC_CHANNEL_1].injectedTrigger        = HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO;
     adcChannels[HW_ADC_CHANNEL_1].injectedTriggerEdge         = HW_ADC_TRIGGER_EDGE_RISING;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].enabled   = true;
     adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].pinInput  = 3U;
-    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled   = false;
 }
 
 static void buildTimConfig(void)
@@ -136,6 +133,7 @@ void setUp(void)
     // Install clears the double's log; the hooks go back on in armTriggeredEngine.
     SIL_irq_double_install(11);
     SIL_irq_setHooks(NULL);
+    (void)HW_DMA_init(NULL);
     (void)HW_ADC_init(NULL);
     buildGoodConfig();
 
@@ -180,8 +178,9 @@ static void test_init_too_many_channels(void)
 static void test_init_rejects_injected_gap(void)
 {
     // Enabled slots must be contiguous from 0; [0]=on,[1]=off,[2]=on is a gap.
-    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled = false;
-    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[2].enabled = true;
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[2].enabled  = true;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[2].pinInput = 7U;
     TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
 }
 
@@ -272,6 +271,11 @@ static void test_readout_failure_modes(void)
     TEST_ASSERT_FALSE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
 
     TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+
+    // Initialized but no pass completed yet: the counts are undefined and a
+    // read refuses them.
+    TEST_ASSERT_FALSE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+
     HW_ADC_run1ms();
 
     // Disabled input, out-of-range index, and NULL destination all fail.
@@ -285,16 +289,29 @@ static void test_readout_failure_modes(void)
 // [test->fw~hal_adc_006~1]
 static void test_injected_sampling_and_readout(void)
 {
-    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
-    HW_ADC_run1ms();
+    // Two slots on channel 1: slot 0 on pin 3, slot 1 on pin 7.
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled  = true;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].pinInput = 7U;
+    armTriggeredEngine();
 
     uint32_t  count = 0U;
     float32_t volts = 0.0f;
-    // Enabled injected positions 0 and 1 are readable.
+    // Before the first trigger: nothing to read, and a disabled position fails.
     TEST_ASSERT_TRUE(HW_ADC_getInjectedCount(HW_ADC_CHANNEL_1, 0U, &count));
-    TEST_ASSERT_TRUE(HW_ADC_getInjectedVolts(HW_ADC_CHANNEL_1, 1U, &volts));
-    // A disabled position fails.
+    TEST_ASSERT_EQUAL_UINT32(0U, count);
     TEST_ASSERT_FALSE(HW_ADC_getInjectedCount(HW_ADC_CHANNEL_1, 2U, &count));
+
+    // One tick, one trigger, one completion: both enabled positions carry the
+    // ramp (slot offset 0x8000 + 16*slot + tick, mod 2^12).
+    HW_ADC_run1ms();
+    HW_TIM_advanceTime(UP_CROSS_US);
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedCount(HW_ADC_CHANNEL_1, 0U, &count));
+    TEST_ASSERT_EQUAL_UINT32(1U, count);
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedCount(HW_ADC_CHANNEL_1, 1U, &count));
+    TEST_ASSERT_EQUAL_UINT32(17U, count);
+    TEST_ASSERT_TRUE(HW_ADC_getInjectedVolts(HW_ADC_CHANNEL_1, 1U, &volts));
 
     // Volts use the same formula as the regular path.
     TEST_ASSERT_TRUE(HW_ADC_getInjectedCount(HW_ADC_CHANNEL_1, 1U, &count));
@@ -302,16 +319,12 @@ static void test_injected_sampling_and_readout(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, expected, volts);
 }
 
-/* ---- fw~hal_adc_003: timer-triggered injected — config validation ---- */
+/* ---- fw~hal_adc_003: hardware-triggered injected — config validation ---- */
 // [test->fw~hal_adc_001~1]
-static void test_init_rejects_unbuilt_injected_mode_combos(void)
+static void test_init_rejects_unknown_injected_trigger(void)
 {
-    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode = HW_ADC_TRIGGER_TIMER;
-    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode    = HW_ADC_XFER_POLLED;
-    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
-
-    adcChannels[HW_ADC_CHANNEL_1].injectedTriggerMode = HW_ADC_TRIGGER_SOFTWARE;
-    adcChannels[HW_ADC_CHANNEL_1].injectedXferMode    = HW_ADC_XFER_INTERRUPT;
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedTrigger = HW_ADC_INJECTED_TRIGGER_COUNT;
     TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
 }
 
@@ -323,7 +336,7 @@ static void test_init_rejects_out_of_range_injected_pin(void)
     TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
 }
 
-/* ---- fw~hal_adc_003 / _008: timer-triggered injected — engine behavior ---- */
+/* ---- fw~hal_adc_003 / _008: hardware-triggered injected — engine behavior ---- */
 // [test->fw~hal_adc_008~1]
 static void test_injected_status_walk_and_guards(void)
 {
@@ -335,8 +348,8 @@ static void test_injected_status_walk_and_guards(void)
     makeChannel1Triggered();
     armTriggeredEngine();
 
-    // Armed channel is BUSY until the first completion; the polled neighbor
-    // stays IDLE. Out-of-range channel and NULL destination fail.
+    // Armed channel is BUSY until the first completion; the neighbor with no
+    // injected slots stays IDLE. Out-of-range channel and NULL destination fail.
     TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_1, &status));
     TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_BUSY, status);
     TEST_ASSERT_TRUE(HW_ADC_getInjectedStatus(HW_ADC_CHANNEL_2, &status));
@@ -415,6 +428,113 @@ static void test_reinit_rewires_completion_and_clears_callback(void)
     TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
 }
 
+/* ---- fw~hal_adc_009: DMA software-triggered sampling ---- */
+static void makeChannel1DmaRegular(void)
+{
+    adcChannels[HW_ADC_CHANNEL_1].xferMode   = HW_ADC_XFER_DMA;
+    adcChannels[HW_ADC_CHANNEL_1].dmaChannel = HW_DMA_CHANNEL_ADC1_REG_CONVERSIONS;
+}
+
+// Arm the DMA engine behind the irq double: HW_DMA's completion registers
+// there, so pendedHandler is the DMA transfer-complete interrupt.
+static void armDmaEngine(void)
+{
+    for (size_t ch = 0U; ch < HW_DMA_CHANNEL_COUNT; ch++)
+    {
+        dmaChannels[ch] = (HW_DMA_channelConfig_S){
+            .direction = HW_DMA_DIRECTION_PERIPH_TO_MEM, .width = HW_DMA_WIDTH_16BIT, .channelNameStr = "dma" };
+    }
+    dmaConfig = (HW_DMA_config_S){ .channels = dmaChannels, .numChannels = HW_DMA_CHANNEL_COUNT };
+    SIL_irq_double_install(11);
+    TEST_ASSERT_TRUE(HW_DMA_init(&dmaConfig));
+}
+
+// [test->fw~hal_adc_001~1]
+static void test_init_accepts_dma_regular_rejects_hardware_regular(void)
+{
+    makeChannel1DmaRegular();
+    armDmaEngine();
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendedRegisterCalls);   // the DMA completion
+
+    adcChannels[HW_ADC_CHANNEL_1].triggerMode = HW_ADC_TRIGGER_HARDWARE;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+
+    // An unknown DMA channel is a config typo, rejected at init.
+    adcChannels[HW_ADC_CHANNEL_1].triggerMode = HW_ADC_TRIGGER_SOFTWARE;
+    adcChannels[HW_ADC_CHANNEL_1].dmaChannel  = HW_DMA_CHANNEL_COUNT;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+}
+
+// [test->fw~hal_adc_009~1]
+// [test->fw~hal_adc_008~1]
+static void test_dma_pass_lands_counts_at_completion(void)
+{
+    makeChannel1DmaRegular();
+    armDmaEngine();
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+    TEST_ASSERT_TRUE(HW_ADC_registerCallback(HW_ADC_CHANNEL_1, injectedCbA, NULL));
+
+    HW_ADC_run1ms();
+
+    // Pass in flight: BUSY, the never-completed counts refuse to read, the
+    // completion is pended, no callback yet.
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
+    uint32_t count = 123U;
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_BUSY, status);
+    TEST_ASSERT_FALSE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_EQUAL_UINT32(1U, SIL_irq_double.pendCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, cbACalls);
+
+    // Completion: the staged samples land as each enabled input's own result,
+    // the status walks to OK, and the callback fires once per pass.
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
+    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_EQUAL_UINT32(49U, count);   // ramp: input 3 offset 48 + tick 1
+    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 7U, &count));
+    TEST_ASSERT_EQUAL_UINT32(113U, count);  // ramp: input 7 offset 112 + tick 1
+    TEST_ASSERT_EQUAL_UINT32(1U, cbACalls);
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, cbLastStatus);
+}
+
+// [test->fw~hal_adc_009~1]
+static void test_dma_overlap_faults_and_counts_retained(void)
+{
+    makeChannel1DmaRegular();
+    armDmaEngine();
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+
+    HW_ADC_run1ms();
+    SIL_irq_double.pendedHandler();   // pass 1 completes: counts valid (tick 1)
+    HW_ADC_run1ms();                  // pass 2 in flight, completion withheld
+    HW_ADC_run1ms();                  // pass 3 starts over it: fault, abort, counts retained
+
+    HW_ADC_conversionStatus_E status = HW_ADC_CONVERSION_STATUS_IDLE;
+    uint32_t count = 123U;
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_FAULT, status);
+    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_EQUAL_UINT32(49U, count);   // pass 1's result, not pass 2's
+
+    // The aborted transfer is discarded: a late completion lands nothing.
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_FAULT, status);
+    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_EQUAL_UINT32(49U, count);
+
+    // The next pass starts a fresh transfer and recovers.
+    HW_ADC_run1ms();                  // pass 4 (tick 4)
+    SIL_irq_double.pendedHandler();
+    TEST_ASSERT_TRUE(HW_ADC_getStatus(HW_ADC_CHANNEL_1, &status));
+    TEST_ASSERT_EQUAL(HW_ADC_CONVERSION_STATUS_OK, status);
+    TEST_ASSERT_TRUE(HW_ADC_getCount(HW_ADC_CHANNEL_1, 3U, &count));
+    TEST_ASSERT_EQUAL_UINT32(52U, count);   // ramp: input 3 offset 48 + tick 4
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -437,12 +557,16 @@ int main(void)
 
     RUN_TEST(test_injected_sampling_and_readout);
 
-    RUN_TEST(test_init_rejects_unbuilt_injected_mode_combos);
+    RUN_TEST(test_init_rejects_unknown_injected_trigger);
     RUN_TEST(test_init_rejects_out_of_range_injected_pin);
     RUN_TEST(test_injected_status_walk_and_guards);
     RUN_TEST(test_falling_edge_selects_the_down_crossing);
     RUN_TEST(test_injected_callback_last_wins_and_null_unregisters);
     RUN_TEST(test_reinit_rewires_completion_and_clears_callback);
+
+    RUN_TEST(test_init_accepts_dma_regular_rejects_hardware_regular);
+    RUN_TEST(test_dma_pass_lands_counts_at_completion);
+    RUN_TEST(test_dma_overlap_faults_and_counts_retained);
 
     return UNITY_END();
 }

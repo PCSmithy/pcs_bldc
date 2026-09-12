@@ -12,32 +12,27 @@ schematic/BOM that are stale (they say 25 MHz). As-built deviations now
 live in `hw/rework-log.md` — update the schematic/BOM to match, and log any
 future rework there.
 
-## fw: move the regular ADC path to DMA, then disable AUTDLY
+## fw: move the regular ADC path to DMA, then disable AUTDLY — DONE (2026-09-11)
 
-**When:** before anything downstream (FOC, current-loop tuning) starts trusting
-a per-period injected sample. The DMA conversion is the prerequisite — AUTDLY
-cannot come off ahead of it.
+Closed by the `dma_adc_conversion_disable_AUTDLY` branch (`fw~hal_adc_009` /
+`fw~hal_adc_010`): the regular path runs HW_DMA-backed transfers (unlimited
+DMA request mode set once at init, before the injected arm), and AUTDLY is
+enabled only for polled channels.
 
-**Symptom:** roughly 1 in 208 injected samples goes missing on hardware at
-20 kHz.
+Bench closure (30 s comparison-cursor windows, `IO_bridge` `updateCount`
+against firmware time): both-polled read 596,619/600,000 and the DMA build
+596,577 — near-identical, exposing a **second defect**:
+`HW_TIM_setOutputEnabled`'s disable path (`HAL_TIM_PWM_Stop`) cleared CR1.CEN
+once CCER emptied, freezing the counter — and the TRGO2 timebase — ~2 µs per
+call at 3 calls/ms parked, 171 ms of stopped clock per 30 s. With the freeze
+fixed and the regular path on DMA, parked and spinning both read exactly
+600,000/600,000. The historic ~207/208 "AUTDLY defect" measurement was a
+blend of both mechanisms.
 
-**Mechanism:** `HW_ADC_init` forces `LowPowerAutoWait` (AUTDLY) on for both
-ADCs. AUTDLY is a per-peripheral CFGR bit, not per-group — it halts the
-sequencer until DR is read, and TIM1 TRGO2 triggers arriving in that window
-are dropped rather than queued.
-
-**Why it cannot simply be turned off:** the multi-rank polled regular read
-depends on it. With AUTDLY clear, `HAL_ADC_PollForConversion` clears EOC and
-EOS together, so ranks 2..N wait on an EOC that never re-arms — `HAL_TIMEOUT`
-per rank, stale Vbus/temp/OPAMP counts, and ~16 ms of blocking per `run1ms`
-pass inside a 1 ms task.
-
-**Fix:** move the regular path to `HAL_ADC_Start_DMA` with a completion
-callback, removing the polled-EOC dependency. AUTDLY can then be disabled.
-
-**Verify:** count JEOS ISR entries against TIM1 periods over ≥10 s of steady
-20 kHz operation with the regular path running. Expect 1:1; the current ratio
-is ~207/208.
+Neither defect class is expressible in the sim (the AUTDLY trigger-drop and
+CEN-stop semantics live below the sim TIM/ADC models); the bench measurement
+is the evidence, and `crest_sampling.rs` / `adc_faults.rs` carry the standing
+regression guards.
 
 ## sim: the injected dispatch sequence batches differently under a coarse grid
 

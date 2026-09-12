@@ -15,11 +15,13 @@
 
 /* Typedefs */
 
-// Applies to both the regular and the injected path.
+// Regular-sequence modes. The injected sequence has no mode: it is always
+// hardware-triggered (injectedTrigger names the event source) with interrupt
+// completion.
 typedef enum
 {
     HW_ADC_TRIGGER_SOFTWARE,
-    HW_ADC_TRIGGER_TIMER,
+    HW_ADC_TRIGGER_HARDWARE,
 } HW_ADC_triggerMode_E;
 
 // Polled is fine for slow signals (Vbus, temp); current sensing needs the
@@ -27,8 +29,7 @@ typedef enum
 typedef enum
 {
     HW_ADC_XFER_POLLED,
-    HW_ADC_XFER_INTERRUPT,  // currently supported only for injected channels
-    HW_ADC_XFER_DMA,        // not yet implemented; init() will reject
+    HW_ADC_XFER_DMA,
 } HW_ADC_xferMode_E;
 
 // Outcome of the most recent sampling pass. IDLE = the channel was never
@@ -47,12 +48,12 @@ typedef enum
     HW_ADC_TRIGGER_EDGE_FALLING,
 } HW_ADC_triggerEdge_E;
 
-typedef void (*HW_ADC_injectedCallback_F)(HW_ADC_channels_E channel,
-                                          HW_ADC_conversionStatus_E status,
-                                          void * context);
+typedef void (*HW_ADC_callback_F)(HW_ADC_channels_E channel,
+                                  HW_ADC_conversionStatus_E status,
+                                  void * context);
 
 /* Target Config */
-// HW_ADC_inputConfig_S / _injectedInputConfig_S / _channelConfig_S / _timerTrigger_E
+// HW_ADC_inputConfig_S / _injectedInputConfig_S / _channelConfig_S / _injectedTrigger_E
 #include "HW_ADC_target.h"
 
 typedef struct
@@ -72,6 +73,10 @@ bool HW_ADC_getCount(HW_ADC_channels_E channel, uint8_t inputIndex, uint32_t * c
 
 bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * const out);
 
+bool HW_ADC_registerCallback(HW_ADC_channels_E channel,
+                             HW_ADC_callback_F callback,
+                             void * context);
+
 // injectedIndex is the injected sequence position 0..3, NOT a physical IN#.
 // Task-context reads of ISR-written results are best-effort snapshots; the
 // callback is the only coherent consumer.
@@ -83,7 +88,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
 // NVIC preempt priority above configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY: it
 // and everything it reaches must make no FreeRTOS call, *FromISR included.
 bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
-                                     HW_ADC_injectedCallback_F callback,
+                                     HW_ADC_callback_F callback,
                                      void * context);
 
 bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,

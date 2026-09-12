@@ -4,6 +4,7 @@
 
 /* Includes */
 #include "lib_types.h"
+#include "HW_DMA.h"              // HW_DMA_channel_E (DMA-backed transfer mode)
 
 /* Typedefs */
 
@@ -25,11 +26,13 @@ typedef struct
 } HW_ADC_injectedInputConfig_S;
 
 
+// Injected-sequence hardware trigger source. The sim models its sources as
+// TIM TRGO events; a non-timer source would need its own sim event line.
 typedef enum
 {
-    HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
-    HW_ADC_TIMER_TRIGGER_COUNT,
-} HW_ADC_timerTrigger_E;
+    HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO,
+    HW_ADC_INJECTED_TRIGGER_COUNT,
+} HW_ADC_injectedTrigger_E;
 
 // One ADC peripheral. Lacks HAL handles; carries explicit numBits (the stm32g4
 // target derives it from Init.Resolution).
@@ -40,8 +43,7 @@ typedef struct
     HW_ADC_triggerMode_E triggerMode;
     HW_ADC_xferMode_E    xferMode;
 
-    HW_ADC_triggerMode_E injectedTriggerMode;
-    HW_ADC_xferMode_E    injectedXferMode;
+    HW_DMA_channel_E dmaChannel;
 
     float32_t vref;
     uint8_t   numBits;           // counts -> volts conversion uses (1 << numBits) - 1
@@ -49,8 +51,9 @@ typedef struct
     bool configureMultimode;     // master ADC of a pair applies multimode at init
 
     HW_ADC_inputConfig_S         inputs[HW_ADC_INPUTS_PER_CHANNEL];
+    // Always hardware-triggered with interrupt completion; any enabled slot arms it.
     HW_ADC_injectedInputConfig_S injectedInputs[HW_ADC_INJECTED_INPUTS_PER_CHANNEL];
 
-    HW_ADC_timerTrigger_E injectedTimerTrigger;
+    HW_ADC_injectedTrigger_E injectedTrigger;
     HW_ADC_triggerEdge_E  injectedTriggerEdge;
 } HW_ADC_channelConfig_S;

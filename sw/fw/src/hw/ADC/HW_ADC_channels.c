@@ -39,9 +39,9 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .multimode = { HW_ADC_CUBEMX_MULTIMODE_ADC1 },
 
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
-        .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
-        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
+        .xferMode            = HW_ADC_XFER_DMA,
+        // .xferMode            = HW_ADC_XFER_POLLED,
+        .dmaChannel          = HW_DMA_CHANNEL_ADC1_REG_CONVERSIONS,
         .vref                = 3.3f,
 
         .inputs         =
@@ -82,7 +82,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 }
             }
         },
-        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
+        .injectedTrigger = HW_ADC_INJECTED_TRIGGER_TIM1_TRGO2,
         .injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
@@ -99,9 +99,9 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .multimode = { 0U },
 
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
-        .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
-        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
+        .xferMode            = HW_ADC_XFER_DMA,
+        // .xferMode            = HW_ADC_XFER_POLLED,
+        .dmaChannel          = HW_DMA_CHANNEL_ADC2_REG_CONVERSIONS,
         .vref                = 3.3f,
 
         .inputs         =
@@ -156,7 +156,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 }
             }
         },
-        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_TIM1_TRGO2,
+        .injectedTrigger = HW_ADC_INJECTED_TRIGGER_TIM1_TRGO2,
         .injectedTriggerEdge = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
@@ -166,9 +166,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .channelNameStr      = "ADC1",
         .configureMultimode  = true,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
-        .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
-        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
+        .xferMode            = HW_ADC_XFER_DMA,
+        .dmaChannel          = HW_DMA_CHANNEL_ADC1_REG_CONVERSIONS,
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              =
@@ -183,7 +182,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
             // regular path, as on silicon.
             [0] = { .enabled = true, .inputNameStr = "ADC1_INJ_U", .pinInput = 6U },
         },
-        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+        .injectedTrigger = HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO,
         .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,
     },
 
@@ -192,9 +191,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .channelNameStr      = "ADC2",
         .configureMultimode  = false,
         .triggerMode         = HW_ADC_TRIGGER_SOFTWARE,
-        .xferMode            = HW_ADC_XFER_POLLED,
-        .injectedTriggerMode = HW_ADC_TRIGGER_TIMER,
-        .injectedXferMode    = HW_ADC_XFER_INTERRUPT,
+        .xferMode            = HW_ADC_XFER_DMA,
+        .dmaChannel          = HW_DMA_CHANNEL_ADC2_REG_CONVERSIONS,
         .vref                = 3.3f,
         .numBits             = 12U,
         .inputs              =
@@ -209,7 +207,7 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
             // Phase V ISENSE: shares pin IN7 with the regular path.
             [0] = { .enabled = true, .inputNameStr = "ADC2_INJ_V", .pinInput = 7U },
         },
-        .injectedTimerTrigger = HW_ADC_TIMER_TRIGGER_PWM_TIM_TRGO,
+        .injectedTrigger = HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO,
         .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,
     },
 #else

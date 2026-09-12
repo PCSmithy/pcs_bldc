@@ -17,7 +17,7 @@ The configuration is split in two:
   regular conversion sequence (inputs indexed by physical input number) and an
   injected conversion sequence (inputs indexed by dense sequence position).
 
-See also: [[overview]] (sys~arch_005~1).
+See also: [[overview]] (sys~arch_005~1), [[motor-control]] (sys~mc_001~1).
 
 ## Driver configuration and lifecycle
 
@@ -32,7 +32,7 @@ configuration is rejected by any of:
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config         | The config pointer or its channel array is NULL, or the channel count exceeds the available ADC channels.                                            |
 | Regular input  | A channel's enabled regular inputs' conversion ranks do not form the contiguous sequence 1..N, where N is the channel's enabled regular-input count. |
-| Injected input | A channel's enabled injected inputs are not contiguous from the first sequence position.                                                             |
+| Injected input | A channel's enabled injected inputs are not contiguous from the first sequence position, or the channel names an unknown injected trigger source.    |
 
 Acceptance:
 - A valid config initializes and calibrates every channel and returns true.
@@ -65,23 +65,28 @@ Needs: impl, test
 ### ADC trigger and transfer modes
 `fw~hal_adc_003~1`
 
-Each ADC channel's regular and injected sequences shall each operate under one
-trigger mode and one transfer mode:
+Each ADC channel's regular sequence shall operate under one trigger mode and
+one transfer mode:
 
 | Trigger mode | Sequence start |
 |--------------|----------------|
 | **Software** | The CPU starts the conversion sequence on demand. |
-| **Timer** | A hardware timer event starts the conversion sequence. |
+| **Hardware** | A hardware event (timer, external line) starts the conversion sequence. |
 
 | Transfer mode | Result extraction |
 |---------------|-------------------|
 | **Polled** | The CPU waits for each conversion and reads its result. |
-| **Interrupt** | Conversions complete under interrupt and results are read in the handler. |
 | **DMA** | A DMA stream moves results and signals completion asynchronously. |
 
+Each channel's injected sequence shall start on the channel's configured
+hardware trigger event and edge, its results read in the completion interrupt
+handler.
+
 Acceptance:
-- A channel configured in each listed trigger and transfer mode initializes
-  and produces conversions for its enabled inputs.
+- A channel configured in each listed regular trigger and transfer mode
+  initializes and produces conversions for its enabled regular inputs.
+- A channel with enabled injected inputs converts them once per configured
+  trigger event on the configured edge, and not otherwise.
 
 Covers:
 - sys~arch_005~1
@@ -95,7 +100,7 @@ On a channel configured software-triggered and polled, each sampling pass shall
 start the regular sequence and, holding the sequencer after each conversion
 until that conversion's result is read so no rank's result is lost or
 overwritten regardless of poll latency, poll each conversion to completion
-within a 2 ms per-conversion bound and store the latest raw count for every
+within a 1 ms per-conversion bound and store the latest raw count for every
 enabled regular input; a conversion that exceeds the bound records a fault in
 the channel's pollable conversion status and retains the input's prior count.
 
@@ -106,8 +111,30 @@ Acceptance:
   overwritten when the poll loop runs slower than the conversions.
 - A sampling pass invoked before initialization leaves all stored counts
   unchanged.
-- A conversion that stalls past the 2 ms bound sets the channel's conversion
+- A conversion that stalls past the 1 ms bound sets the channel's conversion
   status to fault and leaves that input's prior count unchanged.
+
+Covers:
+- sys~arch_005~1
+
+Needs: impl, test
+
+### DMA software-triggered sampling
+`fw~hal_adc_009~1`
+
+On a channel configured software-triggered with DMA regular transfer, each
+sampling pass shall start the regular sequence and, at its completion
+(`fw~hal_adc_008~1`), store each enabled regular input's conversion result as
+that input's latest raw count; a pass that starts while the prior pass's
+sequence is incomplete records a fault in the channel's pollable conversion
+status and leaves every enabled input's stored count unchanged.
+
+Acceptance:
+- After a completed pass, every enabled regular input's stored count is its
+  own most recent conversion result, on single- and multi-rank sequences.
+- A pass that starts while the prior pass's sequence is incomplete sets the
+  channel's conversion status to fault and leaves every enabled input's count
+  at its value from the last completed pass.
 
 Covers:
 - sys~arch_005~1
@@ -124,13 +151,13 @@ $$V = \frac{c}{2^{n} - 1}\, V_{ref}$$
 
 where $c$ is the raw count, $n$ the channel's configured ADC resolution in
 bits, and $V_{ref}$ the channel's reference voltage; a read of an uninitialized
-driver, an out-of-range channel or input, a disabled input, or a NULL
-destination returns false.
+driver, an input on a channel with no completed conversion, an out-of-range
+channel or input, a disabled input, or a NULL destination returns false.
 
 Acceptance:
 - For a known count, the volts reading equals the formula above.
-- A read of a disabled input, an out-of-range index, or before initialization
-  returns false.
+- A read of a disabled input, an out-of-range index, before initialization,
+  or before the channel's first completed conversion returns false.
 
 Covers:
 - sys~arch_005~1
@@ -162,14 +189,14 @@ Needs: impl, test
 `fw~hal_adc_006~1`
 
 Each channel shall provide an injected conversion sequence whose enabled inputs
-are addressed by dense sequence position, sampled per the channel's injected
-trigger and transfer mode (`fw~hal_adc_003~1`) and read back per position as a
-raw count and a voltage by the formula of `fw~hal_adc_005~1`.
+are addressed by dense sequence position, sampled at the channel's injected
+trigger event (`fw~hal_adc_003~1`) and read back per position as a raw count and
+a voltage by the formula of `fw~hal_adc_005~1`.
 
 Rationale:
 - The injected group is hardware-prioritized — an injected trigger preempts the
   regular sequence — and lands results in four dedicated registers, so inputs
-  use a dense 0..3 position. The driver carries it, with timer triggering
+  use a dense 0..3 position. The driver carries it, with hardware triggering
   (`fw~hal_adc_003~1`) and dual-ADC multimode (`fw~hal_adc_007~1`), for
   field-oriented control: phase currents sampled simultaneously across two ADCs
   at the PWM-period center, hardware-triggered from the TIM1 update event.
@@ -182,6 +209,29 @@ Acceptance:
 
 Covers:
 - sys~arch_005~1
+
+Needs: impl, test
+
+### Injected trigger integrity
+`fw~hal_adc_010~1`
+
+On a channel with a hardware-triggered injected sequence and a regular
+sequence configured software-triggered with DMA transfer, the driver shall
+complete one injected conversion sequence per injected trigger event while
+regular sampling passes run.
+
+Rationale:
+- A polled regular sequence's sequencer hold (`fw~hal_adc_004~1`) discards a
+  trigger event arriving during the hold; retaining that mode with its loss is
+  the accepted trade.
+
+Acceptance:
+- Over at least 10 s of sustained operation with injected trigger events at
+  20 kHz and regular sampling passes running, injected completion reports
+  (`fw~hal_adc_008~1`) equal trigger events one-to-one.
+
+Covers:
+- sys~mc_001~1
 
 Needs: impl, test
 

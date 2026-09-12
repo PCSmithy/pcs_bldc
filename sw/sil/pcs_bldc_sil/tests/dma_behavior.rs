@@ -4,11 +4,12 @@
 //! observation point (status + transfer counter), and the completion interrupt
 //! is dispatched by name on the engine grid — the driver carries no test-only API.
 //!
-//! Fabrication is the only route in: the sim `HW_SPI` models its own non-blocking
-//! completion rather than delegating to `HW_DMA_startTransfer` (only the stm32g4
-//! SPI driver does that), so no firmware path in this world starts a transfer.
-//! `HW_DMA_startTransfer` itself — argument validation, the direction dispatch,
-//! the mem->periph `lastMem` capture — is unit-tested in `test_HW_DMA.c`.
+//! Fabrication is the route into the TX channel: the sim `HW_SPI` models its own
+//! non-blocking completion rather than delegating to `HW_DMA_startTransfer` (only
+//! the stm32g4 SPI driver does that). The ADC channels are driven by the real
+//! regular-sequence passes; `adc_faults.rs` wedges and aborts them through the
+//! stall knob. `HW_DMA_startTransfer` itself — argument validation, the direction
+//! dispatch, the mem->periph `lastMem` capture — is unit-tested in `test_HW_DMA.c`.
 
 mod common;
 use common::{assert_status, set_bool, u64_at, Status, DMA_COMPLETE, DMA_ERROR, DMA_IDLE};

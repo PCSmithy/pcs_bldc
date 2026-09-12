@@ -10,7 +10,7 @@ use pcs_bldc_sil::board::{
 use pcs_bldc_sil::{Board, CurrentSenseParams, MotorParams, Sil};
 
 mod common;
-use common::{assert_status, plant, spin_up, tap_button, u64_at, ADC_OK, GRID_US};
+use common::{assert_status, plant, spin_up, tap_button, u64_at, ADC_BUSY, GRID_US};
 
 /// The sim ADC's completion interrupt, resolved by name off the image's DWARF.
 const COMPLETION_ISR: &str = "HW_ADC_sim_completionDispatch";
@@ -104,6 +104,45 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
 }
 
 
+// The fw~hal_adc_010 acceptance window: at least 10 s of sustained operation at
+// the 20 kHz trigger rate with regular sampling passes running. The regular DMA
+// path runs on the real 1 ms task beside the injected stream the whole way.
+// [test->fw~hal_adc_010~1]
+#[test]
+fn injected_completions_equal_timer_events_over_ten_seconds() {
+    let Board { mut sim, fw_member, .. } = board_with(Sil::options().grid_us(GRID_US), 0.8);
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    assert!(!fault_latched(&sim), "no fault through boot");
+
+    let completion = fw_member
+        .borrow()
+        .find_isr(COMPLETION_ISR)
+        .expect("completion interrupt registered");
+    let before = fw_member.borrow().isr_dispatch_count_of(completion);
+    let steps = 200_000u64; // 10 s of 50 µs PWM periods
+    for _ in 0..steps {
+        sim.step().expect("engine step");
+    }
+    let after = fw_member.borrow().isr_dispatch_count_of(completion);
+    assert_eq!(
+        after - before,
+        steps,
+        "completed injected sequences equal trigger events one-to-one over 10 s"
+    );
+
+    // The concurrency condition held: the regular DMA path is still cycling on
+    // both ADCs — at this exact-tick boundary a healthy channel's pass is in
+    // flight (FAULT is the failure signal).
+    for ch in 0..2 {
+        assert_status(
+            &sim,
+            &format!("HW_ADC_data.channelData[{ch}].status"),
+            &ADC_BUSY,
+            "regular DMA path cycling beside the injected stream",
+        );
+    }
+}
+
 // [test->fw~hal_adc_003~1]
 // [test->fw~hal_adc_008~1]
 #[test]
@@ -155,14 +194,15 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
     assert!(max_uv < 0.025, "injected tracks the plant per period ({max_uv:.4} A)");
     assert!(max_w < 0.040, "derived W tracks the plant ({max_w:.4} A)");
 
-    // Coexistence: the regular 1 ms sequencer keeps running on the shared
-    // pins throughout — its per-pass status is still OK on both ADCs.
+    // Coexistence: the regular 1 ms sequencer keeps cycling on the shared
+    // pins throughout — at this exact-tick boundary a healthy channel's pass
+    // is in flight (FAULT is the failure signal).
     for ch in 0..2 {
         assert_status(
             &sim,
-            &format!("HW_ADC_data.status[{ch}]"),
-            &ADC_OK,
-            "regular path healthy beside the injected stream",
+            &format!("HW_ADC_data.channelData[{ch}].status"),
+            &ADC_BUSY,
+            "regular path cycling beside the injected stream",
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Timer-triggered injected sampling: the sim twin of the TIM1 TRGO2 → ADC1/ADC2
+//! Hardware-triggered injected sampling: the sim twin of the TIM1 TRGO2 → ADC1/ADC2
 //! chain, asserted white-box against the real firmware. The sim board config arms
 //! both channels (rising edge, one slot each on pins IN6/IN7); triggers land during
 //! the TIM advance and completions drain through the SIL_irq service, so status,
@@ -30,13 +30,13 @@ fn injected_samples_the_shared_pin_and_completes() {
     for ch in 0..2 {
         assert_status(
             &sim,
-            &format!("HW_ADC_data.injectedStatus[{ch}]"),
+            &format!("HW_ADC_data.channelData[{ch}].injectedConversionStatus"),
             &ADC_OK,
             &format!("channel {ch} injected conversion completed"),
         );
     }
     assert_eq!(
-        u64_at(&sim, "HW_ADC_data.pendingCompletions[0]"),
+        u64_at(&sim, "HW_ADC_data.channelData[0].pendingCompletions"),
         0,
         "every queued conversion has been drained"
     );
