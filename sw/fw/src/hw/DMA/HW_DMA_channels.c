@@ -68,6 +68,60 @@ static const HW_DMA_channelConfig_S HW_DMA_channelConfig[] =
         .channelNameStr = "AS5048_RX",
 #endif
     },
+    [HW_DMA_CHANNEL_ADC1_REG_CONVERSIONS] =
+    {
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+        // ADC1 data register -> memory, 16-bit, DMAMUX request ADC1.
+        .hdma =
+        {
+            .Instance = DMA1_Channel3,
+            .Init =
+            {
+                .Request             = DMA_REQUEST_ADC1,
+                .Direction           = DMA_PERIPH_TO_MEMORY,
+                .PeriphInc           = DMA_PINC_DISABLE,
+                .MemInc              = DMA_MINC_ENABLE,
+                .PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
+                .MemDataAlignment    = DMA_MDATAALIGN_HALFWORD,
+                .Mode                = DMA_NORMAL,
+                .Priority            = DMA_PRIORITY_HIGH,
+            },
+        },
+        .periphAddress = (uint32_t)&(ADC1->DR),
+        .irqn          = DMA1_Channel3_IRQn,
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .direction      = HW_DMA_DIRECTION_PERIPH_TO_MEM,
+        .width          = HW_DMA_WIDTH_16BIT,
+        .channelNameStr = "ADC1_DMA",
+#endif
+    },
+    [HW_DMA_CHANNEL_ADC2_REG_CONVERSIONS] =
+    {
+#if (BUILD_TARGET == BUILD_TARGET_STM32G4)
+        // ADC2 data register -> memory, 16-bit, DMAMUX request ADC2.
+        .hdma =
+        {
+            .Instance = DMA1_Channel4,
+            .Init =
+            {
+                .Request             = DMA_REQUEST_ADC2,
+                .Direction           = DMA_PERIPH_TO_MEMORY,
+                .PeriphInc           = DMA_PINC_DISABLE,
+                .MemInc              = DMA_MINC_ENABLE,
+                .PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
+                .MemDataAlignment    = DMA_MDATAALIGN_HALFWORD,
+                .Mode                = DMA_NORMAL,
+                .Priority            = DMA_PRIORITY_HIGH,
+            },
+        },
+        .periphAddress = (uint32_t)&(ADC2->DR),
+        .irqn          = DMA1_Channel4_IRQn,
+#elif (BUILD_TARGET == BUILD_TARGET_SIM)
+        .direction      = HW_DMA_DIRECTION_PERIPH_TO_MEM,
+        .width          = HW_DMA_WIDTH_16BIT,
+        .channelNameStr = "ADC2_DMA",
+#endif
+    },
 };
 
 const HW_DMA_config_S HW_DMA_config =

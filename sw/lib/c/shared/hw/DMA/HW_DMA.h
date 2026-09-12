@@ -40,5 +40,10 @@ bool HW_DMA_init(const HW_DMA_config_S * const config);
 // range, memory is NULL, or numItems is zero.
 bool HW_DMA_startTransfer(HW_DMA_channel_E channel, void * memory, uint32_t numItems);
 
+// Abort an in-flight transfer: the channel returns to idle and no completion is
+// reported for it. Idle channels are a no-op success; returns false before init
+// or on an out-of-range channel.
+bool HW_DMA_abortTransfer(HW_DMA_channel_E channel);
+
 HW_DMA_status_E HW_DMA_getStatus(HW_DMA_channel_E channel);
 bool HW_DMA_registerCallback(HW_DMA_channel_E channel, HW_DMA_completeCallback_F callback, void * context);
