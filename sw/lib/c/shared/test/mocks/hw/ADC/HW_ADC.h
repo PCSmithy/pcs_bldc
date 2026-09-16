@@ -36,3 +36,5 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
 bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
                                      HW_ADC_callback_F callback,
                                      void * context);
+
+void HW_ADC_setInjectedIrqMasked(bool masked);

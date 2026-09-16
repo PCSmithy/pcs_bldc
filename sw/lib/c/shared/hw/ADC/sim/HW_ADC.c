@@ -705,6 +705,13 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
     return ret;
 }
 
+// [impl->fw~conn_trace_008~1]
+void HW_ADC_setInjectedIrqMasked(bool masked)
+{
+    // The framework holds a masked dispatch pending, as the NVIC does.
+    SIL_irq_setEnabled(HW_ADC_completionIrqHandle, !masked);
+}
+
 // [impl->fw~hal_adc_008~1]
 bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
                               HW_ADC_conversionStatus_E * const out)

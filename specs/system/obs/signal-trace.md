@@ -10,19 +10,19 @@ tags: [system, obs]
 
 The firmware shall stream samples of host-selected memory locations
 (`sys~obs_002~1`) over the protocol (`sys~conn_001~1`), sampling each
-location at its host-assigned period of 1 ms, 10 ms, or 100 ms,
-capturing locations that share a sampling instant as one coherent
-snapshot, and batching samples with the millisecond timestamp of their
-capture.
+location at its host-assigned period of one PWM cycle, 1 ms, or 10 ms,
+capturing the locations that share a period as one coherent snapshot
+each time it falls due, and batching samples with the PWM-cycle index
+of their capture.
 
 Acceptance:
 
-- A 32-bit counter the firmware increments each millisecond, traced at
-  1 ms, arrives with consecutive values at consecutive timestamps.
-- Two variables the firmware updates together each millisecond, traced
-  at 1 ms, arrive with mutually consistent values in every sample.
-- Signals assigned 1 ms, 10 ms, and 100 ms periods trace concurrently,
-  each at its own period.
+- A 32-bit counter the firmware increments each PWM cycle, traced at one
+  cycle, arrives with consecutive values at consecutive cycle indices.
+- Two variables the firmware updates together each cycle, traced at one
+  cycle, arrive with mutually consistent values in every sample.
+- Signals assigned the one-cycle, 1 ms, and 10 ms periods trace
+  concurrently, each at its own period.
 
 See also: [[signal-selection]], [[identity-gate]]
 

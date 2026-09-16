@@ -6,14 +6,14 @@
 use prost::Message;
 
 /// The minimal-varint wire bytes for the envelope of request_id 7 carrying
-/// WatchRequest [(0x2000_0000, 4, 1), (0x2000_0010, 2, 10)] — hand-derived
+/// WatchRequest [(0x2000_0000, 4, 1), (0x2000_0010, 2, 20)] — hand-derived
 /// by the oracle in sw/sil/pcs_bldc_sil/tests/trace_stream.rs, the encoding
 /// the firmware accepted on real hardware.
 const WATCH_REQUEST_WIRE: &[u8] = &[
     0x08, 0x07, // request_id 7
     0xF2, 0x01, 0x18, // envelope field 30 (WatchRequest), length 24
     0x0A, 0x0A, 0x08, 0x80, 0x80, 0x80, 0x80, 0x02, 0x10, 0x04, 0x18, 0x01, 0x0A, 0x0A, 0x08, 0x90,
-    0x80, 0x80, 0x80, 0x02, 0x10, 0x02, 0x18, 0x0A,
+    0x80, 0x80, 0x80, 0x02, 0x10, 0x02, 0x18, 0x14,
 ];
 
 fn prost_envelope(request_id: u32, payload: pcs_proto::shared::envelope::Payload) -> Vec<u8> {
@@ -30,12 +30,12 @@ fn watch_request_matches_hand_rolled_bytes() {
         pcs_proto::trace::Watch {
             address: 0x2000_0000,
             size: 4,
-            period_ms: 1,
+            period_cycles: 1,
         },
         pcs_proto::trace::Watch {
             address: 0x2000_0010,
             size: 2,
-            period_ms: 10,
+            period_cycles: 20,
         },
     ];
     let bytes = prost_envelope(
@@ -54,8 +54,10 @@ fn stream_envelope_omits_zero_request_id() {
     let bytes = prost_envelope(
         0,
         pcs_proto::shared::envelope::Payload::Samples(pcs_proto::trace::Samples {
-            tick_ms: 0,
+            first_cycle: 0,
             data: vec![0xAB],
+            period_cycles: 1,
+            count: 1,
         }),
     );
     assert_eq!(&bytes[..2], &[0x8A, 0x02]);

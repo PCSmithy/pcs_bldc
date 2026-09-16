@@ -99,3 +99,36 @@ Covers:
 - sys~safety_001~1
 
 Needs: impl, test
+
+## Diagnostics
+
+### Link throughput test
+`fw~conn_server_005~1`
+
+An accepted `LinkTestRequest` shall stream `LinkTestFrame` messages —
+sequence numbers 0 through the requested count minus 1, each payload
+of the requested size with byte $i$ equal to $(\text{seq} + i) \bmod
+256$ — as many per millisecond as the transport accepts whole frames
+(`fw~conn_proto_004~1`), a running test abandoned when the serial channel
+loses the host connection (`fw~conn_serial_005~1`), the request rejected
+when:
+
+| Rejected when |
+|---------------|
+| The payload size is outside 1..256 bytes |
+| The frame count is outside 1..1000000 |
+| A test is in progress |
+
+Acceptance:
+- An accepted request yields exactly the requested count of frames with
+  consecutive sequence numbers and the pattern payload.
+- A request during a test is rejected; a request after the count is
+  reached is accepted.
+- A disconnect ends a running test; a request after reconnect is
+  accepted with sequence numbers restarting at 0.
+- Each rejection condition rejects the request.
+
+Covers:
+- sys~conn_004~1
+
+Needs: impl, test

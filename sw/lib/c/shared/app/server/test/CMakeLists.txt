@@ -3,7 +3,7 @@
 add_executable(test_app_server test_app_server.c)
 target_link_libraries(test_app_server PRIVATE
   app_server
-  lib_cobs lib_crc32
+  lib_cobs lib_crc32 lib_utils
   freertos_host_hooks
   unity
 )

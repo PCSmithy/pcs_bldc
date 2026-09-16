@@ -10,9 +10,10 @@ tags: [system, mc]
 
 The firmware shall drive the motor through one of a set of selectable
 commutation methods — each receiving the speed target, motor shaft angle,
-and phase currents, and producing the three-phase bridge duty commands —
-with the active method selectable only while the bridge is disabled, and
-bridge enable permitted only while the gate driver reports operational.
+phase currents, and bus voltage, and producing the three-phase bridge duty
+commands — with the active method selectable only while the bridge is
+disabled, and bridge enable permitted only while the gate driver reports
+operational.
 
 Acceptance:
 - Each registered method, while active, drives the bridge duty commands

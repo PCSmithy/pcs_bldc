@@ -8,6 +8,7 @@ import { store, subscribe } from "../state.js";
 import { histories, lowerBound } from "./history.js";
 import { meta } from "./watchflow.js";
 import { traceDashed } from "./colors.js";
+import { periodLabel } from "./budget.js";
 import { appearanceOf, resolvedColor } from "./appearance.js";
 import { GlTraces, buildTraceGeometry, arcAtX, parseColor, DOT_SIZE_PX } from "./glrender.js";
 import { envelopeTable } from "./decimate.js";
@@ -569,7 +570,7 @@ export class PlotWidget {
         return `<span class="legend-entry" title="${esc(p)}">
           <span class="legend-bar" style="background:${resolvedColor(p)}"></span>
           <span class="legend-name mono">${esc(shortName(p))}</span>
-          <span class="legend-period">${w ? `${w.period_ms}ms` : ""}</span>
+          <span class="legend-period">${w ? periodLabel(w.period_cycles) : ""}</span>
         </span>`;
       })
       .join("");
@@ -846,8 +847,10 @@ export class PlotWidget {
 
   renderXAxis() {
     const [t0, t1] = this.window;
-    // More decimals as the paused zoom narrows, so labels stay distinct.
-    const dp = t1 - t0 < 2000 ? 3 : 1;
+    // More decimals as the paused zoom narrows, so labels stay distinct: a
+    // one-cycle tick sits on a 0.05 ms grid, so 4 dp is the true resolution.
+    const span = t1 - t0;
+    const dp = span < 10 ? 4 : span < 2000 ? 3 : 2;
     const fmt = (t) => `${(t / 1000).toFixed(dp)} s`;
     const html =
       `<span class="mono">${fmt(t0)}</span><span class="mono">${fmt((t0 + t1) / 2)}</span><span class="mono">${fmt(t1)}</span>`;

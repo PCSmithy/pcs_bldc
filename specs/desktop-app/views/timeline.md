@@ -23,7 +23,7 @@ widget rendering the same X range per:
 While paused, the paused span's samples are retained for the whole
 pause, and newly arriving samples (`app~obs_004~1`) are retained for
 the first 120 s of the pause — a longer pause surfacing the unretained
-interval as a tick-count gap on resume.
+interval as a sample-time gap on resume, at every sample period alike.
 
 Acceptance:
 
@@ -33,7 +33,9 @@ Acceptance:
   paused span renders however long the pause holds.
 - Resuming within 120 s renders the live span including the samples
   that arrived while paused; resuming later renders the unretained
-  interval as a tick-count gap.
+  interval as a sample-time gap.
+- A one-cycle signal fills a 60 s span, and resuming within 120 s
+  renders the samples it received while paused.
 
 See also: [[workspace]]
 
@@ -47,7 +49,7 @@ Needs: impl, test
 
 While the timeline (`app~views_008~1`) is paused, the app shall adjust
 every plot widget's shared X range per the actions below, the range
-bounded between 10 ms and the paused span:
+bounded between 1 ms and the paused span:
 
 | Action | Behavior |
 |--------|----------|
@@ -63,7 +65,7 @@ Acceptance:
   widget, about the held cursor time or, with none held, the range
   center.
 - Panning stops at the paused span's edges, zooming out at the span,
-  and zooming in at 10 ms; a step into any bound leaves the range
+  and zooming in at 1 ms; a step into any bound leaves the range
   unchanged.
 - A horizontal drag on one plot widget sets every plot widget's range
   to the dragged extent.

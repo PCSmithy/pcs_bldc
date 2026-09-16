@@ -12,7 +12,7 @@ const ELF_BUILD = FORCED === "mismatch" ? "1d77b2e4a09c" : DEVICE_BUILD;
 
 // A plausible firmware namespace, ~704 leaves.
 const MODULES = [
-  ["app_motorControl_data.channels[0]", ["velocityMeasured_radPerSec:f32", "velocitySetpointCurrent_radPerSec:f32", "mechanicalAngle_rad:f32", "magneticAngle_rad:f32", "busCurrent:f32", "faultLatched:bool", "encoderFaultCount:u16", "duty[0]:f32", "duty[1]:f32", "duty[2]:f32", "phaseCurrent_a[0]:f32", "phaseCurrent_a[1]:f32", "phaseCurrent_a[2]:f32"]],
+  ["app_motorControl_data.channels[0]", ["velocityMeasured_radPerSec:f32", "velocitySetpointCurrent_radPerSec:f32", "mechanicalAngle_rad:f32", "magneticAngle_rad:f32", "busCurrent:f32", "currentQ_a:f32", "faultLatched:bool", "encoderFaultCount:u16", "duty[0]:f32", "duty[1]:f32", "duty[2]:f32", "phaseCurrent_a[0]:f32", "phaseCurrent_a[1]:f32", "phaseCurrent_a[2]:f32"]],
   // Read-only fixtures (const config in rodata) for the hide-const filter.
   ["IO_bridge_channelConfig", ["phaseCurrent_gain[0]:f32:ro", "phaseCurrent_gain[1]:f32:ro", "phaseCurrent_gain[2]:f32:ro", "deadtime_ns:u16:ro", "pwmFreq_hz:u32:ro"]],
   ["IO_AS5048_data.channels[0]", ["raw:u16", "angle_deg:f32", "angle_rad:f32", "status:enum"]],
@@ -113,6 +113,7 @@ export const mock = {
         connected = FORCED !== "lost";
         return { connected, port: "COM8", device_build_id: DEVICE_BUILD };
       case "load_elf":
+        window.__devmockElfLoads = (window.__devmockElfLoads || 0) + 1;
         if (FORCED === "badelf") throw `read ${args.path}: os error 2 (not found)`;
         return { build_id: ELF_BUILD, signal_count: signals.length };
       case "list_signals": {
@@ -121,31 +122,39 @@ export const mock = {
           .filter((s) => !needle || s.path.toLowerCase().includes(needle))
           .slice(0, args.limit || 400);
       }
-      case "install_watches":
+      case "install_watches": {
         // Test surface: every install call, in order, for one-recommit
         // assertions.
         (window.__devmockInstalls ??= []).push(args.watches || []);
         if (FORCED === "rejected") throw "exceeds link budget";
-        watchList = (args.watches || []).map((w) => {
+        const requested = (args.watches || []).map((w) => {
           const sig = signals.find((s) => s.path === w.path);
           return {
             path: w.path,
-            period_ms: w.period_ms,
+            period_cycles: w.period_cycles,
             size: sig?.size ?? 4,
             kind: sig?.kind ?? "f32",
           };
         });
-        // An accepted list restarts the stream from tick 0 — and the mock
-        // backfills ~66 s at once so 60 s spans and pause/zoom are
-        // exercisable immediately.
-        streamTick = 0;
+        // Budget admission (fw~conn_trace_002), with the board's causes — the
+        // app only presents the cause it gets back.
+        const want = usage(requested);
+        if (want.u > RAM_BUDGET) throw "exceeds sample-RAM budget";
+        if (want.r > LINK_BUDGET) throw "exceeds link budget";
+        watchList = requested;
+        // An accepted list restarts the stream from cycle 0 — and the mock
+        // backfills ~66 s at once — at every period alike, retention
+        // being uniform — so 60 s spans and pause/zoom are exercisable
+        // immediately.
+        streamCycle = 0;
         setTimeout(() => {
-          emitBatchRange(0, BACKFILL_MS);
-          streamTick = BACKFILL_MS;
+          emitBatchRange(0, BACKFILL_CYCLES);
+          streamCycle = BACKFILL_CYCLES;
         }, 0);
         // The Tauri side pushes a trace-status event on every list change.
         emit("trace-status", traceStatusInfo());
         return traceStatusInfo();
+      }
       case "clear_watches":
         watchList = [];
         emit("trace-status", traceStatusInfo());
@@ -169,67 +178,121 @@ export const mock = {
 };
 
 // ── trace stream fixtures: deterministic waveforms per watched signal, a
-// gap window every ~5 s, budgets computed with the real admission formulas
-// (u = 4 + Σsize, r = Σ(size·1000/p) + 21·max(1000/p)) so the meters and
-// suggested-fix math can be QA'd honestly.
+// dropout window every ~5 s, and budgets computed with the real admission
+// formulas (fw~conn_trace_002) so the meters and suggested-fix math can be
+// QA'd honestly. Everything here runs in the wire's PWM-cycle domain; the
+// emitted tick is the cycle index in ms, one cycle = 0.05 ms.
 
 let watchList = [];
-let streamTick = 0;
+let streamCycle = 0;
+
+const CYCLES_PER_MS = 20;
+const CYCLES_PER_S = 20_000;
+const WIRE_OVERHEAD_W = 27;
+const SAMPLES_DATA_CAPACITY = 256;
+const RAM_BUDGET = 2048;
+const LINK_BUDGET = 480_000;
+
+// The board staggers its period groups so two captures never land on the
+// same cycle (app_server_trace.c): a group's cycle indices are ≡ its offset
+// (mod its period).
+const GROUP_OFFSET = { 1: 0, 20: 1, 200: 2 };
+
+/** First cycle >= `from` on a group's stagger grid. */
+function firstCycle(from, period) {
+  const off = GROUP_OFFSET[period] ?? 0;
+  return from + ((((off - from) % period) + period) % period);
+}
+
+/** A watch list by period: [{ period, size, entries }]. */
+function groups(list = watchList) {
+  const byPeriod = new Map();
+  for (const w of list) {
+    if (!byPeriod.has(w.period_cycles)) {
+      byPeriod.set(w.period_cycles, { period: w.period_cycles, size: 0, entries: [] });
+    }
+    const g = byPeriod.get(w.period_cycles);
+    g.size += w.size;
+    g.entries.push(w);
+  }
+  return [...byPeriod.values()];
+}
+
+/** The fw~conn_trace_002 formulas over a watch list → { u, r }. */
+function usage(list) {
+  let u = 0, r = 0;
+  for (const g of groups(list)) {
+    const f = CYCLES_PER_S / g.period;
+    u += Math.max(1, CYCLES_PER_MS / g.period) * (4 + g.size);
+    r += g.size * f + WIRE_OVERHEAD_W * Math.min(f, Math.max(1000, Math.floor((f * g.size) / SAMPLES_DATA_CAPACITY)));
+  }
+  return { u, r };
+}
 
 function traceStatusInfo() {
-  let sum = 0, rate = 0, maxF = 0;
-  for (const w of watchList) {
-    const f = 1000 / w.period_ms;
-    sum += w.size;
-    rate += w.size * f;
-    if (f > maxF) maxF = f;
-  }
+  const { u, r } = usage(watchList);
   return {
-    ram_budget_bytes: 2048,
-    ram_worst_tick_bytes: watchList.length ? 4 + sum : 0,
-    link_budget_bytes_per_s: 1100000,
-    link_rate_bytes_per_s: watchList.length ? rate + 21 * maxF : 0,
+    ram_budget_bytes_per_ms: RAM_BUDGET,
+    ram_usage_bytes_per_ms: Math.round(u),
+    link_budget_bytes_per_s: LINK_BUDGET,
+    link_rate_bytes_per_s: Math.round(r),
   };
 }
 
-function waveform(path, kind, tick) {
-  const phase = [...path].reduce((a, c) => a + c.charCodeAt(0), 0) % 97;
-  if (kind === "bool") return Math.sin(tick / 700 + phase) > 0 ? 1 : 0;
-  if (kind === "enum") return Math.floor(tick / 2000 + phase) % 4;
-  if (kind === "u16" || kind === "u32") return (tick + phase * 1000) % 65536;
-  return Math.sin(tick / (300 + phase * 5) + phase) * (2 + (phase % 5));
+// Per-path phase, memoized: a 20 kHz backfill calls waveform 200 k+ times
+// a signal, and re-walking the path string each time dominates it.
+const PHASES = new Map();
+function phaseOf(path) {
+  let p = PHASES.get(path);
+  if (p === undefined) {
+    p = [...path].reduce((a, c) => a + c.charCodeAt(0), 0) % 97;
+    PHASES.set(path, p);
+  }
+  return p;
 }
 
-const BATCH_MS = 50;
-const GAP_EVERY_MS = 5000;
-const GAP_LEN_MS = 120;
-const BACKFILL_MS = 66_000;
+function waveform(path, kind, t) {
+  const phase = phaseOf(path);
+  if (kind === "bool") return Math.sin(t / 700 + phase) > 0 ? 1 : 0;
+  if (kind === "enum") return Math.floor(t / 2000 + phase) % 4;
+  if (kind === "u16" || kind === "u32") return (Math.round(t) + phase * 1000) % 65536;
+  // A ~5 ms ripple rides the slow swing: aliased away at 1 ms, resolved at
+  // 20 kHz — a one-cycle watch has to look different from a slow one.
+  return Math.sin(t / (300 + phase * 5) + phase) * (2 + (phase % 5)) + Math.sin(t / 0.8) * 0.4;
+}
 
-function emitBatchRange(t0, t1) {
-  const inGap = (t) => t % GAP_EVERY_MS >= GAP_EVERY_MS - GAP_LEN_MS;
+const BATCH_CYCLES = 50 * CYCLES_PER_MS;     // 50 ms of wire time a batch
+const GAP_EVERY_CYCLES = 5 * CYCLES_PER_S;
+const GAP_LEN_CYCLES = 120 * CYCLES_PER_MS;
+const BACKFILL_CYCLES = 66 * CYCLES_PER_S;
+
+/** Emit one "samples" event covering cycle indices [c0, c1). */
+function emitBatchRange(c0, c1) {
+  const inGap = (c) => c % GAP_EVERY_CYCLES >= GAP_EVERY_CYCLES - GAP_LEN_CYCLES;
   let dropped = 0;
-  const sigs = watchList.map((w) => ({ path: w.path, points: [] }));
-  for (let t = t0; t < t1; t++) {
-    if (inGap(t)) { dropped++; continue; }
-    for (let i = 0; i < watchList.length; i++) {
-      const w = watchList[i];
-      if (t % w.period_ms === 0) {
-        sigs[i].points.push([t, waveform(w.path, w.kind, t)]);
-      }
+  const sigs = new Map(watchList.map((w) => [w.path, { path: w.path, points: [] }]));
+  for (const g of groups()) {
+    for (let c = firstCycle(c0, g.period); c < c1; c += g.period) {
+      if (inGap(c)) { dropped++; continue; }
+      const t = c / CYCLES_PER_MS;
+      for (const w of g.entries) sigs.get(w.path).points.push([t, waveform(w.path, w.kind, t)]);
     }
   }
   // Test surface (like __devmockInstalls): lets the suite scale timing
   // floors to the batches a loaded host ACTUALLY delivered.
   window.__devmockBatches = (window.__devmockBatches || 0) + 1;
-  emit("samples", { signals: sigs.filter((s) => s.points.length), dropped_ticks: dropped });
+  emit("samples", {
+    signals: [...sigs.values()].filter((s) => s.points.length),
+    dropped_records: dropped,
+  });
 }
 
 setInterval(() => {
   if (!connected || !watchList.length) return;
-  const t0 = streamTick;
-  streamTick += BATCH_MS;
-  emitBatchRange(t0, streamTick);
-}, BATCH_MS);
+  const c0 = streamCycle;
+  streamCycle += BATCH_CYCLES;
+  emitBatchRange(c0, streamCycle);
+}, BATCH_CYCLES / CYCLES_PER_MS);
 
 // Live-ish fixtures: 10 Hz telemetry, occasional log lines, a lost event.
 let t = 184000;

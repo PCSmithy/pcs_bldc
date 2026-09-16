@@ -1,6 +1,7 @@
 //! The trace client: watch installation behind the identity gate, `Samples`
-//! demultiplexing per the phase-locked due rule, and batched "samples"
-//! events toward the webview (raw stream rate is 1 kHz; the UI gets ~20 Hz).
+//! demultiplexing of each group's batched records, and batched "samples"
+//! events toward the webview (the UI gets ~20 Hz). Cycle indices convert to
+//! the webview's millisecond domain here — one PWM cycle is 0.05 ms.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,21 +14,27 @@ use crate::firmware::{identity_matches, FirmwareState};
 use crate::protocol::Client;
 use crate::session::{SamplesConsumer, SessionState};
 
-/// Batched samples flush thresholds: whichever trips first.
+/// Batched samples flush thresholds: whichever trips first. The point cap
+/// bounds one event's payload when a device stall's backlog arrives at once
+/// (a one-cycle group delivers 20 000 records per second per entry).
 const BATCH_EMIT_INTERVAL: Duration = Duration::from_millis(50);
-const BATCH_EMIT_MAX_MSGS: usize = 256;
+const BATCH_EMIT_MAX_POINTS: usize = 16_384;
+
+/// PWM cycles per millisecond: the wire's cycle index over the webview's
+/// millisecond tick domain.
+const CYCLES_PER_MS: f64 = 20.0;
 
 #[derive(serde::Deserialize)]
 pub struct WatchSpec {
     pub path: String,
-    pub period_ms: u32,
+    pub period_cycles: u32,
 }
 
 #[derive(Clone)]
 struct WatchEntry {
     path: String,
     size: u32,
-    period_ms: u32,
+    period_cycles: u32,
     leaf: dwarf_map::Leaf,
 }
 
@@ -38,13 +45,13 @@ struct WatchTable {
 #[derive(Clone, serde::Serialize)]
 struct SignalSeries {
     path: String,
-    points: Vec<(u32, f64)>,
+    points: Vec<(f64, f64)>,
 }
 
 #[derive(Clone, serde::Serialize)]
 pub struct SamplesBatch {
     signals: Vec<SignalSeries>,
-    dropped_ticks: u32,
+    dropped_records: u32,
 }
 
 /// Little-endian typed decode to the plot currency. Enums decode as their
@@ -71,28 +78,35 @@ fn decode(leaf: dwarf_map::Leaf, bytes: &[u8]) -> f64 {
     }
 }
 
-/// Demultiplex one `Samples` message: bytes belong, in watch-list order, to
-/// exactly the entries whose period divides the tick. A length mismatch
-/// between the due set and the data means a corrupt or foreign message —
-/// dropped whole.
+/// Demultiplex one `Samples` message: its data is `count` consecutive
+/// records of the entries whose period is the message's, each record the
+/// group's bytes in watch-list order, record k captured at cycle index
+/// `first_cycle + k * period_cycles`. A length that is not `count` whole
+/// records means a corrupt or foreign message — dropped whole.
 // [impl->app~obs_004~1]
 fn demux(table: &WatchTable, samples: &pcs_proto::trace::Samples) -> Vec<(usize, u32, f64)> {
-    let due = |e: &WatchEntry| samples.tick_ms % e.period_ms == 0;
-    let expected: usize = table
+    let group: Vec<(usize, &WatchEntry)> = table
         .entries
         .iter()
-        .filter(|e| due(e))
-        .map(|e| e.size as usize)
-        .sum();
-    if expected != samples.data.len() {
+        .enumerate()
+        .filter(|(_, e)| e.period_cycles == samples.period_cycles)
+        .collect();
+    let record: usize = group.iter().map(|(_, e)| e.size as usize).sum();
+    let count = samples.count as usize;
+    if (record == 0) || (count == 0) || (record * count != samples.data.len()) {
         return Vec::new();
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(group.len() * count);
     let mut offset = 0usize;
-    for (i, entry) in table.entries.iter().enumerate().filter(|(_, e)| due(e)) {
-        let bytes = &samples.data[offset..offset + entry.size as usize];
-        offset += entry.size as usize;
-        out.push((i, samples.tick_ms, decode(entry.leaf, bytes)));
+    for k in 0..count {
+        let cycle = samples
+            .first_cycle
+            .wrapping_add((k as u32).wrapping_mul(samples.period_cycles));
+        for (i, entry) in &group {
+            let bytes = &samples.data[offset..offset + entry.size as usize];
+            offset += entry.size as usize;
+            out.push((*i, cycle, decode(entry.leaf, bytes)));
+        }
     }
     out
 }
@@ -101,27 +115,25 @@ fn demux(table: &WatchTable, samples: &pcs_proto::trace::Samples) -> Vec<(usize,
 /// "samples" event when a threshold trips.
 struct BatchState {
     table: WatchTable,
-    buffers: Vec<Vec<(u32, f64)>>,
-    min_period_ms: u32,
-    prev_tick: Option<u32>,
-    dropped_ticks: u32,
-    msgs_since_emit: usize,
+    buffers: Vec<Vec<(f64, f64)>>,
+    /// Newest cycle index seen per entry — groups run at their own rates, so
+    /// a missed record is only visible against its own entry's last one.
+    prev_cycle: Vec<Option<u32>>,
+    dropped_records: u32,
+    points_since_emit: usize,
     last_emit: Instant,
 }
 
 impl BatchState {
     fn new(table: WatchTable) -> Self {
         let buffers = table.entries.iter().map(|_| Vec::new()).collect();
-        // Periods are nested (1 | 10 | 100), so every due tick is a multiple
-        // of the fastest period — the stride the gap counter measures in.
-        let min_period_ms = table.entries.iter().map(|e| e.period_ms).min().unwrap_or(1);
+        let prev_cycle = table.entries.iter().map(|_| None).collect();
         Self {
             table,
             buffers,
-            min_period_ms,
-            prev_tick: None,
-            dropped_ticks: 0,
-            msgs_since_emit: 0,
+            prev_cycle,
+            dropped_records: 0,
+            points_since_emit: 0,
             last_emit: Instant::now(),
         }
     }
@@ -131,20 +143,24 @@ impl BatchState {
         if points.is_empty() {
             return None;
         }
-        if let Some(prev) = self.prev_tick {
-            // Wrap-safe delta: tick_ms wraps u32 after ~49.7 days of uptime.
-            let delta = samples.tick_ms.wrapping_sub(prev);
-            if delta > self.min_period_ms {
-                self.dropped_ticks += delta / self.min_period_ms - 1;
+        self.points_since_emit += points.len();
+        for (entry, cycle, value) in points {
+            let period = self.table.entries[entry].period_cycles;
+            if let Some(prev) = self.prev_cycle[entry] {
+                let delta = cycle.wrapping_sub(prev);
+                // Past half the u32 range the index went backwards: the
+                // counter wrapped (~59.65 h of uptime) or the stream re-armed.
+                // Resync on the new domain instead of charging the whole span
+                // as dropped records.
+                if (delta <= (u32::MAX / 2)) && (delta > period) {
+                    self.dropped_records += (delta / period) - 1;
+                }
             }
+            self.prev_cycle[entry] = Some(cycle);
+            self.buffers[entry].push((f64::from(cycle) / CYCLES_PER_MS, value));
         }
-        self.prev_tick = Some(samples.tick_ms);
-        for (entry, tick, value) in points {
-            self.buffers[entry].push((tick, value));
-        }
-        self.msgs_since_emit += 1;
-        if self.msgs_since_emit >= BATCH_EMIT_MAX_MSGS
-            || self.last_emit.elapsed() >= BATCH_EMIT_INTERVAL
+        if (self.points_since_emit >= BATCH_EMIT_MAX_POINTS)
+            || (self.last_emit.elapsed() >= BATCH_EMIT_INTERVAL)
         {
             return Some(self.flush());
         }
@@ -165,10 +181,10 @@ impl BatchState {
             .collect();
         let batch = SamplesBatch {
             signals,
-            dropped_ticks: self.dropped_ticks,
+            dropped_records: self.dropped_records,
         };
-        self.dropped_ticks = 0;
-        self.msgs_since_emit = 0;
+        self.dropped_records = 0;
+        self.points_since_emit = 0;
         self.last_emit = Instant::now();
         batch
     }
@@ -285,10 +301,10 @@ pub fn install_watches(
     watches: Vec<WatchSpec>,
 ) -> Result<TraceStatus, String> {
     for w in &watches {
-        if !matches!(w.period_ms, 1 | 10 | 100) {
+        if !matches!(w.period_cycles, 1 | 20 | 200) {
             return Err(format!(
-                "{}: period {} ms is not 1/10/100",
-                w.path, w.period_ms
+                "{}: period {} cycles is not 1/20/200",
+                w.path, w.period_cycles
             ));
         }
     }
@@ -304,12 +320,12 @@ pub fn install_watches(
             wire.push(pcs_proto::trace::Watch {
                 address,
                 size,
-                period_ms: w.period_ms,
+                period_cycles: w.period_cycles,
             });
             entries.push(WatchEntry {
                 path: w.path.clone(),
                 size,
-                period_ms: w.period_ms,
+                period_cycles: w.period_cycles,
                 leaf,
             });
         }
@@ -391,19 +407,28 @@ mod tests {
     use super::*;
     use dwarf_map::{Leaf, Scalar};
 
-    fn entry(path: &str, size: u32, period_ms: u32, leaf: Leaf) -> WatchEntry {
+    fn entry(path: &str, size: u32, period_cycles: u32, leaf: Leaf) -> WatchEntry {
         WatchEntry {
             path: path.into(),
             size,
-            period_ms,
+            period_cycles,
             leaf,
         }
     }
 
-    fn samples(tick_ms: u32, data: &[u8]) -> pcs_proto::trace::Samples {
+    /// One group's message: `count` records of the `period_cycles` entries,
+    /// the first captured at `first_cycle`.
+    fn samples(
+        first_cycle: u32,
+        period_cycles: u32,
+        count: u32,
+        data: &[u8],
+    ) -> pcs_proto::trace::Samples {
         pcs_proto::trace::Samples {
-            tick_ms,
+            first_cycle,
             data: data.to_vec(),
+            period_cycles,
+            count,
         }
     }
 
@@ -411,63 +436,100 @@ mod tests {
         WatchTable {
             entries: vec![
                 entry("a", 4, 1, Leaf::Scalar(Scalar::U32)),
-                entry("b", 2, 10, Leaf::Scalar(Scalar::U16)),
-                entry("c", 1, 100, Leaf::Scalar(Scalar::U8)),
+                entry("b", 2, 20, Leaf::Scalar(Scalar::U16)),
+                entry("c", 1, 200, Leaf::Scalar(Scalar::U8)),
+                entry("d", 1, 20, Leaf::Scalar(Scalar::U8)),
             ],
         }
     }
 
     // [test->app~obs_004~1]
     #[test]
-    fn membership_follows_the_due_rule_in_list_order() {
+    fn a_message_maps_to_its_own_group_in_list_order() {
         let table = mixed_table();
-        // Tick 0: everything due, list order a|b|c.
-        let got = demux(
-            &table,
-            &samples(0, &[0x44, 0x33, 0x22, 0x11, 0xEF, 0xBE, 0x7F]),
-        );
+        // The 20-cycle group is entries b and d, 3 bytes per record.
         assert_eq!(
-            got,
-            vec![
-                (0, 0, f64::from(0x1122_3344u32)),
-                (1, 0, f64::from(0xBEEFu16)),
-                (2, 0, f64::from(0x7Fu8)),
-            ]
+            demux(&table, &samples(21, 20, 1, &[0xEF, 0xBE, 0x7F])),
+            vec![(1, 21, f64::from(0xBEEFu16)), (3, 21, f64::from(0x7Fu8))]
         );
-        // Tick 1: only the 1 ms entry.
-        assert_eq!(demux(&table, &samples(1, &[1, 0, 0, 0])), vec![(0, 1, 1.0)]);
-        // Tick 10: 1 ms + 10 ms.
+        // The one-cycle group is entry a alone.
         assert_eq!(
-            demux(&table, &samples(10, &[2, 0, 0, 0, 5, 0])),
-            vec![(0, 10, 2.0), (1, 10, 5.0)]
+            demux(&table, &samples(4, 1, 1, &[1, 0, 0, 0])),
+            vec![(0, 4, 1.0)]
         );
-        // Tick 100: all three again.
+        // The 200-cycle group is entry c alone.
         assert_eq!(
-            demux(&table, &samples(100, &[3, 0, 0, 0, 6, 0, 9])),
-            vec![(0, 100, 3.0), (1, 100, 6.0), (2, 100, 9.0)]
+            demux(&table, &samples(202, 200, 1, &[9])),
+            vec![(2, 202, 9.0)]
         );
     }
 
     // [test->app~obs_004~1]
     #[test]
-    fn gap_in_ticks_yields_points_only_at_received_ticks() {
-        let mut state = BatchState::new(WatchTable {
-            entries: vec![entry("a", 1, 1, Leaf::Scalar(Scalar::U8))],
-        });
-        for tick in [0u32, 1, 5, 6] {
-            // Re-arm the interval clock so a stalled test host can't trigger
-            // an early flush and steal points from the final one.
-            state.last_emit = Instant::now();
-            let _ = state.ingest(&samples(tick, &[tick as u8]));
-        }
-        let batch = state.flush();
-        assert_eq!(batch.signals.len(), 1);
+    fn batched_records_land_at_cycle_indices_spaced_by_the_period() {
+        let table = mixed_table();
+        // Three one-cycle records from cycle 7: consecutive cycle indices.
         assert_eq!(
-            batch.signals[0].points,
-            vec![(0, 0.0), (1, 1.0), (5, 5.0), (6, 6.0)]
+            demux(
+                &table,
+                &samples(7, 1, 3, &[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])
+            ),
+            vec![(0, 7, 1.0), (0, 8, 2.0), (0, 9, 3.0)]
         );
-        // Ticks 2, 3, 4 never arrived: counted as dropped, not synthesized.
-        assert_eq!(batch.dropped_ticks, 3);
+        // Two 20-cycle records from cycle 21: b|d then b|d, 20 cycles apart.
+        assert_eq!(
+            demux(&table, &samples(21, 20, 2, &[1, 0, 10, 2, 0, 20])),
+            vec![(1, 21, 1.0), (3, 21, 10.0), (1, 41, 2.0), (3, 41, 20.0)]
+        );
+    }
+
+    // [test->app~obs_004~1]
+    #[test]
+    fn a_cycle_index_gap_yields_values_at_exactly_the_received_indices() {
+        let mut state = BatchState::new(WatchTable {
+            entries: vec![
+                entry("fast", 1, 1, Leaf::Scalar(Scalar::U8)),
+                entry("slow", 1, 200, Leaf::Scalar(Scalar::U8)),
+            ],
+        });
+        // Re-arm the interval clock so a stalled test host cannot trigger an
+        // early flush and steal points from the final message.
+        for (first, data) in [(0u32, [0u8, 1]), (5, [5, 6])] {
+            state.last_emit = Instant::now();
+            let _ = state.ingest(&samples(first, 1, 2, &data));
+        }
+        // The slow group's own first record: its gap counter starts here, not
+        // against the fast group's indices.
+        state.last_emit = Instant::now();
+        let _ = state.ingest(&samples(2, 200, 1, &[7]));
+        let batch = state.flush();
+        let fast = &batch.signals[0];
+        assert_eq!(fast.path, "fast");
+        assert_eq!(
+            fast.points,
+            vec![(0.0, 0.0), (0.05, 1.0), (0.25, 5.0), (0.30, 6.0)]
+        );
+        assert_eq!(batch.signals[1].points, vec![(0.1, 7.0)]);
+        // Cycles 2, 3, 4 never arrived: counted as dropped, not synthesized.
+        assert_eq!(batch.dropped_records, 3);
+    }
+
+    // [test->app~obs_004~1]
+    #[test]
+    fn a_backwards_cycle_index_resyncs_instead_of_counting_drops() {
+        let mut state = BatchState::new(WatchTable {
+            entries: vec![entry("fast", 1, 1, Leaf::Scalar(Scalar::U8))],
+        });
+        state.last_emit = Instant::now();
+        let _ = state.ingest(&samples(1_000_000, 1, 2, &[1, 2]));
+        // The u32 index wrapped and the domain restarted near 0: resync on it
+        // rather than charge the backwards span as billions of drops.
+        state.last_emit = Instant::now();
+        let _ = state.ingest(&samples(0, 1, 2, &[3, 4]));
+        let batch = state.flush();
+        assert_eq!(batch.dropped_records, 0);
+        assert_eq!(state.prev_cycle[0], Some(1));
+        assert_eq!(batch.signals[0].points.len(), 4);
     }
 
     // [test->app~obs_004~1]
@@ -518,7 +580,7 @@ mod tests {
             let table = WatchTable {
                 entries: vec![entry("x", bytes.len() as u32, 1, leaf)],
             };
-            let got = demux(&table, &samples(0, &bytes));
+            let got = demux(&table, &samples(0, 1, 1, &bytes));
             assert_eq!(got.len(), 1, "{leaf:?}");
             assert_eq!(got[0].2, expected, "{leaf:?}");
         }
@@ -528,31 +590,36 @@ mod tests {
     #[test]
     fn length_mismatch_drops_the_whole_message() {
         let table = mixed_table();
-        // Tick 0 expects 7 bytes; 6 (or 8) means foreign membership — drop.
-        assert!(demux(&table, &samples(0, &[0; 6])).is_empty());
-        assert!(demux(&table, &samples(0, &[0; 8])).is_empty());
+        // The 20-cycle group's record is 3 bytes: 2 records need 6.
+        assert!(demux(&table, &samples(21, 20, 2, &[0; 5])).is_empty());
+        assert!(demux(&table, &samples(21, 20, 2, &[0; 7])).is_empty());
+        // A period no entry holds has no membership at all.
+        assert!(demux(&table, &samples(0, 2, 1, &[0; 4])).is_empty());
         // And a valid message right after still demuxes.
-        assert_eq!(demux(&table, &samples(1, &[9, 0, 0, 0])).len(), 1);
+        assert_eq!(demux(&table, &samples(4, 1, 1, &[9, 0, 0, 0])).len(), 1);
     }
 
     #[test]
-    fn batch_emits_at_the_message_threshold() {
+    fn batch_emits_at_the_point_threshold() {
         let mut state = BatchState::new(WatchTable {
             entries: vec![entry("a", 1, 1, Leaf::Scalar(Scalar::U8))],
         });
-        // Re-arm the interval clock each message so only the count threshold
-        // can trip, however slowly the test host runs.
+        // Re-arm the interval clock each message so only the point threshold
+        // can trip, however slowly the test host runs. 64 records a message is
+        // the shape a one-cycle group at 20 kHz actually delivers.
+        const PER_MSG: u32 = 64;
+        let data = [0u8; PER_MSG as usize];
         let mut emitted = None;
-        for tick in 0..BATCH_EMIT_MAX_MSGS as u32 {
+        let mut first = 0u32;
+        while emitted.is_none() {
             state.last_emit = Instant::now();
-            if let Some(batch) = state.ingest(&samples(tick, &[0])) {
-                emitted = Some((tick, batch));
-            }
+            emitted = state.ingest(&samples(first, 1, PER_MSG, &data));
+            first += PER_MSG;
         }
-        let (at_tick, batch) = emitted.expect("threshold emit");
-        assert_eq!(at_tick, BATCH_EMIT_MAX_MSGS as u32 - 1);
-        assert_eq!(batch.signals[0].points.len(), BATCH_EMIT_MAX_MSGS);
-        assert_eq!(state.msgs_since_emit, 0);
+        let batch = emitted.expect("threshold emit");
+        assert_eq!(first as usize, BATCH_EMIT_MAX_POINTS);
+        assert_eq!(batch.signals[0].points.len(), BATCH_EMIT_MAX_POINTS);
+        assert_eq!(state.points_since_emit, 0);
     }
 
     /// Drive `perform_install` against a mock wire that answers the watch
@@ -584,7 +651,7 @@ mod tests {
                     vec![pcs_proto::trace::Watch {
                         address: 0x2000_0000,
                         size: 4,
-                        period_ms: 1,
+                        period_cycles: 1,
                     }],
                     vec![entry("new", 4, 1, Leaf::Scalar(Scalar::U32))],
                     Box::new(|_| {}),
@@ -628,16 +695,17 @@ mod tests {
     #[test]
     fn accepted_install_replaces_the_table_and_yields_a_consumer() {
         let (result, trace) = run_install(Payload::TraceStatus(TraceStatus {
-            ram_budget_bytes: 2048,
-            ram_worst_tick_bytes: 8,
-            link_budget_bytes_per_s: 1_100_000,
+            ram_budget_bytes_per_ms: 2048,
+            ram_usage_bytes_per_ms: 100,
+            link_budget_bytes_per_s: 480_000,
             link_rate_bytes_per_s: 25_000,
         }));
         let (status, consumer) = match result {
             Ok(v) => v,
             Err(e) => panic!("accepted install failed: {e}"),
         };
-        assert_eq!(status.ram_budget_bytes, 2048);
+        assert_eq!(status.ram_budget_bytes_per_ms, 2048);
+        assert_eq!(status.ram_usage_bytes_per_ms, 100);
         assert!(consumer.is_some());
         let guard = trace.0.lock().unwrap();
         let state = guard.as_ref().expect("new table installed");

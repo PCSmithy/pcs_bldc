@@ -91,6 +91,10 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
                                      HW_ADC_callback_F callback,
                                      void * context);
 
+// Mask the injected completion, and with it the callback it dispatches, across
+// a short task-context region sharing state with it. Not nestable.
+void HW_ADC_setInjectedIrqMasked(bool masked);
+
 bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
                               HW_ADC_conversionStatus_E * const out);
 

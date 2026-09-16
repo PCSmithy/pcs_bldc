@@ -31,6 +31,10 @@ typedef struct
     float32_t         voltsPerAmp;
 } IO_bridge_currentSenseConfig_S;
 
+// Invoked once per completed phase-current triple, in the injected-completion
+// ISR context (see IO_bridge_registerCycleCallback).
+typedef void (*IO_bridge_cycleCallback_F)(IO_bridge_channel_E channel, void * context);
+
 typedef struct
 {
     HW_TIM_channels_E phaseU;
@@ -79,3 +83,11 @@ bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps
 bool IO_bridge_getInjectedPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
 
 bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_phase_E phase, uint32_t * const out);
+
+// One callback per bridge; a later registration replaces the earlier. It runs in
+// the injected-completion ISR, which the board places at an NVIC preempt priority
+// above configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY: it and everything it reaches
+// must make no FreeRTOS call, *FromISR included, and no lib_timer call.
+bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
+                                     IO_bridge_cycleCallback_F callback,
+                                     void * context);

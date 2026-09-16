@@ -18,6 +18,8 @@ Acceptance:
 
 - With the running build's ELF loaded, a watch install
   (`app~obs_003~1`) is issued and succeeds.
+- A connection re-reads the loaded ELF file, so a file rebuilt since it
+  was chosen gates by its current identity.
 - With a different build's ELF loaded, the gated capabilities are
   unavailable, while a ping round trip and the telemetry view
   (`app~views_002~1`) continue.

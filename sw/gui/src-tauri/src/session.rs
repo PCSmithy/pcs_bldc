@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use serialport::SerialPort;
+
 use tauri::{AppHandle, Emitter, State};
 
 use crate::protocol::{Client, StreamEvent};
@@ -184,8 +186,9 @@ pub fn connect(
 
     let mut opened = serialport::new(&port, 115_200)
         .timeout(Duration::from_millis(50))
-        .open()
+        .open_native()
         .map_err(|e| format!("open {port}: {e}"))?;
+    grow_driver_queue(&opened);
     // The firmware serves only while the host holds the port open, which it
     // reads from the CDC line state — DTR must be raised explicitly here
     // (pyserial does it implicitly; serialport-rs does not).
@@ -225,7 +228,7 @@ pub fn connect(
     let reader = std::thread::Builder::new()
         .name("session-reader".into())
         .spawn(move || {
-            let mut buf = [0u8; 1024];
+            let mut buf = [0u8; 4096];
             let mut consecutive_errors = 0u32;
             while !reader_shutdown.load(Ordering::Relaxed) {
                 let n = match reader_port.read(&mut buf) {
@@ -319,6 +322,29 @@ pub fn get_status(state: State<SessionState>) -> SessionStatus {
         },
     }
 }
+
+/// Windows usbser keeps a 4 KB receive queue by default; a few ms of host
+/// latency at hundreds of kB/s overruns it and corrupts frames. A driver that
+/// refuses 1 MB gets one retry at 64 KB — still far above the default.
+#[cfg(windows)]
+fn grow_driver_queue(port: &serialport::COMPort) {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetupComm(handle: *mut std::ffi::c_void, in_queue: u32, out_queue: u32) -> i32;
+    }
+    // SAFETY: a valid open handle; SetupComm only resizes the driver queues.
+    let grown = unsafe {
+        (SetupComm(port.as_raw_handle(), 1 << 20, 1 << 14) != 0)
+            || (SetupComm(port.as_raw_handle(), 1 << 16, 1 << 14) != 0)
+    };
+    if !grown {
+        eprintln!("SetupComm: driver kept its default receive queue; frames may drop");
+    }
+}
+
+#[cfg(not(windows))]
+fn grow_driver_queue(_port: &serialport::TTYPort) {}
 
 /// Drop any existing session (its `Drop` stops the reader); true if one existed.
 fn teardown(state: &State<SessionState>) -> bool {
