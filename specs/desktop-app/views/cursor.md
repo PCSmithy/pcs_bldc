@@ -26,7 +26,7 @@ Acceptance:
 - Pointing at one plot widget places the cursor mark at the same time
   on every plot widget; leaving them clears every mark.
 - Each plot's readout lists its signals' values at the held time; for
-  a time inside a tick-count gap the readout states the absence.
+  a time inside a cycle-index gap the readout states the absence.
 
 See also: [[live-plot]], [[table]]
 

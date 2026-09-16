@@ -16,7 +16,7 @@ its sample period:
 | Mode | Value shown |
 |------|-------------|
 | No cursor time held | The latest streamed value, updating as samples arrive |
-| A cursor time held (`app~views_005~1`) | The value at the cursor time, its absence stated for a time inside a tick-count gap |
+| A cursor time held (`app~views_005~1`) | The value at the cursor time, its absence stated for a time inside a cycle-index gap |
 
 Acceptance:
 

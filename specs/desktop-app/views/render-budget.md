@@ -18,8 +18,8 @@ within both budgets:
 
 | Reference-shape parameter | Value |
 |---------------------------|-------|
-| Watch list (`app~obs_003~1`) | 8 signals, each at a 10 ms sample period |
-| Plot widgets ([[workspace]]) | 4, each holding two of the signals |
+| Watch list (`app~obs_003~1`) | 8 signals: 4 at the one-cycle period and 4 at 10 ms |
+| Plot widgets ([[workspace]]) | 4, each holding one one-cycle and one 10 ms signal |
 | Display span (`app~views_008~1`) | 30 s |
 | App window | 1920 × 1080 CSS px at a device pixel ratio of 1 |
 

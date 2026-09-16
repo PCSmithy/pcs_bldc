@@ -6,9 +6,9 @@ tags: [firmware, conn, trace, server]
 # Signal trace services
 
 The trace services of the app_server module ([[server]]): a host-set
-watch list of memory spans sampled at per-entry periods and streamed
-as `Samples` messages, one-shot memory reads and writes, and the trace
-capability report.
+watch list of memory spans sampled at per-entry periods in the PWM
+cycle callback and streamed as `Samples` messages, one-shot memory
+reads and writes, and the trace capability report.
 
 ## Configuration
 
@@ -52,22 +52,27 @@ when:
 |---------|---------------|
 | Entry span | Not contained in one readable region (`fw~conn_trace_001~1`) |
 | Entry size | Outside 1..8 bytes |
-| Entry period | Not 1 ms, 10 ms, or 100 ms |
+| Entry period | Not 1, 20, or 200 PWM cycles |
+| One-cycle entries | More than 4 entries have the one-cycle period |
 | Entry count | Exceeds the watch capacity (`fw~conn_trace_001~1`) |
-| Samples fit | $\sum_i s_i$ exceeds the 256-byte `Samples` data capacity (`fw~conn_trace_005~1`) |
+| Samples fit | Any $S_g$ exceeds the 256-byte `Samples` data capacity (`fw~conn_trace_005~1`) |
 | RAM usage | $u$ exceeds the sample-RAM budget (`fw~conn_trace_001~1`) |
 | Link rate | $r$ exceeds the link budget (`fw~conn_trace_001~1`) |
 
-where, over the requested entries with sizes $s_i$ bytes, periods
-$p_i$ ms, and per-entry sample rates $f_i = 1000 / p_i$ per second:
+where, over the requested entries with sizes $s_i$ bytes grouped by
+period into groups $g$ of period $c_g$ cycles, record size
+$S_g = \sum_{i \in g} s_i$, record rate $f_g = 20000 / c_g$ per second,
+and records per millisecond $n_g = \max(1,\ 20 / c_g)$:
 
-$$u = 4 + \sum_i s_i \quad \text{[bytes]}$$
+$$u = \sum_g n_g \,(4 + S_g) \quad \text{[bytes per millisecond]}$$
 
-$$r = \Bigl(\sum_i s_i f_i\Bigr) + \Bigl(W \cdot \max_i f_i\Bigr)
+$$r = \sum_g \Bigl( S_g f_g + W \cdot m_g \Bigr), \quad
+m_g = \min\Bigl(f_g,\ \max\bigl(1000,\ f_g S_g / 256\bigr)\Bigr)
 \quad \text{[bytes per second]}$$
 
-with $W$ the per-message wire overhead of `fw~conn_trace_005~1`, and
-an empty list having $u = 0$ and $r = 0$.
+with $W$ the per-message wire overhead of `fw~conn_trace_005~1`, $m_g$
+the group's message rate (`fw~conn_trace_009~1`), and an empty list
+having $u = 0$ and $r = 0$.
 
 Acceptance:
 
@@ -77,6 +82,7 @@ Acceptance:
   continues per the prior list.
 - Each rejection condition rejects the request.
 - A list whose $r$ equals the link budget is accepted.
+- A list with exactly 4 one-cycle entries is accepted.
 
 Covers:
 - sys~obs_005~1
@@ -107,28 +113,57 @@ Needs: impl, test
 `fw~conn_trace_004~1`
 
 While the active watch list (`fw~conn_trace_002~1`) is non-empty, the
-server shall sample and stream it per:
+server shall sample it in the bridge cycle callback
+(`fw~io_bridge_007~1`), after that cycle's commutation step
+(`fw~mc_015~1`), per:
 
 | Behavior | Detail |
 |----------|-------|
-| Tick | Sampling advances a millisecond tick count, restarted at zero when a list installs, buffered samples of the prior list discarded |
-| Capture | Each tick captures every entry whose period divides the tick count, entries sharing a tick captured as one coherent snapshot |
-| Emission | Each captured tick is emitted as one `Samples` message (`fw~conn_trace_005~1`), in capture order |
-| Overflow | A tick whose capture does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole |
+| Cycle index | Sampling advances a 32-bit PWM-cycle index each callback, restarted at zero when a list installs, buffered samples of the prior list discarded |
+| Capture | Each cycle captures every group that is due — a group of period $c$ cycles and offset $k$ is due when $(\text{index} - k) \bmod c = 0$ — the group's entries captured as one coherent snapshot into one buffered record |
+| Overflow | A record that does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole |
+
+| Group period $c$ | Offset $k$ |
+|------------------|------------|
+| 1 cycle | 0 |
+| 20 cycles (1 ms) | 1 |
+| 200 cycles (10 ms) | 2 |
 
 Acceptance:
 
-- With a 1 ms entry, consecutive emitted messages carry consecutive
-  tick counts, each with the entry's bytes.
-- Entries at 1 ms, 10 ms, and 100 ms appear in exactly the ticks their
-  periods divide.
-- Two locations the firmware updates together within a tick arrive
+- With a one-cycle entry, consecutive emitted records carry consecutive
+  cycle indices, each with the entry's bytes.
+- Entries at 1, 20, and 200 cycles appear in exactly the cycles their
+  group's offset and period select.
+- Two locations the firmware updates together within a cycle arrive
   mutually consistent in every capture.
-- After a list installs, the first emitted message carries tick zero,
-  and no prior-list message follows it.
+- After a list installs, the first emitted record of each group carries
+  that group's offset as its cycle index, and no prior-list record
+  follows it.
 - With emission stalled long enough to fill the sample buffer, emitted
-  tick counts jump past the skipped ticks and every emitted message
-  holds complete captures.
+  cycle indices jump past the skipped records and every emitted record
+  holds a complete capture.
+
+Covers:
+- sys~obs_005~1
+
+Needs: impl, test
+
+### Sample emission
+`fw~conn_trace_009~1`
+
+Each millisecond, the server shall emit each group's buffered records
+(`fw~conn_trace_004~1`) in capture order as `Samples` messages
+(`fw~conn_trace_005~1`), consecutive records of one group sharing a
+message up to its data capacity.
+
+Acceptance:
+
+- A one-cycle group with 16-byte records reaches the host as messages
+  of 16 records each, with no record held longer than 2 ms.
+- A 10 ms group's records each arrive in their own message.
+- A one-cycle group's records buffered across a 3 ms emission stall
+  arrive in the next emission, in capture order.
 
 Covers:
 - sys~obs_005~1
@@ -138,27 +173,31 @@ Needs: impl, test
 ### Samples message format
 `fw~conn_trace_005~1`
 
-A `Samples` message shall carry one captured tick — the 32-bit tick
-count and at most 256 data bytes, the captured spans concatenated in
+A `Samples` message shall carry the records of one group
+(`fw~conn_trace_009~1`) — the group's period in cycles, the cycle index
+of its first record, its record count, and at most 256 data bytes, the
+records concatenated in capture order, each record the group's spans in
 watch-list order — its wire overhead beyond the data bytes at most
-$W = 21$ bytes, the worst case over its encoding (`fw~conn_proto_001~1`)
+$W = 27$ bytes, the worst case over its encoding (`fw~conn_proto_001~1`)
 and framing (`fw~conn_proto_002~1`):
 
 | Component | Worst-case bytes |
 |-----------|------------------|
 | `request_id` (0 on stream messages, omitted on the wire) | 0 |
 | `samples` field tag + length (`Envelope` field 33) | 4 |
-| `tick_ms` field | 6 |
+| `period_cycles` field | 3 |
+| `first_cycle` field | 6 |
+| `count` field | 3 |
 | `data` field tag + length | 3 |
 | Frame CRC-32 | 4 |
-| COBS overhead, $\lceil 273 / 254 \rceil$ | 2 |
+| COBS overhead, $\lceil 279 / 254 \rceil$ | 2 |
 | Frame delimiters | 2 |
-| Total $W$ | 21 |
+| Total $W$ | 27 |
 
 Acceptance:
 
-- A known list and tick encode to a byte-exact reference frame.
-- The wire frame of a message carrying 256 data bytes is 277 bytes or
+- A known list and record batch encode to a byte-exact reference frame.
+- The wire frame of a message carrying 256 data bytes is 283 bytes or
   fewer.
 
 Covers:

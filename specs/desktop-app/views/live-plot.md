@@ -13,14 +13,14 @@ The workspace's strip-chart widget ([[workspace]]).
 `app~views_001~1`
 
 A plot widget shall plot each of its signals' demultiplexed
-values (`app~obs_004~1`) against their tick timestamps as one trace
+values (`app~obs_004~1`) against their cycle indices as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
-extending as messages arrive, each gap-free run of ticks rendered as
+extending as messages arrive, each gap-free run of cycle indices rendered as
 one connected segment, its samples rendered per `app~views_014~1`.
 
 Acceptance:
 
-- A trace spanning a tick-count gap renders as separate segments with
+- A trace spanning a cycle-index gap renders as separate segments with
   no line across the gap.
 
 Covers:
