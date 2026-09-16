@@ -3,6 +3,71 @@
 Deferred firmware tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. SIL-specific items live in `sil/backlog.md`.
 
+## USB link: double-buffered bulk IN
+
+**When:** when the trace needs more than ~500 kB/s sustained — e.g. more
+than four one-cycle watches, or a higher PWM rate.
+
+**What it is:** measured 2026-09-15 with `tools/pcs_client.py --link-test`
+(256 B frames, zero drops): 205 kB/s at the start of the day, CPU-bound in
+the server task on a bitwise CRC-32; 515 kB/s after the table CRC, a
+512-byte CDC endpoint transfer, and `-O2` on the link path (the list in
+`sw/lib/c/CMakeLists.txt`). Per byte the link now runs at the host's
+polling cadence, one 64-byte packet every ~80 µs (~800 kB/s asymptote):
+the STM32 fsdev bulk IN endpoint is single-buffered in TinyUSB 0.20, so
+every packet needs the completion interrupt to reload it before the
+host's retry. The peripheral supports double-buffered bulk endpoints
+(`dcd_stm32_fsdev.c` enables it for isochronous only) and the PMA has
+room for a second 64-byte IN buffer.
+
+**Where:** `sw/lib/c/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c`
+(vendored; carry the patch or upstream it), `tusb_config.h`. Re-measure
+with the link test; then raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S` and
+its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
+
+## Trace: burst capture and on-board envelopes
+
+**When:** after the 20 kHz streaming trace has been used on the bench for
+a while and one of these two limits actually bites.
+
+**What it is:** two extensions the fast-trace design deliberately left
+out. (1) *Burst capture*: a scope-style mode where the cycle callback
+fills a fixed-layout RAM buffer with many spans (more than the 4 one-cycle
+watches the stream admits) for a short window, with a manual or
+threshold trigger and pre-trigger history, frozen on completion and
+drained through the existing 128-byte memory read. Borrow the trace
+ring's arena; periodic tracing pauses while a burst is armed. (2)
+*Envelopes*: a watch flag that keeps min and max over the 20 cycles of a
+millisecond and ships both in the 1 ms record, so a 1 ms signal carries
+its sub-millisecond ripple at 1 ms bandwidth; the GUI already draws
+min/max envelopes.
+
+**Where:** `sw/lib/c/shared/app/server/app_server_trace.c` (capture),
+`sw/lib/c/shared/proto/trace.proto` (a burst request and status), the
+GUI trace client and history for the envelope record shape.
+
+**Origin:** fast-trace design discussion (2026-09-14); both judged
+unnecessary for the first 20 kHz slice.
+
+## SVM formulation comparison
+
+**When:** after the V/f branch lands with the sector-based modulator
+(`fw~mc_014~1`) and its reference test.
+
+**What it is:** `fw~mc_014~1` pins the duty triple, not the algorithm, so a
+min/max zero-sequence-injection modulator (and any other formulation with
+symmetric zero-vector placement) satisfies the same spec and the same
+reference test. Implement the alternative behind the same signature and
+compare on code size, worst-case execution time in the 20 kHz step, and
+test complexity; keep whichever wins, or keep both behind a build option
+if the difference is instructive.
+
+**Where:** the modulator module under `sw/lib/c/shared/lib/`, its Unity
+reference test, and the ISR budget note in `docs/motor-sprint.md`.
+
+**Origin:** V/f + SVM spec interview (2026-09-14) — owner curiosity about
+whether the classic sector-based form earns its extra code.
+
 ## HW_I2C stuck-bus recovery
 
 **When:** when a bus that dies mid-operation must recover without a reboot —

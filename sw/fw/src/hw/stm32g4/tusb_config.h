@@ -34,6 +34,9 @@ extern "C" {
 // batched write is absorbed in one go and drains async — a window larger than
 // this FIFO forces IO_serial_write into 1 ms backpressure yields per overflow.
 #define CFG_TUD_CDC_TX_BUFSIZE  2048
+// Bytes handed to the endpoint per transfer; one packet per transfer costs a
+// host poll interval per 64 B, so a multi-packet transfer carries the stream.
+#define CFG_TUD_CDC_EP_BUFSIZE  512
 
 #ifdef __cplusplus
 }

@@ -56,3 +56,17 @@ endif()
 
 # Our own library code (layered).
 add_subdirectory(shared)
+
+# The USB link path is throughput-bound on CPU at -Og, so the link-path and
+# fast-cycle modules build at -O2 on the board (515 kB/s measured with
+# tools/pcs_client.py --link-test; docs/backlog.md). Statics stay traceable;
+# line stepping and locals in these units degrade. To debug one of them,
+# configure with -DPCS_LINK_PATH_OPT=-Og.
+set(PCS_LINK_PATH_OPT "-O2" CACHE STRING "Optimization level for the USB link path on the embedded build")
+if(PCS_TARGET STREQUAL "embedded")
+  foreach(t freertos nanopb tinyusb lib_cobs lib_crc32 lib_protobuf io_COBSFrame io_serial app_server hw_ADC io_bridge)
+    if(TARGET ${t})
+      target_compile_options(${t} PRIVATE ${PCS_LINK_PATH_OPT})
+    endif()
+  endforeach()
+endif()
