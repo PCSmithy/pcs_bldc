@@ -62,8 +62,8 @@ grids the suites use.
 
 ## sim: route OPAMP output into an ADC input, so the gain spec can be covered
 
-**When:** whenever the sim ADC or OPAMP model is next touched. It is the one
-piece holding the OFT defect baseline at 28 instead of 27.
+**When:** whenever the sim ADC or OPAMP model is next touched. It is one of
+the known test gaps listed in `CLAUDE.md`'s spec-state section.
 
 **What:** `fw~hal_opamp_002~1` requires each channel to drive its amplifier's
 **internal ADC input** with the pin voltage times the configured gain, and its
@@ -81,8 +81,8 @@ sim's, not the spec's.
 **Fix:** give sim `HW_ADC` a per-input source that can be an OPAMP channel
 rather than a port — the OPAMP model computes `input × gain` already, so the
 work is the selection and the wiring, not new physics. Then restore the
-`[test->]` tag on a test that converts the internal input, and drop the
-baseline back to 27 in `CLAUDE.md`.
+`[test->]` tag on a test that converts the internal input, and remove the
+entry from the known-gap list in `CLAUDE.md`.
 
 ## SIL: no perf regression gate — the µs/step numbers cannot regress detectably
 

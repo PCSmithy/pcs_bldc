@@ -13,7 +13,9 @@ bridge's three phases share one HW_TIM peripheral whose master output enable
 gates the bridge.
 
 See also: [[overview]] (sys~arch_005~1), [[tim]] (HW_TIM supplies the
-complementary PWM), [[bridge-actuation]] (sys~mc_004~1).
+complementary PWM), [[bridge-actuation]] (sys~mc_004~1),
+[[motor-control-application]] (fw~mc_015~1 runs the commutation step from
+the per-cycle callback).
 
 ## Driver configuration and lifecycle
 
@@ -94,5 +96,66 @@ Acceptance:
 
 Covers:
 - sys~mc_004~1
+
+Needs: impl, test
+
+## Current and voltage sense
+
+### Sense readout in engineering units
+`fw~io_bridge_005~1`
+
+The driver shall report each configured sense — the three phase currents,
+the bus current, and the bus voltage — from the most recent regular-sequence
+sample of its ADC input as
+
+value = (V_pin − V_bias) / scale
+
+with V_bias and scale the sense's configured bias and volts per unit,
+returning false for a sense whose scale is zero, an out-of-range bridge or
+phase, or an uninitialized driver.
+
+Acceptance:
+- A pin voltage of V_bias reads zero; a pin voltage of V_bias + scale reads
+  one unit.
+- A sense with zero scale returns false.
+- A new regular sample changes the reported value at the next read.
+
+Covers:
+- sys~mc_001~1
+
+Needs: impl, test
+
+### Injected phase-current cycle
+`fw~io_bridge_006~1`
+
+The driver shall form each PWM cycle's phase-current triple from the
+injected U and V samples whose timestamps fall within the configured pair
+window — U and V in amps per fw~io_bridge_005~1's law, W = −(U + V) — with
+a sample arriving outside the window starting a new pair.
+
+Acceptance:
+- Over N PWM periods, N triples are formed, each from that period's
+  samples.
+- Two samples farther apart than the pair window form no triple.
+
+Covers:
+- sys~mc_001~1
+
+Needs: impl, test
+
+### Per-cycle callback
+`fw~io_bridge_007~1`
+
+The driver shall invoke a callback registered per bridge, with its
+registered context, once per completed phase-current triple
+(fw~io_bridge_006~1), in the interrupt context of the completing injected
+conversion.
+
+Acceptance:
+- Over N completed triples the callback runs N times with the registered
+  context, each after that triple is readable.
+
+Covers:
+- sys~mc_001~1
 
 Needs: impl, test

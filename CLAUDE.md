@@ -219,8 +219,8 @@ sufficient to make the tooling aware of a new topic.
 
 - `specs/system/` — `sys~` anchors in `overview.md` (`sys~arch_001..005`,
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
-  `obs`, `ops`, `pd`, `safety`). 22 are intentionally uncovered
-  (system-level tests deferred to the SIL / system-test phases).
+  `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
+  (system-level tests land with the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
     file per peripheral, per-peripheral sub-topic IDs).
@@ -231,7 +231,8 @@ sufficient to make the tooling aware of a new topic.
     `io/bridge.md` (IO_bridge three-phase actuation + current sense),
     `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
-    + `mc/six-step.md` + `mc/vf-sinusoidal.md` (app_motorControl),
+    + `mc/six-step.md` + `mc/vf-sinusoidal.md` + `mc/modulation.md`
+    (app_motorControl and the transform/SVM math),
     `safety/overcurrent.md` + `safety/encoder-fault.md`.
 - **Desktop-app specs** (`specs/desktop-app/`) — `app~` specs across
   `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,
@@ -242,17 +243,21 @@ sufficient to make the tooling aware of a new topic.
   needs the live Tauri core). `[impl->]`/`[test->]` tags live in `.js`
   and `.py` files too, and the UI verification surface is the playwright
   suite `sw/gui/tests/test_views.py` (over the devmock).
-- 176 spec defs across 68 files; `tools/validate-specs.py` clean. Trace
-  with `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
-  scanned without the source dirs). The intentional defect baseline is
-  **28**: the 22 `sys~` anchors; 4 reserved `fw~` specs — `fw~mc_007`
-  (gesture map) + `fw~mc_010` (V/f) future app methods,
-  `fw~hal_tim_005`/`_007` (dead-time, break input — sim modeling
-  pending); `app~arch_001` (implemented; its test needs the live
-  Tauri core); and `fw~hal_opamp_002` (implemented, test-uncovered —
-  its acceptance criterion is an OPAMP output read back through an ADC,
-  and the sim has no internal OPAMP→ADC path to route it; see
-  `docs/sil/backlog.md`). Anything else = investigate. Both `[test->]` and
+- `tools/validate-specs.py` must be clean. Trace with
+  `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
+  scanned without the source dirs); the report is not expected to be
+  defect-free, but every `not ok` line must fall in one of these classes:
+  - a `sys~` anchor with no system-level test yet;
+  - a `fw~`/`app~` spec written ahead of its code (`-impl, -test`) on
+    the branch that will implement it;
+  - a known test gap with a written home: `fw~mc_007` (gesture map, not
+    built), `fw~hal_tim_005`/`_007` (dead-time, break input — sim
+    modeling pending), `app~arch_001` (its test needs the live Tauri
+    core), `fw~hal_opamp_002` (needs a sim OPAMP→ADC path; see
+    `docs/sil/backlog.md`).
+
+  Anything else — a dangling tag, a stale ID, an implemented spec that
+  lost its coverage — is a regression to investigate. Both `[test->]` and
   `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
 
 ### Decisions explicitly deferred (will become specs when made)
