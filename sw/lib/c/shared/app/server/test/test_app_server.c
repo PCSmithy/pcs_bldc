@@ -45,6 +45,11 @@ static const app_server_region_S traceWritableRegions[] = {
 static app_server_watch_S traceBigWatchStorage[2U * TRACE_BIG_WATCH_CAPACITY];
 static uint8_t traceBigSampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(TRACE_BIG_RAM_BUDGET)];
 
+// A ring deep enough to hold more wire bytes than the 2 KB sim transport takes
+// in one pass, so a drain can stop partway and leave records behind it.
+#define TRACE_DEEP_RAM_BUDGET (6144U)
+static uint8_t traceDeepSampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(TRACE_DEEP_RAM_BUDGET)];
+
 /* Stub board hooks: settable telemetry, request recorder. */
 
 static board_Telemetry stubTelemetry;
@@ -69,6 +74,7 @@ static void stubHandleRequest(const board_Request * const request, shared_Respon
 static uint32_t samplerMaskCalls;
 static bool     samplerMasked;
 static uint32_t traceWordWhileMasked;
+static uint32_t traceWordWhileUnmasked;
 
 static void stubSetSamplerMasked(bool masked)
 {
@@ -77,6 +83,10 @@ static void stubSetSamplerMasked(bool masked)
     if (masked)
     {
         traceWordWhileMasked = traceMemory[2];
+    }
+    else
+    {
+        traceWordWhileUnmasked = traceMemory[2];
     }
 }
 
@@ -93,6 +103,7 @@ void setUp(void)
     samplerMaskCalls = 0U;
     samplerMasked = false;
     traceWordWhileMasked = 0U;
+    traceWordWhileUnmasked = 0U;
 
     serialChannelCfg[IO_SERIAL_CHANNEL_CDC] =
         (IO_serial_channelConfig_S){ .transport = IO_SERIAL_TRANSPORT_USB_CDC };
@@ -511,6 +522,41 @@ static void useBigTraceConfig(void)
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
 }
 
+static void useDeepTraceConfig(void)
+{
+    serverConfig.sampleStorage        = traceDeepSampleStorage;
+    serverConfig.sampleRamBudgetBytes = TRACE_DEEP_RAM_BUDGET;
+    TEST_ASSERT_TRUE(app_server_init(&serverConfig));
+}
+
+// Ask for the capability report out of band and return it.
+static trace_TraceStatus requestTraceStatus(uint32_t requestId)
+{
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = requestId;
+    req.which_payload = shared_Envelope_trace_status_request_tag;
+    injectEnvelope(&req);
+    app_server_run1ms();
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL(shared_Envelope_trace_status_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(requestId, replies[0].request_id);
+    return replies[0].payload.trace_status;
+}
+
+// The four one-cycle 4-byte spans of a 16-byte record — the batching cases of
+// fw~conn_trace_009 are all written against them.
+static void installFourFastWatches(void)
+{
+    trace_Watch watches[4];
+    for (uint32_t i = 0U; i < 4U; i++)
+    {
+        watches[i] = (trace_Watch){
+            .address = TRACE_TEST_BASE + (i * 4U), .size = 4U, .period_cycles = 1U };
+    }
+    (void) installWatches(watches, 4U);
+}
+
 /* ---- fw~conn_trace_001: trace resource configuration ---- */
 
 // [test->fw~conn_trace_001~1]
@@ -556,12 +602,19 @@ static void test_watch_admission_accepted_reports_usage(void)
         { .address = TRACE_TEST_BASE + 16U, .size = 2U, .period_cycles = 200U },
     };
     const trace_TraceStatus status = installWatches(watches, 2U);
-    TEST_ASSERT_EQUAL_UINT32(TRACE_RAM_BUDGET, status.ram_budget_bytes);
+    TEST_ASSERT_EQUAL_UINT32(TRACE_RAM_BUDGET, status.ram_budget_bytes_per_ms);
     // u = 20 x (4 + 4) for the one-cycle group + 1 x (4 + 2) for the 10 ms one
     TEST_ASSERT_EQUAL_UINT32(160U + 6U, status.ram_usage_bytes_per_ms);
     TEST_ASSERT_EQUAL_UINT32(TRACE_LINK_BUDGET, status.link_budget_bytes_per_s);
     // r = (4 B x 20000 Hz + 27 B x 1000 msg/s) + (2 B x 100 Hz + 27 B x 100 msg/s)
     TEST_ASSERT_EQUAL_UINT32(107000U + 2900U, status.link_rate_bytes_per_s);
+
+    // The out-of-band report answers with the same numbers.
+    const trace_TraceStatus report = requestTraceStatus(79U);
+    TEST_ASSERT_EQUAL_UINT32(status.ram_budget_bytes_per_ms, report.ram_budget_bytes_per_ms);
+    TEST_ASSERT_EQUAL_UINT32(status.ram_usage_bytes_per_ms, report.ram_usage_bytes_per_ms);
+    TEST_ASSERT_EQUAL_UINT32(status.link_budget_bytes_per_s, report.link_budget_bytes_per_s);
+    TEST_ASSERT_EQUAL_UINT32(status.link_rate_bytes_per_s, report.link_rate_bytes_per_s);
 }
 
 // [test->fw~conn_trace_002~1]
@@ -583,13 +636,6 @@ static void test_watch_admission_rejects_bad_entries(void)
     const trace_Watch oddPeriod = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 300U };
     expectWatchRejection(&oddPeriod, 1U, "period");
 
-    trace_Watch fiveFast[5];
-    for (uint32_t i = 0U; i < 5U; i++)
-    {
-        fiveFast[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 1U, .period_cycles = 1U };
-    }
-    expectWatchRejection(fiveFast, 5U, "one-cycle");
-
     trace_Watch tooMany[TRACE_WATCH_CAPACITY + 1U];
     for (uint32_t i = 0U; i < (TRACE_WATCH_CAPACITY + 1U); i++)
     {
@@ -598,18 +644,25 @@ static void test_watch_admission_rejects_bad_entries(void)
     expectWatchRejection(tooMany, TRACE_WATCH_CAPACITY + 1U, "list exceeds");
 }
 
-// [test->fw~conn_trace_002~1]
-static void test_watch_admission_four_one_cycle_entries_accepted(void)
+// [test->fw~conn_trace_002~1] nothing caps the one-cycle group's entry count -
+// only the RAM and link budgets decide.
+static void test_watch_admission_five_one_cycle_entries_accepted(void)
 {
-    trace_Watch watches[4];
-    for (uint32_t i = 0U; i < 4U; i++)
+    trace_Watch watches[5];
+    for (uint32_t i = 0U; i < 5U; i++)
     {
         watches[i] = (trace_Watch){
             .address = TRACE_TEST_BASE + (i * 4U), .size = 4U, .period_cycles = 1U };
     }
-    serverConfig.sampleRamBudgetBytes = 1024U;   // u = 20 x (4 + 16) = 400
+    serverConfig.sampleStorage        = traceBigSampleStorage;
+    serverConfig.sampleRamBudgetBytes = TRACE_BIG_RAM_BUDGET;
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
-    (void) installWatches(watches, 4U);
+    const trace_TraceStatus status = installWatches(watches, 5U);
+    // u = 20 x (4 + 20) = 480, inside the 1024 B/ms budget
+    TEST_ASSERT_EQUAL_UINT32(480U, status.ram_usage_bytes_per_ms);
+    // r = 20 x 20000 + 27 x m, m = min(20000, max(1000, 20000 x 20 / 256)) = 1562
+    TEST_ASSERT_EQUAL_UINT32(400000U + 42174U, status.link_rate_bytes_per_s);
+    TEST_ASSERT_EQUAL_UINT32(TRACE_LINK_BUDGET, status.link_budget_bytes_per_s);
 }
 
 // [test->fw~conn_trace_002~1]
@@ -643,6 +696,8 @@ static void test_watch_admission_ram_budget_rejection(void)
 static void test_watch_admission_ram_budget_boundary_fits(void)
 {
     serverConfig.sampleRamBudgetBytes = 720U;   // u = 20 x (4 + 32) == budget
+    // r = 32 x 20000 + 27 x m, m = min(20000, max(1000, 20000 x 32 / 256)) = 2500
+    serverConfig.linkBudgetBytesPerS  = 707500U; // == r, so only the RAM point is on trial
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
     trace_Watch watches[4];
     for (uint32_t i = 0U; i < 4U; i++)
@@ -1006,6 +1061,251 @@ static void test_ring_overflow_skips_whole_records_leaving_gap(void)
     TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.count);
 }
 
+// [test->fw~conn_trace_004~1] two locations the firmware updates together
+// between cycles arrive mutually consistent in every capture
+// [test->sys~obs_005~1]
+static void test_one_cycle_group_captures_a_coherent_snapshot(void)
+{
+    const trace_Watch watches[] = {
+        { .address = TRACE_TEST_BASE,      .size = 4U, .period_cycles = 1U },
+        { .address = TRACE_TEST_BASE + 4U, .size = 4U, .period_cycles = 1U },
+    };
+    (void) installWatches(watches, 2U);
+
+    uint32_t records = 0U;
+    for (uint32_t c = 0U; c < 60U; c++)
+    {
+        traceMemory[0] = c + 1U;    // the pair a firmware writer updates together
+        traceMemory[1] = ~(c + 1U);
+        app_server_sampleCycle();
+        if (((c + 1U) % 20U) == 0U)
+        {
+            app_server_run1ms();
+            shared_Envelope replies[16];
+            const uint32_t n = collectReplies(replies, 16U);
+            for (uint32_t r = 0U; r < n; r++)
+            {
+                const trace_Samples * const samples = &replies[r].payload.samples;
+                TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+                TEST_ASSERT_EQUAL_UINT32(samples->count * 8U, samples->data.size);
+                for (uint32_t k = 0U; k < samples->count; k++)
+                {
+                    uint32_t first  = 0U;
+                    uint32_t second = 0U;
+                    (void) memcpy(&first, &samples->data.bytes[k * 8U], 4U);
+                    (void) memcpy(&second, &samples->data.bytes[(k * 8U) + 4U], 4U);
+                    TEST_ASSERT_EQUAL_UINT32(~first, second);
+                    records++;
+                }
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(60U, records);
+}
+
+// [test->fw~conn_trace_004~1] a run broken in the middle by dropped records
+// never shares a message: the batch ends where the cycle index stops stepping
+// [test->fw~conn_trace_009~1]
+static void test_interior_gap_splits_the_batch(void)
+{
+    useDeepTraceConfig();
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
+    (void) installWatches(&w, 1U);
+
+    // Stall emission until the ring is full and dropping, then let one pass
+    // take as much as the 2 KB transport holds - the rest stays buffered.
+    HW_USB_sim_setTxAccepting(false);
+    for (uint32_t c = 0U; c < 600U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    HW_USB_sim_setTxAccepting(true);
+    app_server_run1ms();
+
+    for (uint32_t c = 0U; c < 10U; c++)
+    {
+        app_server_sampleCycle();   // a second run, past the dropped middle
+    }
+
+    shared_Envelope replies[16];
+    (void) collectReplies(replies, 16U);   // discard the partial drain
+    app_server_run1ms();
+    const uint32_t n = collectReplies(replies, 16U);
+    TEST_ASSERT_TRUE(n >= 2U);
+
+    uint32_t gaps = 0U;
+    for (uint32_t r = 0U; r < n; r++)
+    {
+        const trace_Samples * const samples = &replies[r].payload.samples;
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(1U, samples->period_cycles);
+        TEST_ASSERT_EQUAL_UINT32(samples->count * 4U, samples->data.size);
+        if (r > 0U)
+        {
+            const trace_Samples * const prior = &replies[r - 1U].payload.samples;
+            if (samples->first_cycle != (prior->first_cycle + prior->count))
+            {
+                gaps++;
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(1U, gaps);
+
+    const trace_Samples * const last = &replies[n - 1U].payload.samples;
+    TEST_ASSERT_EQUAL_UINT32(600U, last->first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(10U, last->count);
+}
+
+// [test->fw~conn_trace_004~1] a one-cycle group flooding the ring never
+// corrupts the staggered 20-cycle group: its records stay whole, on its
+// offset, and no emitted index runs past what was sampled
+// [test->fw~conn_trace_009~1]
+static void test_overflow_keeps_the_slow_group_records_honest(void)
+{
+    const trace_Watch watches[] = {
+        { .address = TRACE_TEST_BASE,       .size = 4U, .period_cycles = 1U  },
+        { .address = TRACE_TEST_BASE + 16U, .size = 8U, .period_cycles = 20U },
+    };
+    (void) installWatches(watches, 2U);
+
+    for (uint32_t c = 0U; c < 100U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+
+    shared_Envelope replies[16];
+    const uint32_t n = collectReplies(replies, 16U);
+    TEST_ASSERT_TRUE(n >= 2U);
+
+    uint32_t slowRecords = 0U;
+    uint32_t lastFastEnd = 0U;
+    bool     haveFast    = false;
+    for (uint32_t r = 0U; r < n; r++)
+    {
+        const trace_Samples * const samples = &replies[r].payload.samples;
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+        TEST_ASSERT_TRUE(samples->count > 0U);
+        TEST_ASSERT_TRUE((samples->first_cycle +
+                          ((samples->count - 1U) * samples->period_cycles)) < 100U);
+        if (samples->period_cycles == 20U)
+        {
+            TEST_ASSERT_EQUAL_UINT32(samples->count * 8U, samples->data.size);
+            TEST_ASSERT_EQUAL_UINT32(1U, samples->first_cycle % 20U);
+            slowRecords += samples->count;
+        }
+        else
+        {
+            TEST_ASSERT_EQUAL_UINT32(1U, samples->period_cycles);
+            TEST_ASSERT_EQUAL_UINT32(samples->count * 4U, samples->data.size);
+            if (haveFast)
+            {
+                TEST_ASSERT_TRUE(samples->first_cycle > lastFastEnd);
+            }
+            lastFastEnd = samples->first_cycle + samples->count - 1U;
+            haveFast = true;
+        }
+    }
+    TEST_ASSERT_TRUE(haveFast);
+    TEST_ASSERT_TRUE(slowRecords >= 1U);
+}
+
+// [test->fw~conn_trace_009~1] 16-byte records fill a 256-byte Samples at 16 of
+// them, so a millisecond of one-cycle captures leaves as 16 + 4
+static void test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    for (uint32_t c = 0U; c < 20U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(2U, collectReplies(replies, 8U));
+    const uint32_t expectedCounts[] = { 16U, 4U };
+    uint32_t expectedFirst = 0U;
+    for (uint32_t m = 0U; m < 2U; m++)
+    {
+        const trace_Samples * const samples = &replies[m].payload.samples;
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[m].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(1U, samples->period_cycles);
+        TEST_ASSERT_EQUAL_UINT32(expectedFirst, samples->first_cycle);
+        TEST_ASSERT_EQUAL_UINT32(expectedCounts[m], samples->count);
+        TEST_ASSERT_EQUAL_UINT32(expectedCounts[m] * 16U, samples->data.size);
+        expectedFirst += expectedCounts[m];
+    }
+}
+
+// [test->fw~conn_trace_009~1] records buffered across a 3 ms emission stall all
+// arrive in the next emission, in capture order
+static void test_records_stalled_three_milliseconds_arrive_in_capture_order(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    for (uint32_t c = 0U; c < 60U; c++)
+    {
+        traceMemory[0] = c;         // a per-cycle stamp the emitted order is read from
+        app_server_sampleCycle();   // three passes' worth, with no emission
+    }
+
+    app_server_run1ms();
+    shared_Envelope replies[16];
+    const uint32_t n = collectReplies(replies, 16U);
+
+    uint32_t seen = 0U;
+    for (uint32_t r = 0U; r < n; r++)
+    {
+        const trace_Samples * const samples = &replies[r].payload.samples;
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(seen, samples->first_cycle);
+        for (uint32_t k = 0U; k < samples->count; k++)
+        {
+            uint32_t stamp = 0U;
+            (void) memcpy(&stamp, &samples->data.bytes[k * 16U], 4U);
+            TEST_ASSERT_EQUAL_UINT32(seen, stamp);
+            seen++;
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(60U, seen);
+}
+
+// [test->fw~conn_trace_009~1] no record is held longer than 2 ms: a record
+// captured in pass n leaves no later than pass n + 2
+static void test_no_record_is_held_past_two_emissions(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    uint32_t emitted = 0U;
+    for (uint32_t pass = 0U; pass < 10U; pass++)
+    {
+        for (uint32_t c = 0U; c < 20U; c++)
+        {
+            app_server_sampleCycle();
+        }
+        app_server_run1ms();
+
+        shared_Envelope replies[8];
+        const uint32_t n = collectReplies(replies, 8U);
+        for (uint32_t r = 0U; r < n; r++)
+        {
+            const trace_Samples * const samples = &replies[r].payload.samples;
+            TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+            for (uint32_t k = 0U; k < samples->count; k++)
+            {
+                const uint32_t capturedInPass = (samples->first_cycle + k) / 20U;
+                TEST_ASSERT_TRUE(pass <= (capturedInPass + 2U));
+                emitted++;
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(200U, emitted);
+}
+
 /* ---- fw~conn_trace_005: Samples message format ---- */
 
 // [test->fw~conn_trace_005~1] a known list and record encode to a byte-exact
@@ -1023,31 +1323,25 @@ static void test_samples_frame_is_byte_exact(void)
     app_server_run1ms();
 
     // Envelope{ samples = Samples{ first_cycle: 1, data: EF BE,
-    //                              period_cycles: 20, count: 1 } }
-    const uint8_t payload[] = {
+    //                              period_cycles: 20, count: 1 } }, then the
+    // little-endian CRC-32 of those 13 bytes, COBS-encoded (one 0x12 group
+    // code, no zero bytes to escape) between two delimiters. Every byte below
+    // is a reference value, not a call into the codecs under test.
+    const uint8_t expected[] = {
+        0x00U,                             // leading delimiter
+        0x12U,                             // COBS code: 17 nonzero bytes follow
         0x8AU, 0x02U, 0x0AU,               // field 33, length-delimited, 10 bytes
         0x08U, 0x01U,                      // first_cycle = 1
         0x12U, 0x02U, 0xEFU, 0xBEU,        // data = EF BE
         0x18U, 0x14U,                      // period_cycles = 20
         0x20U, 0x01U,                      // count = 1
+        0xAAU, 0xCFU, 0x9CU, 0x12U,        // CRC-32 = 0x129CCFAA, little endian
+        0x00U,                             // trailing delimiter
     };
-    uint8_t plain[sizeof(payload) + 4U];
-    (void) memcpy(plain, payload, sizeof(payload));
-    const uint32_t crc = lib_crc32_compute(payload, sizeof(payload));
-    plain[sizeof(payload)]      = (uint8_t) (crc & 0xFFU);
-    plain[sizeof(payload) + 1U] = (uint8_t) ((crc >> 8U) & 0xFFU);
-    plain[sizeof(payload) + 2U] = (uint8_t) ((crc >> 16U) & 0xFFU);
-    plain[sizeof(payload) + 3U] = (uint8_t) ((crc >> 24U) & 0xFFU);
-
-    uint8_t expected[IO_COBSFRAME_WIRE_MAX(sizeof(plain))];
-    expected[0] = 0x00U;
-    size_t cobsLen = 0U;
-    TEST_ASSERT_TRUE(lib_cobs_encode(plain, sizeof(plain), &expected[1], sizeof(expected) - 2U, &cobsLen));
-    expected[cobsLen + 1U] = 0x00U;
 
     uint8_t wire[512];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
-    TEST_ASSERT_EQUAL_UINT32((uint32_t) (cobsLen + 2U), wireLen);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t) sizeof(expected), wireLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, wire, wireLen);
 }
 
@@ -1171,6 +1465,34 @@ static void test_write_lands_and_reads_back(void)
     TEST_ASSERT_EQUAL_UINT32(2U, samplerMaskCalls);
     TEST_ASSERT_FALSE(samplerMasked);
     TEST_ASSERT_EQUAL_UINT32(0U, traceWordWhileMasked);
+    TEST_ASSERT_EQUAL_UINT32(0x04030201U, traceWordWhileUnmasked);
+}
+
+// [test->fw~conn_trace_008~1] the sampler-mask hook is optional: a board that
+// supplies none still takes the write.
+static void test_write_without_sampler_mask_hook_lands(void)
+{
+    traceMemory[2] = 0U;
+    serverConfig.setSamplerMasked = NULL;
+    TEST_ASSERT_TRUE(app_server_init(&serverConfig));
+
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 63U;
+    req.which_payload = shared_Envelope_write_request_tag;
+    req.payload.write_request.address = TRACE_TEST_BASE + 8U;
+    req.payload.write_request.data.size = 4U;
+    req.payload.write_request.data.bytes[0] = 0x01U;
+    req.payload.write_request.data.bytes[1] = 0x02U;
+    req.payload.write_request.data.bytes[2] = 0x03U;
+    req.payload.write_request.data.bytes[3] = 0x04U;
+    injectEnvelope(&req);
+    app_server_run1ms();
+
+    shared_Envelope replies[2];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 2U));
+    TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_UINT32(0x04030201U, traceMemory[2]);
+    TEST_ASSERT_EQUAL_UINT32(0U, samplerMaskCalls);
 }
 
 static void expectWriteRejection(uint32_t address, uint32_t len, const char * const causeSubstring)
@@ -1359,6 +1681,24 @@ static void test_link_test_count_reached_frees_the_service(void)
     TEST_ASSERT_EQUAL_UINT32(2U, acceptLinkTest(75U, 16U, 2U));
 }
 
+// [test->fw~conn_server_005~1] a link test dies with the port: nothing more
+// streams after the disconnect, and the next session starts a fresh count
+static void test_link_test_clears_on_disconnect(void)
+{
+    (void) acceptLinkTest(76U, 256U, 200U);   // still running when the port drops
+
+    HW_USB_sim_setConnected(false);
+    app_server_run1ms();   // disconnect edge: the test is abandoned with the list
+    HW_USB_sim_setConnected(true);
+
+    app_server_run1ms();
+    shared_Envelope replies[32];
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 32U));
+
+    // A fresh request is accepted, its sequence restarting at zero.
+    TEST_ASSERT_EQUAL_UINT32(2U, acceptLinkTest(77U, 16U, 2U));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1384,7 +1724,7 @@ int main(void)
 
     RUN_TEST(test_watch_admission_accepted_reports_usage);
     RUN_TEST(test_watch_admission_rejects_bad_entries);
-    RUN_TEST(test_watch_admission_four_one_cycle_entries_accepted);
+    RUN_TEST(test_watch_admission_five_one_cycle_entries_accepted);
     RUN_TEST(test_watch_admission_link_budget_boundary);
     RUN_TEST(test_watch_admission_ram_budget_rejection);
     RUN_TEST(test_watch_admission_ram_budget_boundary_fits);
@@ -1400,6 +1740,12 @@ int main(void)
     RUN_TEST(test_sampler_quiet_without_a_list);
     RUN_TEST(test_new_list_restarts_stream_discarding_buffered);
     RUN_TEST(test_ring_overflow_skips_whole_records_leaving_gap);
+    RUN_TEST(test_one_cycle_group_captures_a_coherent_snapshot);
+    RUN_TEST(test_interior_gap_splits_the_batch);
+    RUN_TEST(test_overflow_keeps_the_slow_group_records_honest);
+    RUN_TEST(test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four);
+    RUN_TEST(test_records_stalled_three_milliseconds_arrive_in_capture_order);
+    RUN_TEST(test_no_record_is_held_past_two_emissions);
 
     RUN_TEST(test_samples_frame_is_byte_exact);
     RUN_TEST(test_max_samples_frame_layout_and_wire_bound);
@@ -1407,12 +1753,14 @@ int main(void)
     RUN_TEST(test_read_returns_current_contents);
     RUN_TEST(test_read_rejections);
     RUN_TEST(test_write_lands_and_reads_back);
+    RUN_TEST(test_write_without_sampler_mask_hook_lands);
     RUN_TEST(test_write_rejections);
 
     RUN_TEST(test_link_test_streams_exactly_the_requested_frames);
     RUN_TEST(test_link_test_rejects_out_of_range_requests);
     RUN_TEST(test_link_test_rejects_second_request_while_running);
     RUN_TEST(test_link_test_count_reached_frees_the_service);
+    RUN_TEST(test_link_test_clears_on_disconnect);
 
     return UNITY_END();
 }

@@ -13,9 +13,8 @@
 #define APP_SERVER_TRACE_RECORD_HEADER_BYTES (3U)
 #define APP_SERVER_TRACE_CYCLE_BYTES         (4U)
 
-// The u formula (fw~conn_trace_002) charges CYCLE_BYTES per record; the ring
-// header costs the rest, over the most records one millisecond can hold (20
-// one-cycle plus one each of the 20- and 200-cycle groups).
+// Most records one millisecond can hold: 20 one-cycle plus one each of the
+// 20- and 200-cycle groups. The u formula charges only CYCLE_BYTES of each.
 #define APP_SERVER_TRACE_RECORDS_PER_MS_MAX (22U)
 
 #define APP_SERVER_TRACE_MAX_RECORD_DATA_BYTES (sizeof(((trace_Samples *) 0)->data.bytes))
@@ -23,21 +22,14 @@
 #define APP_SERVER_TRACE_MAX_READ_BYTES        (sizeof(((trace_ReadReply *) 0)->data.bytes))
 #define APP_SERVER_TRACE_MAX_WRITE_BYTES       (sizeof(((trace_WriteRequest *) 0)->data.bytes))
 
-// Period groups (fw~conn_trace_004) and the one-cycle group's entry cap
-// (fw~conn_trace_002).
-#define APP_SERVER_TRACE_GROUP_COUNT           (3U)
-#define APP_SERVER_TRACE_ONE_CYCLE_GROUP       (0U)
-#define APP_SERVER_TRACE_ONE_CYCLE_MAX_ENTRIES (4U)
+// Period groups (fw~conn_trace_004).
+#define APP_SERVER_TRACE_GROUP_COUNT (3U)
 
 // Baseline message rate of fw~conn_trace_009: emission runs once a millisecond.
 #define APP_SERVER_TRACE_EMISSIONS_PER_S (1000U)
 
-// SPSC ring fences: order the record's plain data accesses against the
-// volatile index publishes, so the ring stays correct with an ISR-context
-// producer or off a single core (DMB on Cortex-M; compiler-only on x86 TSO).
-// ACQUIRE after reading the peer's index, before touching the buffer;
-// RELEASE after touching the buffer, before publishing our index.
-// FULL brackets the sampler's gate, which orders plain accesses both ways.
+// SPSC ring fences ordering the record's plain data against the volatile index
+// publishes: ACQUIRE after reading the peer's index, RELEASE before publishing.
 #define APP_SERVER_TRACE_BARRIER_ACQUIRE() __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #define APP_SERVER_TRACE_BARRIER_RELEASE() __atomic_thread_fence(__ATOMIC_RELEASE)
 #define APP_SERVER_TRACE_BARRIER_FULL()    __atomic_thread_fence(__ATOMIC_SEQ_CST)
@@ -51,9 +43,8 @@ _Static_assert(APP_SERVER_TRACE_RING_OVERHEAD_BYTES ==
 
 /* Private Data Definitions */
 
-// One period group: its wire period, the stagger offset that keeps the groups
-// out of one another's cycles (fw~conn_trace_004), and the record counts the
-// admission formulas use (n_g per millisecond, f_g per second).
+// One period group: wire period, the stagger offset keeping groups out of one
+// another's cycles (fw~conn_trace_004), and n_g / f_g for the admission formulas.
 typedef struct
 {
     uint32_t periodCycles;
@@ -80,9 +71,8 @@ typedef struct
 typedef struct
 {
     const app_server_config_S * config;
-    // Watch double buffer: the sampler streams `active`; WatchRequest decode
-    // fills `staged`; an accepted admission swaps the two behind the gate
-    // below, so the ISR-context sampler never sees a half-committed list.
+    // Watch double buffer: the sampler streams `active` while decode fills
+    // `staged`; admission swaps them behind the gate below, never half-committed.
     app_server_watch_S * active;
     app_server_watch_S * staged;
     app_server_trace_groupState_S groupState[APP_SERVER_TRACE_GROUP_COUNT];
@@ -90,7 +80,6 @@ typedef struct
     // before touching anything the sampler reads and the new count last.
     volatile uint32_t activeCount;
     uint32_t stagedCount;
-    uint32_t stagedOneCycleCount;
     bool stagedRejected;
     char stagedCause[sizeof(((shared_Response *) 0)->cause)];
     volatile uint32_t cycleIndex;
@@ -245,11 +234,6 @@ static void app_server_trace_private_stageEntry(uint32_t address, uint32_t size,
     {
         app_server_trace_private_stageReject("watch span not readable");
     }
-    else if ((group == APP_SERVER_TRACE_ONE_CYCLE_GROUP) &&
-             (data->stagedOneCycleCount >= APP_SERVER_TRACE_ONE_CYCLE_MAX_ENTRIES))
-    {
-        app_server_trace_private_stageReject("more than 4 one-cycle watches");
-    }
     else if (data->stagedCount >= data->config->watchCapacity)
     {
         app_server_trace_private_stageReject("watch list exceeds capacity");
@@ -262,10 +246,6 @@ static void app_server_trace_private_stageEntry(uint32_t address, uint32_t size,
             .group     = (uint8_t) group,
         };
         data->stagedCount++;
-        if (group == APP_SERVER_TRACE_ONE_CYCLE_GROUP)
-        {
-            data->stagedOneCycleCount++;
-        }
     }
 }
 
@@ -283,10 +263,8 @@ static bool app_server_trace_private_watchEntryCallback(pb_istream_t * stream, c
     return ret;
 }
 
-// Stable-partition a list by group so each group's entries are contiguous —
-// preserving watch-list order within the group, which is record order on the
-// wire — and index where each group starts, how many entries it holds, and its
-// record size S_g.
+// Stable-partition by group (watch-list order within a group is wire record
+// order), then index each group's start, count, and record size S_g.
 static void app_server_trace_private_index(app_server_watch_S * const list, uint32_t count,
                                            app_server_trace_groupState_S * const groupState)
 {
@@ -318,9 +296,8 @@ static void app_server_trace_private_index(app_server_watch_S * const list, uint
     }
 }
 
-// The admission formulas of fw~conn_trace_002 over an indexed list: the widest
-// record, the RAM figure u in bytes per millisecond, and the link rate r in
-// bytes per second. m_g's division floors, so r is the exact rate rounded down.
+// The fw~conn_trace_002 formulas over an indexed list: widest record, u in
+// bytes per ms, r in bytes per second (m_g floors, so r rounds down).
 static void app_server_trace_private_usage(const app_server_trace_groupState_S * const groupState,
                                            uint32_t * const maxRecordBytes,
                                            uint32_t * const ramPerMs,
@@ -429,7 +406,6 @@ bool app_server_trace_init(const app_server_config_S * const config)
         data->active = &config->watchStorage[0U];
         data->staged = &config->watchStorage[config->watchCapacity];
         data->stagedCount = 0U;
-        data->stagedOneCycleCount = 0U;
         data->stagedRejected = false;
         data->stagedCause[0] = '\0';
         (void) memset(data->groupState, 0, sizeof(data->groupState));
@@ -449,9 +425,8 @@ void app_server_trace_sampleCycle(void)
         for (uint32_t g = 0U; g < APP_SERVER_TRACE_GROUP_COUNT; g++)
         {
             const app_server_trace_group_S * const group = &app_server_trace_groups[g];
-            // Unsigned wrap keeps the pre-offset cycles indivisible, so each
-            // group's first record lands on its own offset. The index rolls
-            // over out of phase after 2^32 cycles (~60 h of drive).
+            // Unsigned wrap keeps pre-offset cycles indivisible, so each group
+            // first fires on its own offset; 2^32 cycles (~60 h) rolls it out of phase.
             if ((data->groupState[g].count > 0U) &&
                 (((cycle - group->offset) % group->periodCycles) == 0U))
             {
@@ -481,7 +456,6 @@ bool app_server_trace_envelopeCallback(pb_istream_t * stream, const pb_field_t *
         request->watches.funcs.decode = app_server_trace_private_watchEntryCallback;
         request->watches.arg = NULL;
         data->stagedCount = 0U;
-        data->stagedOneCycleCount = 0U;
         data->stagedRejected = false;
         data->stagedCause[0] = '\0';
     }
@@ -544,7 +518,7 @@ void app_server_trace_status(trace_TraceStatus * const status)
         uint32_t ramPerMs = 0U;
         uint32_t linkRate = 0U;
         app_server_trace_private_usage(data->groupState, &maxRecordBytes, &ramPerMs, &linkRate);
-        status->ram_budget_bytes        = data->config->sampleRamBudgetBytes;
+        status->ram_budget_bytes_per_ms = data->config->sampleRamBudgetBytes;
         status->ram_usage_bytes_per_ms  = ramPerMs;
         status->link_budget_bytes_per_s = data->config->linkBudgetBytesPerS;
         status->link_rate_bytes_per_s   = linkRate;
@@ -600,9 +574,9 @@ bool app_server_trace_write(const trace_WriteRequest * const request,
         }
         else
         {
-            // Whole-or-prior for every firmware reader: the critical section
-            // holds off the tasks, the board hook the cycle callback, which
-            // runs above the FreeRTOS syscall priority and ignores the former.
+            // The critical section holds off other tasks; the board hook masks
+            // the cycle callback, which runs above the FreeRTOS syscall priority
+            // and ignores BASEPRI.
             const bool maskable = (data->config->setSamplerMasked != NULL);
             taskENTER_CRITICAL();
             if (maskable)

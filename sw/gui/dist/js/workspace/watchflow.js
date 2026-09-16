@@ -35,7 +35,7 @@ function renderPreview() {
   set({
     budgetPreview: {
       u: p.u,
-      ramMax: s?.ram_budget_bytes ?? 2048,
+      ramMax: s?.ram_budget_bytes_per_ms ?? 2048,
       r: p.r,
       linkMax: s?.link_budget_bytes_per_s ?? 480_000,
       count: p.count,
@@ -147,9 +147,8 @@ export function initWatchflow() {
 function computeFixes() {
   const list = entries();
   const fixes = [];
-  // One-cycle entries are both the bandwidth hogs and the only entries with
-  // a count limit of their own (4), so they get two fixes: slow them, or
-  // drop them.
+  // One-cycle entries dominate both budgets, so they get two fixes: slow
+  // them, or drop them.
   const fastest = list.filter((e) => e.period_cycles === 1);
   if (fastest.length) {
     const plural = fastest.length > 1 ? "s" : "";

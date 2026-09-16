@@ -10,9 +10,8 @@
 
 /* Defines */
 
-// Ring storage past the budget: the u-formula charges 4 bytes per record, the
-// ring's own record header costs 3 more over the 22 records a millisecond can
-// hold, and one slot stays empty, so every list the formula admits fully fits.
+// Ring storage past the budget: the ring's own 3-byte record header over the 22
+// records a millisecond can hold, plus the one slot that always stays empty.
 #define APP_SERVER_TRACE_RING_OVERHEAD_BYTES (67U)
 #define APP_SERVER_TRACE_STORAGE_BYTES(budgetBytes) \
     ((budgetBytes) + APP_SERVER_TRACE_RING_OVERHEAD_BYTES)

@@ -17,8 +17,9 @@ typedef struct
     uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
     uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
 
-    IO_bridge_cycleCallback_F cycleCallback;
-    void *                    cycleContext;
+    // Published by a task, read by the injected-completion ISR.
+    IO_bridge_cycleCallback_F volatile cycleCallback;
+    void * volatile                    cycleContext;
 
 } IO_bridge_channelData_S;
 
@@ -80,6 +81,8 @@ static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period)
     return (uint32_t)((duty * (float32_t)period) + 0.5f);
 }
 
+// value = (V_pin - V_bias) / scale
+// [impl->fw~io_bridge_005~1]
 static bool IO_bridge_private_decodeCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t volts, float32_t * const amps_out)
 {
     bool ret = false;
@@ -91,6 +94,8 @@ static bool IO_bridge_private_decodeCurrent(const IO_bridge_currentSenseConfig_S
     return ret;
 }
 
+// Most recent regular-sequence sample of the sense's ADC input.
+// [impl->fw~io_bridge_005~1]
 static bool IO_bridge_private_readCurrent(const IO_bridge_currentSenseConfig_S * const sense, float32_t * const amps_out)
 {
     bool ret = false;
@@ -124,11 +129,14 @@ static void IO_bridge_private_completeInjectedPair(size_t channel, uint32_t now)
     channelData->updateCount[IO_BRIDGE_PHASE_W] += 1U;
     channelData->sampleTime_us[IO_BRIDGE_PHASE_W] = now;
 
-    // Last, so the whole triple is readable to the callback.
+    // Last, so the whole triple is readable to the callback. One load each, so
+    // a concurrent deregistration cannot null the pointer between test and call.
     // [impl->fw~io_bridge_007~1]
-    if (channelData->cycleCallback != NULL)
+    const IO_bridge_cycleCallback_F callback = channelData->cycleCallback;
+    void * const callbackContext = channelData->cycleContext;
+    if (callback != NULL)
     {
-        channelData->cycleCallback((IO_bridge_channel_E)channel, channelData->cycleContext);
+        callback((IO_bridge_channel_E)channel, callbackContext);
     }
 }
 
@@ -375,6 +383,7 @@ bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel)
     return ret;
 }
 
+// [impl->fw~io_bridge_005~1]
 bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out)
 {
     bool ret = false;
@@ -392,6 +401,7 @@ bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E ph
     return ret;
 }
 
+// [impl->fw~io_bridge_005~1]
 bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps_out)
 {
     bool ret = false;
@@ -438,6 +448,8 @@ bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
         (channel < IO_BRIDGE_CHANNEL_COUNT) &&
         ((size_t)channel < data->config->numChannels))
     {
+        // Context first: the ISR can fire between the stores, and must never
+        // pair a newly published callback with the previous context.
         data->channels[channel].cycleContext  = context;
         data->channels[channel].cycleCallback = callback;
         ret = true;

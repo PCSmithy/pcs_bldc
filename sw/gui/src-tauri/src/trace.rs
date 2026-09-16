@@ -147,10 +147,12 @@ impl BatchState {
         for (entry, cycle, value) in points {
             let period = self.table.entries[entry].period_cycles;
             if let Some(prev) = self.prev_cycle[entry] {
-                // Wrap-safe delta: the cycle index wraps u32 after ~2.5 days
-                // of uptime.
                 let delta = cycle.wrapping_sub(prev);
-                if delta > period {
+                // Past half the u32 range the index went backwards: the
+                // counter wrapped (~59.65 h of uptime) or the stream re-armed.
+                // Resync on the new domain instead of charging the whole span
+                // as dropped records.
+                if (delta <= (u32::MAX / 2)) && (delta > period) {
                     self.dropped_records += (delta / period) - 1;
                 }
             }
@@ -514,6 +516,24 @@ mod tests {
 
     // [test->app~obs_004~1]
     #[test]
+    fn a_backwards_cycle_index_resyncs_instead_of_counting_drops() {
+        let mut state = BatchState::new(WatchTable {
+            entries: vec![entry("fast", 1, 1, Leaf::Scalar(Scalar::U8))],
+        });
+        state.last_emit = Instant::now();
+        let _ = state.ingest(&samples(1_000_000, 1, 2, &[1, 2]));
+        // The u32 index wrapped and the domain restarted near 0: resync on it
+        // rather than charge the backwards span as billions of drops.
+        state.last_emit = Instant::now();
+        let _ = state.ingest(&samples(0, 1, 2, &[3, 4]));
+        let batch = state.flush();
+        assert_eq!(batch.dropped_records, 0);
+        assert_eq!(state.prev_cycle[0], Some(1));
+        assert_eq!(batch.signals[0].points.len(), 4);
+    }
+
+    // [test->app~obs_004~1]
+    #[test]
     fn every_scalar_kind_decodes() {
         let cases: Vec<(Leaf, Vec<u8>, f64)> = vec![
             (Leaf::Scalar(Scalar::U8), vec![0xFF], 255.0),
@@ -660,10 +680,10 @@ mod tests {
     fn rejected_install_leaves_prior_state_intact() {
         let (result, trace) = run_install(Payload::Response(pcs_proto::shared::Response {
             accepted: false,
-            cause: "more than 4 one-cycle watches".into(),
+            cause: "exceeds link budget".into(),
         }));
         match result {
-            Err(cause) => assert_eq!(cause, "more than 4 one-cycle watches"),
+            Err(cause) => assert_eq!(cause, "exceeds link budget"),
             Ok(_) => panic!("rejection was accepted"),
         }
         let guard = trace.0.lock().unwrap();
@@ -675,7 +695,7 @@ mod tests {
     #[test]
     fn accepted_install_replaces_the_table_and_yields_a_consumer() {
         let (result, trace) = run_install(Payload::TraceStatus(TraceStatus {
-            ram_budget_bytes: 2048,
+            ram_budget_bytes_per_ms: 2048,
             ram_usage_bytes_per_ms: 100,
             link_budget_bytes_per_s: 480_000,
             link_rate_bytes_per_s: 25_000,
@@ -684,7 +704,7 @@ mod tests {
             Ok(v) => v,
             Err(e) => panic!("accepted install failed: {e}"),
         };
-        assert_eq!(status.ram_budget_bytes, 2048);
+        assert_eq!(status.ram_budget_bytes_per_ms, 2048);
         assert_eq!(status.ram_usage_bytes_per_ms, 100);
         assert!(consumer.is_some());
         let guard = trace.0.lock().unwrap();

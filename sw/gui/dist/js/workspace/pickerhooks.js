@@ -73,7 +73,7 @@ export function initPickerWatchControls() {
       store.budgetPreview ??
       (s && {
         u: s.ram_usage_bytes_per_ms,
-        ramMax: s.ram_budget_bytes,
+        ramMax: s.ram_budget_bytes_per_ms,
         r: s.link_rate_bytes_per_s,
         linkMax: s.link_budget_bytes_per_s,
         count: store.watched.size,

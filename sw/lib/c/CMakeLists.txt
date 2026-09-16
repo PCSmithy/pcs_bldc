@@ -57,16 +57,18 @@ endif()
 # Our own library code (layered).
 add_subdirectory(shared)
 
-# The USB link path is throughput-bound on CPU at -Og, so the link-path and
-# fast-cycle modules build at -O2 on the board (515 kB/s measured with
-# tools/pcs_client.py --link-test; docs/backlog.md). Statics stay traceable;
-# line stepping and locals in these units degrade. To debug one of them,
-# configure with -DPCS_LINK_PATH_OPT=-Og.
-set(PCS_LINK_PATH_OPT "-O2" CACHE STRING "Optimization level for the USB link path on the embedded build")
+# The link path is throughput-bound on CPU at -Og, so these units alone - the
+# link path plus the ADC/bridge/TIM/USB drivers on the per-cycle and per-frame
+# paths - build at -O2 on the board (515 kB/s measured with tools/pcs_client.py
+# --link-test; docs/backlog.md). The cycle body in main.c and the motor-control
+# code stay at -Og. Statics stay traceable; line stepping and locals in these
+# units degrade - to debug one, configure with -DPCS_LINK_PATH_OPT=-Og.
 if(PCS_TARGET STREQUAL "embedded")
-  foreach(t freertos nanopb tinyusb lib_cobs lib_crc32 lib_protobuf io_COBSFrame io_serial app_server hw_ADC io_bridge)
-    if(TARGET ${t})
-      target_compile_options(${t} PRIVATE ${PCS_LINK_PATH_OPT})
+  set(PCS_LINK_PATH_OPT "-O2" CACHE STRING "Optimization level for the USB link path on the embedded build")
+  foreach(t freertos nanopb tinyusb lib_cobs lib_crc32 lib_protobuf io_COBSFrame io_serial app_server hw_ADC hw_TIM hw_USB io_bridge)
+    if(NOT TARGET ${t})
+      message(FATAL_ERROR "PCS_LINK_PATH_OPT target '${t}' does not exist - update the list in ${CMAKE_CURRENT_LIST_FILE}")
     endif()
+    target_compile_options(${t} PRIVATE ${PCS_LINK_PATH_OPT})
   endforeach()
 endif()

@@ -379,14 +379,25 @@ def run(page):
 
     # ── [test->app~views_005~1] one shared cursor across every plot ──
     newest = page.evaluate("() => __cockpit.histories.get('task1msRuns').newestTick()")
-    cursor_tick = newest - 1000
+    # The device staggers its period groups, so a signal's ticks sit on its own
+    # 0.05 ms grid, never on whole milliseconds: take a tick the signal really
+    # has rather than an arithmetic one.
+    cursor_tick = page.evaluate(
+        "() => { const h = __cockpit.histories.get('task1msRuns');"
+        " return h.tickAtOrBefore(h.newestTick() - 1000); }"
+    )
     page.evaluate(f"() => __cockpit.setCursorTick({cursor_tick})")
     visible_lines = page.eval_on_selector_all(
         ".plot-widget .cursor-line", "els => els.filter(e => !e.hidden).length"
     )
     check("views_005 cursor line on every plot", visible_lines == 2, visible_lines)
     readout = page.locator(".plot-widget .cursor-readout").first.inner_text()
-    check("views_005 readout carries the time", f"{cursor_tick:,}".replace(",", " ") in readout, readout[:80])
+    # As the readout writes it: grouped thousands, trailing zeros trimmed.
+    tick_txt = (
+        f"{cursor_tick:,.2f}".rstrip("0").rstrip(".") if cursor_tick % 1
+        else f"{cursor_tick:,.0f}"
+    ).replace(",", " ")
+    check("views_005 readout carries the time", tick_txt in readout, (tick_txt, readout[:80]))
     # An in-gap tick reads "no sample" (mock gap: t % 5000 in [4880, 5000)).
     gap_tick = (newest // 5000) * 5000 - 60
     page.evaluate(f"() => __cockpit.setCursorTick({gap_tick})")
@@ -1002,8 +1013,8 @@ def run(page):
     page.click(".watch-row[data-path='task1msRuns'] .watch-remove")
 
     # ══ the one-cycle period end to end: the 20 kHz label, a 10 ms signal on
-    #    the same timeline, the 10 s fast-retention window, and the board's
-    #    four-entry one-cycle cap ══
+    #    the same timeline, the full-retention 60 s span, and the board's
+    #    budget-based refusal of an over-wide one-cycle list ══
     FAST_S = "app_motorControl_data.channels[0].currentQ_a"
     SLOW_S = "app_motorControl_data.channels[0].busCurrent"
     page.evaluate(
@@ -1078,36 +1089,80 @@ def run(page):
         align,
     )
 
-    # ── [test->app~views_008~1] a 30 s span shows a one-cycle signal's most
-    #    recent 10 s and a cycle-index gap before it ──
-    page.evaluate("() => __cockpit.timeline.setSpan(30000)")
+    # ── [test->app~views_008~1] a one-cycle signal fills a 60 s span: it
+    #    carries the same retention as every other period ──
+    page.evaluate("() => __cockpit.timeline.setSpan(60000)")
     page.wait_for_timeout(400)
     retain = page.evaluate(
         f"""() => {{
           const f = __cockpit.histories.get({FAST_S!r});
           const sl = __cockpit.histories.get({SLOW_S!r});
           const [t0, t1] = __cockpit.timeline.currentWindow();
+          const i0 = f.indexAtOrAfter(t0);
           return {{
             span: t1 - t0,
             fast_extent: f.newestTick() - f.tickAtIndex(0),
             slow_extent: sl.newestTick() - sl.tickAtIndex(0),
-            gap_before_fast: f.tickAtIndex(0) - t0,
+            fast_lead: t0 - f.tickAtIndex(0),
+            fast_in_window: f.newestTick() - f.tickAtIndex(i0),
+            fast_in_window_count: f.size - i0,
           }};
         }}"""
     )
     check(
-        "views_008 a one-cycle signal keeps its most recent 10 s in a 30 s span",
-        abs(retain["span"] - 30_000) < 1
-        and 9_000 < retain["fast_extent"] <= 10_400
-        and retain["slow_extent"] > 25_000
-        and retain["gap_before_fast"] > 15_000,
+        "views_008 a one-cycle signal fills a 60 s span",
+        abs(retain["span"] - 60_000) < 1
+        and retain["fast_extent"] > 59_000
+        and retain["fast_lead"] >= 0
+        and retain["fast_in_window"] > 59_000
+        and retain["fast_in_window_count"] > 1_000_000
+        and retain["slow_extent"] > 59_000,
         retain,
     )
     page.evaluate("() => __cockpit.timeline.setSpan(10000)")
 
-    # ── [test->app~obs_003~1] a fifth one-cycle watch is refused by the
-    #    board; the app presents the cause and the prior list keeps running ──
-    surplus = [f"est_flux_data.buf[{i}]" for i in range(5)]
+    # ── [test->app~views_008~1] and it retains what arrives while paused:
+    #    resuming inside the 120 s catch-up shows no hole at the pause ──
+    paused_at = page.evaluate(
+        f"""() => {{
+          const t = __cockpit.histories.get({FAST_S!r}).newestTick();
+          __cockpit.timeline.pause();
+          return t;
+        }}"""
+    )
+    page.wait_for_function(
+        f"(t) => __cockpit.histories.get({FAST_S!r}).newestTick() > t + 2000",
+        arg=paused_at,
+        timeout=15_000,
+    )
+    page.evaluate("() => __cockpit.timeline.resume()")
+    page.wait_for_timeout(200)
+    across = page.evaluate(
+        f"""(t) => {{
+          const f = __cockpit.histories.get({FAST_S!r});
+          const i = f.indexAtOrAfter(t);
+          const grew = f.newestTick() - t;
+          let worst = 0;
+          for (const [a, b] of f.gapsIn(t, t + grew)) worst = Math.max(worst, b - a);
+          return {{ grew, count: f.size - i, worst_gap: worst }};
+        }}""",
+        paused_at,
+    )
+    check(
+        "views_008 a one-cycle signal retains the samples that arrive while paused",
+        across["grew"] > 2_000
+        # 20 samples/ms over the paused interval, less the mock's ~120 ms
+        # dropouts; a lost pause interval would read as a single huge gap.
+        and across["count"] > across["grew"] * 18
+        and across["worst_gap"] < 500,
+        across,
+    )
+
+    # ── [test->app~obs_003~1] a one-cycle list past the link budget is
+    #    refused by the board (six 4-byte 20 kHz entries put r at 530 625 B/s,
+    #    over the 480 000 B/s budget); the app presents the cause and the
+    #    prior list keeps running ──
+    surplus = [f"est_flux_data.buf[{i}]" for i in range(6)]
     before = page.evaluate(f"() => __cockpit.histories.get({FAST_S!r}).newestTick()")
     page.evaluate("(paths) => { for (const p of paths) __cockpit.addWatch(p, 1); }", surplus)
     page.wait_for_selector(".reject-scrim", timeout=8000)
@@ -1123,9 +1178,9 @@ def run(page):
         timeout=8000,
     )
     check(
-        "obs_003 a fifth one-cycle watch presents the board's cause, stream unbroken",
-        refusal["cause"] == "more than 4 one-cycle watches"
-        and refusal["verdict"] == "more than 4 one-cycle watches"
+        "obs_003 an over-budget one-cycle list presents the board's cause, stream unbroken",
+        refusal["cause"] == "exceeds link budget"
+        and refusal["verdict"] == "exceeds link budget"
         and any("20 kHz" in f for f in refusal["fixes"]),
         refusal,
     )
@@ -2434,11 +2489,12 @@ def run(page):
     )
     dt_num = None
     if dt_read:
-        digits = "".join(ch for ch in dt_read["text"] if ch.isdigit())
-        dt_num = int(digits) * (-1 if "-" in dt_read["text"] else 1)
+        # Ticks sit on the wire's 0.05 ms grid, so the delta carries decimals.
+        digits = "".join(ch for ch in dt_read["text"] if ch.isdigit() or ch == ".")
+        dt_num = float(digits) * (-1 if "-" in dt_read["text"] else 1)
     check(
         "views_018 time delta shows on the anchoring widget from a foreign cursor",
-        dt_read is not None and dt_num == dt_read["expect"],
+        dt_read is not None and abs(dt_num - dt_read["expect"]) < 1e-6,
         dt_read,
     )
 
@@ -2456,7 +2512,9 @@ def run(page):
           const el = w.el.querySelector(`[data-path="${p}"] [data-delta-v]`);
           // Expectation from the history itself, independent of the widget's
           // own cursor-value plumbing (the surface under test).
-          const v = __cockpit.histories.get(p).valueAt(__cockpit.cursor.tick);
+          // The cursor holds a free time, off the staggered sample grid: read
+          // the signal at it the way the app does, within one period.
+          const v = __cockpit.histories.get(p).valueNear(__cockpit.cursor.tick);
           return { text: el ? el.textContent : null,
                    expect: v === null || !w.anchor ? null : v - w.anchor.value };
         }""",
@@ -2746,6 +2804,29 @@ def run(page):
         and ring["tail_ok"]
         and ring["at_newest"] == ring["cap"] + 4,
         ring,
+    )
+
+    # ── history ring: the wire's u32 cycle index wraps after ~59.65 h and the
+    #    tick domain restarts near zero — the ring must start the new domain
+    #    instead of rejecting every tick as stale forever ──
+    wrapped = page.evaluate(
+        """() => {
+          const proto = [...__cockpit.histories.values()][0].constructor;
+          const h = new proto(200);
+          h.append([[200_000_000, 1], [200_000_010, 2]]);
+          h.append([[0, 3], [10, 4]]);   // the index wrapped
+          return { len: h.size, oldest: h.tickAtIndex(0), newest: h.newestTick(),
+                   at0: h.valueAt(0), gaps: h.gaps.length };
+        }"""
+    )
+    check(
+        "history restarts its tick domain on a cycle-index wrap",
+        wrapped["len"] == 2
+        and wrapped["oldest"] == 0
+        and wrapped["newest"] == 10
+        and wrapped["at0"] == 3
+        and wrapped["gaps"] == 0,
+        wrapped,
     )
 
     # ═══ batch 11: live smooth scroll — the window glides at display rate

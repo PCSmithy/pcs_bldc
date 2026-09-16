@@ -316,6 +316,8 @@ static void app_server_private_drainSamples(void)
 
             if (samples->count > 0U)
             {
+                // The records are already popped: a failed send drops them, and
+                // the host sees the loss as a gap in the cycle indices.
                 samples->data.size = (pb_size_t) used;
                 (void) app_server_private_sendEnvelope(env);
                 progressing = true;

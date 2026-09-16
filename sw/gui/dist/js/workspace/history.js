@@ -22,14 +22,8 @@ export function lowerBound(xs, t) {
 }
 
 export const CYCLE_MS = 0.05;  // one PWM cycle at 20 kHz
-const CYCLES_PER_MS = 20;
 
-const CAP_MS = 120_000; // live retention horizon per signal
-
-// A one-cycle signal keeps only its most recent 10 s (app~views_008); the
-// full horizon at 20 kHz would be 3.6 M samples a signal. Older samples are
-// trimmed away and render as a cycle-index gap.
-const FAST_RETAIN_MS = 10_000;
+const CAP_MS = 120_000; // live retention horizon, every period alike
 
 // While paused, the frozen span is sacred: nothing at or after its start is
 // trimmed. Appends continue this much stream time past the pause (Resume
@@ -41,6 +35,13 @@ const PAUSE_CATCHUP_MS = 120_000;
 // samples pool, then advance `start` once (O(1) on the ring).
 const TRIM_SLACK = 4096;
 
+// The wire's u32 cycle index wraps after ~59.65 h of uptime and the tick
+// domain restarts near zero. A tick this far behind the newest is that
+// restart (or a re-armed stream), not a stale batch tail — the same rule the
+// display clock applies in timeline.js. An hour is far past any legitimate
+// backwards step and far short of the wrap span.
+const RESET_MS = 3_600_000;
+
 // Worst-case retention: live CAP_MS, or paused sacred-span-start → catch-up
 // cutoff (max display span 60 s + PAUSE_CATCHUP_MS).
 const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
@@ -50,22 +51,34 @@ const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
 // them — partial edge buckets are raw-scanned by the range query.
 const LEVEL_SHIFTS = [4, 7, 10, 13];
 
+// Compaction slides the window by a whole top-level bucket span, keeping
+// every level's alignment (see _compact).
+const COMPACT_ALIGN = 1 << LEVEL_SHIFTS[LEVEL_SHIFTS.length - 1];
+
+/** Stable small hash of a signal path — compaction stagger only. */
+function hashPath(path) {
+  let h = 2166136261;
+  for (let i = 0; i < path.length; i++) h = Math.imul(h ^ path.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
 export class SignalHistory {
-  constructor(period_cycles) {
+  constructor(period_cycles, path = "") {
     this.periodCycles = period_cycles;
     this.period = period_cycles * CYCLE_MS;
-    this.fast = period_cycles < CYCLES_PER_MS;
-    this._capMs = this.fast ? FAST_RETAIN_MS : CAP_MS;
     // Ticks land on 0.05 ms multiples, which binary floats cannot hold
     // exactly, so the gap test carries half a period of slack — a real gap
     // is two periods or more.
     this._gapAfter = this.period * 1.5;
-    const live = Math.ceil((this.fast ? FAST_RETAIN_MS : RETAIN_BOUND_MS) / this.period) + 2;
-    // Capacity = live bound + the stale pool + compaction headroom (the
-    // headroom sets how often the tail hits capacity and memmoves back to
-    // 0 — a quarter of the live bound makes that rare, capped so a 20 kHz
-    // ring stays a few MB).
-    this._cap = live + TRIM_SLACK + Math.min(Math.max(1024, live >> 2), 32_768);
+    const live = Math.ceil(RETAIN_BOUND_MS / this.period) + 2;
+    // Capacity = live bound + the stale pool + compaction headroom, the
+    // headroom setting how often the tail hits capacity and slides back: an
+    // eighth of the live bound puts a 20 kHz signal ~22 s apart. A per-path
+    // offset of up to a quarter of the headroom staggers those slides so
+    // co-watched 20 kHz signals never compact on the same batch.
+    // Cost: ≈18 B/sample (two Float64 rings + pyramid) — ~70 MB at 20 kHz.
+    const headroom = Math.max(32_768, live >> 3);
+    this._cap = live + TRIM_SLACK + headroom - (hashPath(path) % (headroom >> 2));
     this._t = new Float64Array(this._cap);
     this._v = new Float64Array(this._cap);
     this._start = 0;
@@ -140,14 +153,14 @@ export class SignalHistory {
   append(points) {
     const tl = store.timeline;
     const paused = tl?.mode === "paused" && tl.pausedSpan;
-    // A paused fast signal stops AT the pause: catching up would trim the
-    // frozen span away, since its 10 s window trails the newest sample.
-    const appendCutoff = !paused ? Infinity
-      : this.fast ? tl.pausedSpan[1]
-      : tl.pausedSpan[1] + PAUSE_CATCHUP_MS;
+    const appendCutoff = paused ? tl.pausedSpan[1] + PAUSE_CATCHUP_MS : Infinity;
     for (const [tick, value] of points) {
       if (tick > appendCutoff) continue; // past the paused catch-up cap
-      const last = this._len ? this._t[this._start + this._len - 1] : null;
+      let last = this._len ? this._t[this._start + this._len - 1] : null;
+      if (last !== null && tick < last - RESET_MS) {
+        this.clear(); // tick domain restarted (index wrap): old samples are gone
+        last = null;
+      }
       if (last !== null && tick <= last) continue; // stale/duplicate batch tail
       if (last !== null && tick - last > this._gapAfter) this.gaps.push([last, tick]);
       if (this._start + this._len === this._cap) {
@@ -158,7 +171,7 @@ export class SignalHistory {
           // bounds len between calls). Drop an oldest chunk now: retention
           // would drop these samples at call end anyway, and chunking
           // amortizes the compact that must follow.
-          const n = Math.max(1, Math.min(this._len >> 3, TRIM_SLACK));
+          const n = Math.max(COMPACT_ALIGN, Math.min(this._len >> 3, TRIM_SLACK));
           this._start += n;
           this._len -= n;
           this._dropMarkersBelow(this._t[this._start]);
@@ -175,8 +188,8 @@ export class SignalHistory {
       this._len++;
     }
     const newest = this._len ? this._t[this._start + this._len - 1] : 0;
-    let horizon = newest - this._capMs;
-    if (paused && !this.fast) horizon = Math.min(horizon, tl.pausedSpan[0]);
+    let horizon = newest - CAP_MS;
+    if (paused) horizon = Math.min(horizon, tl.pausedSpan[0]);
     const drop = this.indexAtOrAfter(horizon);
     if (drop > TRIM_SLACK) {
       this._start += drop;
@@ -197,14 +210,37 @@ export class SignalHistory {
     if (g) this.gaps.splice(0, g);
   }
 
-  /** Tail reached capacity: memmove the live window to 0 and rebuild the
-   *  storage-aligned pyramid. Rare (once per headroom-many appends) and
-   *  O(len) with a tiny constant. */
+  /** Tail reached capacity: slide the live window down by a whole number of
+   *  top-level buckets. Every level's bucket size divides that span, so the
+   *  pyramid slides with the data — bucket b → b - delta>>shift, extreme
+   *  indices - delta — instead of being rebuilt (~5 ms at 3.6 M samples
+   *  against ~55 for a rebuild). Rare: once per headroom-many appends. */
   _compact() {
-    this._t.copyWithin(0, this._start, this._start + this._len);
-    this._v.copyWithin(0, this._start, this._start + this._len);
-    this._start = 0;
-    for (let i = 0; i < this._len; i++) this._bucketAdd(i, this._v[i]);
+    const delta = this._start & ~(COMPACT_ALIGN - 1);
+    const end = this._start + this._len;
+    if (!delta) { // window sits inside the first bucket: rebuild instead
+      this._t.copyWithin(0, this._start, end);
+      this._v.copyWithin(0, this._start, end);
+      this._start = 0;
+      for (let i = 0; i < this._len; i++) this._bucketAdd(i, this._v[i]);
+      return;
+    }
+    this._t.copyWithin(this._start - delta, this._start, end);
+    this._v.copyWithin(this._start - delta, this._start, end);
+    for (const L of this._lv) {
+      const d = delta >> L.shift;
+      const n = Math.ceil(end / (1 << L.shift));
+      L.min.copyWithin(0, d, n);
+      L.max.copyWithin(0, d, n);
+      L.amin.copyWithin(0, d, n);
+      L.amax.copyWithin(0, d, n);
+      // Buckets left entirely below the new window go negative here and
+      // read as empty; they reset when their first index is written again.
+      for (let b = n - d; b-- > 0; ) {
+        if (L.amin[b] >= 0) { L.amin[b] -= delta; L.amax[b] -= delta; }
+      }
+    }
+    this._start -= delta;
   }
 
   /** Fold storage index e (value v) into every level's covering bucket.
@@ -403,7 +439,7 @@ export const histories = new Map();
 export function historyFor(path, period_cycles) {
   let h = histories.get(path);
   if (!h || h.periodCycles !== period_cycles) {
-    h = new SignalHistory(period_cycles);
+    h = new SignalHistory(period_cycles, path);
     histories.set(path, h);
   }
   return h;

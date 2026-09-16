@@ -135,15 +135,16 @@ export const mock = {
             kind: sig?.kind ?? "f32",
           };
         });
-        // The board's one-cycle cap (fw~conn_trace_002) — the app only
-        // presents the cause it gets back.
-        if (requested.filter((w) => w.period_cycles === 1).length > 4) {
-          throw "more than 4 one-cycle watches";
-        }
+        // Budget admission (fw~conn_trace_002), with the board's causes — the
+        // app only presents the cause it gets back.
+        const want = usage(requested);
+        if (want.u > RAM_BUDGET) throw "exceeds sample-RAM budget";
+        if (want.r > LINK_BUDGET) throw "exceeds link budget";
         watchList = requested;
         // An accepted list restarts the stream from cycle 0 — and the mock
-        // backfills ~66 s at once so 60 s spans and pause/zoom are
-        // exercisable immediately.
+        // backfills ~66 s at once — at every period alike, retention
+        // being uniform — so 60 s spans and pause/zoom are exercisable
+        // immediately.
         streamCycle = 0;
         setTimeout(() => {
           emitBatchRange(0, BACKFILL_CYCLES);
@@ -188,11 +189,24 @@ const CYCLES_PER_MS = 20;
 const CYCLES_PER_S = 20_000;
 const WIRE_OVERHEAD_W = 27;
 const SAMPLES_DATA_CAPACITY = 256;
+const RAM_BUDGET = 2048;
+const LINK_BUDGET = 480_000;
 
-/** The watch list by period: [{ period, size, entries }]. */
-function groups() {
+// The board staggers its period groups so two captures never land on the
+// same cycle (app_server_trace.c): a group's cycle indices are ≡ its offset
+// (mod its period).
+const GROUP_OFFSET = { 1: 0, 20: 1, 200: 2 };
+
+/** First cycle >= `from` on a group's stagger grid. */
+function firstCycle(from, period) {
+  const off = GROUP_OFFSET[period] ?? 0;
+  return from + ((((off - from) % period) + period) % period);
+}
+
+/** A watch list by period: [{ period, size, entries }]. */
+function groups(list = watchList) {
   const byPeriod = new Map();
-  for (const w of watchList) {
+  for (const w of list) {
     if (!byPeriod.has(w.period_cycles)) {
       byPeriod.set(w.period_cycles, { period: w.period_cycles, size: 0, entries: [] });
     }
@@ -203,17 +217,23 @@ function groups() {
   return [...byPeriod.values()];
 }
 
-function traceStatusInfo() {
+/** The fw~conn_trace_002 formulas over a watch list → { u, r }. */
+function usage(list) {
   let u = 0, r = 0;
-  for (const g of groups()) {
+  for (const g of groups(list)) {
     const f = CYCLES_PER_S / g.period;
     u += Math.max(1, CYCLES_PER_MS / g.period) * (4 + g.size);
-    r += g.size * f + WIRE_OVERHEAD_W * Math.min(f, Math.max(1000, (f * g.size) / SAMPLES_DATA_CAPACITY));
+    r += g.size * f + WIRE_OVERHEAD_W * Math.min(f, Math.max(1000, Math.floor((f * g.size) / SAMPLES_DATA_CAPACITY)));
   }
+  return { u, r };
+}
+
+function traceStatusInfo() {
+  const { u, r } = usage(watchList);
   return {
-    ram_budget_bytes: 2048,
+    ram_budget_bytes_per_ms: RAM_BUDGET,
     ram_usage_bytes_per_ms: Math.round(u),
-    link_budget_bytes_per_s: 480000,
+    link_budget_bytes_per_s: LINK_BUDGET,
     link_rate_bytes_per_s: Math.round(r),
   };
 }
@@ -244,9 +264,6 @@ const BATCH_CYCLES = 50 * CYCLES_PER_MS;     // 50 ms of wire time a batch
 const GAP_EVERY_CYCLES = 5 * CYCLES_PER_S;
 const GAP_LEN_CYCLES = 120 * CYCLES_PER_MS;
 const BACKFILL_CYCLES = 66 * CYCLES_PER_S;
-// A one-cycle signal retains 10 s (app~views_008): backfill just past that
-// so its window is full the moment a list installs, and no further.
-const FAST_BACKFILL_CYCLES = 11 * CYCLES_PER_S;
 
 /** Emit one "samples" event covering cycle indices [c0, c1). */
 function emitBatchRange(c0, c1) {
@@ -254,11 +271,7 @@ function emitBatchRange(c0, c1) {
   let dropped = 0;
   const sigs = new Map(watchList.map((w) => [w.path, { path: w.path, points: [] }]));
   for (const g of groups()) {
-    const from = g.period === 1 ? Math.max(c0, c1 - FAST_BACKFILL_CYCLES) : c0;
-    // Every group is phase 0 here: the board's per-period offsets are a
-    // sampler detail no app requirement rests on, and they would put every
-    // slow tick a cycle off a whole millisecond.
-    for (let c = Math.ceil(from / g.period) * g.period; c < c1; c += g.period) {
+    for (let c = firstCycle(c0, g.period); c < c1; c += g.period) {
       if (inGap(c)) { dropped++; continue; }
       const t = c / CYCLES_PER_MS;
       for (const w of g.entries) sigs.get(w.path).points.push([t, waveform(w.path, w.kind, t)]);

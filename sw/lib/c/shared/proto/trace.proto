@@ -27,7 +27,7 @@ message WatchRequest {
 // cpu_budget_permille) — admission then gains a third check without any
 // message change.
 message TraceStatus {
-  uint32 ram_budget_bytes         = 1;
+  uint32 ram_budget_bytes_per_ms  = 1;
   uint32 ram_usage_bytes_per_ms   = 2;
   uint32 link_budget_bytes_per_s  = 3;
   uint32 link_rate_bytes_per_s    = 4;

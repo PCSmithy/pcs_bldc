@@ -16,7 +16,9 @@ use common::proto::{
 use common::{connected_world, drain_tx, inject, GRID_US};
 
 /// Protocol address of the sim trace window (`app_server_simTraceWindow32`);
-/// word [0] is the 1 kHz counter task_1ms increments.
+/// word [0] is the 1 kHz counter task_1ms increments. Words [1] and [2] are the
+/// cycle callback's, so the one-shot round-trip below uses word [3], which no
+/// firmware writer touches.
 const WINDOW_BASE: u32 = 0x2000_0000;
 
 /// Step the world, draining the sim USB capture each step into `deframer`, and
@@ -67,7 +69,7 @@ fn trace_stream() {
         .find(|(id, field, _)| (*id == 1) && (*field == F_TRACE_STATUS))
         .map(|(_, _, bytes)| parse_fields(bytes))
         .expect("TraceStatus reply to the accepted WatchRequest");
-    assert_eq!(field_varint(&status, 1), 2048, "sample-RAM budget");
+    assert_eq!(field_varint(&status, 1), 2048, "sample-RAM budget, bytes per ms");
     assert_eq!(field_varint(&status, 2), 4 + 4, "RAM usage per millisecond");
     assert_eq!(field_varint(&status, 3), 480_000, "link budget");
     assert_eq!(field_varint(&status, 4), 31_000, "link rate");
@@ -86,7 +88,7 @@ fn trace_stream() {
         }
     }
     assert!(
-        records.len() >= 40,
+        records.len() >= 58,
         "a 1 ms watch streams every 20 cycles: {} records over 60 ms",
         records.len()
     );
@@ -102,9 +104,9 @@ fn trace_stream() {
     }
 
     // One-shot write then read back: the span's current contents round-trip.
-    inject(&mut sim, &write_request(2, WINDOW_BASE + 8, &[0xDE, 0xAD, 0xBE, 0xEF]));
+    inject(&mut sim, &write_request(2, WINDOW_BASE + 12, &[0xDE, 0xAD, 0xBE, 0xEF]));
     let mut envelopes = run(&mut sim, &mut deframer, 60);
-    inject(&mut sim, &read_request(3, WINDOW_BASE + 8, 4));
+    inject(&mut sim, &read_request(3, WINDOW_BASE + 12, 4));
     envelopes.extend(run(&mut sim, &mut deframer, 60));
 
     let write_reply = envelopes

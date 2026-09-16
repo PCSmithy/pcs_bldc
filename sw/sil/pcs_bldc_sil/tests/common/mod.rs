@@ -225,6 +225,8 @@ pub fn drain_tx(sim: &mut Sil) -> Vec<u8> {
 pub mod proto {
     /// `shared.Envelope` oneof field numbers.
     pub const F_RESPONSE: u32 = 3;
+    pub const F_LINK_TEST_REQUEST: u32 = 7;
+    pub const F_LINK_TEST_FRAME: u32 = 8;
     pub const F_WATCH_REQUEST: u32 = 30;
     pub const F_TRACE_STATUS: u32 = 31;
     pub const F_SAMPLES: u32 = 33;
@@ -352,6 +354,16 @@ pub mod proto {
         envelope(request_id, F_WATCH_REQUEST, &wr)
     }
 
+    /// A LinkTestRequest for `frame_count` frames of `payload_bytes` each.
+    pub fn link_test_request(request_id: u64, payload_bytes: u32, frame_count: u32) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.push(0x08);
+        put_varint(u64::from(payload_bytes), &mut msg);
+        msg.push(0x10);
+        put_varint(u64::from(frame_count), &mut msg);
+        envelope(request_id, F_LINK_TEST_REQUEST, &msg)
+    }
+
     pub fn read_request(request_id: u64, address: u32, size: u32) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.push(0x08);
@@ -386,9 +398,18 @@ pub mod proto {
             self.first_cycle + (k * self.period_cycles)
         }
 
+        /// Bytes per record — the group's watched spans concatenated.
+        pub fn record_size(&self) -> usize {
+            assert!(
+                self.count > 0,
+                "a Samples message with no records has no record size: {self:?}"
+            );
+            self.data.len() / (self.count as usize)
+        }
+
         /// Record `k`'s bytes.
         pub fn record(&self, k: u32) -> &[u8] {
-            let size = self.data.len() / (self.count as usize);
+            let size = self.record_size();
             let start = (k as usize) * size;
             &self.data[start..start + size]
         }

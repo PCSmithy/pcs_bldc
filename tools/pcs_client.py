@@ -12,8 +12,8 @@ Usage (from the project venv):
     .venv/Scripts/python tools/pcs_client.py --port COM5 --link-test 256:20000
     .venv/Scripts/python tools/pcs_client.py --selftest
 
-Protobuf bindings are generated on demand from sw/proto/ into
-tools/pcs_client_gen/ (gitignored).
+Protobuf bindings are generated on demand from sw/lib/c/shared/proto/ and
+sw/proto/ into tools/pcs_client_gen/ (gitignored).
 """
 
 import argparse
@@ -44,9 +44,9 @@ def ensure_bindings():
     shared_dir = REPO / "sw" / "lib" / "c" / "shared" / "proto"
     board_dir = REPO / "sw" / "proto"
     protos = [shared_dir / "shared.proto", shared_dir / "trace.proto", board_dir / "board.proto"]
-    out = GEN_DIR / "shared_pb2.py"
+    outs = [GEN_DIR / f"{name}_pb2.py" for name in ("shared", "trace", "board")]
     newest = max(p.stat().st_mtime for p in protos)
-    if (not out.exists()) or (out.stat().st_mtime < newest):
+    if any((not o.exists()) or (o.stat().st_mtime < newest) for o in outs):
         GEN_DIR.mkdir(exist_ok=True)
         subprocess.run(
             [sys.executable, "-m", "grpc_tools.protoc",
@@ -116,12 +116,28 @@ def deframe(segment: bytes):
     return payload
 
 
+def split_frames(buffer: bytearray):
+    """Split a read at every delimiter: whole segments plus the trailing
+    partial. One split per read beats rescanning the buffer per frame."""
+    segments = buffer.split(b"\x00")
+    tail = bytearray(segments.pop())
+    return [bytes(seg) for seg in segments if seg], tail
+
+
 # --- display ---
 
 def show(env, pb2, board_pb2, log_buffer, trace=None):
     kind = env.WhichOneof("payload")
     if kind == "samples":
         m = env.samples
+        # Advance the expectation before any early return: a message we can't
+        # decode still consumed its records, and skipping it fakes a gap on
+        # the next one. Cycle index is a uint32 and wraps.
+        expected = None
+        if trace is not None:
+            expected = trace["next_cycle"].get(m.period_cycles)
+            trace["next_cycle"][m.period_cycles] = (
+                (m.first_cycle + (m.count * m.period_cycles)) & 0xFFFFFFFF)
         if trace is None or not trace.get("watches"):
             print(f"[samples] c={m.first_cycle} x{m.count} @{m.period_cycles} "
                   f"{len(m.data)}B (no local watch list)")
@@ -136,12 +152,10 @@ def show(env, pb2, board_pb2, log_buffer, trace=None):
             return
 
         # Per-group gap detection: the group's cycle indices step by its period.
-        expected = trace["next_cycle"].get(m.period_cycles)
-        if expected is not None and m.first_cycle != expected:
-            dropped = (m.first_cycle - expected) // m.period_cycles
+        if (expected is not None) and (m.first_cycle != expected):
+            dropped = ((m.first_cycle - expected) & 0xFFFFFFFF) // m.period_cycles
             print(f"[samples] GAP @{m.period_cycles}: expected c={expected}, "
                   f"got c={m.first_cycle} ({dropped} record(s) dropped)")
-        trace["next_cycle"][m.period_cycles] = m.first_cycle + m.count * m.period_cycles
 
         # Print when a multiple of print_every falls inside this batch.
         seen = trace.get("count", 0)
@@ -164,7 +178,7 @@ def show(env, pb2, board_pb2, log_buffer, trace=None):
         return
     if kind == "trace_status":
         s = env.trace_status
-        print(f"[trace] id={env.request_id} ram {s.ram_usage_bytes_per_ms}/{s.ram_budget_bytes}B/ms "
+        print(f"[trace] id={env.request_id} ram {s.ram_usage_bytes_per_ms}/{s.ram_budget_bytes_per_ms}B/ms "
               f"link {s.link_rate_bytes_per_s}/{s.link_budget_bytes_per_s}B/s")
         return
     if kind == "read_reply":
@@ -205,6 +219,8 @@ def link_test(ser, pb2, next_id, payload_bytes, frame_count, timeout):
     Nothing prints during the run — terminal I/O would be part of what gets
     measured. Elapsed time spans the request write to the last frame received.
     """
+    import serial  # pyserial, from the venv
+
     env = pb2.Envelope(request_id=next(next_id))
     env.link_test_request.payload_bytes = payload_bytes
     env.link_test_request.frame_count = frame_count
@@ -215,6 +231,9 @@ def link_test(ser, pb2, next_id, payload_bytes, frame_count, timeout):
     payload_bytes_seen = 0
     wire_bytes_seen = 0
     crc_failures = 0
+    decode_failures = 0
+    short_frames = 0
+    stale_frames = 0
     dropped = 0
     next_seq = 0
     last_frame = started
@@ -222,52 +241,62 @@ def link_test(ser, pb2, next_id, payload_bytes, frame_count, timeout):
     # Poll the driver buffer instead of blocking reads: a blocking read that
     # waits out its timeout lets the driver buffer overrun at these rates.
     ser.timeout = 0
-    while True:
-        chunk = ser.read(ser.in_waiting or 1)
-        now = time.monotonic()
-        # Telemetry and log keep arriving throughout, so only frame silence
-        # marks the end — which also bounds a board that never answers.
-        if now - last_frame > LINK_TEST_QUIET_S:
-            break
-        if timeout is not None and now - started > timeout:
-            break
-        buffer += chunk
-        # Split the whole read at once rather than partition per frame: at
-        # these rates the quadratic rescan is the bottleneck being measured.
-        segments = buffer.split(b"\x00")
-        buffer = bytearray(segments.pop())   # trailing partial segment
-        for segment in segments:
-            if not segment:
-                continue
-            payload = deframe(bytes(segment))
-            if payload is None:
-                crc_failures += 1
-                continue
-            env = pb2.Envelope()
-            try:
-                env.ParseFromString(payload)
-            except Exception:
-                crc_failures += 1
-                continue
-            kind = env.WhichOneof("payload")
-            if kind == "response" and not env.response.accepted:
-                print(f"[link-test] REJECTED: {env.response.cause}")
-                return
-            if kind != "link_test_frame":
-                continue
-            # Wire cost as the frame sat on the link: its COBS segment plus
-            # the delimiter that ended it.
-            wire_bytes_seen += len(segment) + 1
-            payload_bytes_seen += len(env.link_test_frame.payload)
-            # seq is a uint32 counter — wrap-safe gap arithmetic.
-            dropped += (env.link_test_frame.seq - next_seq) & 0xFFFFFFFF
-            next_seq = (env.link_test_frame.seq + 1) & 0xFFFFFFFF
-            frames += 1
-            last_frame = now
+    try:
+        while True:
+            chunk = ser.read(ser.in_waiting or 1)
+            now = time.monotonic()
+            # Consume what was just read before deciding to stop, or the last
+            # read of the run is thrown away.
+            buffer += chunk
+            segments, buffer = split_frames(buffer)
+            for segment in segments:
+                payload = deframe(segment)
+                if payload is None:
+                    crc_failures += 1
+                    continue
+                env = pb2.Envelope()
+                try:
+                    env.ParseFromString(payload)
+                except Exception:
+                    decode_failures += 1
+                    continue
+                kind = env.WhichOneof("payload")
+                if kind == "response" and not env.response.accepted:
+                    print(f"[link-test] REJECTED: {env.response.cause}")
+                    return
+                if kind != "link_test_frame":
+                    continue
+                seq = env.link_test_frame.seq
+                # seq never wraps (count <= 1e6), so a backwards one is a
+                # leftover frame from an earlier run still in the buffer.
+                if seq < next_seq:
+                    stale_frames += 1
+                    continue
+                # Wire cost as the frame sat on the link: its COBS segment plus
+                # the delimiter that ended it.
+                wire_bytes_seen += len(segment) + 1
+                size = len(env.link_test_frame.payload)
+                payload_bytes_seen += size
+                if size != payload_bytes:
+                    short_frames += 1
+                dropped += seq - next_seq
+                next_seq = seq + 1
+                frames += 1
+                last_frame = now
+            # Telemetry and log keep arriving throughout, so only frame silence
+            # marks the end, which also bounds a board that never answers.
+            if now - last_frame > LINK_TEST_QUIET_S:
+                break
+            if (timeout is not None) and (now - started > timeout):
+                break
+    except serial.SerialException as exc:
+        print(f"[port] {ser.port} unavailable mid-test ({exc}); partial summary:")
 
     elapsed = max(last_frame - started, 1e-9)
     expected = frames + dropped
     loss = (100.0 * dropped / expected) if expected else 0.0
+    # Every corrupt frame also shows up as a seq gap in the next good frame.
+    corrupt = min(crc_failures + decode_failures, dropped)
     print(f"[link-test] requested {payload_bytes} B x {frame_count} frames")
     print(f"  frames        {frames}")
     print(f"  payload       {payload_bytes_seen} B")
@@ -275,8 +304,11 @@ def link_test(ser, pb2, next_id, payload_bytes, frame_count, timeout):
     print(f"  elapsed       {elapsed:.3f} s")
     print(f"  payload rate  {payload_bytes_seen / elapsed / 1000:.1f} kB/s")
     print(f"  wire rate     {wire_bytes_seen / elapsed / 1000:.1f} kB/s")
-    print(f"  dropped       {dropped} ({loss:.2f}%)")
+    print(f"  dropped       {dropped} ({loss:.2f}%), {corrupt} of them corrupt")
     print(f"  CRC failures  {crc_failures}")
+    print(f"  decode fails  {decode_failures}")
+    print(f"  short frames  {short_frames}")
+    print(f"  stale frames  {stale_frames} (ignored)")
 
 
 def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=100):
@@ -321,11 +353,9 @@ def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=10
     log_buffer = []
     while True:
         buffer += ser.read(4096)
-        while b"\x00" in buffer:
-            segment, _, buffer = buffer.partition(b"\x00")
-            if not segment:
-                continue
-            payload = deframe(bytes(segment))
+        segments, buffer = split_frames(buffer)
+        for segment in segments:
+            payload = deframe(segment)
             if payload is None:
                 print(f"[frame] discarded {len(segment)}-byte invalid segment")
                 continue
@@ -379,15 +409,18 @@ def run(port: str, baud: int, args):
     for spec in (args.watch or []):
         try:
             parts = spec.split(":")
+            if len(parts) > 4:
+                raise ValueError
             addr, size, period = (int(part, 0) for part in parts[:3])
             fmt = parts[3] if len(parts) > 3 else "u"
-            if period not in (1, 20, 200):
+            if (period not in (1, 20, 200)) or not (1 <= size <= 8):
                 raise ValueError
             if fmt not in ("u", "f") or (fmt == "f" and size not in (4, 8)):
                 raise ValueError
         except ValueError:
             sys.exit(f"bad --watch '{spec}' (expected ADDR:SIZE:PERIOD_CYCLES[:u|f]; "
-                     "period 1, 20, or 200 PWM cycles; f = decode as float, size 4 or 8)")
+                     "size 1..8; period 1, 20, or 200 PWM cycles; "
+                     "f = decode as float, size 4 or 8)")
         watches.append((addr, size, period, fmt))
 
     next_id = itertools.count(1)
@@ -395,9 +428,12 @@ def run(port: str, baud: int, args):
     # A link test is a one-shot measurement, not a stream: run it and exit,
     # rather than falling into the reconnect loop.
     if link_spec is not None:
-        with serial.Serial(port, baud, timeout=0.05) as ser:
-            grow_rx_buffer(ser)
-            link_test(ser, pb2, next_id, link_spec[0], link_spec[1], args.timeout)
+        try:
+            with serial.Serial(port, baud, timeout=0.05) as ser:
+                grow_rx_buffer(ser)
+                link_test(ser, pb2, next_id, link_spec[0], link_spec[1], args.timeout)
+        except serial.SerialException as exc:
+            print(f"[port] {port} unavailable ({exc})")
         return
 
     # Survive board resets: when the port dies (or isn't there yet), poll for
@@ -468,6 +504,22 @@ def selftest() -> int:
     assert round_trip.link_test_request.payload_bytes == 256
     assert round_trip.link_test_request.frame_count == 20000
 
+    # A run longer than 254 nonzero bytes splits into COBS 0xFF blocks.
+    big = bytes((((i * 7) % 255) + 1) for i in range(300))
+    assert cobs_decode(cobs_encode(big)) == big
+    assert deframe(frame(big)[1:-1]) == big
+
+    # ~270 B on the wire: the frame the throughput run counts, zeros included.
+    env = pb2.Envelope()
+    env.link_test_frame.seq = 4321
+    env.link_test_frame.payload = bytes(range(256))
+    wire = frame(env.SerializeToString())
+    assert len(wire) > 260
+    round_trip = pb2.Envelope()
+    round_trip.ParseFromString(deframe(wire[1:-1]))
+    assert round_trip.link_test_frame.seq == 4321
+    assert round_trip.link_test_frame.payload == bytes(range(256))
+
     print("selftest ok")
     return 0
 
@@ -495,7 +547,8 @@ def main():
     ap.add_argument("--timeout", type=float, metavar="SECONDS",
                     help="give up on a --link-test run after this long")
     ap.add_argument("--print-every", type=int, default=100, metavar="N",
-                    help="print every Nth sample record (default 100); gaps always print")
+                    help="print every Nth sample record, counted across all groups "
+                         "(default 100); gaps always print")
     ap.add_argument("--selftest", action="store_true", help="verify framing + bindings offline")
     args = ap.parse_args()
 
@@ -503,6 +556,11 @@ def main():
         sys.exit(selftest())
     if not args.port:
         ap.error("--port is required (or use --selftest)")
+    if (args.link_test is not None) and any((args.watch, args.read, args.write,
+                                             args.set_mode, args.clear_fault,
+                                             args.set_velocity is not None)):
+        ap.error("--link-test is a standalone measurement; run it without "
+                 "--watch/--read/--write/--set-mode/--set-velocity/--clear-fault")
     try:
         run(args.port, args.baud, args)
     except KeyboardInterrupt:

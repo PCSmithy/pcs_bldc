@@ -323,9 +323,9 @@ pub fn get_status(state: State<SessionState>) -> SessionStatus {
     }
 }
 
-/// Drop any existing session (its `Drop` stops the reader); true if one existed.
 /// Windows usbser keeps a 4 KB receive queue by default; a few ms of host
-/// latency at hundreds of kB/s overruns it and corrupts frames.
+/// latency at hundreds of kB/s overruns it and corrupts frames. A driver that
+/// refuses 1 MB gets one retry at 64 KB — still far above the default.
 #[cfg(windows)]
 fn grow_driver_queue(port: &serialport::COMPort) {
     use std::os::windows::io::AsRawHandle;
@@ -334,14 +334,19 @@ fn grow_driver_queue(port: &serialport::COMPort) {
         fn SetupComm(handle: *mut std::ffi::c_void, in_queue: u32, out_queue: u32) -> i32;
     }
     // SAFETY: a valid open handle; SetupComm only resizes the driver queues.
-    unsafe {
-        SetupComm(port.as_raw_handle(), 1 << 20, 1 << 14);
+    let grown = unsafe {
+        (SetupComm(port.as_raw_handle(), 1 << 20, 1 << 14) != 0)
+            || (SetupComm(port.as_raw_handle(), 1 << 16, 1 << 14) != 0)
+    };
+    if !grown {
+        eprintln!("SetupComm: driver kept its default receive queue; frames may drop");
     }
 }
 
 #[cfg(not(windows))]
 fn grow_driver_queue(_port: &serialport::TTYPort) {}
 
+/// Drop any existing session (its `Drop` stops the reader); true if one existed.
 fn teardown(state: &State<SessionState>) -> bool {
     state
         .0

@@ -847,8 +847,10 @@ export class PlotWidget {
 
   renderXAxis() {
     const [t0, t1] = this.window;
-    // More decimals as the paused zoom narrows, so labels stay distinct.
-    const dp = t1 - t0 < 2000 ? 3 : 1;
+    // More decimals as the paused zoom narrows, so labels stay distinct: a
+    // one-cycle tick sits on a 0.05 ms grid, so 4 dp is the true resolution.
+    const span = t1 - t0;
+    const dp = span < 10 ? 4 : span < 2000 ? 3 : 2;
     const fmt = (t) => `${(t / 1000).toFixed(dp)} s`;
     const html =
       `<span class="mono">${fmt(t0)}</span><span class="mono">${fmt((t0 + t1) / 2)}</span><span class="mono">${fmt(t1)}</span>`;

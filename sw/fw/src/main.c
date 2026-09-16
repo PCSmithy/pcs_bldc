@@ -144,15 +144,11 @@ extern uint32_t app_server_simTraceWindow32[];
 #endif
 
 // --- Bridge cycle probe (fw~mc_018) ----------------------------------------
-// Maxima in microseconds, on the 1 MHz free-running time base, from cycle
-// callback entry to the end of the commutation step and to callback exit. The
-// host clears either by writing zero to it (fw~conn_trace_008).
+// Microsecond maxima from cycle-callback entry to the end of the commutation
+// step and to callback exit; the host clears either by writing zero to it.
 // [impl->fw~mc_018~1]
 static volatile uint32_t main_cycleProbe_stepMax_us;
 static volatile uint32_t main_cycleProbe_callbackMax_us;
-
-// The bridge's free-running 1 us time base (IO_bridge_channels.c).
-#define MAIN_CYCLE_TIME_BASE (HW_TIM_PERIPHERAL_2)
 
 // --- Per-task heartbeat counters (SIL liveness) ----------------------------
 // One free-running counter per task, bumped once per loop-body iteration.
@@ -349,12 +345,12 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     (void)channel;
     (void)context;
     uint32_t entry_us = 0U;
-    (void)HW_TIM_getCounter(MAIN_CYCLE_TIME_BASE, &entry_us);
+    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &entry_us);
 
     // --- commutation step (fw~mc_015): the active method's step lands here ---
 
     uint32_t stepEnd_us = 0U;
-    (void)HW_TIM_getCounter(MAIN_CYCLE_TIME_BASE, &stepEnd_us);
+    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &stepEnd_us);
     const uint32_t stepDuration_us = stepEnd_us - entry_us;
     if (stepDuration_us > main_cycleProbe_stepMax_us)
     {
@@ -362,13 +358,15 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     }
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-    // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal.
+    // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal,
+    // word [2] its complement - a lockstep pair the coherence test checks.
     app_server_simTraceWindow32[1]++;
+    app_server_simTraceWindow32[2] = ~app_server_simTraceWindow32[1];
 #endif
     app_server_sampleCycle();   // capture trace watches after the step (fw~conn_trace_004)
 
     uint32_t exit_us = 0U;
-    (void)HW_TIM_getCounter(MAIN_CYCLE_TIME_BASE, &exit_us);
+    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &exit_us);
     const uint32_t callbackDuration_us = exit_us - entry_us;
     if (callbackDuration_us > main_cycleProbe_callbackMax_us)
     {

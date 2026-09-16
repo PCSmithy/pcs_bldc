@@ -372,6 +372,7 @@ static void test_getInjectedUpdateCount_before_init_fails(void)
 }
 
 // Bias + gain applied, sign preserved across the zero-current midpoint.
+// [test->fw~io_bridge_005~1]
 static void test_getPhaseCurrent_scales_and_signs(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -389,6 +390,7 @@ static void test_getPhaseCurrent_scales_and_signs(void)
 
 // Each phase reads its own configured (ADC channel, IN#): setting only V's cell
 // leaves U and W failing.
+// [test->fw~io_bridge_005~1]
 static void test_getPhaseCurrent_routes_to_configured_input(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -403,6 +405,7 @@ static void test_getPhaseCurrent_routes_to_configured_input(void)
     TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &amps));
 }
 
+// [test->fw~io_bridge_005~1]
 static void test_getBusCurrent_scales(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -415,6 +418,7 @@ static void test_getBusCurrent_scales(void)
 
 // A failed ADC read (input never set) propagates as false, leaving the
 // destination unchanged — never a false 0 A to the overcurrent monitor.
+// [test->fw~io_bridge_005~1]
 static void test_getPhaseCurrent_read_failure_propagates(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -425,6 +429,7 @@ static void test_getPhaseCurrent_read_failure_propagates(void)
 }
 
 // An unconfigured sense (voltsPerAmp == 0) fails rather than dividing by zero.
+// [test->fw~io_bridge_005~1]
 static void test_getPhaseCurrent_unconfigured_sense_fails(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phaseCurrent[IO_BRIDGE_PHASE_U].voltsPerAmp = 0.0f;
@@ -521,6 +526,7 @@ static void test_getInjectedPhaseCurrent_no_sample_yet_fails(void)
 
 // A completion decodes its slot's counts through the same bias + gain as the
 // regular path, so the sinking leg comes back genuinely negative.
+// [test->fw~io_bridge_006~1]
 static void test_injected_completion_decodes_signed_amps(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -604,6 +610,7 @@ static void test_injected_w_completes_only_on_second_callback(void)
 }
 
 // Each phase counts its own samples, so U advances alone when V's ADC is quiet.
+// [test->fw~io_bridge_006~1]
 static void test_injected_per_phase_counts_advance_independently(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
@@ -657,6 +664,7 @@ static void test_injected_dropped_partner_holds_w_then_next_trigger_pairs(void)
 
 // Samples stamped a whole trigger period apart are two different triggers, so
 // they never pair however their arrival order interleaves.
+// [test->fw~io_bridge_006~1]
 static void test_injected_different_triggers_never_pair(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
