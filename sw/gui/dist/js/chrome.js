@@ -214,12 +214,15 @@ function renderGate() {
     <div class="trace-gate-note">
       <h2 class="gate-title display">${icon("alert-triangle")}Tracing is paused — build identity doesn't match</h2>
       <p class="gate-body">
-        The board reports <code>${esc(store.connection.buildId)}</code>; the loaded .elf is
-        <code>${esc(store.elf.buildId)}</code>. Symbol addresses from a different build would read
-        the wrong memory, so the watch list is held. Telemetry and the log keep streaming.
+        The board reports <code>${esc(store.connection.buildId)}</code>; the loaded .elf
+        (<code>${esc(store.elf.path)}</code>) is <code>${esc(store.elf.buildId)}</code>. Symbol
+        addresses from a different build would read the wrong memory, so the watch list is held.
+        Telemetry and the log keep streaming. A <code>+hash</code> suffix means that build came
+        from a tree with uncommitted changes.
       </p>
       <div class="gate-actions">
         <button class="btn btn-primary btn-lg" data-act="choose-elf">Choose matching .elf…</button>
+        <button class="btn btn-lg" data-act="reload-elf">Reload .elf</button>
       </div>
       <span class="gate-foot">Layout and watch list are preserved — tracing resumes the moment identities agree.</span>
     </div>`;
@@ -373,6 +376,9 @@ export function initChrome() {
         break;
       case "choose-elf":
         await chooseElf();
+        break;
+      case "reload-elf":
+        if (store.elf.path) await api.loadElf(store.elf.path).catch((e) => set({ connectError: String(e) }));
         break;
     }
   });

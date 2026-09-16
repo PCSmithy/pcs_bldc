@@ -211,6 +211,9 @@ export async function attachEvents() {
   await listen("connection", (ev) => {
     if (ev.state === "connected") {
       set({ connection: { state: "connected", port: ev.port, buildId: ev.build_id }, lastPort: ev.port });
+      // The file behind the loaded .elf may have been rebuilt since it was
+      // parsed; gate the new session against what is on disk now.
+      if (store.elf.path) api.loadElf(store.elf.path).catch(() => {});
     } else if (ev.state === "lost") {
       set({ connection: { state: "lost", port: null, buildId: null } });
     } else {

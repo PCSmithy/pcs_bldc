@@ -113,6 +113,7 @@ export const mock = {
         connected = FORCED !== "lost";
         return { connected, port: "COM8", device_build_id: DEVICE_BUILD };
       case "load_elf":
+        window.__devmockElfLoads = (window.__devmockElfLoads || 0) + 1;
         if (FORCED === "badelf") throw `read ${args.path}: os error 2 (not found)`;
         return { build_id: ELF_BUILD, signal_count: signals.length };
       case "list_signals": {

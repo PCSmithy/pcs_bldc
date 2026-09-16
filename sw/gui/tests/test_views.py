@@ -3172,6 +3172,19 @@ def run(page):
     manual = page.evaluate(f"() => window.__devmockInstalls.length - {installs1}")
     check("conn_001 manual reconnect also reinstalls the watch list", manual == 1, manual)
 
+    # ── [test->app~obs_002~1] a connection re-reads the loaded .elf, so a
+    #    file rebuilt on disk since it was chosen gates by its current identity ──
+    loads0 = page.evaluate("() => window.__devmockElfLoads || 0")
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    page.evaluate(
+        "() => { window.__devmockConn.replug(); return __cockpit.api.connect('COM8'); }"
+    )
+    page.wait_for_function("() => __cockpit.store.connection.state === 'connected'")
+    page.wait_for_function(f"() => (window.__devmockElfLoads || 0) > {loads0}", timeout=5000)
+    gate = page.evaluate("() => __cockpit.store.gate")
+    check("obs_002 connecting re-reads the loaded .elf and gates on its current identity", gate == "matched", gate)
+
     # ═══ batch 13 (bench round 3): anchor preview, widget launcher, watch
     # drag sources, UI zoom (the views_009 dead-stop lives with its batch) ═══
 
