@@ -9,9 +9,9 @@ Sensored block commutation: the rotor electrical angle — motor shaft angle
 corrected by a captured alignment offset and scaled by the pole-pair
 count — selects which two phases conduct; the third floats.
 
-See also: [[motor-control-application]] (fw~mc_006~1 dispatches this
-method), [[bridge]] (`fw~io_bridge_002` duties; per-phase float
-via `fw~io_bridge_004` output disable).
+See also: [[motor-control-application]] (fw~mc_015~1 runs this method's
+step each PWM cycle), [[bridge]] (`fw~io_bridge_002` duties; per-phase
+float via `fw~io_bridge_004` output disable).
 
 ### Six-step commutation
 `fw~mc_011~1`

@@ -10,13 +10,13 @@ tags: [app, views]
 
 A table widget shall display one row per signal added to it — the
 signal's name, its value per the mode below, rendered per
-the value rendering table (`app~views_013~1`), its scalar type, and
-its sample period:
+the value rendering table (`app~views_013~1`), its scalar type, and its
+sample period, labeled per the period-label table of `app~views_010~1`:
 
 | Mode | Value shown |
 |------|-------------|
 | No cursor time held | The latest streamed value, updating as samples arrive |
-| A cursor time held (`app~views_005~1`) | The value at the cursor time, its absence stated for a time inside a cycle-index gap |
+| A cursor time held (`app~views_005~1`) | The value at the cursor time, its absence stated for a time inside a sample-time gap |
 
 Acceptance:
 

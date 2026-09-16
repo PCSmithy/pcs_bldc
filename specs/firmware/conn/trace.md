@@ -17,9 +17,9 @@ reads and writes, and the trace capability report.
 
 The server shall take the trace services' resources from its
 configuration — the readable memory regions, the writable memory
-regions, the watch capacity in entries, the sample-RAM budget in
-bytes, and the link budget in bytes per second — returning false at
-initialization when the configuration is rejected by any of:
+regions, the watch capacity in entries, the sample-RAM budget in bytes
+per millisecond, and the link budget in bytes per second — returning
+false at initialization when the configuration is rejected by any of:
 
 | Element | Rejected when |
 |---------|---------------|
@@ -53,7 +53,6 @@ when:
 | Entry span | Not contained in one readable region (`fw~conn_trace_001~1`) |
 | Entry size | Outside 1..8 bytes |
 | Entry period | Not 1, 20, or 200 PWM cycles |
-| One-cycle entries | More than 4 entries have the one-cycle period |
 | Entry count | Exceeds the watch capacity (`fw~conn_trace_001~1`) |
 | Samples fit | Any $S_g$ exceeds the 256-byte `Samples` data capacity (`fw~conn_trace_005~1`) |
 | RAM usage | $u$ exceeds the sample-RAM budget (`fw~conn_trace_001~1`) |
@@ -71,7 +70,7 @@ m_g = \min\Bigl(f_g,\ \max\bigl(1000,\ f_g S_g / 256\bigr)\Bigr)
 \quad \text{[bytes per second]}$$
 
 with $W$ the per-message wire overhead of `fw~conn_trace_005~1`, $m_g$
-the group's message rate (`fw~conn_trace_009~1`), and an empty list
+the group's message rate per `fw~conn_trace_009~1`, and an empty list
 having $u = 0$ and $r = 0$.
 
 Acceptance:
@@ -81,8 +80,8 @@ Acceptance:
 - A rejected request leaves the active list unchanged: sampling
   continues per the prior list.
 - Each rejection condition rejects the request.
-- A list whose $r$ equals the link budget is accepted.
-- A list with exactly 4 one-cycle entries is accepted.
+- A list whose $u$ equals the sample-RAM budget, and one whose $r$
+  equals the link budget, are each accepted.
 
 Covers:
 - sys~obs_005~1
@@ -154,13 +153,13 @@ Needs: impl, test
 
 Each millisecond, the server shall emit each group's buffered records
 (`fw~conn_trace_004~1`) in capture order as `Samples` messages
-(`fw~conn_trace_005~1`), consecutive records of one group sharing a
-message up to its data capacity.
+(`fw~conn_trace_005~1`), consecutive records of one group whose cycle
+indices step by its period sharing a message up to its data capacity.
 
 Acceptance:
 
 - A one-cycle group with 16-byte records reaches the host as messages
-  of 16 records each, with no record held longer than 2 ms.
+  of up to 16 records, with no record held longer than 2 ms.
 - A 10 ms group's records each arrive in their own message.
 - A one-cycle group's records buffered across a 3 ms emission stall
   arrive in the next emission, in capture order.

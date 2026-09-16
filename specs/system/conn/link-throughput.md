@@ -9,8 +9,7 @@ tags: [system, conn]
 `sys~conn_004~1`
 
 On request, the firmware shall stream a commanded count of frames of a
-commanded payload size, each carrying a sequence number, at the rate
-the transport accepts.
+commanded payload size, each carrying a sequence number.
 
 Acceptance:
 

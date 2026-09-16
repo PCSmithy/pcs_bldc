@@ -39,7 +39,8 @@ per-signal values by splitting its data bytes into `count` records,
 assigning each record's bytes, in installed watch-list order, to the
 signals of the message's period at cycle index `first_cycle` plus the
 record's ordinal times the period, decoding each signal's bytes as its
-resolved scalar type.
+resolved scalar type. Each cycle index maps to a sample time of 50 µs
+per cycle.
 
 Acceptance:
 

@@ -8,10 +8,11 @@ tags: [firmware, mc, app, driver]
 The `app_motorControl` module owns the drive loop across two cadences. The
 1 ms cycle owns the inputs and the gate: encoder angle, speed target, mode
 selection, bus voltage, fault latching, and bridge enable. The
-PWM-synchronous cycle, entered from the bridge's per-cycle callback, runs
-the active commutation method's step from those inputs and the cycle's
-phase currents and writes the duties. The operator interface is the user
-button (gestures), the dial encoder (speed target), and the LED ring (state
+PWM-synchronous cycle, entered from the bridge's per-cycle callback that
+`main.c` composes around the duration probe (fw~mc_018~1), runs the active
+commutation method's step from those inputs and the cycle's phase currents
+and writes the duties. The operator interface is the user button
+(gestures), the dial encoder (speed target), and the LED ring (state
 indication).
 
 See also: [[commutation-method-architecture]] (sys~mc_005~1), [[bridge]]
@@ -26,8 +27,9 @@ gate), [[overcurrent]] (fw~safety_001~1, the trip that force-disables).
 `fw~mc_006~1`
 
 The application shall hold the bridge enabled exactly while an enable
-request stands with dev_gateDriver_isOperational true and no fault latched,
-and otherwise disabled with zero duties.
+request stands with dev_gateDriver_isOperational true, no fault latched,
+and the active method driving at least one phase, and otherwise disabled
+with zero duties.
 
 Acceptance:
 - An enable request with the gate driver not operational, or with a fault
@@ -91,8 +93,8 @@ Needs: impl, test
 `fw~mc_018~1`
 
 The firmware shall hold, as readable statics, the maximum observed
-durations in microseconds, measured on the 1 MHz free-running counter
-(`fw~hal_tim_003~1`), from bridge cycle callback entry to the end of
+durations in microseconds, measured on the bridge's free-running
+microsecond time base, from bridge cycle callback entry to the end of
 the commutation step and from entry to callback exit, each maximum
 cleared by writing zero to it (`fw~conn_trace_008~1`).
 

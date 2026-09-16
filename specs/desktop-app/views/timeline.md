@@ -23,9 +23,7 @@ widget rendering the same X range per:
 While paused, the paused span's samples are retained for the whole
 pause, and newly arriving samples (`app~obs_004~1`) are retained for
 the first 120 s of the pause — a longer pause surfacing the unretained
-interval as a cycle-index gap on resume. A one-cycle signal's samples
-are retained for its most recent 10 s in either mode, older samples
-rendering as a cycle-index gap.
+interval as a sample-time gap on resume, at every sample period alike.
 
 Acceptance:
 
@@ -35,9 +33,9 @@ Acceptance:
   paused span renders however long the pause holds.
 - Resuming within 120 s renders the live span including the samples
   that arrived while paused; resuming later renders the unretained
-  interval as a cycle-index gap.
-- With a 30 s span, a one-cycle signal renders over the most recent
-  10 s and a gap before it.
+  interval as a sample-time gap.
+- A one-cycle signal fills a 60 s span, and resuming within 120 s
+  renders the samples it received while paused.
 
 See also: [[workspace]]
 

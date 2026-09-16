@@ -14,9 +14,10 @@ of it, exposing the observed maximum of each duration for host readout.
 
 Acceptance:
 
-- Over 60 s at the maximum speed target with 4 one-cycle and 28 slower
-  watches installed (`sys~obs_005~1`), the exposed maxima read 20 µs or
-  less for the step and 40 µs or less for the callback.
+- Over 60 s at the maximum speed target with four 4-byte one-cycle
+  watches and 28 4-byte watches at 10 ms installed (`sys~obs_005~1`),
+  the exposed maxima read 20 µs or less for the step and 40 µs or less
+  for the callback.
 
 See also: [[commutation-method-architecture]]
 

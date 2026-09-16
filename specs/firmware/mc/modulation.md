@@ -48,7 +48,8 @@ v_u = v_α, v_v = (−v_α + √3 v_β) / 2, v_w = (−v_α − √3 v_β) / 2
 d_x = 0.5 + (v_x − (max(v_u, v_v, v_w) + min(v_u, v_v, v_w)) / 2) / V_bus
 
 where a command whose magnitude exceeds V_bus / √3 is first scaled to
-magnitude V_bus / √3 at its own angle.
+magnitude V_bus / √3 at its own angle, and a bus voltage of zero yielding
+duties of 0.5.
 
 Rationale:
 - Sector-based SVM and min/max zero-sequence injection yield the same duty

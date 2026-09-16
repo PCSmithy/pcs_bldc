@@ -221,7 +221,9 @@ sufficient to make the tooling aware of a new topic.
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
-- **Firmware specs** (`specs/firmware/`), all back-filled + traced to code:
+- **Firmware specs** (`specs/firmware/`), traced to code, except the V/f
+  + modulation set (`fw~mc_010`, `fw~mc_013`–`fw~mc_017`) written ahead of
+  its implementation in `docs/motor-sprint.md`'s next branch:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
     file per peripheral, per-peripheral sub-topic IDs).
   - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
@@ -249,12 +251,15 @@ sufficient to make the tooling aware of a new topic.
   defect-free, but every `not ok` line must fall in one of these classes:
   - a `sys~` anchor with no system-level test yet;
   - a `fw~`/`app~` spec written ahead of its code (`-impl, -test`) on
-    the branch that will implement it;
+    the branch that will implement it, or named in
+    `docs/motor-sprint.md`;
   - a known test gap with a written home: `fw~mc_007` (gesture map, not
     built), `fw~hal_tim_005`/`_007` (dead-time, break input — sim
     modeling pending), `app~arch_001` (its test needs the live Tauri
     core), `fw~hal_opamp_002` (needs a sim OPAMP→ADC path; see
-    `docs/sil/backlog.md`).
+    `docs/sil/backlog.md`), `fw~mc_018` (bench-only: its bounds are
+    verified from the traced maxima, the sim clock cannot resolve
+    intra-callback durations).
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and

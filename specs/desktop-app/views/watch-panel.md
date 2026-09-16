@@ -13,7 +13,13 @@ picker's watch panel — a row of the signal's trace color, name,
 sample period, and latest streamed value, the value rendered per the
 value rendering table (`app~views_013~1`) — the period selectable and
 the signal removable in the row, either edit applied through the
-watch installation (`app~obs_003~1`).
+watch installation (`app~obs_003~1`), each period labeled per:
+
+| Period | Label |
+|--------|-------|
+| 1 cycle | 20 kHz |
+| 20 cycles | 1 ms |
+| 200 cycles | 10 ms |
 
 Acceptance:
 

@@ -62,8 +62,8 @@ compare on code size, worst-case execution time in the 20 kHz step, and
 test complexity; keep whichever wins, or keep both behind a build option
 if the difference is instructive.
 
-**Where:** the modulator module under `sw/lib/c/shared/lib/`, its Unity
-reference test, and the ISR budget note in `docs/motor-sprint.md`.
+**Where:** the modulator module under `sw/lib/c/shared/lib/` and its
+Unity reference test.
 
 **Origin:** V/f + SVM spec interview (2026-09-14) — owner curiosity about
 whether the classic sector-based form earns its extra code.

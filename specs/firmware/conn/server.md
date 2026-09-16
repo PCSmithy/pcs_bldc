@@ -108,8 +108,10 @@ Needs: impl, test
 An accepted `LinkTestRequest` shall stream `LinkTestFrame` messages —
 sequence numbers 0 through the requested count minus 1, each payload
 of the requested size with byte $i$ equal to $(\text{seq} + i) \bmod
-256$ — as many per server pass as the transmit capacity
-(`fw~conn_serial_006~1`) admits, the request rejected when:
+256$ — as many per millisecond as the transport accepts whole frames
+(`fw~conn_proto_004~1`), a running test abandoned when the serial channel
+loses the host connection (`fw~conn_serial_005~1`), the request rejected
+when:
 
 | Rejected when |
 |---------------|
@@ -122,6 +124,8 @@ Acceptance:
   consecutive sequence numbers and the pattern payload.
 - A request during a test is rejected; a request after the count is
   reached is accepted.
+- A disconnect ends a running test; a request after reconnect is
+  accepted with sequence numbers restarting at 0.
 - Each rejection condition rejects the request.
 
 Covers:
