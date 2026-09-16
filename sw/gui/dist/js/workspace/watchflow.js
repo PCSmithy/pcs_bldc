@@ -23,7 +23,7 @@ let debounceTimer = null;
 function entries() {
   return [...store.watched.entries()].map(([path, w]) => ({
     path,
-    period_ms: w.period_ms,
+    period_cycles: w.period_cycles,
     size: meta.get(path)?.size ?? 4,
   }));
 }
@@ -37,14 +37,14 @@ function renderPreview() {
       u: p.u,
       ramMax: s?.ram_budget_bytes ?? 2048,
       r: p.r,
-      linkMax: s?.link_budget_bytes_per_s ?? 1_100_000,
+      linkMax: s?.link_budget_bytes_per_s ?? 480_000,
       count: p.count,
       capacity: WATCH_CAPACITY,
     },
   });
 }
 
-export function addWatch(path, period_ms = 10) {
+export function addWatch(path, period_cycles = 200) {
   if (store.gate !== "matched") return; // gated: never fire while mismatched
   if (!store.watched.has(path) && store.watched.size >= WATCH_CAPACITY) return;
   const sig = store.signals.find((s) => s.path === path);
@@ -52,16 +52,16 @@ export function addWatch(path, period_ms = 10) {
   // An already-watched signal keeps its entry untouched (the drop handler
   // re-adds before joining a widget — a join must not clobber the period).
   if (store.watched.has(path)) return;
-  store.watched.set(path, { period_ms });
-  historyFor(path, period_ms);
+  store.watched.set(path, { period_cycles });
+  historyFor(path, period_cycles);
   afterEdit();
 }
 
-export function setPeriod(path, period_ms) {
+export function setPeriod(path, period_cycles) {
   const w = store.watched.get(path);
   if (!w) return;
-  store.watched.set(path, { ...w, period_ms });
-  historyFor(path, period_ms); // resets that signal's history to the new rate
+  store.watched.set(path, { ...w, period_cycles });
+  historyFor(path, period_cycles); // resets that signal's history to the new rate
   afterEdit();
 }
 
@@ -92,7 +92,7 @@ export async function commit() {
     return;
   }
   pausedDeferral = false;
-  const list = entries().map(({ path, period_ms }) => ({ path, period_ms }));
+  const list = entries().map(({ path, period_cycles }) => ({ path, period_cycles }));
   const key = JSON.stringify(list);
   if (key === committed) return;
   try {
@@ -147,17 +147,25 @@ export function initWatchflow() {
 function computeFixes() {
   const list = entries();
   const fixes = [];
-  const fastest = list.filter((e) => e.period_ms === 1);
+  // One-cycle entries are both the bandwidth hogs and the only entries with
+  // a count limit of their own (4), so they get two fixes: slow them, or
+  // drop them.
+  const fastest = list.filter((e) => e.period_cycles === 1);
   if (fastest.length) {
-    const moved = list.map((e) => (e.period_ms === 1 ? { ...e, period_ms: 10 } : e));
-    const p = preview(moved);
+    const plural = fastest.length > 1 ? "s" : "";
+    const moved = list.map((e) => (e.period_cycles === 1 ? { ...e, period_cycles: 200 } : e));
     fixes.push({
-      label: `Move the ${fastest.length} fastest signal${fastest.length > 1 ? "s" : ""} to 10 ms → ${pctOfLink(p.r)} of link`,
-      apply: () => { for (const e of fastest) setPeriod(e.path, 10); },
+      label: `Move the ${fastest.length} 20 kHz signal${plural} to 10 ms → ${pctOfLink(preview(moved).r)} of link`,
+      apply: () => { for (const e of fastest) setPeriod(e.path, 200); },
+    });
+    const kept = list.filter((e) => e.period_cycles !== 1);
+    fixes.push({
+      label: `Drop the ${fastest.length} 20 kHz signal${plural} → ${pctOfLink(preview(kept).r)} of link`,
+      apply: () => { for (const e of fastest) removeWatch(e.path); },
     });
   }
   if (list.length > 1) {
-    const heaviest = [...list].sort((a, b) => b.size / b.period_ms - a.size / a.period_ms)[0];
+    const heaviest = [...list].sort((a, b) => b.size / b.period_cycles - a.size / a.period_cycles)[0];
     const p = preview(list.filter((e) => e.path !== heaviest.path));
     fixes.push({
       label: `Drop ${heaviest.path.split(".").pop()} → ${pctOfLink(p.r)}`,
@@ -168,7 +176,7 @@ function computeFixes() {
 }
 
 function pctOfLink(r) {
-  const max = store.traceStatus?.link_budget_bytes_per_s ?? 1_100_000;
+  const max = store.traceStatus?.link_budget_bytes_per_s ?? 480_000;
   return `${Math.round((r / max) * 100)} %`;
 }
 

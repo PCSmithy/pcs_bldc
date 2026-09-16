@@ -10,7 +10,7 @@ import { store, notify, prefs } from "../state.js";
 import { histories } from "./history.js";
 
 export const SPANS_MS = [5_000, 10_000, 30_000, 60_000];
-const MIN_RANGE_MS = 10; // zoom-in floor across the plot (app~views_009)
+const MIN_RANGE_MS = 1; // zoom-in floor across the plot (app~views_009)
 const LS_KEY = "cockpit.timeline.span.v1";
 
 const tl = () => store.timeline;

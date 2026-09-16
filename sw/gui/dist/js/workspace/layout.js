@@ -336,7 +336,7 @@ export function persist() {
     widgets: widgets.map((w) => w.toJSON()),
     watched: [...store.watched.entries()].map(([path, w]) => ({
       path,
-      period_ms: w.period_ms,
+      period_cycles: w.period_cycles,
       ...meta.get(path),
     })),
     colors: colorSlots(),
@@ -368,6 +368,14 @@ function migrateFlowCfg(cfg) {
   delete cfg.hpx;
 }
 
+// Snapshots before the cycle-index periods stored ms: 1 -> 1 ms, and both
+// 10 and 100 -> 10 ms (100 ms is no longer a period).
+const PERIOD_MS_TO_CYCLES = { 1: 20, 10: 200, 100: 200 };
+
+function migratePeriod(w) {
+  return w.period_cycles ?? PERIOD_MS_TO_CYCLES[w.period_ms] ?? 200;
+}
+
 function restore() {
   // Clone: widget cfgs must not alias the prefs object (a live mutation
   // would corrupt the persisted snapshot between saves).
@@ -378,7 +386,7 @@ function restore() {
   restoreAppearance(snap_.appearance); // before colors resolve: overrides win
   for (const w of snap_.watched || []) {
     meta.set(w.path, { size: w.size ?? 4, kind: w.kind ?? "f32", enums: w.enums });
-    store.watched.set(w.path, { period_ms: w.period_ms });
+    store.watched.set(w.path, { period_cycles: migratePeriod(w) });
   }
   notify("watched", store.watched);
   for (const cfg of snap_.widgets || []) {

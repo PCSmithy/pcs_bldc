@@ -30,6 +30,16 @@
 // Bound on the disconnect-edge RX flush of a dead session's queued bytes.
 #define APP_SERVER_RX_DRAIN_MAX_BYTES (4096U)
 
+// Envelope bytes a Samples message costs beyond its data: the envelope tag and
+// length plus the period, first-cycle, count, and data-field varints. The
+// framing rest of fw~conn_trace_005's W is IO_COBSFRAME_WIRE_MAX's own.
+#define APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD (19U)
+
+// Link-throughput-test bounds (fw~conn_server_005). The payload cap is the
+// schema's; the frame cap keeps a runaway request finite.
+#define APP_SERVER_LINK_TEST_MAX_PAYLOAD (sizeof(((shared_LinkTestFrame *) 0)->payload.bytes))
+#define APP_SERVER_LINK_TEST_MAX_FRAMES  (1000000U)
+
 /* Private Data Definitions */
 
 typedef struct
@@ -39,6 +49,11 @@ typedef struct
     uint32_t telemetryDivider;
     ringbuf_t logRing;
     uint8_t logStorage[APP_SERVER_LOG_BUF_BYTES];
+    // Link throughput test; remaining == 0 means no test is running, so the
+    // count reaching zero is what frees the service for the next request.
+    uint32_t linkTestRemaining;
+    uint32_t linkTestSeq;
+    uint32_t linkTestPayloadBytes;
     // RX sized to the frame cap (callback-decoded watches don't count toward
     // the encode bound); TX to the largest envelope the board encodes.
     uint8_t rxFrame[IO_COBSFRAME_MAX_PAYLOAD];
@@ -70,6 +85,34 @@ static bool app_server_private_sendEnvelope(const shared_Envelope * const env)
     return sent;
 }
 
+// [impl->fw~conn_server_005~1] admission: bounds, then exclusivity.
+static bool app_server_private_admitLinkTest(const shared_LinkTestRequest * const request,
+                                             shared_Response * const response)
+{
+    bool accepted = false;
+    if ((request->payload_bytes < 1U) || (request->payload_bytes > APP_SERVER_LINK_TEST_MAX_PAYLOAD))
+    {
+        (void) strcpy(response->cause, "payload_bytes out of range");
+    }
+    else if ((request->frame_count < 1U) || (request->frame_count > APP_SERVER_LINK_TEST_MAX_FRAMES))
+    {
+        (void) strcpy(response->cause, "frame_count out of range");
+    }
+    else if (data->linkTestRemaining > 0U)
+    {
+        (void) strcpy(response->cause, "link test already running");
+    }
+    else
+    {
+        data->linkTestSeq = 0U;
+        data->linkTestPayloadBytes = request->payload_bytes;
+        data->linkTestRemaining = request->frame_count;
+        accepted = true;
+    }
+    response->accepted = accepted;
+    return accepted;
+}
+
 // [impl->fw~conn_server_001~1]
 // [impl->fw~obs_identity_002~1]
 static void app_server_private_handleEnvelope(const shared_Envelope * const request)
@@ -90,6 +133,13 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
             // Serve the named identity object, so wire and image report the
             // same bytes (and the anchor is always linked).
             (void) strcpy(reply->payload.identity.build_id, lib_build_identityString);
+            break;
+
+        // [impl->fw~conn_server_005~1]
+        case shared_Envelope_link_test_request_tag:
+            reply->which_payload = shared_Envelope_response_tag;
+            (void) app_server_private_admitLinkTest(&request->payload.link_test_request,
+                                                    &reply->payload.response);
             break;
 
         case shared_Envelope_board_request_tag:
@@ -206,34 +256,71 @@ static void app_server_private_publishTelemetry(void)
     }
 }
 
-// [impl->fw~conn_trace_004~1] emission: buffered ticks leave in capture order
-// [impl->fw~conn_trace_005~1] one Samples payload per tick, tick count + data
+// [impl->fw~conn_trace_009~1] each group's buffered records leave in capture
+// order, consecutive records of one group sharing a message
+// [impl->fw~conn_trace_005~1] one Samples per message: the group's period, its
+// first record's cycle index, the record count, and the concatenated data
 static void app_server_private_drainSamples(void)
 {
-    size_t dataLen = 0U;
-    while (app_server_trace_peekLen(&dataLen))
+    bool progressing = true;
+    while (progressing)
     {
-        // Hold off (samples stay ring-buffered) while the transport lacks
-        // room for the whole frame; 24 covers the envelope's tags, lengths,
-        // and tick varint ahead of the framing overhead.
-        const uint32_t reserve = (uint32_t) IO_COBSFRAME_WIRE_MAX(dataLen + 24U);
-        if (IO_serial_txFree(data->config->serial) < reserve)
+        uint32_t group = 0U;
+        uint32_t cycle = 0U;
+        size_t recordLen = 0U;
+        progressing = false;
+        if (app_server_trace_peek(&group, &cycle, &recordLen))
         {
-            break;
+            const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
+            shared_Envelope * const env = &data->txEnvelope;
+            app_server_private_zeroEnvelope(env);
+            env->which_payload = shared_Envelope_samples_tag;
+            trace_Samples * const samples = &env->payload.samples;
+            samples->period_cycles = periodCycles;
+            samples->first_cycle = cycle;
+
+            size_t used = 0U;
+            uint32_t nextCycle = cycle;
+            bool batching = true;
+            while (batching)
+            {
+                // Hold off (records stay ring-buffered) while the message or
+                // the transport lacks room for one more record.
+                const uint32_t reserve = (uint32_t) IO_COBSFRAME_WIRE_MAX(
+                    used + recordLen + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
+                if (((used + recordLen) > sizeof(samples->data.bytes)) ||
+                    (IO_serial_txFree(data->config->serial) < reserve) ||
+                    (!app_server_trace_pop(&samples->data.bytes[used],
+                                           sizeof(samples->data.bytes) - used)))
+                {
+                    batching = false;
+                }
+                else
+                {
+                    used += recordLen;
+                    samples->count++;
+                    nextCycle += periodCycles;
+
+                    // Only a run of one group's records whose cycle indices
+                    // still step by its period can share the message: a gap
+                    // left by an overflow starts a new one.
+                    uint32_t nextGroup = 0U;
+                    uint32_t peekedCycle = 0U;
+                    size_t peekedLen = 0U;
+                    batching = (app_server_trace_peek(&nextGroup, &peekedCycle, &peekedLen)) &&
+                               (nextGroup == group) &&
+                               (peekedCycle == nextCycle);
+                    recordLen = peekedLen;
+                }
+            }
+
+            if (samples->count > 0U)
+            {
+                samples->data.size = (pb_size_t) used;
+                (void) app_server_private_sendEnvelope(env);
+                progressing = true;
+            }
         }
-        shared_Envelope * const env = &data->txEnvelope;
-        app_server_private_zeroEnvelope(env);
-        env->which_payload = shared_Envelope_samples_tag;
-        size_t poppedLen = 0U;
-        if (!app_server_trace_pop(&env->payload.samples.tick_ms,
-                                  env->payload.samples.data.bytes,
-                                  sizeof(env->payload.samples.data.bytes),
-                                  &poppedLen))
-        {
-            break;
-        }
-        env->payload.samples.data.size = (pb_size_t) poppedLen;
-        (void) app_server_private_sendEnvelope(env);
     }
 }
 
@@ -263,6 +350,33 @@ static void app_server_private_drainLog(void)
     }
 }
 
+// [impl->fw~conn_server_005~1] last drain of the pass, measuring only the room
+// the real services leave. IO_COBSFrame_send takes whole frames or none, so a
+// short pass stops mid-count and resumes next pass.
+static void app_server_private_drainLinkTest(void)
+{
+    bool sent = true;
+    while ((data->linkTestRemaining > 0U) && sent)
+    {
+        shared_Envelope * const env = &data->txEnvelope;
+        app_server_private_zeroEnvelope(env);
+        env->which_payload = shared_Envelope_link_test_frame_tag;
+        env->payload.link_test_frame.seq = data->linkTestSeq;
+        env->payload.link_test_frame.payload.size = (pb_size_t) data->linkTestPayloadBytes;
+        for (uint32_t i = 0U; i < data->linkTestPayloadBytes; i++)
+        {
+            env->payload.link_test_frame.payload.bytes[i] = (uint8_t) ((data->linkTestSeq + i) & 0xFFU);
+        }
+
+        sent = app_server_private_sendEnvelope(env);
+        if (sent)
+        {
+            data->linkTestSeq++;
+            data->linkTestRemaining--;
+        }
+    }
+}
+
 /* Public Function Definitions */
 
 bool app_server_init(const app_server_config_S * const config)
@@ -276,6 +390,7 @@ bool app_server_init(const app_server_config_S * const config)
         data->config = config;
         data->wasConnected = false;
         data->telemetryDivider = 0U;
+        data->linkTestRemaining = 0U;
         ringbuf_init(&data->logRing, data->logStorage, sizeof(data->logStorage));
         success = true;
     }
@@ -302,12 +417,15 @@ void app_server_run1ms(void)
             }
             app_server_private_drainLog();
             app_server_private_drainSamples();
+            app_server_private_drainLinkTest();
         }
         else if (data->wasConnected)
         {
             // [impl->fw~conn_trace_003~1] the watch list dies with the port —
             // and so does any half-received or held frame from that session.
+            // [impl->fw~conn_server_005~1] a link test is abandoned with it.
             app_server_trace_clear();
+            data->linkTestRemaining = 0U;
             IO_COBSFrame_reset(data->config->frame);
             uint8_t discard[16];
             uint32_t drained = 0U;
@@ -326,9 +444,9 @@ void app_server_run1ms(void)
 }
 
 // [impl->fw~conn_trace_004~1]
-void app_server_sample1ms(void)
+void app_server_sampleCycle(void)
 {
-    app_server_trace_sample1ms();
+    app_server_trace_sampleCycle();
 }
 
 // [impl->fw~obs_log_001~1]

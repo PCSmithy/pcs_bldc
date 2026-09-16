@@ -8,14 +8,12 @@ import { icon } from "../icons.js";
 import { store, subscribe } from "../state.js";
 import { histories } from "./history.js";
 import { meta, setPeriod, removeWatch } from "./watchflow.js";
-import { WATCH_CAPACITY } from "./budget.js";
+import { WATCH_CAPACITY, PERIOD_CYCLES, periodLabel } from "./budget.js";
 import { forEachWidget, persist } from "./layout.js";
 import { formatValue } from "./plotwidget.js";
 import { resolvedColor } from "./appearance.js";
 import { throttleTrailing } from "../perf.js";
 import { esc } from "../dom.js";
-
-const PERIODS = [1, 10, 100];
 
 let host = null;
 
@@ -40,8 +38,8 @@ function renderRows() {
           <span class="watch-name mono">${esc(path)}</span>
         </span>
         <span class="seg watch-seg" role="group" aria-label="Sample period">
-          ${PERIODS.map((p) => `<button class="watch-seg-opt ${p === w.period_ms ? "is-selected" : ""}"
-              data-period="${p}">${p}</button>`).join("")}
+          ${PERIOD_CYCLES.map((p) => `<button class="watch-seg-opt ${p === w.period_cycles ? "is-selected" : ""}"
+              data-period="${p}">${periodLabel(p)}</button>`).join("")}
         </span>
         <span class="watch-value mono" data-value>${esc(formatValue(histories.get(path)?.latest() ?? null, m?.kind, m?.enums))}</span>
         <button class="watch-remove" aria-label="Remove ${esc(path)} from the watch list">×</button>

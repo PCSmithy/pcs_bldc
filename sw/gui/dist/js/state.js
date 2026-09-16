@@ -98,8 +98,8 @@ export const store = {
   linkHz: 0,                // measured telemetry arrival rate
   traceStatus: null,        // last TraceStatusInfo
   budgetVerdict: "—",       // 'accepted' | rejection cause | '—'
-  watched: new Map(),       // path -> { period_ms }  (workspace-owned)
-  gapCount: 0,              // cumulative dropped ticks from samples batches
+  watched: new Map(),       // path -> { period_cycles }  (workspace-owned)
+  gapCount: 0,              // cumulative dropped records from samples batches
   // The plot timeline (workspace-owned, see workspace/timeline.js; mutations
   // notify the "timeline" topic). window/pausedSpan are [t0, t1] ms or null.
   timeline: { span_ms: 10_000, mode: "live", window: null, pausedSpan: null },
@@ -229,7 +229,7 @@ export async function attachEvents() {
   await listen("log", (l) => notify("log", l.text));
   await listen("trace-status", (s) => set({ traceStatus: s }));
   await listen("samples", (batch) => {
-    if (batch.dropped_ticks) set({ gapCount: store.gapCount + batch.dropped_ticks });
+    if (batch.dropped_records) set({ gapCount: store.gapCount + batch.dropped_records });
     notify("samples", batch);
   });
 }

@@ -17,6 +17,9 @@ typedef struct
     uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
     uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
 
+    IO_bridge_cycleCallback_F cycleCallback;
+    void *                    cycleContext;
+
 } IO_bridge_channelData_S;
 
 
@@ -112,6 +115,7 @@ static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_currentSenseCo
 }
 
 // U and V are sampled simultaneously - derive W from them by KCL
+// [impl->fw~io_bridge_006~1]
 static void IO_bridge_private_completeInjectedPair(size_t channel, uint32_t now)
 {
     IO_bridge_channelData_S * const channelData = &data->channels[channel];
@@ -120,6 +124,12 @@ static void IO_bridge_private_completeInjectedPair(size_t channel, uint32_t now)
     channelData->updateCount[IO_BRIDGE_PHASE_W] += 1U;
     channelData->sampleTime_us[IO_BRIDGE_PHASE_W] = now;
 
+    // Last, so the whole triple is readable to the callback.
+    // [impl->fw~io_bridge_007~1]
+    if (channelData->cycleCallback != NULL)
+    {
+        channelData->cycleCallback((IO_bridge_channel_E)channel, channelData->cycleContext);
+    }
 }
 
 
@@ -155,8 +165,9 @@ static void IO_bridge_private_injectedComplete(HW_ADC_channels_E adcChannel, HW_
                             channelData->updateCount[phase] += 1U;
                             channelData->sampleTime_us[phase] = now_us;
 
+                            // [impl->fw~io_bridge_006~1]
                             const IO_bridge_phase_E partner = IO_bridge_complementaryPhase[phase];
-                            if (partner < IO_BRIDGE_PHASE_COUNT) // don't think I need this check because we're already within a `if (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE)` block
+                            if (partner < IO_BRIDGE_PHASE_COUNT) // the derived phase has no partner
                             {
                                 // Unsigned subtract is wrap-safe; the partner's stamp is always in the past.
                                 const uint32_t timeSincePartner_us = now_us - channelData->sampleTime_us[partner];
@@ -409,6 +420,26 @@ bool IO_bridge_getInjectedPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_ph
         (data->channels[channel].updateCount[phase] != 0U))
     {
         *amps_out = data->channels[channel].current_amps[phase];
+        ret = true;
+    }
+
+    return ret;
+}
+
+// [impl->fw~io_bridge_007~1]
+bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
+                                     IO_bridge_cycleCallback_F callback,
+                                     void * context)
+{
+    bool ret = false;
+
+    if ((data->config != NULL) &&
+        (callback != NULL) &&
+        (channel < IO_BRIDGE_CHANNEL_COUNT) &&
+        ((size_t)channel < data->config->numChannels))
+    {
+        data->channels[channel].cycleContext  = context;
+        data->channels[channel].cycleCallback = callback;
         ret = true;
     }
 

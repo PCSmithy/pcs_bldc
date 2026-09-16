@@ -8,6 +8,7 @@ import { store, subscribe } from "../state.js";
 import { histories, lowerBound } from "./history.js";
 import { meta } from "./watchflow.js";
 import { traceDashed } from "./colors.js";
+import { periodLabel } from "./budget.js";
 import { appearanceOf, resolvedColor } from "./appearance.js";
 import { GlTraces, buildTraceGeometry, arcAtX, parseColor, DOT_SIZE_PX } from "./glrender.js";
 import { envelopeTable } from "./decimate.js";
@@ -569,7 +570,7 @@ export class PlotWidget {
         return `<span class="legend-entry" title="${esc(p)}">
           <span class="legend-bar" style="background:${resolvedColor(p)}"></span>
           <span class="legend-name mono">${esc(shortName(p))}</span>
-          <span class="legend-period">${w ? `${w.period_ms}ms` : ""}</span>
+          <span class="legend-period">${w ? periodLabel(w.period_cycles) : ""}</span>
         </span>`;
       })
       .join("");

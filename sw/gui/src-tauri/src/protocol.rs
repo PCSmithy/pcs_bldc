@@ -246,8 +246,10 @@ mod tests {
         pump.push(&reply_frame(
             0,
             Payload::Samples(pcs_proto::trace::Samples {
-                tick_ms: 3,
+                first_cycle: 60,
                 data: vec![1, 2, 3, 4],
+                period_cycles: 20,
+                count: 1,
             }),
         ));
         assert_eq!(*seen.lock().unwrap(), vec!["log", "telemetry", "samples"]);

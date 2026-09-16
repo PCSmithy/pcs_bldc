@@ -42,8 +42,9 @@ def boot(page):
     page.wait_for_function("() => __cockpit.store.gate === 'matched'")
 
 
-def add_plot_with(page, paths, period=1):
-    """Watch `paths`, plot them on a fresh widget, return the widget id."""
+def add_plot_with(page, paths, period=20):
+    """Watch `paths` at `period` PWM cycles (1 | 20 | 200), plot them on a
+    fresh widget, return the widget id."""
     for p in paths:
         page.evaluate(f"() => __cockpit.addWatch({p!r}, {period})")
     wid = page.evaluate(
@@ -345,7 +346,7 @@ def run(page):
     )
 
     # Two plots for the shared-cursor assertions.
-    add_plot_with(page, [VEL_M], 1)
+    add_plot_with(page, [VEL_M], 20)
     wait_for_samples(page, "task1msRuns")
     wait_for_samples(page, VEL_M)
 
@@ -403,7 +404,7 @@ def run(page):
     page.evaluate(
         """() => { const t = __cockpit.addWidget({ type: 'table', signals: [] });
           t.addSignal('task1msRuns');
-          __cockpit.addWatch('app_motorControl_data.channels[0].faultLatched', 10);
+          __cockpit.addWatch('app_motorControl_data.channels[0].faultLatched', 200);
           t.addSignal('app_motorControl_data.channels[0].faultLatched'); }"""
     )
     wait_for_samples(page, "app_motorControl_data.channels[0].faultLatched", 5)
@@ -437,7 +438,7 @@ def run(page):
           return {{
             shown: m ? parseInt(m[1], 10) : null,
             expect: __cockpit.histories.get('task1msRuns').valueAt({cursor_tick}),
-            period: row ? row.textContent.includes(`${{w.period_ms}} ms`) : false,
+            period: row ? row.textContent.includes(__cockpit.periodLabel(w.period_cycles)) : false,
           }};
         }}"""
     )
@@ -500,7 +501,7 @@ def run(page):
         " && !__cockpit.store.watched.has(s.path)) || {}).path || null"
     )
     check("views_007 a ramp-kind signal exists for the auto check", ramp is not None, ramp)
-    scratch = add_plot_with(page, [ramp], 1)
+    scratch = add_plot_with(page, [ramp], 20)
     wait_for_samples(page, ramp, 100)
 
     def scale_l(widget_id):
@@ -662,13 +663,13 @@ def run(page):
         (win3, win4),
     )
 
-    # zoom-in floor: the spec's 10 ms bound
+    # zoom-in floor: the spec's 1 ms bound
     page.evaluate(
         "() => { const w = __cockpit.timeline.get().window;"
         " __cockpit.timeline.zoomAt((w[0] + w[1]) / 2, 1e-9); }"
     )
     floor_w = page.evaluate("() => { const w = __cockpit.timeline.get().window; return w[1] - w[0]; }")
-    check("views_009 zoom-in stops at 10 ms", abs(floor_w - 10) < 1, floor_w)
+    check("views_009 zoom-in stops at 1 ms", abs(floor_w - 1) < 0.1, floor_w)
 
     # ── [test->app~views_009~1] a step into the bound leaves the range
     #    unchanged: with the width pinned, the old re-centering slid the
@@ -948,7 +949,7 @@ def run(page):
         timeout=5000,
     )
     installs_before = page.evaluate("() => (window.__devmockInstalls || []).length")
-    page.click(".watch-row[data-path='task1msRuns'] [data-period='100']")
+    page.click(".watch-row[data-path='task1msRuns'] [data-period='200']")
     page.wait_for_function(
         f"() => (window.__devmockInstalls || []).length === {installs_before} + 1",
         timeout=5000,
@@ -956,7 +957,7 @@ def run(page):
     last = page.evaluate("() => window.__devmockInstalls.at(-1)")
     check(
         "views_010 period edit reaches the device as one recommitted list",
-        len(last) == 1 and last[0]["path"] == "task1msRuns" and last[0]["period_ms"] == 100,
+        len(last) == 1 and last[0]["path"] == "task1msRuns" and last[0]["period_cycles"] == 200,
         last,
     )
     page.click(".watch-row[data-path='task1msRuns'] .watch-remove")
@@ -976,29 +977,168 @@ def run(page):
 
     # ── [test->app~obs_003~1] a drop-join of an already-watched signal keeps
     #    its period (regression: addWatch reset a 1 ms watch back to 10 ms) ──
-    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
-    page.evaluate("() => __cockpit.setPeriod('task1msRuns', 1)")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
+    page.evaluate("() => __cockpit.setPeriod('task1msRuns', 20)")
     page.wait_for_selector(
-        ".watch-row[data-path='task1msRuns'] [data-period='1'].is-selected"
+        ".watch-row[data-path='task1msRuns'] [data-period='20'].is-selected"
     )
     first_plot = page.evaluate("() => document.querySelector('.plot-widget').dataset.widgetId")
     drop_signal(page, "task1msRuns", widget_id=first_plot)
     after_drop = page.evaluate(
         """() => ({
-          period: __cockpit.store.watched.get('task1msRuns')?.period_ms,
+          period: __cockpit.store.watched.get('task1msRuns')?.period_cycles,
           joined: (() => { let j = false; __cockpit.forEachWidget(w =>
             { if (w.cfg.signals.includes('task1msRuns')) j = true; }); return j; })(),
           seg: !!document.querySelector(
-            ".watch-row[data-path='task1msRuns'] [data-period='1'].is-selected"),
+            ".watch-row[data-path='task1msRuns'] [data-period='20'].is-selected"),
         })"""
     )
     check(
         "obs_003 drop-join keeps the 1 ms period and joins the widget",
-        after_drop["period"] == 1 and after_drop["joined"] and after_drop["seg"],
+        after_drop["period"] == 20 and after_drop["joined"] and after_drop["seg"],
         after_drop,
     )
     # Leave the workspace as views_010 left it (unwatched, emptied plot).
     page.click(".watch-row[data-path='task1msRuns'] .watch-remove")
+
+    # ══ the one-cycle period end to end: the 20 kHz label, a 10 ms signal on
+    #    the same timeline, the 10 s fast-retention window, and the board's
+    #    four-entry one-cycle cap ══
+    FAST_S = "app_motorControl_data.channels[0].currentQ_a"
+    SLOW_S = "app_motorControl_data.channels[0].busCurrent"
+    page.evaluate(
+        f"() => {{ __cockpit.addWatch({FAST_S!r}, 1); __cockpit.addWatch({SLOW_S!r}, 200); }}"
+    )
+    mixed = page.evaluate(
+        "(paths) => { const w = __cockpit.addWidget({ type: 'plot', signals: [] });"
+        "  for (const p of paths) w.addSignal(p); return w.cfg.id; }",
+        [FAST_S, SLOW_S],
+    )
+    page.wait_for_function(
+        "() => __cockpit.store.traceStatus && __cockpit.store.traceStatus.link_rate_bytes_per_s > 0",
+        timeout=8000,
+    )
+    wait_for_samples(page, FAST_S, 150_000)
+    wait_for_samples(page, SLOW_S, 5000)
+
+    # ── [test->app~views_010~1] the period reads as a rate at one cycle ──
+    labels = page.evaluate(
+        f"""() => ({{
+          opt: document.querySelector(".watch-row[data-path='{FAST_S}'] [data-period='1']")?.textContent,
+          fast_sel: !!document.querySelector(".watch-row[data-path='{FAST_S}'] [data-period='1'].is-selected"),
+          slow_sel: !!document.querySelector(".watch-row[data-path='{SLOW_S}'] [data-period='200'].is-selected"),
+          legend: [...document.querySelector('[data-widget-id="{mixed}"]')
+            .querySelectorAll('.legend-period')].map(e => e.textContent).sort(),
+        }})"""
+    )
+    check(
+        "views_010 the one-cycle period reads 20 kHz in the panel and legend",
+        labels["opt"] == "20 kHz"
+        and labels["fast_sel"]
+        and labels["slow_sel"]
+        and labels["legend"] == ["10 ms", "20 kHz"],
+        labels,
+    )
+
+    # ── [test->app~views_006~1] the table's period column names it too ──
+    tid = page.evaluate(
+        "(paths) => { const t = __cockpit.addWidget({ type: 'table', signals: [] });"
+        "  for (const p of paths) t.addSignal(p); return t.cfg.id; }",
+        [FAST_S, SLOW_S],
+    )
+    cells = page.evaluate(
+        f"""() => [...document.querySelector('[data-widget-id="{tid}"]')
+             .querySelectorAll('td.col-period')].map(e => e.textContent.trim()).sort()"""
+    )
+    check("views_006 the table period column names the rate", cells == ["10 ms", "20 kHz"], cells)
+
+    # ── [test->app~obs_004~1] both periods demux onto one tick domain ──
+    align = page.evaluate(
+        f"""() => {{
+          const f = __cockpit.histories.get({FAST_S!r});
+          const sl = __cockpit.histories.get({SLOW_S!r});
+          const win = __cockpit.timeline.currentWindow();
+          return {{
+            fast_period: f.period, slow_period: sl.period,
+            newest_skew: Math.abs(f.newestTick() - sl.newestTick()),
+            fast_in_window: f.newestTick() > win[0] && f.newestTick() <= win[1] + 100,
+            slow_in_window: sl.newestTick() > win[0] && sl.newestTick() <= win[1] + 100,
+            fast_step: f.tickAtIndex(1) - f.tickAtIndex(0),
+          }};
+        }}"""
+    )
+    check(
+        "obs_004 one-cycle and 10 ms signals share one tick domain",
+        align["fast_period"] == 0.05
+        and align["slow_period"] == 10
+        and abs(align["fast_step"] - 0.05) < 1e-9
+        and align["newest_skew"] < 100
+        and align["fast_in_window"]
+        and align["slow_in_window"],
+        align,
+    )
+
+    # ── [test->app~views_008~1] a 30 s span shows a one-cycle signal's most
+    #    recent 10 s and a cycle-index gap before it ──
+    page.evaluate("() => __cockpit.timeline.setSpan(30000)")
+    page.wait_for_timeout(400)
+    retain = page.evaluate(
+        f"""() => {{
+          const f = __cockpit.histories.get({FAST_S!r});
+          const sl = __cockpit.histories.get({SLOW_S!r});
+          const [t0, t1] = __cockpit.timeline.currentWindow();
+          return {{
+            span: t1 - t0,
+            fast_extent: f.newestTick() - f.tickAtIndex(0),
+            slow_extent: sl.newestTick() - sl.tickAtIndex(0),
+            gap_before_fast: f.tickAtIndex(0) - t0,
+          }};
+        }}"""
+    )
+    check(
+        "views_008 a one-cycle signal keeps its most recent 10 s in a 30 s span",
+        abs(retain["span"] - 30_000) < 1
+        and 9_000 < retain["fast_extent"] <= 10_400
+        and retain["slow_extent"] > 25_000
+        and retain["gap_before_fast"] > 15_000,
+        retain,
+    )
+    page.evaluate("() => __cockpit.timeline.setSpan(10000)")
+
+    # ── [test->app~obs_003~1] a fifth one-cycle watch is refused by the
+    #    board; the app presents the cause and the prior list keeps running ──
+    surplus = [f"est_flux_data.buf[{i}]" for i in range(5)]
+    before = page.evaluate(f"() => __cockpit.histories.get({FAST_S!r}).newestTick()")
+    page.evaluate("(paths) => { for (const p of paths) __cockpit.addWatch(p, 1); }", surplus)
+    page.wait_for_selector(".reject-scrim", timeout=8000)
+    refusal = page.evaluate(
+        """() => ({
+          cause: document.querySelector('.reject-reason-text')?.textContent,
+          verdict: __cockpit.store.budgetVerdict,
+          fixes: [...document.querySelectorAll('[data-fixlabel]')].map(e => e.textContent),
+        })"""
+    )
+    page.wait_for_function(
+        f"() => __cockpit.histories.get({FAST_S!r}).newestTick() > {before}",
+        timeout=8000,
+    )
+    check(
+        "obs_003 a fifth one-cycle watch presents the board's cause, stream unbroken",
+        refusal["cause"] == "more than 4 one-cycle watches"
+        and refusal["verdict"] == "more than 4 one-cycle watches"
+        and any("20 kHz" in f for f in refusal["fixes"]),
+        refusal,
+    )
+    page.click(".reject-scrim [data-dismiss]")
+    page.evaluate(
+        """(paths) => { for (const p of paths) {
+             __cockpit.forEachWidget(w => w.removeSignal?.(p));
+             __cockpit.removeWatch(p);
+           } }""",
+        surplus + [FAST_S, SLOW_S],
+    )
+    for wid in (mixed, tid):
+        widget_eval(page, wid, "(w) => w.hooks.onRemove(w.cfg.id)")
 
     # ── picker column resize + collapse (chrome ergonomics; no spec) ──
     rz = page.locator(".picker-resizer").bounding_box()
@@ -1026,7 +1166,7 @@ def run(page):
     boot(page)
     sig_a = "app_motorControl_data.channels[0].phaseCurrent_a[0]"
     sig_b = "app_motorControl_data.channels[0].phaseCurrent_a[1]"
-    add_plot_with(page, [sig_a, sig_b], 1)
+    add_plot_with(page, [sig_a, sig_b], 20)
     # A second plot holding sig_a: appearance must render on EVERY widget.
     page.evaluate(
         "(p) => { const w = __cockpit.addWidget({ type: 'plot', signals: [] }); w.addSignal(p); }",
@@ -1230,7 +1370,7 @@ def run(page):
     #    its watch-panel row ──
     page.fill(".picker-search input", "*")  # match-all (an empty fill fires no event)
     page.wait_for_function("() => __cockpit.store.signals.length > 20")
-    page.evaluate("() => __cockpit.addWatch('IO_bridge_channelConfig.deadtime_ns', 100)")
+    page.evaluate("() => __cockpit.addWatch('IO_bridge_channelConfig.deadtime_ns', 200)")
     page.wait_for_function(
         "() => document.querySelector('.watch-panel')?.textContent.includes('deadtime_ns')"
     )
@@ -1325,7 +1465,7 @@ def run(page):
         "app_motorControl_data.channels[0].duty[1]",
         "task1msRuns",
     ]
-    add_plot_with(page, seven, 100)
+    add_plot_with(page, seven, 200)
     dash_state = (
         "() => { let d = null; __cockpit.forEachWidget(w => { if (!w.traceInfo) return;"
         "  if (!w.cfg.signals.includes('task1msRuns')) return;"
@@ -1368,7 +1508,7 @@ def run(page):
     page.wait_for_function("() => __cockpit.store.gate === 'matched'")
     page.evaluate("() => __cockpit.api.listSignals('')")
     page.wait_for_function("() => __cockpit.store.signals.length > 0")
-    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
     page.wait_for_function("() => (window.__devmockInstalls || []).length >= 1", timeout=5000)
     page.wait_for_timeout(600)  # prefs debounce
     page.goto(coldboot)
@@ -1577,7 +1717,7 @@ def run(page):
 
     # ── [test->app~views_013~1] the name renders in all three surfaces ──
     enum_sig = ENUM_S
-    add_plot_with(page, [enum_sig], period=10)
+    add_plot_with(page, [enum_sig], period=200)
     wait_for_samples(page, enum_sig, 5)
     # Watch panel row (views_010's surface); the cell refreshes at batch rate,
     # so wait for the next refresh rather than racing it.
@@ -1676,6 +1816,20 @@ def run(page):
         healed.startswith("AS5048_"),
         healed,
     )
+    # The same snapshot predates cycle-index periods: its period_ms of 10
+    # restores as 200 cycles, the 10 ms option (app~views_010).
+    migrated = page.evaluate(
+        f"""() => ({{
+          cycles: __cockpit.store.watched.get({enum_sig!r})?.period_cycles,
+          seg: !!document.querySelector(
+            ".watch-row[data-path='{enum_sig}'] [data-period='200'].is-selected"),
+        }})"""
+    )
+    check(
+        "views_010 a legacy period_ms snapshot restores as cycles",
+        migrated["cycles"] == 200 and migrated["seg"],
+        migrated,
+    )
 
 
     # ═══ batch 7 (#21): perf round — FPS readout, trace decimation, culling ═══
@@ -1695,7 +1849,7 @@ def run(page):
     #    column, every column's extent equal to the raw extent, a
     #    single-sample spike preserved ──
     dense_sig = "task1msRuns"
-    dense_id = add_plot_with(page, [dense_sig], 1)
+    dense_id = add_plot_with(page, [dense_sig], 20)
     # Deterministic dense history: 10 000 samples @1 ms seeded AT the live
     # edge (the devmock stream keeps moving globalNewest, so the seed anchors
     # to it and the live window lands exactly on the synthetic span). One
@@ -1841,7 +1995,7 @@ def run(page):
 
     # The batch's scratch plots watch an explicitly-seeded signal — no
     # dependence on whichever watch an earlier batch left first in the map.
-    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
     wait_for_samples(page, "task1msRuns", 5)
 
     # ── GL context loss/restore: the widget rebuilds its programs and
@@ -1990,8 +2144,8 @@ def run(page):
 
     # ── [test->app~views_016~1] unset titles derive per the widget-state
     #    table; removing the earliest-added signal moves the title ──
-    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
-    page.evaluate("() => __cockpit.addWatch('serverRuns', 10)")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
+    page.evaluate("() => __cockpit.addWatch('serverRuns', 200)")
     titles = page.evaluate(
         """() => {
           const read = (w) => w.el.querySelector('.widget-title').textContent;
@@ -2070,7 +2224,7 @@ def run(page):
     # ═══ batch 10: comparison cursor (views_017 anchor + views_018 deltas) ═══
 
     for p in (VEL_M, VEL_S, ENUM_S, U32_S):
-        page.evaluate(f"() => __cockpit.addWatch({p!r}, 1)")
+        page.evaluate(f"() => __cockpit.addWatch({p!r}, 20)")
         wait_for_samples(page, p)
     # The gap-gate check needs a mock gap window (every 5 s of ticks) inside
     # the paused view: stream past one before pausing (~5 s of wall time).
@@ -2078,7 +2232,7 @@ def run(page):
         f"() => (__cockpit.histories.get({VEL_S!r})?.ticks.length || 0) >= 5200",
         timeout=15000,
     )
-    cwid = add_plot_with(page, [VEL_M, VEL_S, ENUM_S, U32_S], 1)
+    cwid = add_plot_with(page, [VEL_M, VEL_S, ENUM_S, U32_S], 20)
     widget_eval(page, cwid, f"(w) => w.setSide({U32_S!r}, 'R')")  # u32 → right axis
     page.evaluate("() => __cockpit.timeline.pause()")
 
@@ -2235,7 +2389,7 @@ def run(page):
         cwidget_eval("(w) => w.anchor?.path"),
     )
     # The batch makes its OWN second plot — no lean on batch 9's title widget.
-    twid2 = add_plot_with(page, [U32_S], 1)
+    twid2 = add_plot_with(page, [U32_S], 20)
     other = require_target_on(page, twid2, U32_S, "views_017 second-widget probe")
     ctrl_click(other["at"])
     indep = page.evaluate(
@@ -2569,13 +2723,13 @@ def run(page):
     ring = page.evaluate(
         """() => {
           const proto = [...__cockpit.histories.values()][0].constructor;
-          const h = new proto(1000); // slow period -> small capacity
+          const h = new proto(200); // slowest period -> smallest capacity
           const cap = h._cap;
           const pts = [];
           let t = 0;
-          for (let i = 0; i < cap + 5; i++) { t += 1000; pts.push([t, i]); }
+          for (let i = 0; i < cap + 5; i++) { t += 10; pts.push([t, i]); }
           h.append(pts);
-          const [xs, ys] = h.windowTable(t - 5000, t);
+          const [xs, ys] = h.windowTable(t - 50, t);
           let ascending = true;
           for (let i = 1; i < xs.length; i++) if (!(xs[i] > xs[i - 1])) ascending = false;
           return {
@@ -2764,7 +2918,7 @@ def run(page):
     prev_span = page.evaluate("() => __cockpit.timeline.get().span_ms")
     page.evaluate(
         """(sig) => {
-          __cockpit.addWatch(sig, 10);
+          __cockpit.addWatch(sig, 200);
           const w = __cockpit.addWidget({ type: 'plot', signals: [] });
           w.addSignal(sig);
           window.__dashWid = w.cfg.id;
@@ -2863,7 +3017,7 @@ def run(page):
     # list cache then swallowed the reinstall).
 
     fresh_boot(page)
-    add_plot_with(page, ["task1msRuns"], period=10)
+    add_plot_with(page, ["task1msRuns"], period=200)
     wait_for_samples(page, "task1msRuns")
     installs0 = page.evaluate("() => (window.__devmockInstalls || []).length")
 
@@ -2941,7 +3095,7 @@ def run(page):
     # drag sources, UI zoom (the views_009 dead-stop lives with its batch) ═══
 
     fresh_boot(page)
-    cwid = add_plot_with(page, [VEL_M, VEL_S], 1)
+    cwid = add_plot_with(page, [VEL_M, VEL_S], 20)
     for p in (VEL_M, VEL_S):
         wait_for_samples(page, p)
     page.evaluate("() => __cockpit.timeline.pause()")
@@ -3190,7 +3344,7 @@ def run(page):
     page.evaluate("() => __cockpit.api.loadElf('mock.elf')")
     page.evaluate("() => __cockpit.api.listSignals('')")
     page.wait_for_function("() => __cockpit.store.gate === 'matched'")
-    page.evaluate("() => __cockpit.addWatch('task1msRuns', 10)")
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
     page.evaluate("() => __cockpit.commit().catch(() => {})")
     page.wait_for_selector(".reject-dialog")
     dismiss_focused = page.evaluate(
@@ -3234,7 +3388,7 @@ def run(page):
     )
     check("keyboard: Enter on a focused signal row toggles its watch", row_watched, row_watched)
 
-    add_plot_with(page, ["task1msRuns"], period=10)
+    add_plot_with(page, ["task1msRuns"], period=200)
     wait_for_samples(page, "task1msRuns")
 
     # ── keyboard: Enter on a focused widget title opens the rename editor ──
@@ -3310,7 +3464,7 @@ def run(page):
     # ── [test->app~conn_001~1] + views_008: reconnect while PAUSED defers
     #    the recommit — the frozen inspection stays honest until resume ──
     fresh_boot(page)
-    add_plot_with(page, [VEL_M], period=1)
+    add_plot_with(page, [VEL_M], period=20)
     page.wait_for_function(
         f"() => (__cockpit.histories.get({VEL_M!r})?.size || 0) > 400", timeout=8000
     )
@@ -3433,8 +3587,8 @@ BUDGET_OFF = os.environ.get("PCS_RENDER_BUDGET") == "off"
 
 def run_budget(pw):
     """[test->app~views_015~1] the render budget, measured on the reference
-    shape: 8 watched signals @ 10 ms on 4 plots (2 each), 30 s span,
-    1920x1080 css px @ DPR 1. Headed (the real GPU renders; headless
+    shape: 8 watched signals — 4 at the one-cycle period and 4 at 10 ms — on
+    4 plots holding one of each, 30 s span, 1920x1080 css px @ DPR 1. Headed (the real GPU renders; headless
     SwiftShader is not the machine the app ships on), with the frame-rate
     limiter OFF so the run measures render capability, not the display's
     vsync — a sub-60 Hz monitor can't false-fail, and exceeding 60 means
@@ -3459,11 +3613,16 @@ def run_budget(pw):
     boot(page)
     page.evaluate(
         """() => {
-        const pool = __cockpit.store.signals.filter(s => s.kind === 'f32').map(s => s.path);
+        const pool = __cockpit.store.signals
+          .filter(s => s.kind === 'f32' && !s.readonly).map(s => s.path);
         let k = 0;
         for (let p = 0; p < 4; p++) {
           const w = __cockpit.addWidget({ type: 'plot', signals: [] });
-          for (let i = 0; i < 2; i++) { const s = pool[k++]; __cockpit.addWatch(s, 10); w.addSignal(s); }
+          for (const period of [1, 200]) {
+            const s = pool[k++];
+            __cockpit.addWatch(s, period);
+            w.addSignal(s);
+          }
         }
         __cockpit.timeline.setSpan(30000);
       }"""

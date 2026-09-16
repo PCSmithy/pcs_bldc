@@ -60,11 +60,34 @@ static void buildGoodConfig(void)
         .timeBasePeripheral = TIMEBASE_PERIPH };
 }
 
+// What the per-cycle callback saw when it last ran. The driver keeps its
+// registration in static storage, so every cycle test re-registers its own.
+static uint32_t            cycleCalls;
+static void *              cycleContext;
+static IO_bridge_channel_E cycleChannel;
+static float32_t           cycleW_amps;
+static bool                cycleW_valid;
+static uint32_t            cycleToken;
+
+static void onCycle(IO_bridge_channel_E channel, void * context)
+{
+    cycleCalls++;
+    cycleChannel = channel;
+    cycleContext = context;
+    cycleW_valid = IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &cycleW_amps);
+}
+
 void setUp(void)
 {
     mock_HW_TIM_reset(TEST_PERIOD);
     mock_HW_ADC_reset();
     buildGoodConfig();
+
+    cycleCalls   = 0U;
+    cycleContext = NULL;
+    cycleChannel = IO_BRIDGE_CHANNEL_COUNT;
+    cycleW_amps  = 0.0f;
+    cycleW_valid = false;
 }
 
 void tearDown(void) {}
@@ -98,6 +121,12 @@ static void test_setPhaseOutputEnabled_before_init_fails(void)
 {
     TEST_ASSERT_FALSE(IO_bridge_setPhaseOutputEnabled(MOTOR, IO_BRIDGE_PHASE_U, true));
     TEST_ASSERT_FALSE(mock_HW_TIM_getOutputEnabled(HW_TIM_CHANNEL_PWM_U));
+}
+
+// [test->fw~io_bridge_007~1]
+static void test_registerCycleCallback_before_init_fails(void)
+{
+    TEST_ASSERT_FALSE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 }
 
 static void test_clearBreakFlags_before_init_fails(void)
@@ -688,6 +717,107 @@ static void test_getInjected_guards_reject_bad_arguments(void)
     TEST_ASSERT_FALSE(IO_bridge_getInjectedUpdateCount(MOTOR, IO_BRIDGE_PHASE_U, NULL));
 }
 
+/* ---- fw~io_bridge_007: per-cycle callback ---- */
+
+// [test->fw~io_bridge_007~1]
+static void test_registerCycleCallback_rejects_bad_arguments(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    TEST_ASSERT_FALSE(IO_bridge_registerCycleCallback(IO_BRIDGE_CHANNEL_COUNT, onCycle, &cycleToken));
+    TEST_ASSERT_FALSE(IO_bridge_registerCycleCallback(MOTOR, NULL, &cycleToken));
+}
+
+// One call per completed pair, carrying the registered context — never on the
+// first of the pair, never twice for the same pair.
+// [test->fw~io_bridge_007~1]
+static void test_cycle_callback_fires_once_per_pair(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    nextTrigger();
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(2.0f));
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(2.0f));
+
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
+
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+    TEST_ASSERT_EQUAL_PTR(&cycleToken, cycleContext);
+    TEST_ASSERT_EQUAL_INT(MOTOR, cycleChannel);
+
+    // The next trigger's pair calls it again, once.
+    nextTrigger();
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    TEST_ASSERT_EQUAL_UINT32(2U, cycleCalls);
+}
+
+// The triple is published before the call, so the callback's own read of W
+// already sees this pair's KCL value.
+// [test->fw~io_bridge_007~1]
+static void test_cycle_callback_reads_derived_w(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    nextTrigger();
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(3.0f));
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(-1.0f));
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+    TEST_ASSERT_TRUE(cycleW_valid);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -2.0f, cycleW_amps);
+}
+
+// A later registration replaces the earlier: the second context is the one the
+// callback is handed.
+// [test->fw~io_bridge_007~1]
+static void test_cycle_callback_reregistration_replaces(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, NULL));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    nextTrigger();
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(1.0f));
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+    TEST_ASSERT_EQUAL_PTR(&cycleToken, cycleContext);
+}
+
+// Samples farther apart than the pair window start a new pair rather than
+// completing one, so no triple and no call.
+// [test->fw~io_bridge_006~1]
+// [test->fw~io_bridge_007~1]
+static void test_cycle_callback_silent_outside_pair_window(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(1.0f));
+
+    nextTrigger();
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    nextTrigger();
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
+
+    // That lone V is the new pair's first sample: U at the same trigger pairs
+    // with it immediately.
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -698,6 +828,7 @@ int main(void)
     RUN_TEST(test_getOutputEnabled_before_init_fails);
     RUN_TEST(test_setPhaseOutputEnabled_before_init_fails);
     RUN_TEST(test_clearBreakFlags_before_init_fails);
+    RUN_TEST(test_registerCycleCallback_before_init_fails);
     RUN_TEST(test_getPhaseCurrent_before_init_fails);
     RUN_TEST(test_getBusCurrent_before_init_fails);
     RUN_TEST(test_getInjectedPhaseCurrent_before_init_fails);
@@ -751,6 +882,12 @@ int main(void)
     RUN_TEST(test_injected_dropped_partner_holds_w_then_next_trigger_pairs);
     RUN_TEST(test_injected_different_triggers_never_pair);
     RUN_TEST(test_getInjected_guards_reject_bad_arguments);
+
+    RUN_TEST(test_registerCycleCallback_rejects_bad_arguments);
+    RUN_TEST(test_cycle_callback_fires_once_per_pair);
+    RUN_TEST(test_cycle_callback_reads_derived_w);
+    RUN_TEST(test_cycle_callback_reregistration_replaces);
+    RUN_TEST(test_cycle_callback_silent_outside_pair_window);
 
     return UNITY_END();
 }

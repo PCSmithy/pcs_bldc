@@ -4,7 +4,8 @@
 # arm's tag decodes — the sanctioned way to set callback fields inside a
 # oneof (the union is memset first, so pre-set callbacks in it are wiped).
 # The server uses it to install the WatchRequest.watches entry consumer.
-shared.Envelope          submsg_callback:true
-shared.Response.cause    max_size:64
-shared.LogText.text      max_size:128
-shared.Identity.build_id max_size:32
+shared.Envelope              submsg_callback:true
+shared.Response.cause        max_size:64
+shared.LogText.text          max_size:128
+shared.Identity.build_id     max_size:32
+shared.LinkTestFrame.payload max_size:256

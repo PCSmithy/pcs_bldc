@@ -1,9 +1,9 @@
-// Framework trace feature: host-selected memory locations sampled at fixed
-// periods and streamed as raw bytes (the host decodes via the ELF's DWARF),
-// plus one-shot reads and writes. Admission is budget-based — the board
-// configures a RAM and a link budget, and TraceStatus reports both budgets
-// and the active list's computed usage so a client can expose the real
-// capability. Fields 30..59 of shared.Envelope belong to this feature.
+// Framework trace feature: host-selected memory locations sampled in the
+// PWM-cycle callback at fixed periods and streamed as raw bytes (the host
+// decodes via the ELF's DWARF), plus one-shot reads and writes. Admission
+// is budget-based — the board configures a RAM and a link budget, and
+// TraceStatus reports both budgets and the active list's computed usage so
+// a client can expose the real capability. Fields 30..59 of shared.Envelope belong to this feature.
 
 syntax = "proto3";
 
@@ -11,9 +11,9 @@ package trace;
 
 // One watched location.
 message Watch {
-  uint32 address   = 1;
-  uint32 size      = 2;   // 1..8 bytes
-  uint32 period_ms = 3;   // 1, 10, or 100
+  uint32 address       = 1;
+  uint32 size          = 2;   // 1..8 bytes
+  uint32 period_cycles = 3;   // 1, 20, or 200 PWM cycles (50 us, 1 ms, 10 ms)
 }
 
 // Replaces the entire watch list and resets the stream; an empty list stops
@@ -28,7 +28,7 @@ message WatchRequest {
 // message change.
 message TraceStatus {
   uint32 ram_budget_bytes         = 1;
-  uint32 ram_worst_tick_bytes     = 2;
+  uint32 ram_usage_bytes_per_ms   = 2;
   uint32 link_budget_bytes_per_s  = 3;
   uint32 link_rate_bytes_per_s    = 4;
   reserved 5, 6;
@@ -38,12 +38,15 @@ message TraceStatus {
 message TraceStatusRequest {
 }
 
-// One tick's samples: the watched bytes, in list order, of every entry whose
-// period divides tick_ms — the host reconstructs membership from the list it
-// set, so no per-sample framing rides the wire.
+// One group's records: `count` consecutive captures of every entry with
+// `period_cycles`, the first at cycle index `first_cycle` and each next one
+// `period_cycles` later; each record is the group's watched bytes in list
+// order — the host reconstructs membership from the list it set.
 message Samples {
-  uint32 tick_ms = 1;
-  bytes  data    = 2;
+  uint32 first_cycle   = 1;
+  bytes  data          = 2;
+  uint32 period_cycles = 3;
+  uint32 count         = 4;
 }
 
 // One-shot read of a memory span.

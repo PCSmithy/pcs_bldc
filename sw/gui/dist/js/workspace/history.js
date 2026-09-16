@@ -1,6 +1,7 @@
-// Per-signal sample history. Ticks are ms at period multiples, so an
-// exact-tick lookup either hits or the sample is absent — never
-// nearest-neighbor across a gap. Storage: preallocated Float64Array rings
+// Per-signal sample history. Ticks are the wire's cycle indices in ms — one
+// PWM cycle is 0.05 ms — at period multiples, so an exact-tick lookup either
+// hits or the sample is absent, never nearest-neighbor across a
+// cycle-index gap. Storage: preallocated Float64Array rings
 // (Float64 — u32 counters exceed an f32 mantissa); a null sample (the
 // wire's non-finite encoding) stores as NaN with its tick in `_nullTicks`
 // so read-out decodes it back exactly. A min/max pyramid serves
@@ -20,7 +21,15 @@ export function lowerBound(xs, t) {
   return lo;
 }
 
+export const CYCLE_MS = 0.05;  // one PWM cycle at 20 kHz
+const CYCLES_PER_MS = 20;
+
 const CAP_MS = 120_000; // live retention horizon per signal
+
+// A one-cycle signal keeps only its most recent 10 s (app~views_008); the
+// full horizon at 20 kHz would be 3.6 M samples a signal. Older samples are
+// trimmed away and render as a cycle-index gap.
+const FAST_RETAIN_MS = 10_000;
 
 // While paused, the frozen span is sacred: nothing at or after its start is
 // trimmed. Appends continue this much stream time past the pause (Resume
@@ -42,13 +51,21 @@ const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
 const LEVEL_SHIFTS = [4, 7, 10, 13];
 
 export class SignalHistory {
-  constructor(period_ms) {
-    this.period = period_ms;
-    const live = Math.ceil(RETAIN_BOUND_MS / period_ms) + 2;
+  constructor(period_cycles) {
+    this.periodCycles = period_cycles;
+    this.period = period_cycles * CYCLE_MS;
+    this.fast = period_cycles < CYCLES_PER_MS;
+    this._capMs = this.fast ? FAST_RETAIN_MS : CAP_MS;
+    // Ticks land on 0.05 ms multiples, which binary floats cannot hold
+    // exactly, so the gap test carries half a period of slack — a real gap
+    // is two periods or more.
+    this._gapAfter = this.period * 1.5;
+    const live = Math.ceil((this.fast ? FAST_RETAIN_MS : RETAIN_BOUND_MS) / this.period) + 2;
     // Capacity = live bound + the stale pool + compaction headroom (the
-    // headroom sets how often the tail hits capacity and memmoves back
-    // to 0 — a quarter of the live bound makes that rare).
-    this._cap = live + TRIM_SLACK + Math.max(1024, live >> 2);
+    // headroom sets how often the tail hits capacity and memmoves back to
+    // 0 — a quarter of the live bound makes that rare, capped so a 20 kHz
+    // ring stays a few MB).
+    this._cap = live + TRIM_SLACK + Math.min(Math.max(1024, live >> 2), 32_768);
     this._t = new Float64Array(this._cap);
     this._v = new Float64Array(this._cap);
     this._start = 0;
@@ -123,12 +140,16 @@ export class SignalHistory {
   append(points) {
     const tl = store.timeline;
     const paused = tl?.mode === "paused" && tl.pausedSpan;
-    const appendCutoff = paused ? tl.pausedSpan[1] + PAUSE_CATCHUP_MS : Infinity;
+    // A paused fast signal stops AT the pause: catching up would trim the
+    // frozen span away, since its 10 s window trails the newest sample.
+    const appendCutoff = !paused ? Infinity
+      : this.fast ? tl.pausedSpan[1]
+      : tl.pausedSpan[1] + PAUSE_CATCHUP_MS;
     for (const [tick, value] of points) {
       if (tick > appendCutoff) continue; // past the paused catch-up cap
       const last = this._len ? this._t[this._start + this._len - 1] : null;
       if (last !== null && tick <= last) continue; // stale/duplicate batch tail
-      if (last !== null && tick - last > this.period) this.gaps.push([last, tick]);
+      if (last !== null && tick - last > this._gapAfter) this.gaps.push([last, tick]);
       if (this._start + this._len === this._cap) {
         if (this._len === this._cap) {
           // The ring is entirely live: a single append() call outgrew
@@ -154,8 +175,8 @@ export class SignalHistory {
       this._len++;
     }
     const newest = this._len ? this._t[this._start + this._len - 1] : 0;
-    let horizon = newest - CAP_MS;
-    if (paused) horizon = Math.min(horizon, tl.pausedSpan[0]);
+    let horizon = newest - this._capMs;
+    if (paused && !this.fast) horizon = Math.min(horizon, tl.pausedSpan[0]);
     const drop = this.indexAtOrAfter(horizon);
     if (drop > TRIM_SLACK) {
       this._start += drop;
@@ -379,10 +400,10 @@ export class SignalHistory {
 /** The app-wide history set, keyed by signal path. */
 export const histories = new Map();
 
-export function historyFor(path, period_ms) {
+export function historyFor(path, period_cycles) {
   let h = histories.get(path);
-  if (!h || h.period !== period_ms) {
-    h = new SignalHistory(period_ms);
+  if (!h || h.periodCycles !== period_cycles) {
+    h = new SignalHistory(period_cycles);
     histories.set(path, h);
   }
   return h;

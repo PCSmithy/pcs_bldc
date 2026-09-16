@@ -127,3 +127,8 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
     }
     return ret;
 }
+
+void HW_ADC_setInjectedIrqMasked(bool masked)
+{
+    (void)masked;
+}

@@ -15,11 +15,14 @@
 
 /* Defines */
 
-// Trace resources (fw~conn_trace_001): link budget is 90% of the USB FS bulk
-// ceiling; the RAM point matches the 256 B Samples cap (32 x 8 B worst tick).
+// Trace resources (fw~conn_trace_001): the link budget is the bench-measured
+// sustained rate for 256-byte messages (515 kB/s, tools/pcs_client.py
+// --link-test, 2026-09-15) less margin; the server's per-frame CPU cost, not
+// USB, sets it. The RAM point covers a millisecond of the widest admissible
+// list (4 x 8 B every cycle beside 28 x 8 B every 20).
 #define APP_SERVER_WATCH_CAPACITY          (32U)
 #define APP_SERVER_SAMPLE_RAM_BYTES        (2048U)
-#define APP_SERVER_LINK_BUDGET_BYTES_PER_S (1100000U)
+#define APP_SERVER_LINK_BUDGET_BYTES_PER_S (480000U)
 
 // VBUS sense front end (board dividers). Voltage: 0.15 V/V divider.
 // Current: INA180A2 over 12 mOhm, 0.6 V/A.
@@ -59,7 +62,8 @@ static const app_server_region_S app_server_config_writableRegions[] =
 
 // Hosted pointers don't fit the 32-bit protocol address space, so the sim
 // backs an SRAM-like protocol range with a dedicated window. Word [0] is a
-// 1 kHz counter task_1ms increments — the SIL trace scenarios' known signal;
+// 1 kHz counter task_1ms increments and word [1] a per-PWM-cycle counter the
+// bridge cycle callback increments - the SIL trace scenarios' known signals;
 // the rest is scratch for read/write scenarios.
 uint32_t app_server_simTraceWindow32[256];
 
@@ -96,6 +100,10 @@ const app_server_config_S app_server_config =
 
     .handleRequest  = app_server_config_private_handleRequest,
     .buildTelemetry = app_server_config_private_buildTelemetry,
+    // [impl->fw~conn_trace_008~1] the cycle sampler runs in the injected-
+    // completion ISR, above the FreeRTOS syscall priority a critical section
+    // masks, so a one-shot write brackets that interrupt instead.
+    .setSamplerMasked = HW_ADC_setInjectedIrqMasked,
 };
 
 /* Private Function Definitions */

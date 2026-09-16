@@ -5,6 +5,7 @@
 #include "lib_cobs.h"
 #include "lib_crc32.h"
 #include "lib_protobuf.h"
+#include "lib_utils.h"
 #include "lib_build_config.h"
 #include "pb_encode.h"
 #include "unity.h"
@@ -25,7 +26,7 @@ static app_server_config_S       serverConfig;
 #define TRACE_TEST_BASE       (0x1000U)
 #define TRACE_WATCH_CAPACITY  (8U)
 #define TRACE_RAM_BUDGET      (256U)
-#define TRACE_LINK_BUDGET     (1100000U)
+#define TRACE_LINK_BUDGET     (480000U)
 
 static uint32_t traceMemory[64];
 static app_server_watch_S traceWatchStorage[2U * TRACE_WATCH_CAPACITY];
@@ -64,6 +65,21 @@ static void stubHandleRequest(const board_Request * const request, shared_Respon
     response->accepted = true;
 }
 
+// Sampler-mask recorder: the trace-write bracket of fw~conn_trace_008.
+static uint32_t samplerMaskCalls;
+static bool     samplerMasked;
+static uint32_t traceWordWhileMasked;
+
+static void stubSetSamplerMasked(bool masked)
+{
+    samplerMasked = masked;
+    samplerMaskCalls++;
+    if (masked)
+    {
+        traceWordWhileMasked = traceMemory[2];
+    }
+}
+
 void setUp(void)
 {
     HW_USB_sim_reset();
@@ -74,6 +90,9 @@ void setUp(void)
     stubTelemetryValid = true;
     lastRequest = (board_Request)board_Request_init_zero;
     requestCalls = 0U;
+    samplerMaskCalls = 0U;
+    samplerMasked = false;
+    traceWordWhileMasked = 0U;
 
     serialChannelCfg[IO_SERIAL_CHANNEL_CDC] =
         (IO_serial_channelConfig_S){ .transport = IO_SERIAL_TRANSPORT_USB_CDC };
@@ -104,6 +123,7 @@ void setUp(void)
         .linkBudgetBytesPerS  = TRACE_LINK_BUDGET,
         .handleRequest  = stubHandleRequest,
         .buildTelemetry = stubBuildTelemetry,
+        .setSamplerMasked = stubSetSamplerMasked,
     };
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
 }
@@ -532,52 +552,77 @@ static void test_trace_init_rejects_bad_resources(void)
 static void test_watch_admission_accepted_reports_usage(void)
 {
     const trace_Watch watches[] = {
-        { .address = TRACE_TEST_BASE,       .size = 4U, .period_ms = 1U  },
-        { .address = TRACE_TEST_BASE + 16U, .size = 2U, .period_ms = 10U },
+        { .address = TRACE_TEST_BASE,       .size = 4U, .period_cycles = 1U   },
+        { .address = TRACE_TEST_BASE + 16U, .size = 2U, .period_cycles = 200U },
     };
     const trace_TraceStatus status = installWatches(watches, 2U);
     TEST_ASSERT_EQUAL_UINT32(TRACE_RAM_BUDGET, status.ram_budget_bytes);
-    TEST_ASSERT_EQUAL_UINT32(4U + 6U, status.ram_worst_tick_bytes);
+    // u = 20 x (4 + 4) for the one-cycle group + 1 x (4 + 2) for the 10 ms one
+    TEST_ASSERT_EQUAL_UINT32(160U + 6U, status.ram_usage_bytes_per_ms);
     TEST_ASSERT_EQUAL_UINT32(TRACE_LINK_BUDGET, status.link_budget_bytes_per_s);
-    // r = 4 B x 1000 Hz + 2 B x 100 Hz + 21 B overhead x 1000 Hz
-    TEST_ASSERT_EQUAL_UINT32(25200U, status.link_rate_bytes_per_s);
+    // r = (4 B x 20000 Hz + 27 B x 1000 msg/s) + (2 B x 100 Hz + 27 B x 100 msg/s)
+    TEST_ASSERT_EQUAL_UINT32(107000U + 2900U, status.link_rate_bytes_per_s);
 }
 
 // [test->fw~conn_trace_002~1]
 static void test_watch_admission_rejects_bad_entries(void)
 {
     const trace_Watch outside = {
-        .address = TRACE_TEST_BASE + sizeof(traceMemory) - 2U, .size = 4U, .period_ms = 1U };
+        .address = TRACE_TEST_BASE + sizeof(traceMemory) - 2U, .size = 4U, .period_cycles = 1U };
     expectWatchRejection(&outside, 1U, "not readable");
 
-    const trace_Watch sizeZero = { .address = TRACE_TEST_BASE, .size = 0U, .period_ms = 1U };
+    const trace_Watch sizeZero = { .address = TRACE_TEST_BASE, .size = 0U, .period_cycles = 1U };
     expectWatchRejection(&sizeZero, 1U, "size");
 
-    const trace_Watch sizeBig = { .address = TRACE_TEST_BASE, .size = 9U, .period_ms = 1U };
+    const trace_Watch sizeBig = { .address = TRACE_TEST_BASE, .size = 9U, .period_cycles = 1U };
     expectWatchRejection(&sizeBig, 1U, "size");
 
-    const trace_Watch badPeriod = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 7U };
-    expectWatchRejection(&badPeriod, 1U, "period");
+    const trace_Watch noPeriod = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 0U };
+    expectWatchRejection(&noPeriod, 1U, "period");
+
+    const trace_Watch oddPeriod = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 300U };
+    expectWatchRejection(&oddPeriod, 1U, "period");
+
+    trace_Watch fiveFast[5];
+    for (uint32_t i = 0U; i < 5U; i++)
+    {
+        fiveFast[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 1U, .period_cycles = 1U };
+    }
+    expectWatchRejection(fiveFast, 5U, "one-cycle");
 
     trace_Watch tooMany[TRACE_WATCH_CAPACITY + 1U];
     for (uint32_t i = 0U; i < (TRACE_WATCH_CAPACITY + 1U); i++)
     {
-        tooMany[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 1U, .period_ms = 100U };
+        tooMany[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 1U, .period_cycles = 200U };
     }
     expectWatchRejection(tooMany, TRACE_WATCH_CAPACITY + 1U, "list exceeds");
 }
 
 // [test->fw~conn_trace_002~1]
+static void test_watch_admission_four_one_cycle_entries_accepted(void)
+{
+    trace_Watch watches[4];
+    for (uint32_t i = 0U; i < 4U; i++)
+    {
+        watches[i] = (trace_Watch){
+            .address = TRACE_TEST_BASE + (i * 4U), .size = 4U, .period_cycles = 1U };
+    }
+    serverConfig.sampleRamBudgetBytes = 1024U;   // u = 20 x (4 + 16) = 400
+    TEST_ASSERT_TRUE(app_server_init(&serverConfig));
+    (void) installWatches(watches, 4U);
+}
+
+// [test->fw~conn_trace_002~1]
 static void test_watch_admission_link_budget_boundary(void)
 {
-    // One 4-byte 1 ms watch: r = 4000 + 21 x 1000 = 25000 exactly.
-    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
+    // One 4-byte 1 ms watch: r = 4 x 1000 + 27 x 1000 = 31000 exactly.
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 20U };
 
-    serverConfig.linkBudgetBytesPerS = 25000U;
+    serverConfig.linkBudgetBytesPerS = 31000U;
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
     (void) installWatches(&w, 1U);   // asserts acceptance at r == budget
 
-    serverConfig.linkBudgetBytesPerS = 24999U;
+    serverConfig.linkBudgetBytesPerS = 30999U;
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
     expectWatchRejection(&w, 1U, "link");
 }
@@ -585,35 +630,48 @@ static void test_watch_admission_link_budget_boundary(void)
 // [test->fw~conn_trace_002~1]
 static void test_watch_admission_ram_budget_rejection(void)
 {
-    serverConfig.sampleRamBudgetBytes = 9U;   // u = 4 + 8 = 12 > 9
+    serverConfig.sampleRamBudgetBytes = 9U;   // u = 1 x (4 + 8) = 12 > 9
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
-    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 8U, .period_ms = 100U };
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 8U, .period_cycles = 200U };
     expectWatchRejection(&w, 1U, "RAM");
 }
 
-// [test->fw~conn_trace_002~1] a list admitted at exactly u == budget must
-// also BUFFER its worst tick — the ring's header + empty slot live outside
-// the budget, not inside it.
+// [test->fw~conn_trace_002~1] a list admitted at exactly u == budget must also
+// BUFFER a whole millisecond of records - the ring's headers and empty slot
+// live outside the budget, not inside it.
+// [test->fw~conn_trace_009~1]
 static void test_watch_admission_ram_budget_boundary_fits(void)
 {
-    serverConfig.sampleRamBudgetBytes = 36U;   // u = 4 + (4 x 8) = 36 == budget
+    serverConfig.sampleRamBudgetBytes = 720U;   // u = 20 x (4 + 32) == budget
     TEST_ASSERT_TRUE(app_server_init(&serverConfig));
     trace_Watch watches[4];
     for (uint32_t i = 0U; i < 4U; i++)
     {
         watches[i] = (trace_Watch){
-            .address = TRACE_TEST_BASE + (i * 8U), .size = 8U, .period_ms = 1U };
+            .address = TRACE_TEST_BASE + (i * 8U), .size = 8U, .period_cycles = 1U };
     }
     (void) installWatches(watches, 4U);   // asserts acceptance at u == budget
 
-    app_server_sample1ms();   // every entry due: the full worst tick
+    for (uint32_t c = 0U; c < 20U; c++)
+    {
+        app_server_sampleCycle();   // a full millisecond of worst-case records
+    }
     app_server_run1ms();
 
-    shared_Envelope replies[2];
-    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 2U));
-    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.tick_ms);
-    TEST_ASSERT_EQUAL_UINT32(32U, replies[0].payload.samples.data.size);
+    // 32-byte records: eight fill a 256-byte Samples, so 20 leave as 8 + 8 + 4.
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(3U, collectReplies(replies, 8U));
+    const uint32_t expectedCounts[] = { 8U, 8U, 4U };
+    uint32_t expectedFirst = 0U;
+    for (uint32_t m = 0U; m < 3U; m++)
+    {
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[m].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(1U, replies[m].payload.samples.period_cycles);
+        TEST_ASSERT_EQUAL_UINT32(expectedFirst, replies[m].payload.samples.first_cycle);
+        TEST_ASSERT_EQUAL_UINT32(expectedCounts[m], replies[m].payload.samples.count);
+        TEST_ASSERT_EQUAL_UINT32(expectedCounts[m] * 32U, replies[m].payload.samples.data.size);
+        expectedFirst += expectedCounts[m];
+    }
 }
 
 // [test->fw~conn_trace_002~1]
@@ -623,7 +681,7 @@ static void test_watch_admission_samples_capacity_rejection(void)
     trace_Watch watches[33];
     for (uint32_t i = 0U; i < 33U; i++)
     {
-        watches[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 8U, .period_ms = 100U };
+        watches[i] = (trace_Watch){ .address = TRACE_TEST_BASE, .size = 8U, .period_cycles = 200U };
     }
     // 33 x 8 = 264 data bytes > the 256-byte Samples capacity
     expectWatchRejection(watches, 33U, "Samples");
@@ -633,27 +691,27 @@ static void test_watch_admission_samples_capacity_rejection(void)
 static void test_rejected_request_leaves_prior_list_streaming(void)
 {
     traceMemory[0] = 0xAABBCCDDU;
-    const trace_Watch good = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
+    const trace_Watch good = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
     (void) installWatches(&good, 1U);
 
-    app_server_sample1ms();   // tick 0 buffered
+    app_server_sampleCycle();   // cycle 0 buffered
 
-    const trace_Watch bad = { .address = TRACE_TEST_BASE, .size = 0U, .period_ms = 1U };
+    const trace_Watch bad = { .address = TRACE_TEST_BASE, .size = 0U, .period_cycles = 1U };
     injectWatchRequest(31U, &bad, 1U);
-    app_server_run1ms();      // pump rejects, then the drain emits tick 0
+    app_server_run1ms();      // pump rejects, then the drain emits cycle 0
 
     shared_Envelope replies[4];
     TEST_ASSERT_EQUAL_UINT32(2U, collectReplies(replies, 4U));
     TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
     TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
     TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[1].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(0U, replies[1].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[1].payload.samples.first_cycle);
 
-    app_server_sample1ms();   // the prior list is still live
+    app_server_sampleCycle();   // the prior list is still live
     app_server_run1ms();
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
     TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.first_cycle);
 }
 
 /* ---- fw~conn_trace_003: watch-list clear on disconnect ---- */
@@ -661,15 +719,15 @@ static void test_rejected_request_leaves_prior_list_streaming(void)
 // [test->fw~conn_trace_003~1]
 static void test_watch_list_clears_on_disconnect(void)
 {
-    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
     (void) installWatches(&w, 1U);
-    app_server_sample1ms();
+    app_server_sampleCycle();
 
     HW_USB_sim_setConnected(false);
-    app_server_run1ms();   // disconnect edge: list + buffered samples die
+    app_server_run1ms();   // disconnect edge: list + buffered records die
     HW_USB_sim_setConnected(true);
 
-    app_server_sample1ms();
+    app_server_sampleCycle();
     app_server_run1ms();
     shared_Envelope replies[4];
     TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 4U));
@@ -681,7 +739,7 @@ static void test_watch_list_clears_on_disconnect(void)
     app_server_run1ms();
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
     TEST_ASSERT_EQUAL(shared_Envelope_trace_status_tag, replies[0].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.trace_status.ram_worst_tick_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.trace_status.ram_usage_bytes_per_ms);
     TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.trace_status.link_rate_bytes_per_s);
 }
 
@@ -719,94 +777,279 @@ static void test_stale_rx_dropped_on_disconnect(void)
 
 /* ---- fw~conn_trace_004: sampling ---- */
 
+// Emit once and flatten every Samples message of `period` into the cycle
+// indices of its records, appended to `out`.
+static uint32_t drainGroupCycles(uint32_t period, uint32_t * const out, uint32_t maxOut)
+{
+    app_server_run1ms();
+    shared_Envelope replies[32];
+    const uint32_t replyCount = collectReplies(replies, 32U);
+    uint32_t count = 0U;
+    for (uint32_t r = 0U; r < replyCount; r++)
+    {
+        const trace_Samples * const samples = &replies[r].payload.samples;
+        if ((replies[r].which_payload == shared_Envelope_samples_tag) &&
+            (samples->period_cycles == period))
+        {
+            for (uint32_t k = 0U; (k < samples->count) && (count < maxOut); k++)
+            {
+                out[count] = samples->first_cycle + (k * period);
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+// Run `cycles` PWM cycles at the real cadence - one emission per 20 of them -
+// collecting the cycle indices the group of `period` reported.
+static uint32_t runCycles(uint32_t cycles, uint32_t period, uint32_t * const out, uint32_t maxOut)
+{
+    uint32_t count = 0U;
+    for (uint32_t c = 0U; c < cycles; c++)
+    {
+        app_server_sampleCycle();
+        if (((c + 1U) % 20U) == 0U)
+        {
+            count += drainGroupCycles(period, &out[count], maxOut - count);
+        }
+    }
+    return count;
+}
+
 // [test->fw~conn_trace_004~1]
-static void test_sampling_due_rule_and_order(void)
+// [test->sys~obs_005~1]
+static void test_group_offsets_and_periods(void)
+{
+    const trace_Watch watches[] = {
+        { .address = TRACE_TEST_BASE,      .size = 1U, .period_cycles = 1U   },
+        { .address = TRACE_TEST_BASE + 4U, .size = 1U, .period_cycles = 20U  },
+        { .address = TRACE_TEST_BASE + 8U, .size = 1U, .period_cycles = 200U },
+    };
+    (void) installWatches(watches, 3U);
+
+    uint32_t fast[512];
+    const uint32_t fastCount = runCycles(420U, 1U, fast, (uint32_t) COUNTOF(fast));
+    TEST_ASSERT_EQUAL_UINT32(420U, fastCount);
+    for (uint32_t i = 0U; i < fastCount; i++)
+    {
+        TEST_ASSERT_EQUAL_UINT32(i, fast[i]);   // offset 0, every cycle
+    }
+
+    (void) installWatches(watches, 3U);
+    uint32_t medium[64];
+    const uint32_t mediumCount = runCycles(420U, 20U, medium, (uint32_t) COUNTOF(medium));
+    TEST_ASSERT_EQUAL_UINT32(21U, mediumCount);
+    for (uint32_t i = 0U; i < mediumCount; i++)
+    {
+        TEST_ASSERT_EQUAL_UINT32(1U + (i * 20U), medium[i]);   // offset 1, every 20
+    }
+
+    (void) installWatches(watches, 3U);
+    uint32_t slow[8];
+    const uint32_t slowCount = runCycles(420U, 200U, slow, (uint32_t) COUNTOF(slow));
+    TEST_ASSERT_EQUAL_UINT32(3U, slowCount);
+    TEST_ASSERT_EQUAL_UINT32(2U, slow[0]);       // offset 2, every 200
+    TEST_ASSERT_EQUAL_UINT32(202U, slow[1]);
+    TEST_ASSERT_EQUAL_UINT32(402U, slow[2]);
+}
+
+// [test->fw~conn_trace_009~1] capture order across groups, with each group's
+// consecutive run sharing one message
+static void test_capture_order_and_batching(void)
 {
     traceMemory[0] = 0x11223344U;
-    traceMemory[4] = 0x0000BEEFU;
+    traceMemory[1] = 0x0000BEEFU;
+    traceMemory[2] = 0x000000A5U;
     const trace_Watch watches[] = {
-        { .address = TRACE_TEST_BASE,       .size = 4U, .period_ms = 1U  },
-        { .address = TRACE_TEST_BASE + 16U, .size = 2U, .period_ms = 10U },
+        { .address = TRACE_TEST_BASE,      .size = 4U, .period_cycles = 1U   },
+        { .address = TRACE_TEST_BASE + 4U, .size = 2U, .period_cycles = 20U  },
+        { .address = TRACE_TEST_BASE + 8U, .size = 1U, .period_cycles = 200U },
     };
-    (void) installWatches(watches, 2U);
+    (void) installWatches(watches, 3U);
 
-    for (uint32_t i = 0U; i < 20U; i++)
+    for (uint32_t c = 0U; c < 20U; c++)
     {
-        app_server_sample1ms();
+        app_server_sampleCycle();
     }
     app_server_run1ms();
 
-    shared_Envelope replies[24];
-    TEST_ASSERT_EQUAL_UINT32(20U, collectReplies(replies, 24U));
-    for (uint32_t t = 0U; t < 20U; t++)
+    // Capture order is 1@0 | 1@1, 20@1 | 1@2, 200@2 | 1@3..19, so each group's
+    // run breaks exactly where another group's record lands between them.
+    const uint32_t expected[5][4] = {
+        //  period, first_cycle, count, data bytes
+        {   1U,  0U,  2U,  8U },
+        {  20U,  1U,  1U,  2U },
+        {   1U,  2U,  1U,  4U },
+        { 200U,  2U,  1U,  1U },
+        {   1U,  3U, 17U, 68U },
+    };
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(5U, collectReplies(replies, 8U));
+    for (uint32_t m = 0U; m < 5U; m++)
     {
-        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[t].which_payload);
-        TEST_ASSERT_EQUAL_UINT32(t, replies[t].payload.samples.tick_ms);
-        const bool slowDue = ((t % 10U) == 0U);
-        TEST_ASSERT_EQUAL_UINT32(((slowDue)) ? 6U : 4U, replies[t].payload.samples.data.size);
-        TEST_ASSERT_EQUAL_UINT8(0x44U, replies[t].payload.samples.data.bytes[0]);
-        TEST_ASSERT_EQUAL_UINT8(0x11U, replies[t].payload.samples.data.bytes[3]);
-        if (slowDue)
+        const trace_Samples * const samples = &replies[m].payload.samples;
+        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[m].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(expected[m][0], samples->period_cycles);
+        TEST_ASSERT_EQUAL_UINT32(expected[m][1], samples->first_cycle);
+        TEST_ASSERT_EQUAL_UINT32(expected[m][2], samples->count);
+        TEST_ASSERT_EQUAL_UINT32(expected[m][3], samples->data.size);
+    }
+    TEST_ASSERT_EQUAL_UINT8(0x44U, replies[0].payload.samples.data.bytes[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x11U, replies[0].payload.samples.data.bytes[3]);
+    TEST_ASSERT_EQUAL_UINT8(0xEFU, replies[1].payload.samples.data.bytes[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xBEU, replies[1].payload.samples.data.bytes[1]);
+    TEST_ASSERT_EQUAL_UINT8(0xA5U, replies[3].payload.samples.data.bytes[0]);
+}
+
+// [test->fw~conn_trace_009~1] a 10 ms group buffers at most one record per
+// emission, so its records each ride their own message
+static void test_slow_group_records_ride_their_own_message(void)
+{
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 200U };
+    (void) installWatches(&w, 1U);
+
+    uint32_t messages = 0U;
+    for (uint32_t c = 0U; c < 420U; c++)
+    {
+        app_server_sampleCycle();
+        if (((c + 1U) % 20U) == 0U)
         {
-            TEST_ASSERT_EQUAL_UINT8(0xEFU, replies[t].payload.samples.data.bytes[4]);
-            TEST_ASSERT_EQUAL_UINT8(0xBEU, replies[t].payload.samples.data.bytes[5]);
+            app_server_run1ms();
+            shared_Envelope replies[4];
+            const uint32_t replyCount = collectReplies(replies, 4U);
+            for (uint32_t r = 0U; r < replyCount; r++)
+            {
+                TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[r].which_payload);
+                TEST_ASSERT_EQUAL_UINT32(1U, replies[r].payload.samples.count);
+                messages++;
+            }
         }
     }
+    TEST_ASSERT_EQUAL_UINT32(3U, messages);
+}
+
+// [test->fw~conn_trace_004~1] the sampler's gate: with no list installed the
+// cycle index never advances, so an install always starts the stream at zero.
+static void test_sampler_quiet_without_a_list(void)
+{
+    for (uint32_t c = 0U; c < 50U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    shared_Envelope replies[4];
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 4U));
+
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
+    (void) installWatches(&w, 1U);
+    app_server_sampleCycle();
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.first_cycle);
 }
 
 // [test->fw~conn_trace_004~1]
 static void test_new_list_restarts_stream_discarding_buffered(void)
 {
-    const trace_Watch first = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
+    const trace_Watch first = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
     (void) installWatches(&first, 1U);
-    for (uint32_t i = 0U; i < 3U; i++)
+    for (uint32_t c = 0U; c < 3U; c++)
     {
-        app_server_sample1ms();   // ticks 0..2 buffered, never drained
+        app_server_sampleCycle();   // cycles 0..2 buffered, never drained
     }
 
-    const trace_Watch second = { .address = TRACE_TEST_BASE + 4U, .size = 2U, .period_ms = 1U };
-    // installWatches asserts exactly one reply: the buffered prior-list ticks
+    const trace_Watch second = { .address = TRACE_TEST_BASE + 4U, .size = 2U, .period_cycles = 20U };
+    // installWatches asserts exactly one reply: the buffered prior-list records
     // were discarded by the install, not drained after it.
     (void) installWatches(&second, 1U);
 
-    app_server_sample1ms();
+    for (uint32_t c = 0U; c < 2U; c++)
+    {
+        app_server_sampleCycle();
+    }
     app_server_run1ms();
     shared_Envelope replies[4];
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
     TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(20U, replies[0].payload.samples.period_cycles);
+    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.first_cycle);   // the new group's offset
+    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.count);
     TEST_ASSERT_EQUAL_UINT32(2U, replies[0].payload.samples.data.size);
 }
 
 // [test->fw~conn_trace_004~1]
-static void test_ring_overflow_skips_whole_ticks_leaving_gap(void)
+static void test_ring_overflow_skips_whole_records_leaving_gap(void)
 {
-    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_ms = 1U };
+    const trace_Watch w = { .address = TRACE_TEST_BASE, .size = 4U, .period_cycles = 1U };
     (void) installWatches(&w, 1U);
 
-    // Record = 10 B, ring free = 258 B (budget 256 + overhead 3 - empty
-    // slot): ticks 0..24 fit, 25..29 are skipped.
-    for (uint32_t i = 0U; i < 30U; i++)
+    // Record = 11 B, ring free = 322 B (budget 256 + overhead 67 - empty slot):
+    // cycles 0..28 fit, 29..34 are skipped.
+    for (uint32_t c = 0U; c < 35U; c++)
     {
-        app_server_sample1ms();
+        app_server_sampleCycle();
     }
     app_server_run1ms();
-    shared_Envelope replies[32];
-    TEST_ASSERT_EQUAL_UINT32(25U, collectReplies(replies, 32U));
-    for (uint32_t t = 0U; t < 25U; t++)
-    {
-        TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[t].which_payload);
-        TEST_ASSERT_EQUAL_UINT32(t, replies[t].payload.samples.tick_ms);
-        TEST_ASSERT_EQUAL_UINT32(4U, replies[t].payload.samples.data.size);
-    }
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(29U, replies[0].payload.samples.count);
+    TEST_ASSERT_EQUAL_UINT32(29U * 4U, replies[0].payload.samples.data.size);
 
-    app_server_sample1ms();   // the tick count jumps the gap
+    app_server_sampleCycle();   // the cycle index jumps the gap
     app_server_run1ms();
-    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 32U));
-    TEST_ASSERT_EQUAL_UINT32(30U, replies[0].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL_UINT32(35U, replies[0].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.count);
 }
 
 /* ---- fw~conn_trace_005: Samples message format ---- */
+
+// [test->fw~conn_trace_005~1] a known list and record encode to a byte-exact
+// reference frame
+static void test_samples_frame_is_byte_exact(void)
+{
+    traceMemory[1] = 0x0000BEEFU;
+    const trace_Watch w = { .address = TRACE_TEST_BASE + 4U, .size = 2U, .period_cycles = 20U };
+    (void) installWatches(&w, 1U);
+
+    for (uint32_t c = 0U; c < 2U; c++)
+    {
+        app_server_sampleCycle();   // cycle 1 is the 20-cycle group's offset
+    }
+    app_server_run1ms();
+
+    // Envelope{ samples = Samples{ first_cycle: 1, data: EF BE,
+    //                              period_cycles: 20, count: 1 } }
+    const uint8_t payload[] = {
+        0x8AU, 0x02U, 0x0AU,               // field 33, length-delimited, 10 bytes
+        0x08U, 0x01U,                      // first_cycle = 1
+        0x12U, 0x02U, 0xEFU, 0xBEU,        // data = EF BE
+        0x18U, 0x14U,                      // period_cycles = 20
+        0x20U, 0x01U,                      // count = 1
+    };
+    uint8_t plain[sizeof(payload) + 4U];
+    (void) memcpy(plain, payload, sizeof(payload));
+    const uint32_t crc = lib_crc32_compute(payload, sizeof(payload));
+    plain[sizeof(payload)]      = (uint8_t) (crc & 0xFFU);
+    plain[sizeof(payload) + 1U] = (uint8_t) ((crc >> 8U) & 0xFFU);
+    plain[sizeof(payload) + 2U] = (uint8_t) ((crc >> 16U) & 0xFFU);
+    plain[sizeof(payload) + 3U] = (uint8_t) ((crc >> 24U) & 0xFFU);
+
+    uint8_t expected[IO_COBSFRAME_WIRE_MAX(sizeof(plain))];
+    expected[0] = 0x00U;
+    size_t cobsLen = 0U;
+    TEST_ASSERT_TRUE(lib_cobs_encode(plain, sizeof(plain), &expected[1], sizeof(expected) - 2U, &cobsLen));
+    expected[cobsLen + 1U] = 0x00U;
+
+    uint8_t wire[512];
+    const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
+    TEST_ASSERT_EQUAL_UINT32((uint32_t) (cobsLen + 2U), wireLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, wire, wireLen);
+}
 
 // [test->fw~conn_trace_005~1]
 static void test_max_samples_frame_layout_and_wire_bound(void)
@@ -820,24 +1063,29 @@ static void test_max_samples_frame_layout_and_wire_bound(void)
     for (uint32_t i = 0U; i < 32U; i++)
     {
         watches[i] = (trace_Watch){
-            .address = TRACE_TEST_BASE + (i * 8U), .size = 8U, .period_ms = 100U };
+            .address = TRACE_TEST_BASE + (i * 8U), .size = 8U, .period_cycles = 200U };
     }
     (void) installWatches(watches, 32U);
 
-    app_server_sample1ms();   // tick 0: all 32 due, 256 data bytes
+    for (uint32_t c = 0U; c < 3U; c++)
+    {
+        app_server_sampleCycle();   // cycle 2: all 32 spans, 256 data bytes
+    }
     app_server_run1ms();
 
-    // Whole wire frame within data + W: 256 + 21.
+    // Whole wire frame within data + W: 256 + 27.
     uint8_t wire[2048];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
     TEST_ASSERT_TRUE(wireLen > 256U);
-    TEST_ASSERT_TRUE(wireLen <= 277U);
+    TEST_ASSERT_TRUE(wireLen <= 283U);
 
     // And the payload is the watched spans concatenated in list order.
     shared_Envelope replies[2];
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 2U));
     TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
-    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.tick_ms);
+    TEST_ASSERT_EQUAL_UINT32(200U, replies[0].payload.samples.period_cycles);
+    TEST_ASSERT_EQUAL_UINT32(2U, replies[0].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(1U, replies[0].payload.samples.count);
     TEST_ASSERT_EQUAL_UINT32(256U, replies[0].payload.samples.data.size);
     for (uint32_t i = 0U; i < 32U; i++)
     {
@@ -917,6 +1165,12 @@ static void test_write_lands_and_reads_back(void)
     TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
     TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
     TEST_ASSERT_EQUAL_UINT32(0x04030201U, traceMemory[2]);
+
+    // The copy lands inside one mask/unmask pair, so the cycle sampler - which
+    // outranks the FreeRTOS critical section - never reads a torn span.
+    TEST_ASSERT_EQUAL_UINT32(2U, samplerMaskCalls);
+    TEST_ASSERT_FALSE(samplerMasked);
+    TEST_ASSERT_EQUAL_UINT32(0U, traceWordWhileMasked);
 }
 
 static void expectWriteRejection(uint32_t address, uint32_t len, const char * const causeSubstring)
@@ -944,6 +1198,167 @@ static void test_write_rejections(void)
     expectWriteRejection(TRACE_TEST_BASE + 200U, 4U, "not writable");
 }
 
+/* ---- fw~conn_server_005: link throughput test ---- */
+
+static void injectLinkTestRequest(uint32_t requestId, uint32_t payloadBytes, uint32_t frameCount)
+{
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = requestId;
+    req.which_payload = shared_Envelope_link_test_request_tag;
+    req.payload.link_test_request.payload_bytes = payloadBytes;
+    req.payload.link_test_request.frame_count = frameCount;
+    injectEnvelope(&req);
+}
+
+// Run maxPasses server passes, checking every streamed frame's seq and pattern
+// payload against the running count; returns the frames seen.
+static uint32_t drainLinkTestFrames(uint32_t payloadBytes, uint32_t maxPasses)
+{
+    uint32_t frames = 0U;
+    for (uint32_t pass = 0U; pass < maxPasses; pass++)
+    {
+        app_server_run1ms();
+        shared_Envelope replies[32];
+        const uint32_t n = collectReplies(replies, 32U);
+        for (uint32_t r = 0U; r < n; r++)
+        {
+            TEST_ASSERT_EQUAL(shared_Envelope_link_test_frame_tag, replies[r].which_payload);
+            TEST_ASSERT_EQUAL_UINT32(0U, replies[r].request_id);   // a stream, like Samples
+            TEST_ASSERT_EQUAL_UINT32(frames, replies[r].payload.link_test_frame.seq);
+            TEST_ASSERT_EQUAL_size_t(payloadBytes, replies[r].payload.link_test_frame.payload.size);
+            for (uint32_t i = 0U; i < payloadBytes; i++)
+            {
+                TEST_ASSERT_EQUAL_UINT8((uint8_t) ((frames + i) & 0xFFU),
+                                        replies[r].payload.link_test_frame.payload.bytes[i]);
+            }
+            frames++;
+        }
+    }
+    return frames;
+}
+
+// The accepted request answers with a Response, then the stream follows in the
+// same pass; returns the frames that rode along with the verdict.
+static uint32_t acceptLinkTest(uint32_t requestId, uint32_t payloadBytes, uint32_t frameCount)
+{
+    injectLinkTestRequest(requestId, payloadBytes, frameCount);
+    app_server_run1ms();
+
+    shared_Envelope replies[32];
+    const uint32_t n = collectReplies(replies, 32U);
+    TEST_ASSERT_TRUE(n >= 1U);
+    TEST_ASSERT_EQUAL_UINT32(requestId, replies[0].request_id);
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
+
+    for (uint32_t r = 1U; r < n; r++)
+    {
+        const uint32_t seq = r - 1U;
+        TEST_ASSERT_EQUAL(shared_Envelope_link_test_frame_tag, replies[r].which_payload);
+        TEST_ASSERT_EQUAL_UINT32(seq, replies[r].payload.link_test_frame.seq);
+        TEST_ASSERT_EQUAL_size_t(payloadBytes, replies[r].payload.link_test_frame.payload.size);
+        for (uint32_t i = 0U; i < payloadBytes; i++)
+        {
+            TEST_ASSERT_EQUAL_UINT8((uint8_t) ((seq + i) & 0xFFU),
+                                    replies[r].payload.link_test_frame.payload.bytes[i]);
+        }
+    }
+    return n - 1U;
+}
+
+// [test->fw~conn_server_005~1]
+static void test_link_test_streams_exactly_the_requested_frames(void)
+{
+    const uint32_t payloadBytes = 64U;
+    const uint32_t frameCount = 40U;
+
+    uint32_t frames = acceptLinkTest(70U, payloadBytes, frameCount);
+    TEST_ASSERT_TRUE(frames < frameCount);   // the 2 KB sim transport fills first
+
+    // The rest streams over later passes as room frees, then stops dead.
+    uint32_t seen = 0U;
+    for (uint32_t pass = 0U; (pass < 8U) && (frames + seen < frameCount); pass++)
+    {
+        app_server_run1ms();
+        shared_Envelope replies[32];
+        const uint32_t n = collectReplies(replies, 32U);
+        for (uint32_t r = 0U; r < n; r++)
+        {
+            const uint32_t seq = frames + seen;
+            TEST_ASSERT_EQUAL(shared_Envelope_link_test_frame_tag, replies[r].which_payload);
+            TEST_ASSERT_EQUAL_UINT32(0U, replies[r].request_id);
+            TEST_ASSERT_EQUAL_UINT32(seq, replies[r].payload.link_test_frame.seq);
+            TEST_ASSERT_EQUAL_size_t(payloadBytes, replies[r].payload.link_test_frame.payload.size);
+            for (uint32_t i = 0U; i < payloadBytes; i++)
+            {
+                TEST_ASSERT_EQUAL_UINT8((uint8_t) ((seq + i) & 0xFFU),
+                                        replies[r].payload.link_test_frame.payload.bytes[i]);
+            }
+            seen++;
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(frameCount, frames + seen);
+
+    TEST_ASSERT_EQUAL_UINT32(0U, drainLinkTestFrames(payloadBytes, 4U));
+}
+
+static void expectLinkTestRejection(uint32_t payloadBytes, uint32_t frameCount,
+                                    const char * const causeSubstring)
+{
+    injectLinkTestRequest(71U, payloadBytes, frameCount);
+    app_server_run1ms();
+
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));   // verdict only, no stream
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
+    TEST_ASSERT_NOT_NULL(strstr(replies[0].payload.response.cause, causeSubstring));
+}
+
+// [test->fw~conn_server_005~1]
+static void test_link_test_rejects_out_of_range_requests(void)
+{
+    expectLinkTestRejection(0U, 10U, "payload_bytes");
+    expectLinkTestRejection(257U, 10U, "payload_bytes");
+    expectLinkTestRejection(64U, 0U, "frame_count");
+    expectLinkTestRejection(64U, 1000001U, "frame_count");
+}
+
+// [test->fw~conn_server_005~1]
+static void test_link_test_rejects_second_request_while_running(void)
+{
+    // A 256-byte payload fills the sim transport long before 200 frames, so
+    // the test is still running when the second request lands.
+    (void) acceptLinkTest(72U, 256U, 200U);
+
+    injectLinkTestRequest(73U, 8U, 1U);
+    app_server_run1ms();
+
+    shared_Envelope replies[32];
+    const uint32_t n = collectReplies(replies, 32U);
+    TEST_ASSERT_TRUE(n >= 1U);
+    TEST_ASSERT_EQUAL_UINT32(73U, replies[0].request_id);
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
+    TEST_ASSERT_NOT_NULL(strstr(replies[0].payload.response.cause, "already running"));
+
+    // The running test keeps its own sequence — the rejection changed nothing.
+    for (uint32_t r = 1U; r < n; r++)
+    {
+        TEST_ASSERT_EQUAL(shared_Envelope_link_test_frame_tag, replies[r].which_payload);
+    }
+}
+
+// [test->fw~conn_server_005~1]
+static void test_link_test_count_reached_frees_the_service(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(3U, acceptLinkTest(74U, 16U, 3U));
+    TEST_ASSERT_EQUAL_UINT32(0U, drainLinkTestFrames(16U, 2U));
+
+    // Seq restarts at zero: a new test, not a continuation of the last one.
+    TEST_ASSERT_EQUAL_UINT32(2U, acceptLinkTest(75U, 16U, 2U));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -969,6 +1384,7 @@ int main(void)
 
     RUN_TEST(test_watch_admission_accepted_reports_usage);
     RUN_TEST(test_watch_admission_rejects_bad_entries);
+    RUN_TEST(test_watch_admission_four_one_cycle_entries_accepted);
     RUN_TEST(test_watch_admission_link_budget_boundary);
     RUN_TEST(test_watch_admission_ram_budget_rejection);
     RUN_TEST(test_watch_admission_ram_budget_boundary_fits);
@@ -978,16 +1394,25 @@ int main(void)
     RUN_TEST(test_watch_list_clears_on_disconnect);
     RUN_TEST(test_stale_rx_dropped_on_disconnect);
 
-    RUN_TEST(test_sampling_due_rule_and_order);
+    RUN_TEST(test_group_offsets_and_periods);
+    RUN_TEST(test_capture_order_and_batching);
+    RUN_TEST(test_slow_group_records_ride_their_own_message);
+    RUN_TEST(test_sampler_quiet_without_a_list);
     RUN_TEST(test_new_list_restarts_stream_discarding_buffered);
-    RUN_TEST(test_ring_overflow_skips_whole_ticks_leaving_gap);
+    RUN_TEST(test_ring_overflow_skips_whole_records_leaving_gap);
 
+    RUN_TEST(test_samples_frame_is_byte_exact);
     RUN_TEST(test_max_samples_frame_layout_and_wire_bound);
 
     RUN_TEST(test_read_returns_current_contents);
     RUN_TEST(test_read_rejections);
     RUN_TEST(test_write_lands_and_reads_back);
     RUN_TEST(test_write_rejections);
+
+    RUN_TEST(test_link_test_streams_exactly_the_requested_frames);
+    RUN_TEST(test_link_test_rejects_out_of_range_requests);
+    RUN_TEST(test_link_test_rejects_second_request_while_running);
+    RUN_TEST(test_link_test_count_reached_frees_the_service);
 
     return UNITY_END();
 }

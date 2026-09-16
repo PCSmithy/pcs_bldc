@@ -848,6 +848,21 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
     return ret;
 }
 
+// [impl->fw~conn_trace_008~1]
+void HW_ADC_setInjectedIrqMasked(bool masked)
+{
+    // The injected line's NVIC number is board-assigned (HAL MSP), so the mask
+    // is global; the regions it brackets are a handful of instructions.
+    if (masked)
+    {
+        __disable_irq();
+    }
+    else
+    {
+        __enable_irq();
+    }
+}
+
 // [impl->fw~hal_adc_008~1]
 bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
                               HW_ADC_conversionStatus_E * const out)
