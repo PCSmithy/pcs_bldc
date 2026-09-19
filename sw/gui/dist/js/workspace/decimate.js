@@ -19,7 +19,9 @@ export function envelopeTable(h, t0, t1, cols) {
   let i = h.indexAtOrAfter(t0);
   const end = h.indexAfter(t1);
   const gaps = h.gaps;
-  let gi = 0;
+  // Bisect to the first gap that can still matter for this window: a
+  // burst-of-drops gap list must not cost a scan per refresh.
+  let gi = h.gapIndexFrom(t0);
   // Next null-valued sample at/after i (a cursor, re-sought only when
   // passed — no per-column probe when the null list is empty).
   let bk = h.nextNullIndex(i, end);
@@ -27,8 +29,9 @@ export function envelopeTable(h, t0, t1, cols) {
     const t = tt[start + i];
     // Inject the gap markers windowTable would have placed before this
     // sample (marker at from+period, only for gaps starting inside the
-    // window) — same output positions, same conditions.
-    while (gi < gaps.length && gaps[gi][1] <= t) {
+    // window) — same output positions, same conditions: a gap breaks the
+    // line before the first sample past its START.
+    while (gi < gaps.length && gaps[gi][0] < t) {
       if (gaps[gi][0] >= t0) {
         oxs.push(gaps[gi][0] + h.period);
         oys.push(null);

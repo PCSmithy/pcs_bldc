@@ -17,11 +17,16 @@ values (`app~obs_004~1`) against their sample times as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
 extending as messages arrive, each gap-free run of sample times rendered
 as one connected segment, its samples rendered per `app~views_014~1`.
+The marked gaps are bounded in number, the oldest coalescing pairwise
+past the bound; the samples between two coalesced gaps are not
+rendered.
 
 Acceptance:
 
 - A trace spanning a sample-time gap renders as separate segments with
   no line across the gap.
+- Past the gap bound, the newest gaps still render as separate
+  segments.
 
 Covers:
 - sys~arch_002~1

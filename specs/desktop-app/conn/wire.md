@@ -44,7 +44,7 @@ envelope per:
 | Received | Handling |
 |----------|----------|
 | A reply carrying an outstanding `request_id` | Resolved to that request — a `Response`'s verdict and `cause` (the `fw~conn_server_001~1` reply convention) delivered to the requester |
-| A stream payload (log, telemetry, samples) | Dispatched to its consumer, independent of any request |
+| A stream payload (log, telemetry, samples) | Dispatched to its consumer, independent of any request, and shed rather than held when the consumer falls behind — a shed `Samples` payload counted as a sample-time gap (`app~views_001~1`) |
 
 Acceptance:
 
@@ -53,6 +53,8 @@ Acceptance:
 - A `Response` with `accepted` clear delivers its `cause` to the
   requester.
 - Stream envelopes decode and dispatch with no outstanding request.
+- A reply queued behind a saturating sample stream resolves its request
+  while the stream's consumer falls behind.
 
 Covers:
 - sys~conn_001~1

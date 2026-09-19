@@ -99,7 +99,7 @@ export const store = {
   traceStatus: null,        // last TraceStatusInfo
   budgetVerdict: "—",       // 'accepted' | rejection cause | '—'
   watched: new Map(),       // path -> { period_cycles }  (workspace-owned)
-  gapCount: 0,              // cumulative dropped records from samples batches
+  gapCount: 0,              // cumulative lost points: device drops + host shedding
   // The plot timeline (workspace-owned, see workspace/timeline.js; mutations
   // notify the "timeline" topic). window/pausedSpan are [t0, t1] ms or null.
   timeline: { span_ms: 10_000, mode: "live", window: null, pausedSpan: null },
@@ -232,7 +232,10 @@ export async function attachEvents() {
   await listen("log", (l) => notify("log", l.text));
   await listen("trace-status", (s) => set({ traceStatus: s }));
   await listen("samples", (batch) => {
-    if (batch.dropped_records) set({ gapCount: store.gapCount + batch.dropped_records });
+    // Device drops and host-side shedding (a batch the core could not hand
+    // to a slow webview) both mean missing data: both count as gaps.
+    const lost = (batch.dropped_records || 0) + (batch.host_dropped_points || 0);
+    if (lost) set({ gapCount: store.gapCount + lost });
     notify("samples", batch);
   });
 }

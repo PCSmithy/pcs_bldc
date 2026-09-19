@@ -862,14 +862,28 @@ export class PlotWidget {
 
   renderGapRibbon() {
     const [t0, t1] = this.window;
-    const spans = new Map(); // merged accent spans across this plot's signals
+    const spans = []; // accent spans across this plot's signals
     for (const p of this.cfg.signals) {
       const h = histories.get(p);
       if (!h) continue;
-      for (const [a, b] of h.gapsIn(t0, t1)) spans.set(`${a}:${b}`, [a, b]);
+      for (const span of h.gapsIn(t0, t1)) spans.push(span);
+    }
+    spans.sort((x, y) => x[0] - y[0]);
+    // Spans closer than the minimum rendered width are one mark: a burst of
+    // drops paints a band, not thousands of elements the frame cannot afford
+    // (and that a reader could not tell apart anyway).
+    const grain = (t1 - t0) * 0.004;
+    const marks = [];
+    for (const [a, b] of spans) {
+      const last = marks[marks.length - 1];
+      if (last && a - last[1] <= grain) {
+        if (b > last[1]) last[1] = b;
+      } else {
+        marks.push([a, b]);
+      }
     }
     const pct = (t) => (((t - t0) / (t1 - t0)) * 100).toFixed(2);
-    const html = [...spans.values()]
+    const html = marks
       .map(([a, b]) => `<span class="gap-span" style="left:${pct(a)}%;width:${Math.max(0.4, pct(b) - pct(a))}%"></span>`)
       .join("");
     if (this._ribbonHtml !== html) {

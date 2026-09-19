@@ -2829,6 +2829,67 @@ def run(page):
         wrapped,
     )
 
+    # ── history gap bookkeeping: a run of drops is ONE gap, and the window
+    #    table stays sorted across it (a merged span covers samples, so the
+    #    line break has to key on the span's start) ──
+    merged = page.evaluate(
+        """() => {
+          const proto = [...__cockpit.histories.values()][0].constructor;
+          const h = new proto(20);                  // 1 ms period
+          h.append([[0, 1], [1, 2], [10, 3], [20, 4], [21, 5]]);
+          const [xs, ys] = h.windowTable(0, 21);
+          let ascending = true;
+          for (let i = 1; i < xs.length; i++) if (!(xs[i] > xs[i - 1])) ascending = false;
+          return { gaps: h.gaps.length, span: h.gaps[0], xs, ys, ascending };
+        }"""
+    )
+    check(
+        "history merges a run of drops into one gap and keeps the table sorted",
+        merged["gaps"] == 1
+        and merged["span"] == [1, 20]
+        and merged["ascending"]
+        and merged["ys"].count(None) == 1,
+        merged,
+    )
+
+    # ── history gap bookkeeping stays BOUNDED and sub-linear: a lossy link
+    #    pushes a gap per dropped record, and an unbounded list makes every
+    #    frame O(gaps) — slow frames cost more records, which is the spiral
+    #    that stalled the app in the field ──
+    burst = page.evaluate(
+        """() => {
+          const proto = [...__cockpit.histories.values()][0].constructor;
+          const h = new proto(1);                   // one-cycle, 0.05 ms period
+          const pts = [];
+          let t = 0;
+          // 100 000 discontinuities: three samples, one dropped, repeated.
+          for (let i = 0; i < 400_000; i++) {
+            t += 0.05;
+            if (i % 4 === 3) continue;
+            pts.push([t, i % 11]);
+          }
+          h.append(pts);
+          const newest = h.newestTick();
+          let worst_ms = 0, in_window = 0;
+          for (let k = 0; k < 20; k++) {
+            const a = newest - 1000 - k;
+            const t0 = performance.now();
+            const [xs] = h.windowTable(a, a + 1000);
+            in_window = h.gapsIn(a, a + 1000).length;
+            worst_ms = Math.max(worst_ms, performance.now() - t0);
+            if (!xs.length) return { error: "empty window" };
+          }
+          return { gaps: h.gaps.length, samples: h.size, worst_ms, in_window };
+        }"""
+    )
+    check(
+        "history bounds its gap list and renders a window fast under 100k drops",
+        burst.get("gaps", 1e9) <= 4096
+        and burst.get("in_window", 0) >= 1
+        and burst.get("worst_ms", 1e9) < 5.0,
+        burst,
+    )
+
     # ═══ batch 11: live smooth scroll — the window glides at display rate
     #     while geometry stays at batch rate (presentation cadence,
     #     unspecced; the FPS-cell precedent) ═══
