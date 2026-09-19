@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use pcs_proto::shared::envelope::Payload;
 use pcs_proto::trace::TraceStatus;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::emitter::{UiEmitter, UiEvent};
 use crate::firmware::{identity_matches, FirmwareState};
@@ -165,7 +165,11 @@ impl BatchState {
                 // Resync on the new domain instead of charging the whole span
                 // as dropped records.
                 if (delta <= (u32::MAX / 2)) && (delta > period) {
-                    self.dropped_records += (delta / period) - 1;
+                    // One gap's charge is capped: a wild index must not
+                    // swamp (or overflow) the batch's tally.
+                    const MAX_GAP_CHARGE: u32 = 1 << 24;
+                    let missed = ((delta / period) - 1).min(MAX_GAP_CHARGE);
+                    self.dropped_records = self.dropped_records.saturating_add(missed);
                 }
             }
             self.prev_cycle[entry] = Some(cycle);
@@ -255,7 +259,10 @@ fn expect_trace_status(reply: Payload) -> Result<TraceStatus, String> {
         } else {
             r.cause
         }),
-        other => Err(format!("unexpected reply: {other:?}")),
+        other => Err(format!(
+            "unexpected reply: {}",
+            crate::protocol::payload_kind(&other)
+        )),
     }
 }
 
@@ -328,14 +335,13 @@ pub async fn install_watches(
         let session = app.state::<SessionState>();
         let firmware = app.state::<FirmwareState>();
         let trace = app.state::<TraceState>();
-        install_blocking(&app, &session, &firmware, &trace, watches)
+        install_blocking(&session, &firmware, &trace, watches)
     })
     .await
     .map_err(|e| format!("install watches: {e}"))?
 }
 
 fn install_blocking(
-    app: &AppHandle,
     session: &SessionState,
     firmware: &FirmwareState,
     trace: &TraceState,
@@ -382,11 +388,19 @@ fn install_blocking(
         ));
     }
 
-    let (status, consumer) =
-        perform_install(&client, trace, wire_watches, entries, samples_sink(emitter))?;
+    let (status, consumer) = perform_install(
+        &client,
+        trace,
+        wire_watches,
+        entries,
+        samples_sink(emitter.clone()),
+    )?;
 
+    // Through the emitter, and ahead of the consumer swap: it lands behind
+    // the prior list's final batch and before the new list's first. The front
+    // end clears its histories on this event.
+    emitter.send(UiEvent::TraceStatus(status));
     install_consumer(session, consumer);
-    let _ = app.emit("trace-status", status);
     Ok(status)
 }
 
@@ -411,10 +425,15 @@ pub async fn clear_watches(app: AppHandle) -> Result<TraceStatus, String> {
         let session = app.state::<SessionState>();
         let trace = app.state::<TraceState>();
         let (client, _, emitter) = session_handles(&session)?;
-        let (status, consumer) =
-            perform_install(&client, &trace, Vec::new(), Vec::new(), samples_sink(emitter))?;
+        let (status, consumer) = perform_install(
+            &client,
+            &trace,
+            Vec::new(),
+            Vec::new(),
+            samples_sink(emitter.clone()),
+        )?;
+        emitter.send(UiEvent::TraceStatus(status));
         install_consumer(&session, consumer);
-        let _ = app.emit("trace-status", status);
         Ok(status)
     })
     .await
@@ -424,10 +443,12 @@ pub async fn clear_watches(app: AppHandle) -> Result<TraceStatus, String> {
 #[tauri::command]
 pub async fn trace_status(app: AppHandle) -> Result<TraceStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (client, _, _) = session_handles(&app.state::<SessionState>())?;
-        expect_trace_status(client.request(Payload::TraceStatusRequest(
+        let (client, _, emitter) = session_handles(&app.state::<SessionState>())?;
+        let status = expect_trace_status(client.request(Payload::TraceStatusRequest(
             pcs_proto::trace::TraceStatusRequest::default(),
-        ))?)
+        ))?)?;
+        emitter.send(UiEvent::TraceStatus(status));
+        Ok(status)
     })
     .await
     .map_err(|e| format!("trace status: {e}"))?
@@ -529,10 +550,14 @@ mod tests {
             state.last_emit = Instant::now();
             let _ = state.ingest(&samples(first, 1, 2, &data));
         }
-        // The slow group's own first record: its gap counter starts here, not
-        // against the fast group's indices.
-        state.last_emit = Instant::now();
-        let _ = state.ingest(&samples(2, 200, 1, &[7]));
+        // The slow group runs far ahead of the fast group's newest index: its
+        // gap counter starts on its own first record and then follows its own
+        // period. One counter shared across entries would charge the jump from
+        // cycle 6 to 1000 as drops.
+        for (first, value) in [(1000u32, 7u8), (1200, 8)] {
+            state.last_emit = Instant::now();
+            let _ = state.ingest(&samples(first, 200, 1, &[value]));
+        }
         let batch = state.flush();
         let fast = &batch.signals[0];
         assert_eq!(fast.path, "fast");
@@ -540,7 +565,7 @@ mod tests {
             fast.points,
             vec![(0.0, 0.0), (0.05, 1.0), (0.25, 5.0), (0.30, 6.0)]
         );
-        assert_eq!(batch.signals[1].points, vec![(0.1, 7.0)]);
+        assert_eq!(batch.signals[1].points, vec![(50.0, 7.0), (60.0, 8.0)]);
         // Cycles 2, 3, 4 never arrived: counted as dropped, not synthesized.
         assert_eq!(batch.dropped_records, 3);
     }
@@ -741,104 +766,5 @@ mod tests {
         let guard = trace.accumulator.lock().unwrap();
         let state = guard.as_ref().expect("new table installed");
         assert_eq!(state.lock().unwrap().table.entries[0].path, "new");
-    }
-
-    // TEMP PERF MEASUREMENT — remove after reporting.
-    #[test]
-    #[ignore]
-    fn perf_pipeline_5s_of_20khz_stream() {
-        use prost::Message;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        const MSGS: usize = 5000; // 5 s at 1000 messages/s
-        const PER_MSG: usize = 20; // 20 records per millisecond message
-
-        // Build the 5000 Samples messages and the framed byte stream.
-        let msgs: Vec<pcs_proto::trace::Samples> = (0..MSGS)
-            .map(|k| {
-                let mut data = Vec::with_capacity(PER_MSG * 4);
-                for j in 0..PER_MSG {
-                    let v = (k * PER_MSG + j) as f32 * 0.001;
-                    data.extend_from_slice(&v.to_le_bytes());
-                }
-                pcs_proto::trace::Samples {
-                    first_cycle: (k * PER_MSG) as u32,
-                    data,
-                    period_cycles: 1,
-                    count: PER_MSG as u32,
-                }
-            })
-            .collect();
-
-        let mut wire: Vec<u8> = Vec::new();
-        for m in &msgs {
-            let env = pcs_proto::shared::Envelope {
-                request_id: 0,
-                payload: Some(Payload::Samples(m.clone())),
-            };
-            wire.extend_from_slice(&pcs_wire::frame(&env.encode_to_vec()));
-        }
-        println!("PERF wire bytes total = {}", wire.len());
-        println!("PERF wire bytes/frame = {}", wire.len() / MSGS);
-
-        // (a) Pump::push over the stream in 4 KB chunks, counting-only sink.
-        let count = Arc::new(AtomicUsize::new(0));
-        let sink_count = count.clone();
-        let client = Client::new(Box::new(crate::testutil::SharedBuf::default()));
-        let mut pump = client.pump(Box::new(move |ev| {
-            if matches!(ev, crate::protocol::StreamEvent::Samples(_)) {
-                sink_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }));
-        let t = Instant::now();
-        for chunk in wire.chunks(4096) {
-            pump.push(chunk);
-        }
-        let a_ms = t.elapsed().as_secs_f64() * 1e3;
-        assert_eq!(count.load(Ordering::Relaxed), MSGS);
-
-        // (b) BatchState::ingest of the decoded Samples, flushing every 50.
-        let mut state = BatchState::new(WatchTable {
-            entries: vec![entry("x", 4, 1, Leaf::Scalar(Scalar::F32))],
-        });
-        let mut batches: Vec<SamplesBatch> = Vec::new();
-        let t = Instant::now();
-        for (i, m) in msgs.iter().enumerate() {
-            // Re-arm the interval clock so only the explicit 50-message flush
-            // fires, regardless of how slowly the host runs.
-            state.last_emit = Instant::now();
-            let _ = state.ingest(m);
-            if (i + 1) % 50 == 0 {
-                batches.push(state.flush());
-            }
-        }
-        let b_ms = t.elapsed().as_secs_f64() * 1e3;
-        assert_eq!(batches.len(), MSGS / 50);
-        assert_eq!(batches[0].signals[0].points.len(), 50 * PER_MSG);
-
-        // (c) serde_json::to_string of each flushed batch.
-        let mut json_bytes = 0usize;
-        let t = Instant::now();
-        for b in &batches {
-            json_bytes += serde_json::to_string(b).unwrap().len();
-        }
-        let c_ms = t.elapsed().as_secs_f64() * 1e3;
-
-        println!("PERF (a) pump_push_ms   = {a_ms:.3}");
-        println!("PERF (b) ingest_flush_ms= {b_ms:.3}");
-        println!("PERF (c) json_ms        = {c_ms:.3}");
-        println!("PERF total_ms           = {:.3}", a_ms + b_ms + c_ms);
-        println!(
-            "PERF json bytes/batch   = {} over {} batches",
-            json_bytes / batches.len(),
-            batches.len()
-        );
-        println!(
-            "PERF cpu%% of one core   a={:.2} b={:.2} c={:.2} total={:.2}",
-            a_ms / 50.0,
-            b_ms / 50.0,
-            c_ms / 50.0,
-            (a_ms + b_ms + c_ms) / 50.0
-        );
     }
 }

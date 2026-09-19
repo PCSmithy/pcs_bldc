@@ -43,15 +43,18 @@ function spanIndexPast(spans, t, strict) {
 // past the cap the oldest half coalesces pairwise, so old detail coarsens
 // by halves while the newest half keeps full resolution. A coalesced span
 // swallows the samples between its two halves: they still read their own
-// stored values (a finite sample never decodes as null), they just stop
-// being separately marked.
+// stored values through the accessors (a finite sample never decodes as
+// null), they just stop being rendered — the span is one break.
 const SPAN_CAP = 4096;
 
-/** Append `span`, merging it into the last when they touch or overlap, and
- *  keep the list under SPAN_CAP. */
+/** Append `span`, merging it into the last when they genuinely overlap, and
+ *  keep the list under SPAN_CAP. The test is strict: a gap span's endpoints
+ *  are real samples, so the sample that ends one gap and starts the next
+ *  makes them touch — merging there would swallow that sample and the
+ *  second break. */
 function pushSpan(spans, span) {
   const last = spans.length ? spans[spans.length - 1] : null;
-  if (last && span[0] <= last[1]) {
+  if (last && span[0] < last[1]) {
     if (span[1] > last[1]) last[1] = span[1];
     return;
   }
@@ -259,7 +262,10 @@ export class SignalHistory {
       this._len -= drop;
       this._dropMarkersBelow(this._t[this._start]);
     }
-    trimSpansBelow(this.gaps, horizon);
+    // Samples pool past the horizon until TRIM_SLACK releases them, so the
+    // spans follow the OLDEST RETAINED tick: trimming at the horizon would
+    // strip the gap records of samples still on screen.
+    if (this._len) trimSpansBelow(this.gaps, this._t[this._start]);
   }
 
   /** Drop the null runs and gaps ending below the oldest retained tick —
@@ -424,14 +430,21 @@ export class SignalHistory {
     return lo - this._start;
   }
 
-  /** Logical index of the next null-valued sample in [i0, i1), or -1. */
+  /** Logical index of the next null-valued sample in [i0, i1), or -1. A
+   *  coalesced run spans finite samples too, so the stored value decides:
+   *  only a NaN is a null. */
   nextNullIndex(i0, i1) {
     if (!this._nullRuns.length || i0 >= i1) return -1;
     const from = this.tickAtIndex(i0);
-    const k = spanIndexPast(this._nullRuns, from, false);
-    if (k >= this._nullRuns.length) return -1;
-    const idx = this.indexAtOrAfter(Math.max(this._nullRuns[k][0], from));
-    return idx < i1 ? idx : -1;
+    for (let k = spanIndexPast(this._nullRuns, from, false); k < this._nullRuns.length; k++) {
+      const [a, b] = this._nullRuns[k];
+      let i = this.indexAtOrAfter(Math.max(a, from));
+      if (i >= i1) break; // runs ascend: every later one starts later still
+      for (; i < i1 && this.tickAtIndex(i) <= b; i++) {
+        if (Number.isNaN(this._v[this._start + i])) return i;
+      }
+    }
+    return -1;
   }
 
   /** First gap index that can still affect a window starting at `t` (the
@@ -472,23 +485,27 @@ export class SignalHistory {
   }
 
   /** [ticks, values] within [t0, t1], with an explicit null sample injected
-   *  after each real gap so the plot breaks the line there (the renderer
-   *  splits a trace into runs at null markers). Off the hot path — the
-   *  live refresh goes through decimate.js's ring-native envelope query. */
+   *  per gap so the plot breaks the line there (the renderer splits a trace
+   *  into runs at null markers). A span's endpoints are real samples and
+   *  render; the samples strictly inside it — only a coalesced span has any
+   *  — do not, so the span reads as the one break it is marked as
+   *  (app~views_001). Off the hot path — the live refresh goes through
+   *  decimate.js's ring-native envelope query. */
   windowTable(t0, t1) {
     const xs = [], ys = [];
     let gi = this.gapIndexFrom(t0);
     for (let i = this.indexAtOrAfter(t0); i < this._len; i++) {
       const t = this.tickAtIndex(i);
       if (t > t1) break;
-      // A gap breaks the line before the first sample that follows its
-      // START. Keying on the span's end would place the marker after the
-      // samples a merged span covers, and unsort the table.
-      while (gi < this.gaps.length && this.gaps[gi][0] < t) {
+      // Every span closed at or before this sample has had its break: emit
+      // it, then move on. The marker sits one period past the span's start,
+      // between the two real samples the span joins.
+      while (gi < this.gaps.length && this.gaps[gi][1] <= t) {
         const [from] = this.gaps[gi];
         if (from >= t0) { xs.push(from + this.period); ys.push(null); }
         gi++;
       }
+      if (gi < this.gaps.length && this.gaps[gi][0] < t) continue; // inside the open span
       xs.push(t);
       ys.push(this.valueAtIndex(i));
     }

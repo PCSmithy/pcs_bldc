@@ -241,7 +241,10 @@ fn connect_blocking(
         UiEvent::Connection(connection) => {
             let _ = emit_app.emit("connection", connection);
         }
-    })));
+        UiEvent::TraceStatus(status) => {
+            let _ = emit_app.emit("trace-status", status);
+        }
+    }))?);
 
     let sink_ui = ui.clone();
     let sink_consumer = samples_consumer.clone();
@@ -270,6 +273,7 @@ fn connect_blocking(
         .spawn(move || {
             let mut buf = [0u8; 4096];
             let mut consecutive_errors = 0u32;
+            let mut lost = false;
             while !reader_shutdown.load(Ordering::Relaxed) {
                 let n = match reader_port.read(&mut buf) {
                     Ok(n) if n > 0 => {
@@ -286,7 +290,7 @@ fn connect_blocking(
                     _ => {
                         consecutive_errors += 1;
                         if consecutive_errors >= 5 {
-                            reader_ui.send(UiEvent::Connection(ConnectionEvent::down("lost")));
+                            lost = true;
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(20));
@@ -294,6 +298,11 @@ fn connect_blocking(
                     }
                 };
                 pump.push(&buf[..n]);
+            }
+            // Emitted off the read path: a send that waits for room must not
+            // hold a reader that `Session::drop` is joining.
+            if lost {
+                reader_ui.send(UiEvent::Connection(ConnectionEvent::down("lost")));
             }
         })
         .map_err(|e| format!("spawn reader: {e}"))?;
@@ -316,11 +325,19 @@ fn connect_blocking(
     // On any error, dropping `session` stops the reader and closes the port.
     let build_id = match identity {
         Ok(pcs_proto::shared::envelope::Payload::Identity(identity)) => identity.build_id,
-        Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+        Ok(other) => {
+            return Err(format!(
+                "unexpected reply: {}",
+                crate::protocol::payload_kind(&other)
+            ))
+        }
         Err(e) => return Err(e),
     };
     session.device_build_id = build_id.clone();
 
+    // Installed before the edge goes out: a UI that reacts to "connected" by
+    // querying the session must find it there.
+    *state.0.lock().map_err(|_| "session state poisoned")? = Some(session);
     let _ = app.emit(
         "connection",
         ConnectionEvent {
@@ -329,7 +346,6 @@ fn connect_blocking(
             build_id: Some(build_id.clone()),
         },
     );
-    *state.0.lock().map_err(|_| "session state poisoned")? = Some(session);
     Ok(build_id)
 }
 
@@ -337,13 +353,16 @@ fn connect_blocking(
 /// thread. The session's emitter dies with it; this edge is emitted here.
 #[tauri::command]
 pub async fn disconnect(app: AppHandle) {
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         crate::trace::drop_session_state(&app.state::<crate::trace::TraceState>());
         if teardown(&app.state::<SessionState>()) {
             let _ = app.emit("connection", ConnectionEvent::down("disconnected"));
         }
     })
     .await;
+    if let Err(e) = joined {
+        eprintln!("disconnect: {e}");
+    }
 }
 
 // [impl->app~arch_001~1]
@@ -390,12 +409,15 @@ fn grow_driver_queue(_port: &serialport::TTYPort) {}
 
 /// Drop any existing session (its `Drop` stops the reader); true if one existed.
 fn teardown(state: &SessionState) -> bool {
-    state
+    // The guard is released at the end of this statement, so the reader join
+    // in `Session::drop` runs unlocked — `get_status` is synchronous and
+    // would otherwise block on it.
+    let session = state
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-        .is_some()
+        .take();
+    session.is_some()
 }
 
 #[cfg(test)]

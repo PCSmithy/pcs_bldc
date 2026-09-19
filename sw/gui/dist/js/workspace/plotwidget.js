@@ -26,6 +26,7 @@ const WHEEL_ZOOM_BASE = 1.0015;
 const BASE_STROKE_W = 1.5;
 const POINTED_MAX_PX = 40; // app~views_012's pointing threshold
 const CLICK_MAX_PX = 6; // press+release under this is a click; over, a select drag
+const SNAP_MAX_PX = 4; // cursor snapping reaches this far, so a gap stays pointable
 const ANCHOR_HIT_PX = 8; // bare-click release distance to an anchor line
 
 export class PlotWidget {
@@ -274,12 +275,17 @@ export class PlotWidget {
 
   /** The cursor time a pointer x selects: the sample time nearest the
    *  pointer among this widget's signals (the earlier of two equidistant),
-   *  so every sample of the finest signal is reachable; the pointer time
-   *  itself when no signal has data there. */
+   *  so every sample of the finest signal is reachable. Snapping is a nudge
+   *  onto the signal's grid, bounded by the greater of that signal's period
+   *  and SNAP_MAX_PX of window time: farther than that — pointing inside a
+   *  gap — or outside the window, the pointer time itself stands, so the
+   *  readout's "no sample" is reachable and the cursor never leaves view. */
   snapTime(px, width) {
     const t = this.tickAtPx(px, width);
+    const [t0, t1] = this.viewWindow();
     let best = null;
     let bestD = Infinity;
+    let bestPeriod = 0;
     for (const p of this.cfg.signals) {
       const h = histories.get(p);
       if (!h || !h.size) continue;
@@ -291,10 +297,13 @@ export class PlotWidget {
         if (d < bestD || (d === bestD && tk < best)) {
           best = tk;
           bestD = d;
+          bestPeriod = h.period;
         }
       }
     }
-    return best === null ? t : best;
+    if (best === null) return t;
+    const bound = Math.max(bestPeriod, ((t1 - t0) / Math.max(1, width)) * SNAP_MAX_PX);
+    return bestD > bound || best < t0 || best > t1 ? t : best;
   }
 
   /** Canvas-relative y (css px) of a value on the given scale group. */

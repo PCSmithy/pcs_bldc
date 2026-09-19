@@ -197,8 +197,8 @@ function renderTelemetry() {
   telemEls.perf.textContent = perfCellText();
   const watched = `${store.watched.size} signals watched`;
   if (telemEls.tagWatched.textContent !== watched) telemEls.tagWatched.textContent = watched;
-  const gaps = `${store.gapCount} gaps`;
-  if (telemEls.tagGaps.textContent !== gaps) telemEls.tagGaps.textContent = gaps;
+  const lost = `${thin(store.gapCount)} points lost`;
+  if (telemEls.tagGaps.textContent !== lost) telemEls.tagGaps.textContent = lost;
 }
 
 // ── identity gate scrim ─────────────────────────────────────────────────────

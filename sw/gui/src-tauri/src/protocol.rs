@@ -22,6 +22,30 @@ pub enum StreamEvent {
 
 pub type StreamSink = Box<dyn Fn(StreamEvent) + Send>;
 
+/// The payload's wire name, for error text. A `{payload:?}` would dump a whole
+/// `Samples` body into a dialog.
+pub fn payload_kind(payload: &Payload) -> &'static str {
+    match payload {
+        Payload::Ping(_) => "ping",
+        Payload::Response(_) => "response",
+        Payload::Log(_) => "log",
+        Payload::IdentityRequest(_) => "identity request",
+        Payload::Identity(_) => "identity",
+        Payload::LinkTestRequest(_) => "link test request",
+        Payload::LinkTestFrame(_) => "link test frame",
+        Payload::WatchRequest(_) => "watch request",
+        Payload::TraceStatus(_) => "trace status",
+        Payload::TraceStatusRequest(_) => "trace status request",
+        Payload::Samples(_) => "samples",
+        Payload::ReadRequest(_) => "read request",
+        Payload::ReadReply(_) => "read reply",
+        Payload::WriteRequest(_) => "write request",
+        Payload::BoardRequest(_) => "board request",
+        Payload::BoardReply(_) => "board reply",
+        Payload::Telemetry(_) => "telemetry",
+    }
+}
+
 type Pending = Arc<Mutex<HashMap<u32, mpsc::Sender<Payload>>>>;
 
 pub struct Client {
@@ -56,6 +80,7 @@ impl Client {
     }
 
     pub fn request_timeout(&self, payload: Payload, timeout: Duration) -> Result<Payload, String> {
+        let kind = payload_kind(&payload);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.pending
@@ -82,7 +107,7 @@ impl Client {
             Err(e) => Err(e),
             Ok(()) => rx
                 .recv_timeout(timeout)
-                .map_err(|_| "timeout waiting for reply".to_string()),
+                .map_err(|_| format!("timeout waiting for reply to {kind}")),
         };
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(&id);
@@ -291,6 +316,6 @@ mod tests {
             Payload::Ping(pcs_proto::shared::PingRequest::default()),
             Duration::from_millis(20),
         );
-        assert_eq!(result.unwrap_err(), "timeout waiting for reply");
+        assert_eq!(result.unwrap_err(), "timeout waiting for reply to ping");
     }
 }

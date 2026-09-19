@@ -17,9 +17,9 @@ values (`app~obs_004~1`) against their sample times as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
 extending as messages arrive, each gap-free run of sample times rendered
 as one connected segment, its samples rendered per `app~views_014~1`.
-The marked gaps are bounded in number, the oldest coalescing pairwise
-past the bound; the samples between two coalesced gaps are not
-rendered.
+A signal's marked gaps are bounded at 4096, the oldest coalescing
+pairwise past that bound; the samples between two coalesced gaps are
+not rendered.
 
 Acceptance:
 

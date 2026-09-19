@@ -273,7 +273,9 @@ function emitBatchRange(c0, c1) {
   const sigs = new Map(watchList.map((w) => [w.path, { path: w.path, points: [] }]));
   for (const g of groups()) {
     for (let c = firstCycle(c0, g.period); c < c1; c += g.period) {
-      if (inGap(c)) { dropped++; continue; }
+      // The board counts a drop per ENTRY per missed cycle (trace.rs), not
+      // one per cycle.
+      if (inGap(c)) { dropped += g.entries.length; continue; }
       const t = c / CYCLES_PER_MS;
       for (const w of g.entries) sigs.get(w.path).points.push([t, waveform(w.path, w.kind, t)]);
     }

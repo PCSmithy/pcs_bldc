@@ -350,7 +350,7 @@ def run(page):
     wait_for_samples(page, "task1msRuns")
     wait_for_samples(page, VEL_M)
 
-    # ── [test->app~views_001~1] traces render; a tick-count gap breaks them ──
+    # ── [test->app~views_001~1] traces render; a sample-time gap breaks them ──
     plot_ready = page.evaluate(
         "() => { let n = 0; __cockpit.forEachWidget(w => {"
         "  if (w.renderedTables && [...w.renderedTables().values()].some(([xs]) => xs.length > 40)) n++; });"
@@ -386,7 +386,9 @@ def run(page):
         "() => { const h = __cockpit.histories.get('task1msRuns');"
         " return h.tickAtOrBefore(h.newestTick() - 1000); }"
     )
-    page.evaluate(f"() => __cockpit.setCursorTick({cursor_tick})")
+    # The readout re-renders on a rAF-coalesced notify: settle before reading
+    # it (a slow runner otherwise reads the previous tick's text).
+    page.evaluate(f"async () => {{ __cockpit.setCursorTick({cursor_tick}); {SETTLE_CURSOR_JS} }}")
     visible_lines = page.eval_on_selector_all(
         ".plot-widget .cursor-line", "els => els.filter(e => !e.hidden).length"
     )
@@ -400,7 +402,7 @@ def run(page):
     check("views_005 readout carries the time", tick_txt in readout, (tick_txt, readout[:80]))
     # An in-gap tick reads "no sample" (mock gap: t % 5000 in [4880, 5000)).
     gap_tick = (newest // 5000) * 5000 - 60
-    page.evaluate(f"() => __cockpit.setCursorTick({gap_tick})")
+    page.evaluate(f"async () => {{ __cockpit.setCursorTick({gap_tick}); {SETTLE_CURSOR_JS} }}")
     readout = page.locator(".plot-widget .cursor-readout").first.inner_text()
     check("views_005 in-gap tick reads 'no sample'", "no sample" in readout, readout[:80])
     # Pointer-leave clears every mark — views_005 asks that they clear, not
@@ -414,30 +416,51 @@ def run(page):
     # ── [test->app~views_005~1] pointing lands on the nearest sample among the
     # plot's signals, so a one-cycle signal's every sample is reachable ──
     page.evaluate("() => __cockpit.timeline.pause()")  # a still window: pointer time is comparable
-    first_canvas = page.locator(".plot-widget canvas").first
-    box = first_canvas.bounding_box()
-    page.mouse.move(box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.5)
+    # The hovered canvas and the expectation must be the SAME widget: take
+    # the point to hover from the widget the expectation is derived from.
+    hover = page.evaluate(
+        """() => {
+          let w0 = null;
+          __cockpit.forEachWidget((w) => { if (!w0 && w.cfg.type === 'plot') w0 = w; });
+          window.__pointWid = w0.cfg.id;
+          const r = w0._els.canvas.getBoundingClientRect();
+          return { x: r.left + r.width * 0.4, y: r.top + r.height / 2 };
+        }"""
+    )
+    page.mouse.move(hover["x"], hover["y"])
     snap = page.evaluate(
         """() => {
           const tick = __cockpit.cursor.tick;
           let w0 = null;
-          __cockpit.forEachWidget((w) => { if (!w0 && w.cfg.type === 'plot') w0 = w; });
+          __cockpit.forEachWidget((w) => { if (w.cfg.id === window.__pointWid) w0 = w; });
           const rect = w0._els.canvas.getBoundingClientRect();
           const t = w0.tickAtPx(rect.width * 0.4, rect.width);
-          let onSample = false, nearest = Infinity;
+          let onSample = false, nearest = Infinity, period = 0;
           for (const p of w0.cfg.signals) {
             const h = __cockpit.histories.get(p);
             if (!h || !h.size) continue;
             if (h.valueAt(tick) !== null) onSample = true;
             const i = h.indexAtOrAfter(t);
             for (const j of [i - 1, i]) {
-              if (j >= 0 && j < h.size && h.valueAtIndex(j) !== null) nearest = Math.min(nearest, Math.abs(h.tickAtIndex(j) - t));
+              if (j < 0 || j >= h.size || h.valueAtIndex(j) === null) continue;
+              const d = Math.abs(h.tickAtIndex(j) - t);
+              if (d < nearest) { nearest = d; period = h.period; }
             }
           }
-          return { tick, t, onSample, d: Math.abs(tick - t), nearest, signals: w0.cfg.signals.length };
+          const [v0, v1] = w0.viewWindow();
+          const bound = Math.max(period, ((v1 - v0) / rect.width) * 4);
+          return { tick, t, onSample, d: Math.abs(tick - t), nearest, bound,
+                   signals: w0.cfg.signals.length };
         }"""
     )
-    check("views_005 pointing lands the cursor on a sample", snap["onSample"], snap)
+    # The nearest sample is well inside the snap bound here (a live plot at a
+    # 30 s span), so pointing must land on it — the fallback to the pointed
+    # time belongs to the in-gap case.
+    check(
+        "views_005 pointing lands the cursor on a sample",
+        snap["onSample"] and snap["nearest"] <= snap["bound"],
+        snap,
+    )
     check(
         "views_005 that sample is the nearest across the plot's signals",
         abs(snap["d"] - snap["nearest"]) < 1e-6,
@@ -470,7 +493,7 @@ def run(page):
            return { shown, ok: recent.includes(shown) }; }"""
     )
     check("views_006 latest value live", live["ok"], live["shown"])
-    page.evaluate(f"() => __cockpit.setCursorTick({cursor_tick})")
+    page.evaluate(f"async () => {{ __cockpit.setCursorTick({cursor_tick}); {SETTLE_CURSOR_JS} }}")
     at_cursor = page.locator(".table-widget .table-mode-tag").inner_text()
     check("views_006 at-cursor mode tag", "at cursor" in at_cursor, at_cursor)
     # The row VALUE must be the sample at the cursor time (not the latest),
@@ -530,7 +553,7 @@ def run(page):
     #    groups' values at once (regression: the paged readout dropped the
     #    right-axis signal from the hover popup) ──
     newest = page.evaluate("() => __cockpit.histories.get('task1msRuns').newestTick()")
-    page.evaluate(f"() => __cockpit.setCursorTick({newest - 500})")
+    page.evaluate(f"async () => {{ __cockpit.setCursorTick({newest - 500}); {SETTLE_CURSOR_JS} }}")
     ro = page.locator(f"[data-widget-id='{wid}'] .cursor-readout")
     nsig = widget_eval(page, wid, "(w) => w.cfg.signals.length")
     rows = ro.locator(".readout-row").count()
@@ -658,7 +681,7 @@ def run(page):
     # ── [test->app~views_009~1] paused range control: zoom, select, pan ──
     win0 = page.evaluate("() => __cockpit.timeline.get().window")
     cursor_t = int(win0[0] + (win0[1] - win0[0]) * 0.25)
-    page.evaluate(f"() => __cockpit.setCursorTick({cursor_t})")
+    page.evaluate(f"async () => {{ __cockpit.setCursorTick({cursor_t}); {SETTLE_CURSOR_JS} }}")
     canvas = page.locator(".plot-widget .plot-canvas").first
     canvas.dispatch_event("wheel", {"deltaY": -300, "bubbles": True, "cancelable": True})
     win1 = page.evaluate("() => __cockpit.timeline.get().window")
@@ -1219,6 +1242,39 @@ def run(page):
         and refusal["verdict"] == "exceeds link budget"
         and any("20 kHz" in f for f in refusal["fixes"]),
         refusal,
+    )
+    page.click(".reject-scrim [data-dismiss]")
+
+    # ── [test->app~obs_003~1] a REFUSED period edit rolls back: the device
+    #    keeps streaming the accepted list, so the watched periods (the
+    #    panel's labels) and the histories behind them go back with it —
+    #    otherwise a 10 ms stream feeds a 0.05 ms-period history and every
+    #    sample reads as a gap ──
+    installs0_edit = page.evaluate("() => (window.__devmockInstalls || []).length")
+    page.evaluate("(paths) => { for (const p of paths) __cockpit.addWatch(p, 200); }", surplus)
+    page.wait_for_function(
+        f"() => (window.__devmockInstalls || []).length > {installs0_edit}"
+        " && __cockpit.store.budgetVerdict === 'accepted'",
+        timeout=8000,
+    )
+    page.evaluate("(paths) => { for (const p of paths) __cockpit.setPeriod(p, 1); }", surplus)
+    page.wait_for_selector(".reject-scrim", timeout=8000)
+    rolled = page.evaluate(
+        """(paths) => ({
+             periods: paths.map((p) => __cockpit.store.watched.get(p)?.period_cycles ?? null),
+             histories: paths.map((p) => __cockpit.histories.get(p)?.periodCycles ?? null),
+             labels: [...document.querySelectorAll('.watch-row')]
+               .filter((r) => paths.includes(r.dataset.path))
+               .map((r) => r.querySelector('.watch-seg-opt.is-selected')?.dataset.period ?? null),
+           })""",
+        surplus,
+    )
+    check(
+        "obs_003 a refused period edit rolls the watched list back to what streams",
+        all(v == 200 for v in rolled["periods"])
+        and all(v == 200 for v in rolled["histories"])
+        and rolled["labels"] == ["200"] * len(surplus),
+        rolled,
     )
     page.click(".reject-scrim [data-dismiss]")
     page.evaluate(
@@ -2865,35 +2921,92 @@ def run(page):
         wrapped,
     )
 
-    # ── history gap bookkeeping: a run of drops is ONE gap, and the window
-    #    table stays sorted across it (a merged span covers samples, so the
-    #    line break has to key on the span's start) ──
+    # ── [test->app~views_001~1] a gap span's endpoints are real samples, so
+    #    the sample that ends one gap and starts the next survives with its
+    #    own break: alternating loss is one span per missing record, not one
+    #    span swallowing the lot ──
     merged = page.evaluate(
-        """() => {
+        """async () => {
+          const { envelopeTable } = await import('./js/workspace/decimate.js');
           const proto = [...__cockpit.histories.values()][0].constructor;
           const h = new proto(20);                  // 1 ms period
-          h.append([[0, 1], [1, 2], [10, 3], [20, 4], [21, 5]]);
-          const [xs, ys] = h.windowTable(0, 21);
+          // Every other record lost: ticks 0,2,…,14 over seven real gaps.
+          h.append([0, 2, 4, 6, 8, 10, 12, 14].map((t, i) => [t, i]));
+          const [xs, ys] = h.windowTable(0, 14);
+          const [exs, eys] = envelopeTable(h, 0, 14, 1000);
           let ascending = true;
-          for (let i = 1; i < xs.length; i++) if (!(xs[i] > xs[i - 1])) ascending = false;
-          return { gaps: h.gaps.length, span: h.gaps[0], xs, ys, ascending };
+          for (let i = 1; i < exs.length; i++) if (!(exs[i] > exs[i - 1])) ascending = false;
+          return {
+            gaps: h.gaps.length, first: h.gaps[0], last: h.gaps[h.gaps.length - 1],
+            breaks: ys.filter((v) => v === null).length,
+            ebreaks: eys.filter((v) => v === null).length,
+            samples: eys.filter((v) => v !== null).length,
+            same: JSON.stringify([xs, ys]) === JSON.stringify([exs, eys]), ascending,
+          };
         }"""
     )
     check(
-        "history merges a run of drops into one gap and keeps the table sorted",
-        merged["gaps"] == 1
-        and merged["span"] == [1, 20]
-        and merged["ascending"]
-        and merged["ys"].count(None) == 1,
+        "views_001 every dropped record is its own gap span and its own break",
+        merged["gaps"] == 7
+        and merged["first"] == [0, 2]
+        and merged["last"] == [12, 14]
+        and merged["breaks"] == 7
+        and merged["ebreaks"] == 7
+        and merged["samples"] == 8
+        and merged["same"]
+        and merged["ascending"],
         merged,
     )
 
-    # ── history gap bookkeeping stays BOUNDED and sub-linear: a lossy link
-    #    pushes a gap per dropped record, and an unbounded list makes every
-    #    frame O(gaps) — slow frames cost more records, which is the spiral
-    #    that stalled the app in the field ──
+    # ── [test->app~views_001~1] past the span bound the oldest gaps coalesce
+    #    pairwise: the coalesced span is ONE break and the samples inside it
+    #    are not rendered — and a coalesced NULL run still renders the finite
+    #    samples it spans, nulls only where a null was stored ──
+    coalesced = page.evaluate(
+        """async () => {
+          const { envelopeTable } = await import('./js/workspace/decimate.js');
+          const proto = [...__cockpit.histories.values()][0].constructor;
+          const h = new proto(20);                  // 1 ms period
+          h.append([[0, 0], [1, 1], [10, 2], [11, 3], [20, 4], [21, 5]]);
+          h.gaps.length = 0;
+          h.gaps.push([1, 20]);                     // as the cap coalesces them
+          const [xs, ys] = h.windowTable(0, 21);
+          const [exs, eys] = envelopeTable(h, 0, 21, 1000);
+          const g = new proto(20);
+          g.append([[0, null], [1, 1], [2, 2], [3, null], [4, 4]]);
+          g._nullRuns.length = 0;
+          g._nullRuns.push([0, 3]);                 // one coalesced null run
+          const [nxs, nys] = envelopeTable(g, 0, 4, 1000);
+          return {
+            inside: exs.filter((x) => x > 1 && x < 20 && eys[exs.indexOf(x)] !== null),
+            breaks: eys.filter((v) => v === null).length,
+            same: JSON.stringify([xs, ys]) === JSON.stringify([exs, eys]),
+            nulls: nys.filter((v) => v === null).length,
+            finite: nys.filter((v) => v !== null).length,
+            nxs,
+          };
+        }"""
+    )
+    check(
+        "views_001 a coalesced span is one break and renders none of its samples",
+        coalesced["inside"] == []
+        and coalesced["breaks"] == 1
+        and coalesced["same"]
+        and coalesced["nulls"] == 2
+        and coalesced["finite"] == 3,
+        coalesced,
+    )
+
+    # ── [test->app~views_001~1] history gap bookkeeping stays BOUNDED and
+    #    sub-linear: a lossy link pushes a gap per dropped record, and an
+    #    unbounded list makes every frame O(gaps) — slow frames cost more
+    #    records, which is the spiral that stalled the app in the field. Past
+    #    the bound the oldest coalesce, but a window's spans stay within a
+    #    factor of its real discontinuities and the newest keep full
+    #    resolution — one rendered break each ──
     burst = page.evaluate(
-        """() => {
+        """async () => {
+          const { envelopeTable } = await import('./js/workspace/decimate.js');
           const proto = [...__cockpit.histories.values()][0].constructor;
           const h = new proto(1);                   // one-cycle, 0.05 ms period
           const pts = [];
@@ -2915,14 +3028,34 @@ def run(page):
             worst_ms = Math.max(worst_ms, performance.now() - t0);
             if (!xs.length) return { error: "empty window" };
           }
-          return { gaps: h.gaps.length, samples: h.size, worst_ms, in_window };
+          // The rendered window: the renderer and every hit-test bisect these
+          // xs, so a span covering samples must not unsort them.
+          const [exs] = envelopeTable(h, newest - 1000, newest, 800);
+          let ascending = true;
+          for (let i = 1; i < exs.length; i++) if (!(exs[i] > exs[i - 1])) ascending = false;
+          // A window narrow enough to give every gap its own pixel column:
+          // each still renders as its own break.
+          const [, nys] = envelopeTable(h, newest - 2, newest, 800);
+          return {
+            gaps: h.gaps.length, samples: h.size, worst_ms, in_window, ascending,
+            discontinuities: 5000,                  // 1000 ms at one per 0.2 ms
+            newest_gaps: h.gapsIn(newest - 2, newest).length,
+            newest_breaks: nys.filter((v) => v === null).length,
+          };
         }"""
     )
+    # The wall-clock term is the render budget's business, not this check's:
+    # a loaded CI runner measures the same code many times slower.
+    worst_limit = 5.0 if BUDGET_FULL else 25.0
     check(
-        "history bounds its gap list and renders a window fast under 100k drops",
+        "views_001 history bounds its gap list and renders a window fast under 100k drops",
         burst.get("gaps", 1e9) <= 4096
-        and burst.get("in_window", 0) >= 1
-        and burst.get("worst_ms", 1e9) < 5.0,
+        and burst.get("in_window", 0) * 2 >= burst.get("discontinuities", 0)
+        and burst.get("in_window", 0) <= burst.get("discontinuities", 0)
+        and burst.get("ascending", False)
+        and burst.get("newest_gaps", 0) >= 5
+        and burst.get("newest_breaks", 0) >= burst.get("newest_gaps", 0)
+        and burst.get("worst_ms", 1e9) < worst_limit,
         burst,
     )
 
@@ -3068,24 +3201,37 @@ def run(page):
             }));
             const [d0, d1] = __cockpit.timeline.displayWindow();
             const expected = d0 + (px / rect.width) * (d1 - d0);
-            let nearest = Infinity;
+            let nearest = Infinity, period = 0, onSample = false;
+            const tick = __cockpit.cursor.tick;
             for (const p of w.cfg.signals) {
               const h = __cockpit.histories.get(p);
               if (!h || !h.size) continue;
+              if (h.valueAt(tick) !== null) onSample = true;
               const i = h.indexAtOrAfter(expected);
               for (const j of [i - 1, i]) {
-                if (j >= 0 && j < h.size && h.valueAtIndex(j) !== null) nearest = Math.min(nearest, Math.abs(h.tickAtIndex(j) - expected));
+                if (j < 0 || j >= h.size || h.valueAtIndex(j) === null) continue;
+                const d = Math.abs(h.tickAtIndex(j) - expected);
+                if (d < nearest) { nearest = d; period = h.period; }
               }
             }
-            const tick = __cockpit.cursor.tick;
-            out = { tick, expected, nearest, err: Math.abs(tick - expected) };
+            // views_005's snap bound, derived the way the spec states it.
+            const bound = Math.max(period, ((d1 - d0) / rect.width) * 4);
+            out = { tick, expected, nearest, bound, onSample, err: Math.abs(tick - expected) };
           });
           return out;
         }"""
     )
+    # Within the bound the cursor sits on a real sample — exactly the nearest
+    # one, not merely no farther than it; past it the pointed time stands.
+    snapped = cur is not None and cur["nearest"] <= cur["bound"]
     check(
         "smooth scroll: cursor tick matches the displayed window's mapping",
-        cur is not None and cur["err"] <= (cur["nearest"] if cur["nearest"] != float("inf") else 1) + 1e-6,
+        cur is not None
+        and (
+            (abs(cur["err"] - cur["nearest"]) < 1e-6 and cur["onSample"])
+            if snapped
+            else cur["err"] < 1e-6
+        ),
         cur,
     )
     page.mouse.move(10, 10)

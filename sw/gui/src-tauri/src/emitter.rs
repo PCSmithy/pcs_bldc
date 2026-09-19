@@ -8,6 +8,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use pcs_proto::trace::TraceStatus;
 
 use crate::session::{ConnectionEvent, LogEvent, TelemetryEvent};
 use crate::trace::SamplesBatch;
@@ -17,11 +20,17 @@ use crate::trace::SamplesBatch;
 /// dropping records, the failure this decoupling exists to prevent.
 const EMIT_QUEUE_DEPTH: usize = 32;
 
+/// How long a reliable event waits for room. Long enough that a busy renderer
+/// still gets it, short enough that no caller — a reader thread teardown is
+/// joining included — can be parked indefinitely.
+const RELIABLE_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
 pub enum UiEvent {
     Samples(SamplesBatch),
     Telemetry(TelemetryEvent),
     Log(LogEvent),
     Connection(ConnectionEvent),
+    TraceStatus(TraceStatus),
 }
 
 // [impl->app~conn_003~1]
@@ -35,11 +44,14 @@ pub struct UiEmitter {
 }
 
 impl UiEmitter {
-    pub fn new(sink: Box<dyn Fn(UiEvent) + Send + 'static>) -> Self {
+    /// Fails if the emitter thread cannot start: without it nothing ever
+    /// reaches the webview, and a session built on a dead emitter would look
+    /// connected while showing nothing.
+    pub fn new(sink: Box<dyn Fn(UiEvent) + Send + 'static>) -> Result<Self, String> {
         let (tx, rx) = sync_channel::<UiEvent>(EMIT_QUEUE_DEPTH);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
-        if let Err(e) = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("ui-emitter".into())
             .spawn(move || {
                 // Ends when every sender drops; the flag discards whatever a
@@ -51,21 +63,17 @@ impl UiEmitter {
                     sink(event);
                 }
             })
-        {
-            // No emitter thread: every send sheds, and the tallies keep
-            // accumulating honestly rather than blocking the reader.
-            eprintln!("spawn ui emitter: {e}");
-        }
-        Self {
+            .map_err(|e| format!("spawn ui emitter: {e}"))?;
+        Ok(Self {
             tx,
             shed_points: AtomicU64::new(0),
             dropped_logs: AtomicU64::new(0),
             stop,
-        }
+        })
     }
 
-    /// Queue one event under its kind's full-queue policy. Only a connection
-    /// edge ever waits.
+    /// Queue one event under its kind's full-queue policy. Only the reliable
+    /// kinds wait, and only for `RELIABLE_SEND_TIMEOUT`.
     pub fn send(&self, event: UiEvent) {
         match event {
             UiEvent::Samples(batch) => self.send_samples(batch),
@@ -75,11 +83,33 @@ impl UiEmitter {
                 let _ = self.tx.try_send(UiEvent::Telemetry(t));
             }
             UiEvent::Log(log) => self.send_log(log),
-            // Rare, and an edge the UI misses leaves it wrong until the next
-            // one — worth waiting for room. Only ever sent by a thread that
-            // is already done reading.
-            UiEvent::Connection(c) => {
-                let _ = self.tx.send(UiEvent::Connection(c));
+            // Rare, and a state edge the UI misses leaves it wrong until the
+            // next one. Both go through the queue so they land in order after
+            // whatever is already in it (a trace-status must follow the prior
+            // list's final batch), waiting for room but never forever.
+            event @ (UiEvent::Connection(_) | UiEvent::TraceStatus(_)) => {
+                self.send_reliable(event);
+            }
+        }
+    }
+
+    /// Wait for room, then give up: reliable by default, but no caller — a
+    /// reader thread a teardown is joining included — is ever parked for good.
+    /// Polled because `SyncSender` has no stable timed send.
+    fn send_reliable(&self, event: UiEvent) {
+        const RETRY: Duration = Duration::from_millis(2);
+        let deadline = Instant::now() + RELIABLE_SEND_TIMEOUT;
+        let mut pending = event;
+        loop {
+            match self.tx.try_send(pending) {
+                Ok(()) | Err(TrySendError::Disconnected(_)) => break,
+                Err(TrySendError::Full(event)) => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    pending = event;
+                    std::thread::sleep(RETRY);
+                }
             }
         }
     }
@@ -138,13 +168,24 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
+    /// Set when the emitter thread ends: the sink closure it owns is dropped
+    /// with it, so this observes the thread's exit without a join handle.
+    struct ThreadDone(Arc<AtomicBool>);
+
+    impl Drop for ThreadDone {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// A sink parked inside `gate` while the test holds it, so the queue below
     /// it fills deterministically, recording what gets through.
     struct Harness {
-        emitter: UiEmitter,
+        emitter: Arc<UiEmitter>,
         gate: Arc<Mutex<()>>,
         seen: Arc<Mutex<Vec<UiEvent>>>,
         entered: Arc<AtomicU64>,
+        thread_done: Arc<AtomicBool>,
     }
 
     impl Harness {
@@ -152,10 +193,13 @@ mod tests {
             let gate = Arc::new(Mutex::new(()));
             let seen: Arc<Mutex<Vec<UiEvent>>> = Arc::default();
             let entered = Arc::new(AtomicU64::new(0));
+            let thread_done = Arc::new(AtomicBool::new(false));
             let sink_gate = gate.clone();
             let sink_seen = seen.clone();
             let sink_entered = entered.clone();
+            let done = ThreadDone(thread_done.clone());
             let emitter = UiEmitter::new(Box::new(move |event| {
+                let _ = &done; // owned by the closure: dropped with the thread
                 sink_entered.fetch_add(1, Ordering::Relaxed);
                 {
                     let _open = sink_gate
@@ -166,12 +210,15 @@ mod tests {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(event);
-            }));
+            }))
+            .expect("emitter thread");
+            let emitter = Arc::new(emitter);
             Self {
                 emitter,
                 gate,
                 seen,
                 entered,
+                thread_done,
             }
         }
 
@@ -183,7 +230,12 @@ mod tests {
             let held = self.gate.lock().unwrap();
             self.emitter
                 .send(UiEvent::Connection(ConnectionEvent::down("park")));
+            let deadline = Instant::now() + Duration::from_secs(5);
             while self.entered.load(Ordering::Relaxed) == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "the sink never reached the gate: nothing is parked"
+                );
                 std::thread::yield_now();
             }
             held
@@ -356,7 +408,8 @@ mod tests {
     }
 
     /// A connection edge waits for room rather than being lost: the UI would
-    /// otherwise stay connected over a dead link.
+    /// otherwise stay connected over a dead link. The wait is bounded by
+    /// `RELIABLE_SEND_TIMEOUT`, so the sender is never parked for good.
     // [test->app~conn_003~1]
     #[test]
     fn a_connection_event_survives_a_full_queue() {
@@ -371,7 +424,10 @@ mod tests {
                 emitter.send(UiEvent::Connection(ConnectionEvent::down("lost")));
             });
             std::thread::sleep(Duration::from_millis(20));
-            assert!(!sender.is_finished(), "a full queue must block this send");
+            assert!(
+                !sender.is_finished(),
+                "a full queue must hold this send until room appears"
+            );
             drop(held);
         });
         h.settle();
@@ -384,5 +440,139 @@ mod tests {
                 .any(|e| matches!(e, UiEvent::Connection(c) if c.state == "lost")),
             "the connection edge reaches the webview"
         );
+    }
+
+    /// A trace-status takes the same reliable path, so it lands after the
+    /// batches already queued ahead of it — the front end's history clear
+    /// never overtakes the prior list's final points.
+    // [test->app~conn_003~1]
+    #[test]
+    fn trace_status_lands_after_the_batches_queued_ahead_of_it() {
+        let h = Harness::new();
+        let held = h.park();
+        for _ in 0..4 {
+            h.emitter.send(UiEvent::Samples(samples_batch(1)));
+        }
+        h.emitter.send(UiEvent::TraceStatus(TraceStatus::default()));
+        drop(held);
+        h.settle();
+
+        let seen = h.seen.lock().unwrap();
+        let status_at = seen
+            .iter()
+            .position(|e| matches!(e, UiEvent::TraceStatus(_)))
+            .expect("the trace status reaches the webview");
+        let batches = seen[..status_at]
+            .iter()
+            .filter(|e| matches!(e, UiEvent::Samples(_)))
+            .count();
+        assert_eq!(batches, 4, "every queued batch precedes the status");
+    }
+
+    /// Teardown with the queue full and a reader parked in its connection
+    /// send: `shut_down` releases both rather than deadlocking the join that
+    /// `Session::drop` performs.
+    // [test->app~conn_003~1]
+    #[test]
+    fn shut_down_releases_a_parked_reliable_send() {
+        let h = Harness::new();
+        let held = h.park();
+        for _ in 0..(EMIT_QUEUE_DEPTH + 20) {
+            h.emitter.send(UiEvent::Samples(samples_batch(1)));
+        }
+        let emitter = &h.emitter;
+        std::thread::scope(|scope| {
+            let sender = scope.spawn(move || {
+                emitter.send(UiEvent::Connection(ConnectionEvent::down("lost")));
+            });
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(!sender.is_finished(), "the send is parked on a full queue");
+
+            h.emitter.shut_down();
+            drop(held); // the webview finally drains
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (!sender.is_finished()) && (Instant::now() < deadline) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(sender.is_finished(), "the parked sender completed");
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (!h.thread_done.load(Ordering::Relaxed)) && (Instant::now() < deadline) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            h.thread_done.load(Ordering::Relaxed),
+            "the emitter thread ended"
+        );
+    }
+
+    /// The reader path never blocks on the UI: a full emitter queue sheds the
+    /// batches the pump produces, so the request waiting on the same pump
+    /// still resolves the moment its reply frame arrives.
+    // [test->app~conn_003~1]
+    #[test]
+    fn a_parked_ui_never_stalls_the_reply_path() {
+        use crate::protocol::{Client, StreamEvent};
+        use crate::testutil::{wait_for_requests, SharedBuf};
+        use pcs_proto::shared::envelope::Payload;
+        use prost::Message;
+
+        let h = Harness::new();
+        let held = h.park();
+
+        let buf = SharedBuf::default();
+        let client = Arc::new(Client::new(Box::new(buf.clone())));
+        let emitter_ui = h.emitter.clone();
+        let frame = |request_id: u32, payload: Payload| {
+            pcs_wire::frame(
+                &pcs_proto::shared::Envelope {
+                    request_id,
+                    payload: Some(payload),
+                }
+                .encode_to_vec(),
+            )
+        };
+
+        std::thread::scope(|scope| {
+            let mut pump = client.pump(Box::new(move |event| {
+                if let StreamEvent::Samples(s) = event {
+                    emitter_ui.send(UiEvent::Samples(samples_batch(s.count as usize)));
+                }
+            }));
+            let requester = {
+                let c = client.clone();
+                scope.spawn(move || c.request(Payload::Ping(Default::default())))
+            };
+            let id = wait_for_requests(&buf, 1)[0];
+
+            // Far more sample frames than the queue can hold, all pushed on
+            // the reader's own thread while the UI is parked.
+            for k in 0..(EMIT_QUEUE_DEPTH + 40) {
+                pump.push(&frame(
+                    0,
+                    Payload::Samples(pcs_proto::trace::Samples {
+                        first_cycle: k as u32,
+                        data: vec![0; 4],
+                        period_cycles: 1,
+                        count: 1,
+                    }),
+                ));
+            }
+            pump.push(&frame(
+                id,
+                Payload::Response(pcs_proto::shared::Response {
+                    accepted: true,
+                    cause: String::new(),
+                }),
+            ));
+            let reply = requester.join().unwrap();
+            assert!(
+                matches!(reply, Ok(Payload::Response(r)) if r.accepted),
+                "the reply resolved with the UI still parked"
+            );
+            drop(held);
+        });
     }
 }
