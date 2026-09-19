@@ -580,9 +580,10 @@ def run(page):
     def scale_l(widget_id):
         return widget_eval(page, widget_id, "(w) => w.ranges().L ?? null")
 
-    # The scratch plot lands at the end of the workspace; a plot laid out
-    # off-screen with no height skips its refresh, so bring it into view
-    # before asking its axis to follow the stream.
+    # A following axis needs a moving window: make sure the timeline is
+    # live, and bring the scratch plot (last in the workspace, possibly
+    # off-screen with no height, where a plot skips its refresh) into view.
+    page.evaluate("() => __cockpit.timeline.resume()")
     widget_eval(page, scratch, "(w) => { w.el.scrollIntoView({ block: 'center' }); w.refresh(); return true; }")
     a1 = scale_l(scratch)
     grew = True
@@ -596,10 +597,16 @@ def run(page):
     except Exception:
         grew = False
     a2 = scale_l(scratch)
+    axis_state = widget_eval(
+        page, scratch,
+        "(w) => ({ mode: __cockpit.store.timeline.mode, window: w.window,"
+        " newest: __cockpit.histories.get(w.cfg.signals[0])?.newestTick() ?? null,"
+        " size: w.el.querySelector('.plot-canvas').getBoundingClientRect().height })",
+    )
     check(
         "views_007 auto axis follows the signal's extents",
         grew and a1 is not None and a2 is not None and (a2[1] > a1[1] or a2[0] < a1[0]),
-        (a1, a2),
+        (a1, a2, axis_state),
     )
 
     page.click(f"[data-widget-id='{scratch}'] .widget-menu")
