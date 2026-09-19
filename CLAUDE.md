@@ -249,7 +249,8 @@ sufficient to make the tooling aware of a new topic.
   `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
   scanned without the source dirs); the report is not expected to be
   defect-free, but every `not ok` line must fall in one of these classes:
-  - a `sys~` anchor with no system-level test yet;
+  - a `sys~` anchor whose component decomposition or system-level test
+    is still deferred;
   - a `fw~`/`app~` spec written ahead of its code (`-impl, -test`) on
     the branch that will implement it, or named in
     `docs/motor-sprint.md`;
@@ -257,9 +258,9 @@ sufficient to make the tooling aware of a new topic.
     built), `fw~hal_tim_005`/`_007` (dead-time, break input — sim
     modeling pending), `app~arch_001` (its test needs the live Tauri
     core), `fw~hal_opamp_002` (needs a sim OPAMP→ADC path; see
-    `docs/sil/backlog.md`), `fw~mc_018` (bench-only: its bounds are
-    verified from the traced maxima, the sim clock cannot resolve
-    intra-callback durations).
+    `docs/sil/backlog.md`), `fw~mc_018` (its duration bounds are
+    bench-only, verified from the traced maxima — the sim clock cannot
+    resolve intra-callback durations; the probe mechanics are SIL-tested).
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and

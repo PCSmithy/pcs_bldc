@@ -25,6 +25,31 @@ room for a second 64-byte IN buffer.
 with the link test; then raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S` and
 its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
 
+## Desktop app: trace stream robustness (review 2026-09-19)
+
+**When:** before the trace client is relied on for long unattended
+captures, or when a watch-list swap ever shows a stray sample.
+
+**What it is:** four items a review of the app's stream path left open.
+(1) A watch-list install swaps the host demux table only after the device
+accepts, so a message of the other list decodes onto the wrong signals
+when the two lists' per-period record sizes match; a list generation
+echoed from `WatchRequest` into `Samples` would let the host drop
+mismatched messages. (2) The UI emitter's bounded queue sheds only when
+`app.emit` blocks, and a non-tracing tauri build posts to the event loop
+without blocking, so under a sustained backlog the points pile up in the
+event-loop proxy and the JS heap where nothing is counted — check
+`host_dropped_points` ever moves on the bench and, if not, bound where
+backpressure is visible (an in-flight counter decremented from JS).
+(3) macOS gets neither the 1 MB receive queue (`SetupComm` is Windows)
+nor any host-side loss count: deframe/decode failures are silent and
+surface as device drops. (4) An in-flight request keeps the duplicated
+port handle open for up to its 500 ms timeout after disconnect,
+delaying the DTR drop the board clears its list on.
+
+**Where:** `sw/gui/src-tauri/src/{trace.rs,emitter.rs,session.rs,protocol.rs}`,
+`sw/lib/c/shared/proto/trace.proto` for (1), `app~conn_003`/`app~obs_003`.
+
 ## Trace stream: time-based telemetry cadence
 
 **When:** if a watch list the budget admits ever runs the server task

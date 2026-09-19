@@ -9,10 +9,16 @@ validated against the simulation before the bench.
 
 ## [START HERE] — entry point
 
-**Where we are:** foundation sprint done (M1–M5). Full hw/io/dev/app driver
-stack, all 10 analog inputs bench-verified in engineering units, FreeRTOS
-task architecture (`task_1ms` > `task_10ms` > `task_usb` > `telemetryTask`)
-running. The gate driver has **never been driven** — no motor motion yet.
+**Where we are:** foundation sprint done (M1–M5); Milestone 1 largely
+done. Full hw/io/dev/app driver stack, all 10 analog inputs bench-verified,
+FreeRTOS task architecture (`task_1ms` > `task_10ms` > `task_usb` >
+`server`) running. First motion is real: six-step commutation
+(`fw~mc_011`/`fw~mc_012`) with overcurrent and encoder-fault protection,
+phase currents from the 20 kHz injected ADC with a per-cycle callback
+(`fw~io_bridge_006`/`_007`), and a 20 kHz signal trace to the desktop app.
+Written ahead of their code, for the next branch: the V/f + modulation set
+`fw~mc_010`, `fw~mc_013`–`fw~mc_017` (`specs/firmware/mc/vf-sinusoidal.md`,
+`modulation.md`).
 
 **Read first:**
 1. `CLAUDE.md`, plus the ADC and unhandled-IRQ gotchas at the bottom of this
