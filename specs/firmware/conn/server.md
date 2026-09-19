@@ -134,3 +134,27 @@ Covers:
 - sys~conn_004~1
 
 Needs: impl, test
+
+### Pass transmission
+`fw~conn_server_006~1`
+
+The server shall hand each millisecond pass's frames — replies,
+telemetry, log, samples, and link-test frames — to the serial channel
+as one write, framing each (`fw~conn_proto_002~1`) into a pass buffer
+of 768 bytes — a pass outgrowing the buffer taking one further write per
+fill — a frame taken whole or not at all when the channel's free
+transmit capacity (`fw~conn_serial_006~1`), less what the pass already
+holds, cannot hold it.
+
+Acceptance:
+
+- A pass that produces several frames within the buffer reaches the
+  serial channel as one write carrying them in order.
+- A frame the channel's remaining capacity cannot hold is not written;
+  the pass's earlier frames still leave.
+- A disconnect discards a pass's staged frames.
+
+Covers:
+- sys~conn_002~1
+
+Needs: impl, test

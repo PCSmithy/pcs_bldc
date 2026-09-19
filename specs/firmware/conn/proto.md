@@ -25,6 +25,8 @@ reporting failure for received bytes that do not decode as an
 Acceptance:
 - An `Envelope` carrying each payload type encodes and decodes back to
   identical field values.
+- An `Envelope` assembled around an already-encoded payload is
+  byte-identical to the `Envelope` encoded whole.
 - Decoding a truncated `Envelope` encoding reports failure.
 
 Covers:
@@ -48,6 +50,8 @@ Each frame on the wire shall consist of:
 Acceptance:
 - A known `Envelope` encodes to a byte-exact reference frame vector.
 - The body contains no `0x00` byte.
+- A frame encoded into a caller's buffer is byte-identical to the
+  transmitted one; a buffer too short for it takes nothing.
 
 Covers:
 - sys~conn_002~1

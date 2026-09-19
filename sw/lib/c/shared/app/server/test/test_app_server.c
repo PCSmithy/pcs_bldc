@@ -1801,6 +1801,121 @@ static void test_link_test_clears_on_disconnect(void)
 }
 
 
+// [test->fw~conn_proto_001~1] an envelope assembled around an encoded payload
+// is byte-identical to the envelope encoded whole
+static void test_envelope_assembled_around_a_payload_matches_the_whole(void)
+{
+    shared_Envelope env = shared_Envelope_init_zero;
+    env.request_id = 0U;
+    env.which_payload = shared_Envelope_samples_tag;
+    env.payload.samples.period_cycles = 20U;
+    env.payload.samples.first_cycle = 0x12345678U;
+    env.payload.samples.count = 3U;
+    env.payload.samples.data.size = 12U;
+    for (uint32_t i = 0U; i < 12U; i++)
+    {
+        env.payload.samples.data.bytes[i] = (uint8_t) (0xA0U + i);
+    }
+    uint8_t whole[64];
+    uint8_t assembled[64];
+    size_t wholeLen = 0U;
+    size_t assembledLen = 0U;
+    TEST_ASSERT_TRUE(lib_protobuf_encode(shared_Envelope_fields, &env, whole, sizeof(whole), &wholeLen));
+    TEST_ASSERT_TRUE(lib_protobuf_encodeEnvelope(0U, shared_Envelope_samples_tag, trace_Samples_fields,
+                                                 &env.payload.samples, assembled, sizeof(assembled), &assembledLen));
+    TEST_ASSERT_EQUAL_UINT32((uint32_t) wholeLen, (uint32_t) assembledLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(whole, assembled, wholeLen);
+
+    // With a request id (a two-byte varint) and a reply payload.
+    env = (shared_Envelope) shared_Envelope_init_zero;
+    env.request_id = 300U;
+    env.which_payload = shared_Envelope_response_tag;
+    env.payload.response.accepted = true;
+    TEST_ASSERT_TRUE(lib_protobuf_encode(shared_Envelope_fields, &env, whole, sizeof(whole), &wholeLen));
+    TEST_ASSERT_TRUE(lib_protobuf_encodeEnvelope(300U, shared_Envelope_response_tag, shared_Response_fields,
+                                                 &env.payload.response, assembled, sizeof(assembled), &assembledLen));
+    TEST_ASSERT_EQUAL_UINT32((uint32_t) wholeLen, (uint32_t) assembledLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(whole, assembled, wholeLen);
+    TEST_ASSERT_FALSE(lib_protobuf_encodeEnvelope(0U, shared_Envelope_samples_tag, trace_Samples_fields,
+                                                  &env.payload.samples, assembled, 8U, &assembledLen));
+}
+
+// [test->fw~conn_server_006~1] a pass's frames reach the transport as one
+// write, in order; a frame the pass cannot hold stays out while the earlier
+// ones still leave
+static void test_a_pass_leaves_as_one_write(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+    (void) collectReplies(NULL, 0U);   // resets the sim's write count
+
+    // Telemetry (every 100th pass; the install took one) plus a millisecond
+    // of records that batches as 16 + 4: three frames from one pass.
+    for (uint32_t tick = 0U; tick < 98U; tick++)
+    {
+        app_server_run1ms();
+    }
+    (void) collectReplies(NULL, 0U);
+    for (uint32_t c = 0U; c < 20U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, HW_USB_sim_txWrites());
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(3U, collectReplies(replies, 8U));
+    TEST_ASSERT_EQUAL(shared_Envelope_telemetry_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[1].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[1].payload.samples.count);
+    TEST_ASSERT_EQUAL_UINT32(4U, replies[2].payload.samples.count);
+
+    // Room for the reply reserve plus one full message only: the 16-record
+    // frame leaves, the 4-record one waits for the next pass.
+    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) +
+                              (uint32_t) IO_COBSFRAME_WIRE_MAX(256U + 19U) + 8U;
+    uint8_t zeros[256] = { 0U };
+    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
+    {
+        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
+    }
+    for (uint32_t c = 20U; c < 40U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 8U));
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[0].payload.samples.count);
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 8U));
+    TEST_ASSERT_EQUAL_UINT32(4U, replies[0].payload.samples.count);
+    TEST_ASSERT_EQUAL_UINT32(36U, replies[0].payload.samples.first_cycle);
+}
+
+// [test->fw~conn_server_006~1] a pass that outgrows the stage takes a second
+// write rather than leaving records behind
+static void test_a_backlog_pass_takes_a_second_write_not_less(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+    (void) collectReplies(NULL, 0U);
+
+    for (uint32_t c = 0U; c < 60U; c++)   // 3 ms of 16-byte records: ~1.2 kB on the wire
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(2U, HW_USB_sim_txWrites());
+    shared_Envelope replies[8];
+    const uint32_t n = collectReplies(replies, 8U);
+    uint32_t records = 0U;
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        records += replies[i].payload.samples.count;
+    }
+    TEST_ASSERT_EQUAL_UINT32(60U, records);
+}
+
 // [test->fw~conn_server_001~1] the streams leave a reply's worth of transmit
 // capacity, so a request during a saturating stream is answered in its pass.
 // [test->fw~conn_trace_009~1]
@@ -1936,6 +2051,9 @@ int main(void)
     RUN_TEST(test_link_test_rejects_second_request_while_running);
     RUN_TEST(test_link_test_count_reached_frees_the_service);
     RUN_TEST(test_link_test_clears_on_disconnect);
+    RUN_TEST(test_envelope_assembled_around_a_payload_matches_the_whole);
+    RUN_TEST(test_a_pass_leaves_as_one_write);
+    RUN_TEST(test_a_backlog_pass_takes_a_second_write_not_less);
     RUN_TEST(test_reply_survives_a_saturating_sample_stream);
     RUN_TEST(test_reply_held_until_the_transport_takes_it);
 

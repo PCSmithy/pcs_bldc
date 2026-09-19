@@ -653,12 +653,21 @@ bool app_server_trace_pop(uint8_t * const buffer, size_t bufferLen)
         {
             const uint32_t dataOffset = APP_SERVER_TRACE_RECORD_HEADER_BYTES +
                                         APP_SERVER_TRACE_CYCLE_BYTES;
-            for (uint32_t i = 0U; i < (uint32_t) len; i++)
+            const uint32_t capacity = app_server_trace_private_capacity();
+            // The data lies in at most two runs around the wrap: copy them
+            // whole rather than a byte at a time through the peek.
+            uint32_t start = data->tail + dataOffset;
+            if (start >= capacity)
             {
-                buffer[i] = app_server_trace_private_ringPeek(dataOffset + i);
+                start -= capacity;
+            }
+            const uint32_t firstRun = ((start + (uint32_t) len) > capacity) ? (capacity - start) : (uint32_t) len;
+            (void) memcpy(buffer, &data->config->sampleStorage[start], firstRun);
+            if (firstRun < (uint32_t) len)
+            {
+                (void) memcpy(&buffer[firstRun], data->config->sampleStorage, (uint32_t) len - firstRun);
             }
 
-            const uint32_t capacity = app_server_trace_private_capacity();
             uint32_t newTail = data->tail + dataOffset + (uint32_t) len;
             if (newTail >= capacity)
             {

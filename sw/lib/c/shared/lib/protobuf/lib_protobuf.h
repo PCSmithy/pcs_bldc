@@ -12,6 +12,15 @@ bool lib_protobuf_encode(const pb_msgdesc_t * const fields, const void * const m
                          uint8_t * const buffer, size_t bufferLen,
                          size_t * const encodedLen);
 
+// Encode an envelope around one payload without walking the envelope's oneof:
+// request_id (field 1, omitted when 0), then the payload as the
+// length-delimited field `payloadTag`. Byte-identical to encoding the full
+// envelope, at the cost of the payload alone. False when it exceeds bufferLen.
+bool lib_protobuf_encodeEnvelope(uint32_t requestId, uint32_t payloadTag,
+                                 const pb_msgdesc_t * const payloadFields, const void * const payload,
+                                 uint8_t * const buffer, size_t bufferLen,
+                                 size_t * const encodedLen);
+
 // Decode len bytes into message (described by fields); false when the bytes
 // do not decode as that message type.
 bool lib_protobuf_decode(const pb_msgdesc_t * const fields,

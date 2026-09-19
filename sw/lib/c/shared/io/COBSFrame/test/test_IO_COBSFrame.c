@@ -120,6 +120,27 @@ static void test_wire_format_reference_vector(void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, wire, 16U);
 }
 
+// [test->fw~conn_proto_002~1] a frame encoded into a caller's buffer matches
+// the transmitted one byte for byte; a buffer too short takes nothing
+static void test_encode_into_buffer_matches_the_wire(void)
+{
+    const uint8_t payload[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 9U));
+    uint8_t wire[32] = { 0U };
+    const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
+
+    uint8_t out[32] = { 0xAAU };
+    size_t outLen = 0U;
+    TEST_ASSERT_TRUE(IO_COBSFrame_encode(IO_COBSFRAME_CHANNEL_CDC, payload, 9U, out, sizeof(out), &outLen));
+    TEST_ASSERT_EQUAL_UINT32(wireLen, (uint32_t) outLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(wire, out, wireLen);
+
+    uint8_t shortOut[15] = { 0U };
+    outLen = 99U;
+    TEST_ASSERT_FALSE(IO_COBSFrame_encode(IO_COBSFRAME_CHANNEL_CDC, payload, 9U, shortOut, sizeof(shortOut), &outLen));
+    TEST_ASSERT_EQUAL_UINT32(99U, (uint32_t) outLen);
+}
+
 // [test->fw~conn_proto_002~1]
 static void test_wire_body_contains_no_zero_bytes(void)
 {
@@ -307,6 +328,7 @@ int main(void)
 
     RUN_TEST(test_wire_format_reference_vector);
     RUN_TEST(test_wire_body_contains_no_zero_bytes);
+    RUN_TEST(test_encode_into_buffer_matches_the_wire);
 
     RUN_TEST(test_frames_transmit_in_order);
     RUN_TEST(test_frame_exceeding_capacity_dropped_whole);

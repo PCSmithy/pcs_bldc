@@ -44,6 +44,12 @@
 // worth of room in the pass it is produced (fw~conn_server_001).
 #define APP_SERVER_REPLY_WIRE_RESERVE ((uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX))
 
+// A pass's frames stage here and reach the transport as one write, so a pass
+// costs one transfer rather than one per frame (fw~conn_server_006). Sized
+// past what the link budget lets a millisecond carry; a backlog pass that
+// outgrows it takes a second write, never less capacity.
+#define APP_SERVER_TX_STAGE_BYTES (768U)
+
 /* Private Data Definitions */
 
 typedef struct
@@ -62,6 +68,8 @@ typedef struct
     // the encode bound); TX to the largest envelope the board encodes.
     uint8_t rxFrame[IO_COBSFRAME_MAX_PAYLOAD];
     uint8_t txBytes[LIB_PROTOBUF_ENVELOPE_MAX];
+    uint8_t txStage[APP_SERVER_TX_STAGE_BYTES];
+    size_t  txStageLen;
     // A reply the transport could not take yet; retried before any new request.
     uint8_t pendingReply[LIB_PROTOBUF_ENVELOPE_MAX];
     size_t  pendingReplyLen;
@@ -81,13 +89,74 @@ static void app_server_private_zeroEnvelope(shared_Envelope * const env)
     (void) memset(env, 0, sizeof(*env));
 }
 
+// Transmit capacity left for this pass: what the transport can take beyond
+// the frames already staged.
+static uint32_t app_server_private_txFree(void)
+{
+    const uint32_t transport = IO_serial_txFree(data->config->serial);
+    return (transport > data->txStageLen) ? (transport - (uint32_t) data->txStageLen) : 0U;
+}
+
+// [impl->fw~conn_server_006~1] the pass's staged frames leave as one write.
+static void app_server_private_flushStage(void)
+{
+    if (data->txStageLen > 0U)
+    {
+        IO_serial_write(data->config->serial, data->txStage, (uint32_t) data->txStageLen);
+        data->txStageLen = 0U;
+    }
+}
+
+// [impl->fw~conn_server_006~1] frame payload onto the pass's stage: whole
+// frames only, false when the transport has no room for it. A frame the
+// transport can take but the stage cannot flushes the stage first.
+static bool app_server_private_stageFrame(const uint8_t * const payload, size_t len)
+{
+    bool staged = false;
+    const uint32_t transportRoom = app_server_private_txFree();
+    if (transportRoom > 0U)
+    {
+        const uint32_t stageRoom = APP_SERVER_TX_STAGE_BYTES - (uint32_t) data->txStageLen;
+        uint32_t room = (stageRoom < transportRoom) ? stageRoom : transportRoom;
+        size_t wireLen = 0U;
+        staged = IO_COBSFrame_encode(data->config->frame, payload, len,
+                                     &data->txStage[data->txStageLen], room, &wireLen);
+        if ((!staged) && (stageRoom < transportRoom) && (data->txStageLen > 0U))
+        {
+            app_server_private_flushStage();
+            room = (APP_SERVER_TX_STAGE_BYTES < transportRoom) ? APP_SERVER_TX_STAGE_BYTES : transportRoom;
+            staged = IO_COBSFrame_encode(data->config->frame, payload, len, data->txStage, room, &wireLen);
+        }
+        if (staged)
+        {
+            data->txStageLen += wireLen;
+        }
+    }
+    return staged;
+}
+
 static bool app_server_private_sendEnvelope(const shared_Envelope * const env)
 {
     bool sent = false;
     size_t encodedLen = 0U;
     if (lib_protobuf_encode(shared_Envelope_fields, env, data->txBytes, sizeof(data->txBytes), &encodedLen))
     {
-        sent = IO_COBSFrame_send(data->config->frame, data->txBytes, encodedLen);
+        sent = app_server_private_stageFrame(data->txBytes, encodedLen);
+    }
+    return sent;
+}
+
+// The stream's hot path: the Samples payload encoded on its own and wrapped
+// directly (lib_protobuf_encodeEnvelope), sparing the walk over the envelope's
+// whole oneof that a full-envelope encode pays per message.
+static bool app_server_private_sendSamples(const trace_Samples * const samples)
+{
+    bool sent = false;
+    size_t encodedLen = 0U;
+    if (lib_protobuf_encodeEnvelope(0U, shared_Envelope_samples_tag, trace_Samples_fields, samples,
+                                    data->txBytes, sizeof(data->txBytes), &encodedLen))
+    {
+        sent = app_server_private_stageFrame(data->txBytes, encodedLen);
     }
     return sent;
 }
@@ -95,7 +164,7 @@ static bool app_server_private_sendEnvelope(const shared_Envelope * const env)
 // Transmit capacity available to the streams: whatever exceeds the reply reserve.
 static uint32_t app_server_private_streamTxFree(void)
 {
-    const uint32_t txFree = IO_serial_txFree(data->config->serial);
+    const uint32_t txFree = app_server_private_txFree();
     return (txFree > APP_SERVER_REPLY_WIRE_RESERVE) ? (txFree - APP_SERVER_REPLY_WIRE_RESERVE) : 0U;
 }
 
@@ -105,7 +174,7 @@ static bool app_server_private_flushPendingReply(void)
 {
     if (data->pendingReplyLen > 0U)
     {
-        if (IO_COBSFrame_send(data->config->frame, data->pendingReply, data->pendingReplyLen))
+        if (app_server_private_stageFrame(data->pendingReply, data->pendingReplyLen))
         {
             data->pendingReplyLen = 0U;
         }
@@ -118,7 +187,7 @@ static void app_server_private_sendReply(const shared_Envelope * const reply)
     size_t encodedLen = 0U;
     if (lib_protobuf_encode(shared_Envelope_fields, reply, data->txBytes, sizeof(data->txBytes), &encodedLen))
     {
-        if (!IO_COBSFrame_send(data->config->frame, data->txBytes, encodedLen))
+        if (!app_server_private_stageFrame(data->txBytes, encodedLen))
         {
             (void) memcpy(data->pendingReply, data->txBytes, encodedLen);
             data->pendingReplyLen = encodedLen;
@@ -329,10 +398,14 @@ static void app_server_private_drainSamples(void)
             (buffered >= (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)))
         {
             const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
-            app_server_private_zeroEnvelope(env);
+            // Only the fields the payload encoder reads are written: zeroing
+            // the whole envelope costs more than encoding the message.
+            env->request_id = 0U;
             env->which_payload = shared_Envelope_samples_tag;
             samples->period_cycles = periodCycles;
             samples->first_cycle = cycle;
+            samples->count = 0U;
+            samples->data.size = 0U;
 
             size_t used = 0U;
             uint32_t nextCycle = cycle;
@@ -371,7 +444,7 @@ static void app_server_private_drainSamples(void)
                 // The records are already popped: a failed send drops them, and
                 // the host sees the loss as a gap in the cycle indices.
                 samples->data.size = (pb_size_t) used;
-                (void) app_server_private_sendEnvelope(env);
+                (void) app_server_private_sendSamples(samples);
                 const uint32_t wire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
                     used + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
                 budget -= (wire < budget) ? wire : budget;
@@ -408,8 +481,8 @@ static void app_server_private_drainLog(void)
 }
 
 // [impl->fw~conn_server_005~1] last drain of the pass, measuring only the room
-// the real services leave. IO_COBSFrame_send takes whole frames or none, so a
-// short pass stops mid-count and resumes next pass.
+// the real services leave. The stage takes whole frames or none, so a short
+// pass stops mid-count and resumes next pass.
 static void app_server_private_drainLinkTest(void)
 {
     bool sent = true;
@@ -480,6 +553,7 @@ void app_server_run1ms(void)
             app_server_private_drainLog();
             app_server_private_drainSamples();
             app_server_private_drainLinkTest();
+            app_server_private_flushStage();
         }
         else if (data->wasConnected)
         {
@@ -488,6 +562,7 @@ void app_server_run1ms(void)
             // [impl->fw~conn_server_005~1] a link test is abandoned with it.
             app_server_trace_clear();
             data->pendingReplyLen = 0U;
+            data->txStageLen = 0U;
             data->linkTestRemaining = 0U;
             IO_COBSFrame_reset(data->config->frame);
             uint8_t discard[16];

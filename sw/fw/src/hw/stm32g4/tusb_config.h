@@ -30,9 +30,9 @@ extern "C" {
 #define CFG_TUD_VENDOR          0
 
 #define CFG_TUD_CDC_RX_BUFSIZE  256
-// Hold a full telemetry window's burst (see TELEMETRY_TX_BUF_BYTES) so the
-// batched write is absorbed in one go and drains async — a window larger than
-// this FIFO forces IO_serial_write into 1 ms backpressure yields per overflow.
+// Pipeline depth behind the endpoint buffer: the server's 1 ms pass writes
+// into whatever is free here, and a pass catching up a stall pushes several
+// milliseconds of records at once.
 #define CFG_TUD_CDC_TX_BUFSIZE  2048
 // Bytes handed to the endpoint per transfer; one packet per transfer costs a
 // host poll interval per 64 B, so a multi-packet transfer carries the stream.

@@ -31,6 +31,7 @@ typedef struct
 
     uint8_t  tx[HW_USB_SIM_BUF];
     uint32_t txLen;
+    uint32_t txWrites;   // HW_USB_write calls since reset: one per transfer
 
     uint8_t  rx[HW_USB_SIM_BUF];
     uint32_t rxHead;
@@ -97,6 +98,7 @@ bool HW_USB_connected(void)
 uint32_t HW_USB_write(const uint8_t * data_in, uint32_t len)
 {
     uint32_t n = 0U;
+    data->txWrites++;
     if (data->txAccepting)
     {
         while ((n < len) && (data->txLen < HW_USB_SIM_BUF))
@@ -177,6 +179,11 @@ uint32_t HW_USB_sim_readTx(uint8_t * buffer, uint32_t len)
 uint32_t HW_USB_sim_txLen(void)
 {
     return data->txLen;
+}
+
+uint32_t HW_USB_sim_txWrites(void)
+{
+    return data->txWrites;
 }
 
 void HW_USB_sim_injectRx(const uint8_t * src, uint32_t len)
