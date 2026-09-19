@@ -53,5 +53,12 @@ uint32_t app_server_trace_groupPeriodCycles(uint32_t group);
 
 // Consumer side: the oldest buffered record's group, cycle index, and data
 // length, or false when the ring is empty. Pop moves that record's data out.
+// Ring record layout: 3-byte header (length, group) + 4-byte cycle index + data.
+#define APP_SERVER_TRACE_RECORD_HEADER_BYTES   (3U)
+#define APP_SERVER_TRACE_CYCLE_BYTES           (4U)
+#define APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES (APP_SERVER_TRACE_RECORD_HEADER_BYTES + APP_SERVER_TRACE_CYCLE_BYTES)
+
+/** Bytes buffered right now: each record's data plus its overhead. */
+uint32_t app_server_trace_bufferedBytes(void);
 bool app_server_trace_peek(uint32_t * const group, uint32_t * const cycle, size_t * const dataLen);
 bool app_server_trace_pop(uint8_t * const buffer, size_t bufferLen);

@@ -120,7 +120,7 @@ server shall sample it in the bridge cycle callback
 |----------|-------|
 | Cycle index | Sampling advances a 32-bit PWM-cycle index each callback, restarted at zero when a list installs, buffered samples of the prior list discarded |
 | Capture | Each cycle captures every group that is due — a group of period $c$ cycles and offset $k$ is due when $(\text{index} - k) \bmod c = 0$ — the group's entries captured as one coherent snapshot into one buffered record |
-| Overflow | A record that does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole |
+| Overflow | A record that does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole, and skipping holds until the buffer has drained to half its size, so a loss is one contiguous gap |
 
 | Group period $c$ | Offset $k$ |
 |------------------|------------|
@@ -142,6 +142,8 @@ Acceptance:
 - With emission stalled long enough to fill the sample buffer, emitted
   cycle indices jump past the skipped records and every emitted record
   holds a complete capture.
+- Once a record is skipped, no record is admitted until the buffer has
+  drained to half; the records then admitted form one gap-free run.
 
 Covers:
 - sys~obs_005~1
@@ -156,9 +158,9 @@ Each millisecond, the server shall emit each group's buffered records
 (`fw~conn_trace_005~1`), consecutive records of one group whose cycle
 indices step by its period sharing a message up to its data capacity,
 a message starting only where the transmit capacity holds a full one
-(records otherwise staying buffered), each emission spending only the
-capacity present at its start, and leaving one reply frame of transmit
-capacity (`fw~conn_server_001~1`) unused.
+(records otherwise staying buffered), each emission taking only the
+records buffered and the capacity present at its start, and leaving one
+reply frame of transmit capacity (`fw~conn_server_001~1`) unused.
 
 Acceptance:
 

@@ -303,10 +303,13 @@ static void app_server_private_publishTelemetry(void)
 // first record's cycle index, the record count, and the concatenated data
 static void app_server_private_drainSamples(void)
 {
-    // One pass spends only the capacity present at its start; whatever the
-    // transport frees meanwhile waits for the next pass, so a pass is bounded
-    // however fast the ring refills.
+    // One pass spends only the transmit capacity present at its start and
+    // takes only the records buffered at its start: what the transport frees
+    // or the sampler adds meanwhile waits for the next pass. That bounds the
+    // pass however fast the ring refills, and keeps a message a pass-worth of
+    // records rather than the few that landed during the previous send.
     uint32_t budget = app_server_private_streamTxFree();
+    uint32_t buffered = app_server_trace_bufferedBytes();
     bool progressing = true;
     while (progressing)
     {
@@ -322,7 +325,8 @@ static void app_server_private_drainSamples(void)
         // records held back instead leave whole once capacity returns.
         const uint32_t fullWire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
             sizeof(samples->data.bytes) + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
-        if ((budget >= fullWire) && app_server_trace_peek(&group, &cycle, &recordLen))
+        if ((budget >= fullWire) && app_server_trace_peek(&group, &cycle, &recordLen) &&
+            (buffered >= (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)))
         {
             const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
             app_server_private_zeroEnvelope(env);
@@ -336,6 +340,7 @@ static void app_server_private_drainSamples(void)
             while (batching)
             {
                 if (((used + recordLen) > sizeof(samples->data.bytes)) ||
+                    (buffered < (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)) ||
                     (!app_server_trace_pop(&samples->data.bytes[used],
                                            sizeof(samples->data.bytes) - used)))
                 {
@@ -343,6 +348,7 @@ static void app_server_private_drainSamples(void)
                 }
                 else
                 {
+                    buffered -= APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen;
                     used += recordLen;
                     samples->count++;
                     nextCycle += periodCycles;

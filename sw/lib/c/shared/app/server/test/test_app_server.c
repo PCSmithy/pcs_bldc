@@ -1210,6 +1210,70 @@ static void test_overflow_keeps_the_slow_group_records_honest(void)
     TEST_ASSERT_TRUE(slowRecords >= 1U);
 }
 
+// [test->fw~conn_trace_004~1] once a record is skipped, admission waits for
+// the buffer to drain to half, so the loss reads as one contiguous gap
+static void test_overflow_holds_until_the_buffer_drains_to_half(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    // Fill the buffer past overflow with nothing emitted, then let one pass
+    // drain a few records into a transport with room for one message only.
+    for (uint32_t c = 0U; c < 400U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) +
+                              (uint32_t) IO_COBSFRAME_WIRE_MAX(256U + 19U) + 8U;
+    uint8_t zeros[256] = { 0U };
+    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
+    {
+        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
+    }
+    app_server_run1ms();
+    shared_Envelope replies[64];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 64U));
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[0].payload.samples.count);
+
+    // Room for 16 records now, but the buffer is still above half: these
+    // cycles are skipped, not admitted one-for-one into the freed space.
+    for (uint32_t c = 400U; c < 420U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    // Drain everything that was buffered, then sample a fresh run.
+    uint32_t total = 0U;
+    uint32_t lastEnd = 0U;
+    for (uint32_t pass = 0U; pass < 8U; pass++)
+    {
+        app_server_run1ms();
+        const uint32_t n = collectReplies(replies, 64U);
+        for (uint32_t i = 0U; i < n; i++)
+        {
+            const trace_Samples * const m = &replies[i].payload.samples;
+            total += m->count;
+            lastEnd = m->first_cycle + m->count - 1U;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(lastEnd < 400U, "a record from the held-off span was admitted");
+    for (uint32_t c = 420U; c < 440U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+    const uint32_t n = collectReplies(replies, 64U);
+    TEST_ASSERT_TRUE(n >= 1U);
+    TEST_ASSERT_EQUAL_UINT32(420U, replies[0].payload.samples.first_cycle);
+    uint32_t fresh = 0U;
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        fresh += replies[i].payload.samples.count;
+    }
+    TEST_ASSERT_EQUAL_UINT32(20U, fresh);
+    (void) total;
+}
+
 // [test->fw~conn_trace_009~1] 16-byte records fill a 256-byte Samples at 16 of
 // them, so a millisecond of one-cycle captures leaves as 16 + 4
 static void test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four(void)
@@ -1853,6 +1917,7 @@ int main(void)
     RUN_TEST(test_interior_gap_splits_the_batch);
     RUN_TEST(test_overflow_keeps_the_slow_group_records_honest);
     RUN_TEST(test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four);
+    RUN_TEST(test_overflow_holds_until_the_buffer_drains_to_half);
     RUN_TEST(test_short_transmit_capacity_holds_records_whole);
     RUN_TEST(test_records_stalled_three_milliseconds_arrive_in_capture_order);
     RUN_TEST(test_no_record_is_held_past_two_emissions);

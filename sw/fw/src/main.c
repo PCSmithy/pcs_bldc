@@ -316,6 +316,14 @@ static void task_server(void * params)
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
+        // A pass that overran its tick is not made up: back-to-back passes
+        // would each drain the few records that landed during the last one,
+        // fragmenting the stream. The next pass waits a whole tick instead.
+        const TickType_t now = xTaskGetTickCount();
+        if ((TickType_t)(now - lastWake) > pdMS_TO_TICKS(1U))
+        {
+            lastWake = now;
+        }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
         serverRuns++;
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();

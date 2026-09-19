@@ -10,8 +10,6 @@
 
 // Ring record layout: [dataLen u16 LE][group u8][cycle u32 LE][data...]. The
 // header bytes are ring bookkeeping only; they never ride the wire.
-#define APP_SERVER_TRACE_RECORD_HEADER_BYTES (3U)
-#define APP_SERVER_TRACE_CYCLE_BYTES         (4U)
 
 // Most records one millisecond can hold: 20 one-cycle plus one each of the
 // 20- and 200-cycle groups. The u formula charges only CYCLE_BYTES of each.
@@ -87,6 +85,9 @@ typedef struct
     // cross-writer resets only happen with the gate closed.
     volatile uint32_t head;
     volatile uint32_t tail;
+    // Sampler-owned: set by a skipped record, cleared once the ring has
+    // drained to half, so a loss is one contiguous gap.
+    bool overflowed;
 } app_server_trace_data_S;
 
 static app_server_trace_data_S app_server_trace_data;
@@ -156,6 +157,7 @@ static void app_server_trace_private_restart(void)
     data->cycleIndex = 0U;
     data->head = 0U;
     data->tail = 0U;
+    data->overflowed = false;
 }
 
 // Resolve a protocol span to its backing memory: contained in one region, or
@@ -348,10 +350,22 @@ static void app_server_trace_private_capture(uint32_t group, uint32_t cycle)
     const uint32_t capacity = app_server_trace_private_capacity();
     const uint32_t needed = APP_SERVER_TRACE_RECORD_HEADER_BYTES +
                             APP_SERVER_TRACE_CYCLE_BYTES + dataLen;
-    const uint32_t freeBytes = (capacity - 1U) - app_server_trace_private_ringUsed();
+    const uint32_t used = app_server_trace_private_ringUsed();
+    const uint32_t freeBytes = (capacity - 1U) - used;
     // A record that does not fit is skipped whole; the cycle-index gap is the
-    // host's drop signal.
-    if (needed <= freeBytes)
+    // host's drop signal. Skipping then holds until the ring has drained to
+    // half: one record admitted per record drained would scatter the loss
+    // as single-record gaps, each breaking a message batch, and the small
+    // messages that follow cost the link more than the records they carry.
+    if (data->overflowed && (used <= (capacity / 2U)))
+    {
+        data->overflowed = false;
+    }
+    if (needed > freeBytes)
+    {
+        data->overflowed = true;
+    }
+    if (!data->overflowed)
     {
         // The free-space check read tail: fence before reusing space the
         // consumer just released.
@@ -598,6 +612,11 @@ bool app_server_trace_write(const trace_WriteRequest * const request,
 uint32_t app_server_trace_groupPeriodCycles(uint32_t group)
 {
     return ((group < APP_SERVER_TRACE_GROUP_COUNT)) ? app_server_trace_groups[group].periodCycles : 0U;
+}
+
+uint32_t app_server_trace_bufferedBytes(void)
+{
+    return (data->config != NULL) ? app_server_trace_private_ringUsed() : 0U;
 }
 
 bool app_server_trace_peek(uint32_t * const group, uint32_t * const cycle, size_t * const dataLen)

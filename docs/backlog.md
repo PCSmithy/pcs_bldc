@@ -31,17 +31,29 @@ its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
 is what saturates the link — a fast group plus two slower ones already
 costs three packets per millisecond.
 
-**What it is:** `IO_serial_write` flushes after every frame, so each
-`Samples` message is its own USB IN transfer and pays the per-packet
-floor (~80–170 µs measured 2026-09-18) however short it is. Found while
-fixing the drain collapse (`fw~conn_trace_009`: fragments under
-backpressure pinned the link at 24-byte packets, ~71 kB/s). Coalescing
-one emission's frames into a single flush would cut the packet count to
-the byte-driven minimum at a cost of at most one tick of latency.
+**What it is:** every frame becomes its own USB IN transfer:
+`IO_serial_write` flushes per call, and TinyUSB's stream write starts a
+transfer as soon as 64 bytes are queued anyway, so a pass's frames never
+share one. Measured 2026-09-18/19 on the bench (ISR probe 6 µs, so the
+20 kHz callback is not the load): the server task keeps its 1 kHz pass
+rate up to ~1200 frames/s (2 fast + 10 ms watches, 186 kB/s, telemetry
+10 Hz, zero drops); at ~1850 frames/s (2 fast + 1 ms, 174 kB/s) passes
+fall behind, the ring bursts (~47 gaps/s, 16% of records lost) and
+telemetry drops to 1–2 Hz; 3 fast (1100 frames/s, 263 kB/s) loses no
+records but runs passes at ~300 Hz. The per-frame (transfer) cost, not
+the byte rate, is what the 480 kB/s link budget fails to model — the
+`W` term charges 27 bytes per message where a transfer costs ~60–90
+bytes' worth of time. Coalescing a pass into one transfer needs a
+staging buffer in the server (encode the pass's frames, one
+`IO_serial_write`), since the auto-flush defeats a flush-less write.
 
-**Where:** `IO_serial_write` (flush-per-call is its contract today),
-`app_server_run1ms` (one flush at the end of the emission pass),
-`fw~conn_serial` specs. Re-measure with three watches at 1/20/200 cycles.
+**Where:** `app_server_run1ms` + `IO_COBSFrame` (an encode-into-buffer
+entry point), `IO_serial_write`, the link budget and its `W` model in
+`fw~conn_trace_002`/`_009` and `app_server_config.c` (mirrors: Unity,
+SIL `trace_stream.rs`, GUI devmock/watchflow/trace.rs). Re-measure with
+2 fast + 1 ms. Until then, telemetry cadence is pass-counted: a
+time-based cadence (a `nowMs` config hook) would keep it at 10 Hz when
+passes overrun.
 
 ## Trace: burst capture and on-board envelopes
 
