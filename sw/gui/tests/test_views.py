@@ -411,6 +411,42 @@ def run(page):
     )
     check("views_005 leaving clears every mark", visible_lines == 0, visible_lines)
 
+    # ── [test->app~views_005~1] pointing lands on the nearest sample among the
+    # plot's signals, so a one-cycle signal's every sample is reachable ──
+    page.evaluate("() => __cockpit.timeline.pause()")  # a still window: pointer time is comparable
+    first_canvas = page.locator(".plot-widget canvas").first
+    box = first_canvas.bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.5)
+    snap = page.evaluate(
+        """() => {
+          const tick = __cockpit.cursor.tick;
+          let w0 = null;
+          __cockpit.forEachWidget((w) => { if (!w0 && w.cfg.type === 'plot') w0 = w; });
+          const rect = w0._els.canvas.getBoundingClientRect();
+          const t = w0.tickAtPx(rect.width * 0.4, rect.width);
+          let onSample = false, nearest = Infinity;
+          for (const p of w0.cfg.signals) {
+            const h = __cockpit.histories.get(p);
+            if (!h || !h.size) continue;
+            if (h.valueAt(tick) !== null) onSample = true;
+            const i = h.indexAtOrAfter(t);
+            for (const j of [i - 1, i]) {
+              if (j >= 0 && j < h.size && h.valueAtIndex(j) !== null) nearest = Math.min(nearest, Math.abs(h.tickAtIndex(j) - t));
+            }
+          }
+          return { tick, t, onSample, d: Math.abs(tick - t), nearest, signals: w0.cfg.signals.length };
+        }"""
+    )
+    check("views_005 pointing lands the cursor on a sample", snap["onSample"], snap)
+    check(
+        "views_005 that sample is the nearest across the plot's signals",
+        abs(snap["d"] - snap["nearest"]) < 1e-6,
+        snap,
+    )
+    page.mouse.move(0, 0)
+    page.evaluate("async () => { __cockpit.clearCursor(); " + SETTLE_CURSOR_JS + " }")
+    page.evaluate("() => __cockpit.timeline.resume()")
+
     # ── [test->app~views_006~1] table latest vs at-cursor + formatting ──
     page.evaluate(
         """() => { const t = __cockpit.addWidget({ type: 'table', signals: [] });
@@ -3013,10 +3049,11 @@ def run(page):
     check("smooth scroll: display lead stays within the clamp", lead <= 80, lead)
 
     # (c) cursor mapping under a scrolling window: a pointermove lands on
-    #     the tick the displayed window puts under the pointer (same-task
-    #     read — the window cannot advance mid-evaluate). The expectation is
-    #     derived INDEPENDENTLY from displayWindow + rect math, never from
-    #     the widget's own mapping (which is the code under test).
+    #     the sample nearest the time the displayed window puts under the
+    #     pointer (same-task read — the window cannot advance mid-evaluate).
+    #     The expectation is derived INDEPENDENTLY from displayWindow + rect
+    #     math and the histories, never from the widget's own mapping (which
+    #     is the code under test).
     cur = page.evaluate(
         """() => {
           let out = null;
@@ -3031,14 +3068,24 @@ def run(page):
             }));
             const [d0, d1] = __cockpit.timeline.displayWindow();
             const expected = d0 + (px / rect.width) * (d1 - d0);
-            out = { tick: __cockpit.cursor.tick, expected, err: Math.abs(__cockpit.cursor.tick - expected) };
+            let nearest = Infinity;
+            for (const p of w.cfg.signals) {
+              const h = __cockpit.histories.get(p);
+              if (!h || !h.size) continue;
+              const i = h.indexAtOrAfter(expected);
+              for (const j of [i - 1, i]) {
+                if (j >= 0 && j < h.size && h.valueAtIndex(j) !== null) nearest = Math.min(nearest, Math.abs(h.tickAtIndex(j) - expected));
+              }
+            }
+            const tick = __cockpit.cursor.tick;
+            out = { tick, expected, nearest, err: Math.abs(tick - expected) };
           });
           return out;
         }"""
     )
     check(
         "smooth scroll: cursor tick matches the displayed window's mapping",
-        cur is not None and cur["err"] <= 1,
+        cur is not None and cur["err"] <= (cur["nearest"] if cur["nearest"] != float("inf") else 1) + 1e-6,
         cur,
     )
     page.mouse.move(10, 10)

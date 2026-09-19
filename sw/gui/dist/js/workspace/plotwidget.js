@@ -167,8 +167,7 @@ export class PlotWidget {
       // The shared cursor is pure window math — it must work (app-wide!)
       // even while this widget's renderer is unavailable.
       const rect = canvas.getBoundingClientRect();
-      const tick = Math.round(this.tickAtPx(ev.clientX - rect.left, rect.width));
-      setCursorTick(tick);
+      setCursorTick(this.snapTime(ev.clientX - rect.left, rect.width));
       this._ptr = { x: ev.clientX, y: ev.clientY };
       this._ctrl = isAnchorModifier(ev);
       this.trackSelect(canvas, ev);
@@ -271,6 +270,31 @@ export class PlotWidget {
   tickAtPx(px, width) {
     const [t0, t1] = this.viewWindow();
     return t0 + (px / Math.max(1, width)) * (t1 - t0);
+  }
+
+  /** The cursor time a pointer x selects: the sample time nearest the
+   *  pointer among this widget's signals (the earlier of two equidistant),
+   *  so every sample of the finest signal is reachable; the pointer time
+   *  itself when no signal has data there. */
+  snapTime(px, width) {
+    const t = this.tickAtPx(px, width);
+    let best = null;
+    let bestD = Infinity;
+    for (const p of this.cfg.signals) {
+      const h = histories.get(p);
+      if (!h || !h.size) continue;
+      const iR = h.indexAtOrAfter(t);
+      for (const i of [iR - 1, iR]) {
+        if (i < 0 || i >= h.size || h.valueAtIndex(i) === null) continue;
+        const tk = h.tickAtIndex(i);
+        const d = Math.abs(tk - t);
+        if (d < bestD || (d === bestD && tk < best)) {
+          best = tk;
+          bestD = d;
+        }
+      }
+    }
+    return best === null ? t : best;
   }
 
   /** Canvas-relative y (css px) of a value on the given scale group. */
