@@ -25,6 +25,24 @@ room for a second 64-byte IN buffer.
 with the link test; then raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S` and
 its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
 
+## Trace stream: one USB transfer per emission
+
+**When:** when a watch list's per-tick message count, not its byte rate,
+is what saturates the link — a fast group plus two slower ones already
+costs three packets per millisecond.
+
+**What it is:** `IO_serial_write` flushes after every frame, so each
+`Samples` message is its own USB IN transfer and pays the per-packet
+floor (~80–170 µs measured 2026-09-18) however short it is. Found while
+fixing the drain collapse (`fw~conn_trace_009`: fragments under
+backpressure pinned the link at 24-byte packets, ~71 kB/s). Coalescing
+one emission's frames into a single flush would cut the packet count to
+the byte-driven minimum at a cost of at most one tick of latency.
+
+**Where:** `IO_serial_write` (flush-per-call is its contract today),
+`app_server_run1ms` (one flush at the end of the emission pass),
+`fw~conn_serial` specs. Re-measure with three watches at 1/20/200 cycles.
+
 ## Trace: burst capture and on-board envelopes
 
 **When:** after the 20 kHz streaming trace has been used on the bench for

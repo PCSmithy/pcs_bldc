@@ -154,7 +154,11 @@ Needs: impl, test
 Each millisecond, the server shall emit each group's buffered records
 (`fw~conn_trace_004~1`) in capture order as `Samples` messages
 (`fw~conn_trace_005~1`), consecutive records of one group whose cycle
-indices step by its period sharing a message up to its data capacity.
+indices step by its period sharing a message up to its data capacity,
+a message starting only where the transmit capacity holds a full one
+(records otherwise staying buffered), each emission spending only the
+capacity present at its start, and leaving one reply frame of transmit
+capacity (`fw~conn_server_001~1`) unused.
 
 Acceptance:
 
@@ -163,6 +167,8 @@ Acceptance:
 - A 10 ms group's records each arrive in their own message.
 - A one-cycle group's records buffered across a 3 ms emission stall
   arrive in the next emission, in capture order.
+- With transmit capacity for less than a full message, no message
+  leaves; the buffered records arrive whole once capacity returns.
 
 Covers:
 - sys~obs_005~1

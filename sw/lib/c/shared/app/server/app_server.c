@@ -40,6 +40,10 @@
 #define APP_SERVER_LINK_TEST_MAX_PAYLOAD (sizeof(((shared_LinkTestFrame *) 0)->payload.bytes))
 #define APP_SERVER_LINK_TEST_MAX_FRAMES  (1000000U)
 
+// Transmit capacity the streams leave unused, so a reply always has a frame's
+// worth of room in the pass it is produced (fw~conn_server_001).
+#define APP_SERVER_REPLY_WIRE_RESERVE ((uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX))
+
 /* Private Data Definitions */
 
 typedef struct
@@ -58,6 +62,9 @@ typedef struct
     // the encode bound); TX to the largest envelope the board encodes.
     uint8_t rxFrame[IO_COBSFRAME_MAX_PAYLOAD];
     uint8_t txBytes[LIB_PROTOBUF_ENVELOPE_MAX];
+    // A reply the transport could not take yet; retried before any new request.
+    uint8_t pendingReply[LIB_PROTOBUF_ENVELOPE_MAX];
+    size_t  pendingReplyLen;
     // Two envelopes are live at once during dispatch, and each is far too
     // large for the 2 KB server-task stack.
     shared_Envelope rxEnvelope;
@@ -83,6 +90,40 @@ static bool app_server_private_sendEnvelope(const shared_Envelope * const env)
         sent = IO_COBSFrame_send(data->config->frame, data->txBytes, encodedLen);
     }
     return sent;
+}
+
+// Transmit capacity available to the streams: whatever exceeds the reply reserve.
+static uint32_t app_server_private_streamTxFree(void)
+{
+    const uint32_t txFree = IO_serial_txFree(data->config->serial);
+    return (txFree > APP_SERVER_REPLY_WIRE_RESERVE) ? (txFree - APP_SERVER_REPLY_WIRE_RESERVE) : 0U;
+}
+
+// [impl->fw~conn_server_001~1] a reply the transport cannot take now is held
+// and retried ahead of the next request, so no request goes unanswered.
+static bool app_server_private_flushPendingReply(void)
+{
+    if (data->pendingReplyLen > 0U)
+    {
+        if (IO_COBSFrame_send(data->config->frame, data->pendingReply, data->pendingReplyLen))
+        {
+            data->pendingReplyLen = 0U;
+        }
+    }
+    return (data->pendingReplyLen == 0U);
+}
+
+static void app_server_private_sendReply(const shared_Envelope * const reply)
+{
+    size_t encodedLen = 0U;
+    if (lib_protobuf_encode(shared_Envelope_fields, reply, data->txBytes, sizeof(data->txBytes), &encodedLen))
+    {
+        if (!IO_COBSFrame_send(data->config->frame, data->txBytes, encodedLen))
+        {
+            (void) memcpy(data->pendingReply, data->txBytes, encodedLen);
+            data->pendingReplyLen = encodedLen;
+        }
+    }
 }
 
 // [impl->fw~conn_server_005~1] admission: bounds, then exclusivity.
@@ -209,7 +250,7 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
             break;
     }
 
-    (void) app_server_private_sendEnvelope(reply);
+    app_server_private_sendReply(reply);
 }
 
 static void app_server_private_pumpRequests(void)
@@ -237,7 +278,7 @@ static void app_server_private_pumpRequests(void)
             reply->which_payload = shared_Envelope_response_tag;
             reply->payload.response.accepted = false;
             (void) strcpy(reply->payload.response.cause, "decode error");
-            (void) app_server_private_sendEnvelope(reply);
+            app_server_private_sendReply(reply);
         }
         IO_COBSFrame_run();
     }
@@ -262,6 +303,10 @@ static void app_server_private_publishTelemetry(void)
 // first record's cycle index, the record count, and the concatenated data
 static void app_server_private_drainSamples(void)
 {
+    // One pass spends only the capacity present at its start; whatever the
+    // transport frees meanwhile waits for the next pass, so a pass is bounded
+    // however fast the ring refills.
+    uint32_t budget = app_server_private_streamTxFree();
     bool progressing = true;
     while (progressing)
     {
@@ -269,13 +314,19 @@ static void app_server_private_drainSamples(void)
         uint32_t cycle = 0U;
         size_t recordLen = 0U;
         progressing = false;
-        if (app_server_trace_peek(&group, &cycle, &recordLen))
+        shared_Envelope * const env = &data->txEnvelope;
+        trace_Samples * const samples = &env->payload.samples;
+        // A message starts only where a full one fits. A short message costs
+        // the transport the same round as a full one, so fragments sent under
+        // backpressure pin the link at their size and it never recovers;
+        // records held back instead leave whole once capacity returns.
+        const uint32_t fullWire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
+            sizeof(samples->data.bytes) + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
+        if ((budget >= fullWire) && app_server_trace_peek(&group, &cycle, &recordLen))
         {
             const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
-            shared_Envelope * const env = &data->txEnvelope;
             app_server_private_zeroEnvelope(env);
             env->which_payload = shared_Envelope_samples_tag;
-            trace_Samples * const samples = &env->payload.samples;
             samples->period_cycles = periodCycles;
             samples->first_cycle = cycle;
 
@@ -284,12 +335,7 @@ static void app_server_private_drainSamples(void)
             bool batching = true;
             while (batching)
             {
-                // Hold off (records stay ring-buffered) while the message or
-                // the transport lacks room for one more record.
-                const uint32_t reserve = (uint32_t) IO_COBSFRAME_WIRE_MAX(
-                    used + recordLen + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
                 if (((used + recordLen) > sizeof(samples->data.bytes)) ||
-                    (IO_serial_txFree(data->config->serial) < reserve) ||
                     (!app_server_trace_pop(&samples->data.bytes[used],
                                            sizeof(samples->data.bytes) - used)))
                 {
@@ -320,6 +366,9 @@ static void app_server_private_drainSamples(void)
                 // the host sees the loss as a gap in the cycle indices.
                 samples->data.size = (pb_size_t) used;
                 (void) app_server_private_sendEnvelope(env);
+                const uint32_t wire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
+                    used + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
+                budget -= (wire < budget) ? wire : budget;
                 progressing = true;
             }
         }
@@ -330,7 +379,7 @@ static void app_server_private_drainSamples(void)
 static void app_server_private_drainLog(void)
 {
     if ((ringbuf_count(&data->logRing) > 0U) &&
-        (IO_serial_txFree(data->config->serial) >= APP_SERVER_LOG_WIRE_RESERVE))
+        (app_server_private_streamTxFree() >= APP_SERVER_LOG_WIRE_RESERVE))
     {
         shared_Envelope * const env = &data->txEnvelope;
         app_server_private_zeroEnvelope(env);
@@ -370,7 +419,9 @@ static void app_server_private_drainLinkTest(void)
             env->payload.link_test_frame.payload.bytes[i] = (uint8_t) ((data->linkTestSeq + i) & 0xFFU);
         }
 
-        sent = app_server_private_sendEnvelope(env);
+        // Whole frames only, and never into the reply reserve.
+        const uint32_t reserve = (uint32_t) IO_COBSFRAME_WIRE_MAX(data->linkTestPayloadBytes + 16U);
+        sent = (app_server_private_streamTxFree() >= reserve) && app_server_private_sendEnvelope(env);
         if (sent)
         {
             data->linkTestSeq++;
@@ -409,7 +460,10 @@ void app_server_run1ms(void)
         const bool connected = IO_serial_isConnected(data->config->serial);
         if (connected)
         {
-            app_server_private_pumpRequests();
+            if (app_server_private_flushPendingReply())
+            {
+                app_server_private_pumpRequests();
+            }
 
             data->telemetryDivider++;
             if (data->telemetryDivider >= APP_SERVER_TELEMETRY_PERIOD_TICKS)
@@ -427,6 +481,7 @@ void app_server_run1ms(void)
             // and so does any half-received or held frame from that session.
             // [impl->fw~conn_server_005~1] a link test is abandoned with it.
             app_server_trace_clear();
+            data->pendingReplyLen = 0U;
             data->linkTestRemaining = 0U;
             IO_COBSFrame_reset(data->config->frame);
             uint8_t discard[16];

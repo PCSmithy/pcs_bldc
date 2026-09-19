@@ -1239,6 +1239,43 @@ static void test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four(vo
     }
 }
 
+// [test->fw~conn_trace_009~1] with transmit capacity for less than a full
+// message nothing leaves — no fragment either — and the records arrive whole
+// once capacity returns
+static void test_short_transmit_capacity_holds_records_whole(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    // Pack the transport down to the reply reserve plus room for a few
+    // records: short of one full 16-record message.
+    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) + 96U;
+    uint8_t zeros[256] = { 0U };
+    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
+    {
+        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
+    }
+    const uint32_t txLenBefore = HW_USB_sim_txLen();
+
+    for (uint32_t c = 0U; c < 20U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(txLenBefore, HW_USB_sim_txLen());
+
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 8U));   // frees the transport
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(2U, collectReplies(replies, 8U));
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[0].payload.samples.count);
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[1].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(4U, replies[1].payload.samples.count);
+}
+
 // [test->fw~conn_trace_009~1] records buffered across a 3 ms emission stall all
 // arrive in the next emission, in capture order
 static void test_records_stalled_three_milliseconds_arrive_in_capture_order(void)
@@ -1699,6 +1736,78 @@ static void test_link_test_clears_on_disconnect(void)
     TEST_ASSERT_EQUAL_UINT32(2U, acceptLinkTest(77U, 16U, 2U));
 }
 
+
+// [test->fw~conn_server_001~1] the streams leave a reply's worth of transmit
+// capacity, so a request during a saturating stream is answered in its pass.
+// [test->fw~conn_trace_009~1]
+static void test_reply_survives_a_saturating_sample_stream(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    // Eight passes with nothing drained on the host side fill the transport.
+    for (uint32_t pass = 0U; pass < 8U; pass++)
+    {
+        for (uint32_t c = 0U; c < 20U; c++)
+        {
+            app_server_sampleCycle();
+        }
+        app_server_run1ms();
+    }
+    const uint32_t replyReserve = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX);
+    TEST_ASSERT_TRUE(IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) >= replyReserve);
+
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 77U;
+    req.which_payload = shared_Envelope_trace_status_request_tag;
+    injectEnvelope(&req);
+    app_server_run1ms();
+
+    shared_Envelope replies[64];
+    const uint32_t n = collectReplies(replies, 64U);
+    bool answered = false;
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        if ((replies[i].request_id == 77U) && (replies[i].which_payload == shared_Envelope_trace_status_tag))
+        {
+            answered = true;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(answered, "TraceStatus reply missing under a saturating stream");
+}
+
+// [test->fw~conn_server_001~1] a reply the transport cannot take is held and
+// sent first once it can, ahead of any later request's reply.
+static void test_reply_held_until_the_transport_takes_it(void)
+{
+    // Pack the transport with frame delimiters (parsed as empty segments).
+    uint8_t zeros[256] = { 0U };
+    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > 0U)
+    {
+        const uint32_t room = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC);
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (room < sizeof(zeros)) ? room : (uint32_t) sizeof(zeros));
+    }
+
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 5U;
+    req.which_payload = shared_Envelope_ping_tag;
+    injectEnvelope(&req);
+    app_server_run1ms();
+
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 8U));   // held: no room yet
+
+    req.request_id = 6U;
+    injectEnvelope(&req);
+    app_server_run1ms();                                          // room now: held reply first
+    const uint32_t n = collectReplies(replies, 8U);
+    TEST_ASSERT_TRUE(n >= 2U);
+    TEST_ASSERT_EQUAL_UINT32(5U, replies[0].request_id);
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_UINT32(6U, replies[1].request_id);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1744,6 +1853,7 @@ int main(void)
     RUN_TEST(test_interior_gap_splits_the_batch);
     RUN_TEST(test_overflow_keeps_the_slow_group_records_honest);
     RUN_TEST(test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four);
+    RUN_TEST(test_short_transmit_capacity_holds_records_whole);
     RUN_TEST(test_records_stalled_three_milliseconds_arrive_in_capture_order);
     RUN_TEST(test_no_record_is_held_past_two_emissions);
 
@@ -1761,6 +1871,8 @@ int main(void)
     RUN_TEST(test_link_test_rejects_second_request_while_running);
     RUN_TEST(test_link_test_count_reached_frees_the_service);
     RUN_TEST(test_link_test_clears_on_disconnect);
+    RUN_TEST(test_reply_survives_a_saturating_sample_stream);
+    RUN_TEST(test_reply_held_until_the_transport_takes_it);
 
     return UNITY_END();
 }

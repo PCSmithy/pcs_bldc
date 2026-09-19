@@ -27,6 +27,8 @@ The firmware shall answer every received envelope
 Acceptance:
 - A `PingRequest` receives a `Response` with `accepted` set, carrying
   the request's `request_id`.
+- A request received while the sample stream (`fw~conn_trace_009~1`)
+  holds the transmit capacity is answered within 2 ms.
 - An envelope bearing no recognized request payload receives a
   `Response` with `accepted` clear and a non-empty `cause`.
 
