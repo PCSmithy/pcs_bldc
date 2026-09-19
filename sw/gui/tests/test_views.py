@@ -9,14 +9,17 @@ import os
 import sys
 import threading
 from functools import partial
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 # ES modules are CORS-blocked over file://, so serve dist/ on localhost.
 DIST_DIR = Path(__file__).resolve().parent.parent / "dist"
-_server = HTTPServer(
+# Threading: Chromium opens speculative connections that send nothing for a
+# while; a single-threaded server blocks in one of those and every module
+# fetch queues behind it past the boot wait (seen on the Windows CI runner).
+_server = ThreadingHTTPServer(
     ("127.0.0.1", 0),
     partial(SimpleHTTPRequestHandler, directory=str(DIST_DIR)),
 )
