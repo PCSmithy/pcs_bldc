@@ -86,8 +86,8 @@ typedef struct
     volatile uint32_t head;
     volatile uint32_t tail;
     // Sampler-owned: set by a skipped record, cleared once the ring has
-    // drained to half, so a loss is one contiguous gap.
-    bool overflowed;
+    // drained to half the budget, so a loss is one contiguous gap.
+    volatile bool overflowed;
 } app_server_trace_data_S;
 
 static app_server_trace_data_S app_server_trace_data;
@@ -354,10 +354,10 @@ static void app_server_trace_private_capture(uint32_t group, uint32_t cycle)
     const uint32_t freeBytes = (capacity - 1U) - used;
     // A record that does not fit is skipped whole; the cycle-index gap is the
     // host's drop signal. Skipping then holds until the ring has drained to
-    // half: one record admitted per record drained would scatter the loss
-    // as single-record gaps, each breaking a message batch, and the small
+    // half the budget: one record admitted per record drained would scatter the
+    // loss as single-record gaps, each breaking a message batch, and the small
     // messages that follow cost the link more than the records they carry.
-    if (data->overflowed && (used <= (capacity / 2U)))
+    if (data->overflowed && (used <= (data->config->sampleRamBudgetBytes / 2U)))
     {
         data->overflowed = false;
     }

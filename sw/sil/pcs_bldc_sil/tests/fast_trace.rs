@@ -24,6 +24,9 @@ const WINDOW_BASE: u32 = 0x2000_0000;
 const STEP_MAX: &str = "main_cycleProbe_stepMax_us";
 const CALLBACK_MAX: &str = "main_cycleProbe_callbackMax_us";
 
+/// The sim USB transfer counter: one per HW_USB_write the board issues.
+const TX_WRITES: &str = "HW_USB_sim_data.txWrites";
+
 /// The bounds the cycle callback is held to.
 const STEP_BUDGET_US: u64 = 20;
 const CALLBACK_BUDGET_US: u64 = 40;
@@ -55,27 +58,41 @@ fn samples_of(envelopes: &[(u64, u32, Vec<u8>)], period: u32) -> Vec<Samples> {
 // [test->fw~conn_trace_002~1]
 // [test->fw~conn_trace_004~1]
 // [test->fw~conn_trace_009~1]
+// [test->fw~conn_server_006~1]
 #[test]
 fn one_cycle_and_one_millisecond_groups_stream_together() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
     let mut deframer = Deframer::new();
+    let writes_before = u64_at(&sim, TX_WRITES);
 
     inject(
         &mut sim,
-        &watch_request(1, &[(WINDOW_BASE + 4, 4, 1), (WINDOW_BASE, 4, 20)]),
+        &watch_request(
+            1,
+            &[
+                (WINDOW_BASE + 4, 4, 1),
+                (WINDOW_BASE, 4, 20),
+                (WINDOW_BASE + 12, 4, 200),
+            ],
+        ),
     );
     let envelopes = run(&mut sim, &mut deframer, 600); // 30 ms of PWM periods
 
     // The one-cycle group: a record every cycle, its counter advancing with it.
     let fast = samples_of(&envelopes, 1);
     assert!(!fast.is_empty(), "the one-cycle group streams");
-    // Steady state: a millisecond's 20 one-cycle records leave as two messages,
-    // the 1 ms group's record at offset 1 splitting the run between them.
+    // A millisecond's 20 one-cycle records leave as a run of messages that the
+    // staggered slow records split: none carries more than a millisecond of
+    // them, and the split after the offset-1 record is the one always present.
     let counts: Vec<u32> = fast.iter().map(|batch| batch.count).collect();
     assert!(counts.len() >= 20, "many milliseconds of batches: {counts:?}");
     assert!(
-        counts.chunks_exact(2).all(|pair| pair == [2, 18]),
-        "20 records a millisecond, split 2 + 18 by the staggered 1 ms record: {counts:?}"
+        counts.iter().all(|&count| (count > 0) && (count <= 20)),
+        "no message outruns a millisecond of one-cycle records: {counts:?}"
+    );
+    assert!(
+        counts.contains(&2),
+        "the 1 ms group's record at offset 1 splits the run after two: {counts:?}"
     );
     let mut records: Vec<(u32, u32)> = Vec::new();
     for batch in &fast {
@@ -103,6 +120,14 @@ fn one_cycle_and_one_millisecond_groups_stream_together() {
         );
     }
 
+    // Whatever a pass produced reached the transport as one write — two at
+    // most, where a pass outgrew the stage.
+    let writes = u64_at(&sim, TX_WRITES) - writes_before;
+    assert!(
+        writes <= 2 * 30,
+        "at most two transfers per 1 ms pass over 30 ms, got {writes}"
+    );
+
     // The 1 ms group beside it, on its own stagger offset.
     let medium = samples_of(&envelopes, 20);
     assert!(!medium.is_empty(), "the 1 ms group streams alongside");
@@ -115,6 +140,18 @@ fn one_cycle_and_one_millisecond_groups_stream_together() {
     for (i, &cycle) in slow_cycles.iter().enumerate() {
         assert_eq!(cycle % 20, 1, "the 20-cycle group captures at offset 1");
         assert_eq!(cycle, 1 + (i as u32 * 20), "one record every 20 cycles");
+    }
+
+    // The 10 ms group beside both, one record to a message on its own offset.
+    let slowest = samples_of(&envelopes, 200);
+    assert!(!slowest.is_empty(), "the 10 ms group streams alongside");
+    for (i, batch) in slowest.iter().enumerate() {
+        assert_eq!(batch.count, 1, "a 200-cycle record rides its own message");
+        assert_eq!(
+            batch.cycle_of(0),
+            2 + (i as u32 * 200),
+            "the 200-cycle group captures at offset 2, every 200 cycles"
+        );
     }
 }
 
@@ -194,6 +231,8 @@ fn a_one_cycle_group_captures_the_window_pair_coherently() {
             let bytes = batch.record(k);
             let counter = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             let complement = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+            // The sim runs one fiber, so this proves the capture is coherent
+            // across cycles, not that it is atomic against a preempting ISR.
             assert_eq!(
                 complement,
                 !counter,
@@ -265,19 +304,69 @@ fn a_live_list_swap_restarts_the_stream_at_the_new_width() {
     }
 }
 
-// Mechanics only: the duration bound itself is bench-verified, not claimed here.
+// [test->sys~obs_005~1]
+// [test->fw~conn_trace_004~1] a stall costs one contiguous gap: once a record
+// is skipped nothing is admitted until the buffer has drained to half, and the
+// records that follow form one gap-free run
 #[test]
-fn the_cycle_callback_probe_reads_back_and_re_arms() {
+fn a_stalled_transport_costs_one_gap_then_streams_clean() {
+    let mut sim = connected_world(Sil::options().grid_us(GRID_US));
+    let mut deframer = Deframer::new();
+
+    inject(&mut sim, &watch_request(1, &[(WINDOW_BASE + 4, 4, 1)]));
+    let mut envelopes = run(&mut sim, &mut deframer, 200);
+
+    // The host stops reading: transmit capacity fills, emission stops, and the
+    // sample ring overflows.
+    for _ in 0..800 {
+        sim.step().expect("engine step");
+    }
+
+    // Reading resumes: the backlog leaves and admission re-opens at half.
+    envelopes.extend(run(&mut sim, &mut deframer, 1200));
+
+    let mut cycles: Vec<u32> = Vec::new();
+    for batch in samples_of(&envelopes, 1) {
+        for k in 0..batch.count {
+            cycles.push(batch.cycle_of(k));
+        }
+    }
+    let gaps: Vec<(u32, u32)> = cycles
+        .windows(2)
+        .filter(|pair| pair[1] != pair[0] + 1)
+        .map(|pair| (pair[0], pair[1]))
+        .collect();
+    assert_eq!(gaps.len(), 1, "a stall costs exactly one cycle-index gap: {gaps:?}");
+
+    let resume_at = gaps[0].1;
+    let tail: Vec<u32> = cycles.iter().copied().filter(|&c| c >= resume_at).collect();
+    for (i, &cycle) in tail.iter().enumerate() {
+        assert_eq!(cycle, resume_at + (i as u32), "the stream resumes gap-free");
+    }
+    assert!(
+        tail.len() >= 1000,
+        "the resumed run streams every PWM period: {} records over 1200",
+        tail.len()
+    );
+}
+
+// [test->fw~mc_018~1] the probe mechanics: a standing maximum holds, a zero
+// write clears it, and the following callbacks re-arm it (the duration bound
+// itself is bench-verified)
+#[test]
+fn the_cycle_callback_probe_clears_and_re_arms() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
     for _ in 0..400 {
         sim.step().expect("engine step");
     }
 
-    // The maxima hold what the callback actually cost. The sim clock advances
-    // once per grid step, so an intra-callback duration quantizes to zero — the
-    // bounds below are the contract, not a measurement of the real firmware.
+    // The sim clock advances once per grid step, so a duration taken inside one
+    // callback quantizes to zero: these read as the probe's arm state, and the
+    // budgets below are fw~mc_018's contract, not a measurement.
     let step_max = u64_at(&sim, STEP_MAX);
     let callback_max = u64_at(&sim, CALLBACK_MAX);
+    assert_eq!(step_max, 0, "the empty commutation step measures zero");
+    assert_eq!(callback_max, 0, "an intra-callback duration quantizes to zero");
     assert!(step_max <= STEP_BUDGET_US, "step maximum {step_max} us");
     assert!(callback_max <= CALLBACK_BUDGET_US, "callback maximum {callback_max} us");
 
@@ -299,8 +388,8 @@ fn the_cycle_callback_probe_reads_back_and_re_arms() {
         sim.step().expect("engine step");
     }
     let rearmed = u64_at(&sim, CALLBACK_MAX);
-    assert!(
-        rearmed <= CALLBACK_BUDGET_US,
-        "the cleared maximum restarts from the following callbacks, got {rearmed} us"
+    assert_eq!(
+        rearmed, 0,
+        "the cleared maximum restarts from the following callbacks"
     );
 }

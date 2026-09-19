@@ -86,16 +86,17 @@ Needs: impl, test
 ### Whole-frame transmission
 `fw~conn_proto_004~1`
 
-On a channel, the frame driver shall hand a frame to the backing serial
-channel only when the serial channel's free transmit capacity
-(`fw~conn_serial_006~1`) holds the entire frame, transmitting accepted
-frames in order and reporting the frame dropped otherwise.
+The server shall hand a frame to the serial channel only when the
+channel's free transmit capacity (`fw~conn_serial_006~1`), less what the
+pass already holds (`fw~conn_server_006~1`), holds the entire frame,
+accepted frames leaving in order and a frame that does not fit reported
+dropped.
 
 Acceptance:
-- A frame within free capacity is transmitted in full, in order with
-  prior frames.
-- A frame exceeding free capacity is dropped whole — no bytes of it
-  reach the transport — and reported dropped.
+- A frame within the remaining capacity leaves in full, in order with
+  the pass's earlier frames.
+- A frame exceeding the remaining capacity is dropped whole — no bytes
+  of it reach the transport — and reported dropped.
 
 Covers:
 - sys~conn_002~1

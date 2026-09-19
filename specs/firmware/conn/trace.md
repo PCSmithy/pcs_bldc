@@ -73,6 +73,11 @@ with $W$ the per-message wire overhead of `fw~conn_trace_005~1`, $m_g$
 the group's message rate per `fw~conn_trace_009~1`, and an empty list
 having $u = 0$ and $r = 0$.
 
+The emission tick and the cycle boundary are independent, so a one-cycle
+group captures 21 records between two emissions whenever they drift past
+each other: a list admitted at exactly the sample-RAM budget takes
+periodic single-record gaps (`fw~conn_trace_004~1`).
+
 Acceptance:
 
 - An accepted request replaces the active list in full: sampling
@@ -120,7 +125,7 @@ server shall sample it in the bridge cycle callback
 |----------|-------|
 | Cycle index | Sampling advances a 32-bit PWM-cycle index each callback, restarted at zero when a list installs, buffered samples of the prior list discarded |
 | Capture | Each cycle captures every group that is due — a group of period $c$ cycles and offset $k$ is due when $(\text{index} - k) \bmod c = 0$ — the group's entries captured as one coherent snapshot into one buffered record |
-| Overflow | A record that does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole, and skipping holds until the buffer has drained to half its size, so a loss is one contiguous gap |
+| Overflow | A record that does not fit in the free space of the sample buffer — its size the sample-RAM budget (`fw~conn_trace_001~1`) — is skipped whole, and skipping holds until the buffer has drained to half the budget, so a loss is one contiguous gap |
 
 | Group period $c$ | Offset $k$ |
 |------------------|------------|
@@ -143,7 +148,8 @@ Acceptance:
   cycle indices jump past the skipped records and every emitted record
   holds a complete capture.
 - Once a record is skipped, no record is admitted until the buffer has
-  drained to half; the records then admitted form one gap-free run.
+  drained to half the budget; the records then admitted form one
+  gap-free run.
 
 Covers:
 - sys~obs_005~1

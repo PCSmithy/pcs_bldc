@@ -110,8 +110,8 @@ Needs: impl, test
 An accepted `LinkTestRequest` shall stream `LinkTestFrame` messages —
 sequence numbers 0 through the requested count minus 1, each payload
 of the requested size with byte $i$ equal to $(\text{seq} + i) \bmod
-256$ — as many per millisecond as the transport accepts whole frames
-(`fw~conn_proto_004~1`), a running test abandoned when the serial channel
+256$ — as many per millisecond as the pass accepts whole frames
+(`fw~conn_server_006~1`), a running test abandoned when the serial channel
 loses the host connection (`fw~conn_serial_005~1`), the request rejected
 when:
 
@@ -152,7 +152,6 @@ Acceptance:
   serial channel as one write carrying them in order.
 - A frame the channel's remaining capacity cannot hold is not written;
   the pass's earlier frames still leave.
-- A disconnect discards a pass's staged frames.
 
 Covers:
 - sys~conn_002~1

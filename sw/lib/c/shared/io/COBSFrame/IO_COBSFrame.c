@@ -19,7 +19,6 @@ typedef struct
     const IO_COBSFrame_config_S * config;
     IO_COBSFrame_channelData_S channelData[IO_COBSFRAME_CHANNEL_COUNT];
     uint8_t txPlain[IO_COBSFRAME_MAX_PAYLOAD + IO_COBSFRAME_CRC_LEN];
-    uint8_t txWire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD)];
 } IO_COBSFrame_data_S;
 
 static IO_COBSFrame_data_S IO_COBSFrame_data;
@@ -220,21 +219,4 @@ bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const p
         }
     }
     return encoded;
-}
-
-// [impl->fw~conn_proto_004~1]
-bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len)
-{
-    bool sent = false;
-    size_t wireLen = 0U;
-    if (IO_COBSFrame_encode(channel, payload, len, data->txWire, sizeof(data->txWire), &wireLen))
-    {
-        const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];
-        if (IO_serial_txFree(cfg->serialChannel) >= wireLen)
-        {
-            IO_serial_write(cfg->serialChannel, data->txWire, (uint32_t) wireLen);
-            sent = true;
-        }
-    }
-    return sent;
 }

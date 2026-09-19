@@ -125,8 +125,8 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #define TASK_PRIORITY_200MS (configMAX_PRIORITIES - 5U)
 
 // --- Task profiling --------------------------------------------------------
-// Per-task worst-case body duration in microseconds (read/reset via
-// profileTakeMaxUs). task_usb blocks on its event queue, so it is not profiled.
+// Per-task worst-case body duration in microseconds. task_usb blocks on its
+// event queue, so it is not profiled.
 typedef enum
 {
     PROFILE_TASK_1MS,
@@ -179,18 +179,6 @@ static void profileUpdate(profileTask_E task, uint32_t durationUs)
     {
         profileMaxUs[task] = durationUs;
     }
-}
-
-// Snapshot the task's window max and clear it for the next window. The critical
-// section makes the read-and-clear atomic against the (higher-priority)
-// profiled tasks, so no sample is dropped between the read and the reset.
-static uint32_t profileTakeMaxUs(profileTask_E task)
-{
-    taskENTER_CRITICAL();
-    const uint32_t maxUs = profileMaxUs[task];
-    profileMaxUs[task] = 0U;
-    taskEXIT_CRITICAL();
-    return maxUs;
 }
 
 static void task_1ms(void * params)
@@ -319,6 +307,8 @@ static void task_server(void * params)
         // A pass that overran its tick is not made up: back-to-back passes
         // would each drain the few records that landed during the last one,
         // fragmenting the stream. The next pass waits a whole tick instead.
+        // Strictly more than one tick: a pass that merely straddles a tick
+        // boundary still wakes on schedule, or the task loses a pass in ten.
         const TickType_t now = xTaskGetTickCount();
         if ((TickType_t)(now - lastWake) > pdMS_TO_TICKS(1U))
         {
@@ -356,14 +346,8 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &entry_us);
 
     // --- commutation step (fw~mc_015): the active method's step lands here ---
-
-    uint32_t stepEnd_us = 0U;
-    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &stepEnd_us);
-    const uint32_t stepDuration_us = stepEnd_us - entry_us;
-    if (stepDuration_us > main_cycleProbe_stepMax_us)
-    {
-        main_cycleProbe_stepMax_us = stepDuration_us;
-    }
+    // An empty step measures zero, and its own counter read arrives with it.
+    main_cycleProbe_stepMax_us = 0U;
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
     // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal,

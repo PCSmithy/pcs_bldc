@@ -9,17 +9,17 @@ The `app_motorControl` module owns the drive loop across two cadences. The
 1 ms cycle owns the inputs and the gate: encoder angle, speed target, mode
 selection, bus voltage, fault latching, and bridge enable. The
 PWM-synchronous cycle, entered from the bridge's per-cycle callback that
-`main.c` composes around the duration probe (fw~mc_018~1), runs the active
+`main.c` composes around the duration probe (`fw~mc_018~1`), runs the active
 commutation method's step from those inputs and the cycle's phase currents
 and writes the duties. The operator interface is the user button
 (gestures), the dial encoder (speed target), and the LED ring (state
 indication).
 
-See also: [[commutation-method-architecture]] (sys~mc_005~1), [[bridge]]
-(fw~io_bridge_002/003/004 the duty and enable path, fw~io_bridge_007~1
-the per-cycle callback), [[modulation]] (fw~mc_013~1, the rotor-frame
+See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
+(`fw~io_bridge_002/003/004` the duty and enable path, `fw~io_bridge_007~1`
+the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
 transform), [[gate-driver]] (dev_gateDriver supplies the operational
-gate), [[overcurrent]] (fw~safety_001~1, the trip that force-disables).
+gate), [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
 
 ## Dispatch and gating
 
@@ -41,14 +41,14 @@ Acceptance:
 - A fault latched while enabled deasserts the master output enable.
 
 Covers:
-- sys~mc_005~1
+- `sys~mc_005~1`
 
 Needs: impl, test
 
 ### PWM-synchronous commutation step
 `fw~mc_015~1`
 
-On each bridge cycle callback (fw~io_bridge_007~1) while the bridge is
+On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
 enabled, the application shall run the active method's commutation step
 with the speed target, rotor electrical angle, and bus voltage as last
 published by the 1 ms cycle and the cycle's phase currents, and apply the
@@ -62,7 +62,7 @@ Acceptance:
   by the next step.
 
 Covers:
-- sys~mc_005~1
+- `sys~mc_005~1`
 
 Needs: impl, test
 
@@ -70,13 +70,13 @@ Needs: impl, test
 `fw~mc_016~1`
 
 Each commutation step, the application shall transform the cycle's phase
-currents into the rotor frame (fw~mc_013~1) at the active method's frame
+currents into the rotor frame (`fw~mc_013~1`) at the active method's frame
 angle and hold the result as the drive's I_d and I_q:
 
 | Method   | Frame angle                                                                |
 |----------|----------------------------------------------------------------------------|
-| Six-step | Rotor electrical angle from the encoder and alignment offset (fw~mc_011~1) |
-| V/f      | Commanded electrical angle (fw~mc_010~1)                                   |
+| Six-step | Rotor electrical angle from the encoder and alignment offset (`fw~mc_011~1`) |
+| V/f      | Commanded electrical angle (`fw~mc_010~1`)                                   |
 
 Acceptance:
 - With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and
@@ -85,7 +85,7 @@ Acceptance:
   I_q are constant.
 
 Covers:
-- sys~mc_001~1
+- `sys~mc_001~1`
 
 Needs: impl, test
 
@@ -105,7 +105,7 @@ Acceptance:
 - Writing zero to a maximum restarts it from the next callback.
 
 Covers:
-- sys~mc_006~1
+- `sys~mc_006~1`
 
 Needs: impl, test
 
@@ -131,7 +131,7 @@ Acceptance:
   faulted neither cycles the method nor clears the fault).
 
 Covers:
-- sys~mc_005~1
+- `sys~mc_005~1`
 
 Needs: impl, test
 
@@ -154,7 +154,7 @@ Acceptance:
   speed target.
 
 Covers:
-- sys~mc_005~1
+- `sys~mc_005~1`
 
 Needs: impl, test
 
@@ -171,6 +171,6 @@ Acceptance:
 - A mode or drive-state change appears in the next ring frame.
 
 Covers:
-- sys~mc_005~1
+- `sys~mc_005~1`
 
 Needs: impl, test

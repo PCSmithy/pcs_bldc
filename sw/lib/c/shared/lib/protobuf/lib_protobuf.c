@@ -44,18 +44,17 @@ bool lib_protobuf_encodeEnvelope(uint32_t requestId, uint32_t payloadTag,
                                  uint8_t * const buffer, size_t bufferLen,
                                  size_t * const encodedLen)
 {
-    // Header worst case: request_id key+varint (6) and payload key (5) + length (5).
-    const size_t headerMax = 16U;
+    const size_t headerMax = LIB_PROTOBUF_ENVELOPE_HEADER_MAX;
     bool success = false;
     if ((payloadFields != NULL) && (payload != NULL) && (buffer != NULL) && (encodedLen != NULL) &&
-        (bufferLen > headerMax))
+        (bufferLen >= headerMax))
     {
         // The payload lands past the worst-case header; the real header is
         // then written back-to-back in front of it and the whole moved down.
         pb_ostream_t stream = pb_ostream_from_buffer(&buffer[headerMax], bufferLen - headerMax);
         if (pb_encode(&stream, payloadFields, payload))
         {
-            uint8_t header[16];
+            uint8_t header[LIB_PROTOBUF_ENVELOPE_HEADER_MAX];
             size_t n = 0U;
             if (requestId != 0U)
             {

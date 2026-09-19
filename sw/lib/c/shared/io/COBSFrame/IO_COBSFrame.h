@@ -51,7 +51,3 @@ void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel);
 // outMax or the channel's frame bound.
 bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len,
                          uint8_t * const out, size_t outMax, size_t * const outLen);
-
-// Frame and transmit payload; false (nothing transmitted) when the whole
-// encoded frame exceeds the channel's free transmit capacity.
-bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len);

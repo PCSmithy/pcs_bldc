@@ -197,6 +197,31 @@ static uint32_t collectReplies(shared_Envelope * const out, uint32_t maxOut)
     return count;
 }
 
+// Clear the sim transport (and restore the connection the reset drops), so the
+// next pass starts on an empty, freshly counted transmit path.
+static void resetTx(void)
+{
+    HW_USB_sim_reset();
+    HW_USB_sim_setConnected(true);
+}
+
+// Pack the transport down to `keepFree` bytes of free transmit capacity.
+static void packTxTo(uint32_t keepFree)
+{
+    uint8_t zeros[256] = { 0U };
+    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
+    {
+        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros,
+                        (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
+    }
+}
+
+// Room for the reply reserve plus exactly one full 16-record Samples frame.
+#define TRACE_ONE_MESSAGE_FREE \
+    ((uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) + \
+     (uint32_t) IO_COBSFRAME_WIRE_MAX(256U + 19U) + 8U)
+
 /* ---- init validation ---- */
 
 static void test_init_rejects_bad_config(void)
@@ -1207,7 +1232,11 @@ static void test_overflow_keeps_the_slow_group_records_honest(void)
         }
     }
     TEST_ASSERT_TRUE(haveFast);
-    TEST_ASSERT_TRUE(slowRecords >= 1U);
+    // Ring usable space is (256 budget + 67 overhead) - 1 = 322 B. A fast
+    // record costs 3 + 4 + 4 = 11 B, a slow one 3 + 4 + 8 = 15 B; cycles 0..25
+    // admit 26 fast and the slow records of cycles 1 and 21 (26 x 11 + 2 x 15 =
+    // 316 B) before cycle 26's fast record no longer fits.
+    TEST_ASSERT_EQUAL_UINT32(2U, slowRecords);
 }
 
 // [test->fw~conn_trace_004~1] once a record is skipped, admission waits for
@@ -1223,14 +1252,7 @@ static void test_overflow_holds_until_the_buffer_drains_to_half(void)
     {
         app_server_sampleCycle();
     }
-    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) +
-                              (uint32_t) IO_COBSFRAME_WIRE_MAX(256U + 19U) + 8U;
-    uint8_t zeros[256] = { 0U };
-    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
-    {
-        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
-        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
-    }
+    packTxTo(TRACE_ONE_MESSAGE_FREE);
     app_server_run1ms();
     shared_Envelope replies[64];
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 64U));
@@ -1271,7 +1293,11 @@ static void test_overflow_holds_until_the_buffer_drains_to_half(void)
         fresh += replies[i].payload.samples.count;
     }
     TEST_ASSERT_EQUAL_UINT32(20U, fresh);
-    (void) total;
+    // Record conservation: a 16-byte record costs 3 + 4 + 16 = 23 B and the
+    // ring's usable space is (6144 budget + 67 overhead) - 1 = 6210 B, so
+    // cycles 0..269 fill it exactly and cycle 270 overflows. 16 of those 270
+    // left in the first pass; the rest drain here.
+    TEST_ASSERT_EQUAL_UINT32(270U - 16U, total);
 }
 
 // [test->fw~conn_trace_009~1] 16-byte records fill a 256-byte Samples at 16 of
@@ -1306,6 +1332,8 @@ static void test_sixteen_byte_records_split_a_millisecond_as_sixteen_and_four(vo
 // [test->fw~conn_trace_009~1] with transmit capacity for less than a full
 // message nothing leaves — no fragment either — and the records arrive whole
 // once capacity returns
+// [test->fw~conn_proto_004~1] a frame the remaining capacity cannot hold
+// reaches the transport whole or not at all
 static void test_short_transmit_capacity_holds_records_whole(void)
 {
     useDeepTraceConfig();
@@ -1313,13 +1341,7 @@ static void test_short_transmit_capacity_holds_records_whole(void)
 
     // Pack the transport down to the reply reserve plus room for a few
     // records: short of one full 16-record message.
-    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) + 96U;
-    uint8_t zeros[256] = { 0U };
-    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
-    {
-        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
-        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
-    }
+    packTxTo((uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) + 96U);
     const uint32_t txLenBefore = HW_USB_sim_txLen();
 
     for (uint32_t c = 0U; c < 20U; c++)
@@ -1382,16 +1404,23 @@ static void test_no_record_is_held_past_two_emissions(void)
     installFourFastWatches();
 
     uint32_t emitted = 0U;
-    for (uint32_t pass = 0U; pass < 10U; pass++)
+    uint32_t maxLag = 0U;
+    for (uint32_t pass = 0U; pass < 12U; pass++)
     {
         for (uint32_t c = 0U; c < 20U; c++)
         {
             app_server_sampleCycle();
         }
+        // Every third pass has room for one message only, so 4 of its 20
+        // records carry over and the following pass runs against a backlog.
+        if ((pass % 3U) == 0U)
+        {
+            packTxTo(TRACE_ONE_MESSAGE_FREE);
+        }
         app_server_run1ms();
 
-        shared_Envelope replies[8];
-        const uint32_t n = collectReplies(replies, 8U);
+        shared_Envelope replies[16];
+        const uint32_t n = collectReplies(replies, 16U);
         for (uint32_t r = 0U; r < n; r++)
         {
             const trace_Samples * const samples = &replies[r].payload.samples;
@@ -1399,12 +1428,15 @@ static void test_no_record_is_held_past_two_emissions(void)
             for (uint32_t k = 0U; k < samples->count; k++)
             {
                 const uint32_t capturedInPass = (samples->first_cycle + k) / 20U;
-                TEST_ASSERT_TRUE(pass <= (capturedInPass + 2U));
+                const uint32_t lag = pass - capturedInPass;
+                TEST_ASSERT_TRUE(lag <= 2U);
+                maxLag = (lag > maxLag) ? lag : maxLag;
                 emitted++;
             }
         }
     }
-    TEST_ASSERT_EQUAL_UINT32(200U, emitted);
+    TEST_ASSERT_EQUAL_UINT32(240U, emitted);
+    TEST_ASSERT_TRUE_MESSAGE(maxLag >= 1U, "the packed passes built no backlog");
 }
 
 /* ---- fw~conn_trace_005: Samples message format ---- */
@@ -1468,11 +1500,13 @@ static void test_max_samples_frame_layout_and_wire_bound(void)
     }
     app_server_run1ms();
 
-    // Whole wire frame within data + W: 256 + 27.
+    // Whole wire frame within data + W: 256 + 27. This frame spends 1 byte on
+    // first_cycle where W budgets 5, so it sits a handful under the bound.
     uint8_t wire[2048];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
     TEST_ASSERT_TRUE(wireLen > 256U);
     TEST_ASSERT_TRUE(wireLen <= 283U);
+    TEST_ASSERT_TRUE_MESSAGE((wireLen + 20U) > 283U, "W overstates the frame by more than 20 B");
 
     // And the payload is the watched spans concatenated in list order.
     shared_Envelope replies[2];
@@ -1487,6 +1521,45 @@ static void test_max_samples_frame_layout_and_wire_bound(void)
         TEST_ASSERT_EQUAL_UINT8_ARRAY((const uint8_t *) &traceMemory[i * 2U],
                                       &replies[0].payload.samples.data.bytes[i * 8U], 8U);
     }
+}
+
+// [test->fw~conn_trace_005~1] a full 16-record message past cycle 128 — where
+// first_cycle costs a two-byte varint — still fits W
+static void test_full_message_with_a_multi_byte_first_cycle_fits_the_bound(void)
+{
+    useDeepTraceConfig();
+    installFourFastWatches();
+
+    // Seven drained milliseconds put the cycle index at 140, then 16 cycles
+    // fill one message exactly: 16 x 16 B of data at first_cycle 140.
+    shared_Envelope replies[8];
+    for (uint32_t pass = 0U; pass < 7U; pass++)
+    {
+        for (uint32_t c = 0U; c < 20U; c++)
+        {
+            app_server_sampleCycle();
+        }
+        app_server_run1ms();
+        (void) collectReplies(replies, 8U);
+    }
+    for (uint32_t c = 0U; c < 16U; c++)
+    {
+        app_server_sampleCycle();
+    }
+    app_server_run1ms();
+
+    uint8_t wire[512];
+    const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
+    TEST_ASSERT_TRUE(wireLen > 256U);
+    TEST_ASSERT_TRUE(wireLen <= 283U);
+    TEST_ASSERT_TRUE_MESSAGE((wireLen + 20U) > 283U, "W overstates the frame by more than 20 B");
+
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 8U));
+    TEST_ASSERT_EQUAL(shared_Envelope_samples_tag, replies[0].which_payload);
+    TEST_ASSERT_TRUE(replies[0].payload.samples.first_cycle >= 128U);
+    TEST_ASSERT_EQUAL_UINT32(140U, replies[0].payload.samples.first_cycle);
+    TEST_ASSERT_EQUAL_UINT32(16U, replies[0].payload.samples.count);
+    TEST_ASSERT_EQUAL_UINT32(256U, replies[0].payload.samples.data.size);
 }
 
 /* ---- fw~conn_trace_007/008: one-shot read and write ---- */
@@ -1843,19 +1916,20 @@ static void test_envelope_assembled_around_a_payload_matches_the_whole(void)
 // [test->fw~conn_server_006~1] a pass's frames reach the transport as one
 // write, in order; a frame the pass cannot hold stays out while the earlier
 // ones still leave
+// [test->fw~conn_proto_004~1]
 static void test_a_pass_leaves_as_one_write(void)
 {
     useDeepTraceConfig();
     installFourFastWatches();
-    (void) collectReplies(NULL, 0U);   // resets the sim's write count
+    resetTx();
 
-    // Telemetry (every 100th pass; the install took one) plus a millisecond
-    // of records that batches as 16 + 4: three frames from one pass.
-    for (uint32_t tick = 0U; tick < 98U; tick++)
+    // Phase the divider so the measured pass is the telemetry one: the install
+    // took a pass, and the measured pass is the period's last.
+    for (uint32_t tick = 0U; tick < (APP_SERVER_TELEMETRY_PERIOD_TICKS - 2U); tick++)
     {
         app_server_run1ms();
     }
-    (void) collectReplies(NULL, 0U);
+    resetTx();
     for (uint32_t c = 0U; c < 20U; c++)
     {
         app_server_sampleCycle();
@@ -1871,14 +1945,7 @@ static void test_a_pass_leaves_as_one_write(void)
 
     // Room for the reply reserve plus one full message only: the 16-record
     // frame leaves, the 4-record one waits for the next pass.
-    const uint32_t keepFree = (uint32_t) IO_COBSFRAME_WIRE_MAX(LIB_PROTOBUF_ENVELOPE_MAX) +
-                              (uint32_t) IO_COBSFRAME_WIRE_MAX(256U + 19U) + 8U;
-    uint8_t zeros[256] = { 0U };
-    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > keepFree)
-    {
-        const uint32_t excess = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - keepFree;
-        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (excess < sizeof(zeros)) ? excess : (uint32_t) sizeof(zeros));
-    }
+    packTxTo(TRACE_ONE_MESSAGE_FREE);
     for (uint32_t c = 20U; c < 40U; c++)
     {
         app_server_sampleCycle();
@@ -1898,7 +1965,7 @@ static void test_a_backlog_pass_takes_a_second_write_not_less(void)
 {
     useDeepTraceConfig();
     installFourFastWatches();
-    (void) collectReplies(NULL, 0U);
+    resetTx();
 
     for (uint32_t c = 0U; c < 60U; c++)   // 3 ms of 16-byte records: ~1.2 kB on the wire
     {
@@ -1960,12 +2027,7 @@ static void test_reply_survives_a_saturating_sample_stream(void)
 static void test_reply_held_until_the_transport_takes_it(void)
 {
     // Pack the transport with frame delimiters (parsed as empty segments).
-    uint8_t zeros[256] = { 0U };
-    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > 0U)
-    {
-        const uint32_t room = IO_serial_txFree(IO_SERIAL_CHANNEL_CDC);
-        IO_serial_write(IO_SERIAL_CHANNEL_CDC, zeros, (room < sizeof(zeros)) ? room : (uint32_t) sizeof(zeros));
-    }
+    packTxTo(0U);
 
     shared_Envelope req = shared_Envelope_init_zero;
     req.request_id = 5U;
@@ -1985,6 +2047,58 @@ static void test_reply_held_until_the_transport_takes_it(void)
     TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
     TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
     TEST_ASSERT_EQUAL_UINT32(6U, replies[1].request_id);
+}
+
+// [test->fw~conn_server_001~1] a second request arriving behind a held reply
+// waits its turn: both are answered, in order, once the transport takes them.
+static void test_two_pipelined_requests_are_both_answered(void)
+{
+    HW_USB_sim_setTxAccepting(false);
+
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.which_payload = shared_Envelope_ping_tag;
+    req.request_id = 11U;
+    injectEnvelope(&req);
+    req.request_id = 12U;
+    injectEnvelope(&req);
+
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(0U, HW_USB_sim_txLen());
+
+    HW_USB_sim_setTxAccepting(true);
+    app_server_run1ms();
+
+    shared_Envelope replies[8];
+    const uint32_t n = collectReplies(replies, 8U);
+    TEST_ASSERT_EQUAL_UINT32(2U, n);
+    TEST_ASSERT_EQUAL_UINT32(11U, replies[0].request_id);
+    TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_UINT32(12U, replies[1].request_id);
+    TEST_ASSERT_TRUE(replies[1].payload.response.accepted);
+}
+
+// [test->fw~conn_server_001~1] a held reply belongs to its session: a
+// disconnect drops it rather than answering the next host with it.
+static void test_held_reply_dies_with_the_session(void)
+{
+    HW_USB_sim_setTxAccepting(false);
+
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 5U;
+    req.which_payload = shared_Envelope_ping_tag;
+    injectEnvelope(&req);
+    app_server_run1ms();
+
+    shared_Envelope replies[8];
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 8U));   // held: no room yet
+
+    HW_USB_sim_setConnected(false);
+    app_server_run1ms();                                          // disconnect edge
+    HW_USB_sim_setTxAccepting(true);
+    HW_USB_sim_setConnected(true);
+    app_server_run1ms();
+    app_server_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(0U, collectReplies(replies, 8U));
 }
 
 int main(void)
@@ -2039,6 +2153,7 @@ int main(void)
 
     RUN_TEST(test_samples_frame_is_byte_exact);
     RUN_TEST(test_max_samples_frame_layout_and_wire_bound);
+    RUN_TEST(test_full_message_with_a_multi_byte_first_cycle_fits_the_bound);
 
     RUN_TEST(test_read_returns_current_contents);
     RUN_TEST(test_read_rejections);
@@ -2056,6 +2171,8 @@ int main(void)
     RUN_TEST(test_a_backlog_pass_takes_a_second_write_not_less);
     RUN_TEST(test_reply_survives_a_saturating_sample_stream);
     RUN_TEST(test_reply_held_until_the_transport_takes_it);
+    RUN_TEST(test_two_pipelined_requests_are_both_answered);
+    RUN_TEST(test_held_reply_dies_with_the_session);
 
     return UNITY_END();
 }

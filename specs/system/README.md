@@ -39,9 +39,9 @@ specs in them yet.
   (`sys~mc_005`), and control-loop timing (`sys~mc_006`)
 - `est/` — state estimation, sensorless operation
 - `conn/` — device↔app protocol: schema-defined messages
-  (`sys~conn_001`), message framing (`sys~conn_002`), link throughput
-  test (`sys~conn_004`), request
-  acknowledgement (`sys~conn_003`)
+  (`sys~conn_001`), message framing (`sys~conn_002`), request
+  acknowledgement (`sys~conn_003`), link throughput test
+  (`sys~conn_004`)
 - `obs/` — observability: periodic status telemetry (`sys~obs_001`),
   signal selection from firmware debug information (`sys~obs_002`),
   firmware build identity + gate (`sys~obs_003`/`_004`), signal trace

@@ -96,10 +96,12 @@ fn trace_stream() {
     assert_eq!(c0, 1, "the 20-cycle group's first record sits on its offset");
     for (i, &(cycle, value)) in records.iter().enumerate() {
         assert_eq!(cycle, c0 + (i as u32 * 20), "records every 20 cycles");
+        // The counter is 1 kHz and the group's period is 1 ms, so the value a
+        // record carries follows its own cycle index, not its place in the run.
         assert_eq!(
-            u64::from(value),
-            u64::from(v0) + i as u64,
-            "counter values consecutive and coherent with the cycle index"
+            u64::from(value) - u64::from(v0),
+            u64::from((cycle - c0) / 20),
+            "counter values coherent with the cycle index"
         );
     }
 
@@ -109,6 +111,7 @@ fn trace_stream() {
     inject(&mut sim, &read_request(3, WINDOW_BASE + 12, 4));
     envelopes.extend(run(&mut sim, &mut deframer, 60));
 
+    // [test->fw~conn_trace_008~1]
     let write_reply = envelopes
         .iter()
         .find(|(id, field, _)| (*id == 2) && (*field == F_RESPONSE))

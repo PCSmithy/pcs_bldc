@@ -4,6 +4,12 @@
 #include "lib_types.h"
 #include "pb.h"   // pb_msgdesc_t
 
+/* Defines */
+
+// Envelope header worst case, the room lib_protobuf_encodeEnvelope reserves in
+// front of the payload: request_id key+varint (6) and payload key (5) + length (5).
+#define LIB_PROTOBUF_ENVELOPE_HEADER_MAX (16U)
+
 /* Public Function Declarations */
 
 // Encode message (described by fields) into buffer; false when the encoding

@@ -10,6 +10,10 @@
 
 /* Defines */
 
+// Telemetry cadence: one board.Telemetry per this many 1 ms passes
+// (fw~obs_status_001).
+#define APP_SERVER_TELEMETRY_PERIOD_TICKS (100U) // TODO - make this a board-specific config parameter
+
 // Ring storage past the budget: the ring's own 3-byte record header over the 22
 // records a millisecond can hold, plus the one slot that always stays empty.
 #define APP_SERVER_TRACE_RING_OVERHEAD_BYTES (67U)

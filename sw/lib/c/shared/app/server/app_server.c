@@ -13,10 +13,6 @@
 
 /* Defines */
 
-// Telemetry cadence: one board.Telemetry per this many 1 ms passes
-// (fw~obs_status_001).
-#define APP_SERVER_TELEMETRY_PERIOD_TICKS (100U) // TODO - make this a board-specific config parameter
-
 // Log capture bound (fw~obs_log_001).
 #define APP_SERVER_LOG_BUF_BYTES (512U)
 
@@ -65,9 +61,10 @@ typedef struct
     uint32_t linkTestSeq;
     uint32_t linkTestPayloadBytes;
     // RX sized to the frame cap (callback-decoded watches don't count toward
-    // the encode bound); TX to the largest envelope the board encodes.
+    // the encode bound); TX to the largest envelope the board encodes, plus the
+    // header reserve lib_protobuf_encodeEnvelope stages the payload behind.
     uint8_t rxFrame[IO_COBSFRAME_MAX_PAYLOAD];
-    uint8_t txBytes[LIB_PROTOBUF_ENVELOPE_MAX];
+    uint8_t txBytes[LIB_PROTOBUF_ENVELOPE_MAX + LIB_PROTOBUF_ENVELOPE_HEADER_MAX];
     uint8_t txStage[APP_SERVER_TX_STAGE_BYTES];
     size_t  txStageLen;
     // A reply the transport could not take yet; retried before any new request.
@@ -81,6 +78,17 @@ typedef struct
 
 static app_server_data_S app_server_data;
 static app_server_data_S * const data = &app_server_data;
+
+// The Samples payload encodes past the header reserve into txBytes, so a schema
+// growth that outruns the staging buffer is a build break, not a lost stream.
+_Static_assert((sizeof(((app_server_data_S *) 0)->txBytes) - LIB_PROTOBUF_ENVELOPE_HEADER_MAX) >=
+                   trace_Samples_size,
+               "txBytes cannot hold the worst-case Samples payload");
+
+// The mid-pass retry places a frame into an emptied stage, so the stage holds
+// the largest frame the frame driver can produce.
+_Static_assert(APP_SERVER_TX_STAGE_BYTES >= IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD),
+               "the transmit stage cannot hold one max-size frame");
 
 /* Private Function Definitions */
 
@@ -110,6 +118,8 @@ static void app_server_private_flushStage(void)
 // [impl->fw~conn_server_006~1] frame payload onto the pass's stage: whole
 // frames only, false when the transport has no room for it. A frame the
 // transport can take but the stage cannot flushes the stage first.
+// [impl->fw~conn_proto_004~1] accepted frames leave in order; one that does
+// not fit the remaining capacity is reported dropped.
 static bool app_server_private_stageFrame(const uint8_t * const payload, size_t len)
 {
     bool staged = false;
@@ -121,7 +131,7 @@ static bool app_server_private_stageFrame(const uint8_t * const payload, size_t 
         size_t wireLen = 0U;
         staged = IO_COBSFrame_encode(data->config->frame, payload, len,
                                      &data->txStage[data->txStageLen], room, &wireLen);
-        if ((!staged) && (stageRoom < transportRoom) && (data->txStageLen > 0U))
+        if (!staged && (stageRoom < transportRoom) && (data->txStageLen > 0U))
         {
             app_server_private_flushStage();
             room = (APP_SERVER_TX_STAGE_BYTES < transportRoom) ? APP_SERVER_TX_STAGE_BYTES : transportRoom;
@@ -326,7 +336,10 @@ static void app_server_private_pumpRequests(void)
 {
     IO_COBSFrame_run();
     size_t frameLen = 0U;
-    while (IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen))
+    // A held reply stops the pump: the next request stays framed until the
+    // reply ahead of it has left, so no request loses its answer.
+    while ((data->pendingReplyLen == 0U) &&
+           IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen))
     {
         shared_Envelope * const request = &data->rxEnvelope;
         app_server_private_zeroEnvelope(request);
@@ -359,8 +372,11 @@ static void app_server_private_publishTelemetry(void)
     shared_Envelope * const env = &data->txEnvelope;
     app_server_private_zeroEnvelope(env);
     env->which_payload = shared_Envelope_telemetry_tag;
+    // Staged out of the stream's capacity, so a telemetry frame never eats the
+    // reply reserve; a period with no room for a whole envelope frame is skipped.
     if ((data->config->buildTelemetry != NULL) &&
-        (data->config->buildTelemetry(&env->payload.telemetry)))
+        (app_server_private_streamTxFree() >= APP_SERVER_REPLY_WIRE_RESERVE) &&
+        data->config->buildTelemetry(&env->payload.telemetry))
     {
         (void) app_server_private_sendEnvelope(env);
     }
@@ -398,10 +414,8 @@ static void app_server_private_drainSamples(void)
             (buffered >= (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)))
         {
             const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
-            // Only the fields the payload encoder reads are written: zeroing
-            // the whole envelope costs more than encoding the message.
-            env->request_id = 0U;
-            env->which_payload = shared_Envelope_samples_tag;
+            // Only the Samples fields the payload encoder reads are written:
+            // zeroing the whole envelope costs more than encoding the message.
             samples->period_cycles = periodCycles;
             samples->first_cycle = cycle;
             samples->count = 0U;
@@ -414,8 +428,8 @@ static void app_server_private_drainSamples(void)
             {
                 if (((used + recordLen) > sizeof(samples->data.bytes)) ||
                     (buffered < (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)) ||
-                    (!app_server_trace_pop(&samples->data.bytes[used],
-                                           sizeof(samples->data.bytes) - used)))
+                    !app_server_trace_pop(&samples->data.bytes[used],
+                                          sizeof(samples->data.bytes) - used))
                 {
                     batching = false;
                 }
@@ -432,7 +446,7 @@ static void app_server_private_drainSamples(void)
                     uint32_t nextGroup = 0U;
                     uint32_t peekedCycle = 0U;
                     size_t peekedLen = 0U;
-                    batching = (app_server_trace_peek(&nextGroup, &peekedCycle, &peekedLen)) &&
+                    batching = app_server_trace_peek(&nextGroup, &peekedCycle, &peekedLen) &&
                                (nextGroup == group) &&
                                (peekedCycle == nextCycle);
                     recordLen = peekedLen;
@@ -441,14 +455,14 @@ static void app_server_private_drainSamples(void)
 
             if (samples->count > 0U)
             {
-                // The records are already popped: a failed send drops them, and
-                // the host sees the loss as a gap in the cycle indices.
+                // The records are already popped: a failed send drops them and
+                // ends the pass, the host reading the loss as a cycle-index gap.
                 samples->data.size = (pb_size_t) used;
-                (void) app_server_private_sendSamples(samples);
+                const bool sent = app_server_private_sendSamples(samples);
                 const uint32_t wire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
                     used + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
                 budget -= (wire < budget) ? wire : budget;
-                progressing = true;
+                progressing = sent;
             }
         }
     }
@@ -486,11 +500,16 @@ static void app_server_private_drainLog(void)
 static void app_server_private_drainLinkTest(void)
 {
     bool sent = true;
-    while ((data->linkTestRemaining > 0U) && sent)
+    shared_Envelope * const env = &data->txEnvelope;
+    if (data->linkTestRemaining > 0U)
     {
-        shared_Envelope * const env = &data->txEnvelope;
+        // Only seq and payload change per frame, so the envelope is zeroed once
+        // rather than once per frame of the throughput it measures.
         app_server_private_zeroEnvelope(env);
         env->which_payload = shared_Envelope_link_test_frame_tag;
+    }
+    while ((data->linkTestRemaining > 0U) && sent)
+    {
         env->payload.link_test_frame.seq = data->linkTestSeq;
         env->payload.link_test_frame.payload.size = (pb_size_t) data->linkTestPayloadBytes;
         for (uint32_t i = 0U; i < data->linkTestPayloadBytes; i++)
@@ -562,7 +581,6 @@ void app_server_run1ms(void)
             // [impl->fw~conn_server_005~1] a link test is abandoned with it.
             app_server_trace_clear();
             data->pendingReplyLen = 0U;
-            data->txStageLen = 0U;
             data->linkTestRemaining = 0U;
             IO_COBSFrame_reset(data->config->frame);
             uint8_t discard[16];

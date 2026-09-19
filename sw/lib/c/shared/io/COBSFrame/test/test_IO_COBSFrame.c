@@ -38,6 +38,22 @@ void setUp(void)
 
 void tearDown(void) {}
 
+// Frame a payload and hand it to the serial channel the way the server's pass
+// staging does; false when the whole frame does not fit the free capacity.
+static bool sendFrame(const uint8_t * const payload, size_t len)
+{
+    bool sent = false;
+    uint8_t wire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD)];
+    size_t wireLen = 0U;
+    if (IO_COBSFrame_encode(IO_COBSFRAME_CHANNEL_CDC, payload, len, wire, sizeof(wire), &wireLen) &&
+        (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) >= wireLen))
+    {
+        IO_serial_write(IO_SERIAL_CHANNEL_CDC, wire, (uint32_t) wireLen);
+        sent = true;
+    }
+    return sent;
+}
+
 // Capture everything the frame layer transmitted, then re-present it as
 // received bytes (the sim's TX and RX are independent, so loopback is manual).
 static uint32_t loopTxToRx(void)
@@ -113,7 +129,7 @@ static void test_wire_format_reference_vector(void)
         0x26U, 0x39U, 0xF4U, 0xCBU,
         0x00U,
     };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 9U));
+    TEST_ASSERT_TRUE(sendFrame(payload, 9U));
 
     uint8_t wire[32] = { 0U };
     TEST_ASSERT_EQUAL_UINT32(16U, HW_USB_sim_readTx(wire, sizeof(wire)));
@@ -125,7 +141,7 @@ static void test_wire_format_reference_vector(void)
 static void test_encode_into_buffer_matches_the_wire(void)
 {
     const uint8_t payload[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 9U));
+    TEST_ASSERT_TRUE(sendFrame(payload, 9U));
     uint8_t wire[32] = { 0U };
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
 
@@ -149,7 +165,7 @@ static void test_wire_body_contains_no_zero_bytes(void)
     {
         payload[i] = (uint8_t)((i % 5U == 0U) ? 0U : (i & 0xFFU));
     }
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, sizeof(payload)));
+    TEST_ASSERT_TRUE(sendFrame(payload, sizeof(payload)));
 
     uint8_t wire[128] = { 0U };
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
@@ -162,15 +178,15 @@ static void test_wire_body_contains_no_zero_bytes(void)
     }
 }
 
-/* ---- fw~conn_proto_004: whole-frame transmission ---- */
+/* ---- fw~conn_proto_005: reception + resynchronization ---- */
 
-// [test->fw~conn_proto_004~1]
-static void test_frames_transmit_in_order(void)
+// [test->fw~conn_proto_005~1] back-to-back frames are delivered in order
+static void test_frames_received_in_order(void)
 {
     const uint8_t a[3] = { 0xA1U, 0xA2U, 0xA3U };
     const uint8_t b[3] = { 0xB1U, 0xB2U, 0xB3U };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, a, 3U));
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, b, 3U));
+    TEST_ASSERT_TRUE(sendFrame(a, 3U));
+    TEST_ASSERT_TRUE(sendFrame(b, 3U));
 
     (void)loopTxToRx();
     IO_COBSFrame_run();
@@ -187,39 +203,12 @@ static void test_frames_transmit_in_order(void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(b, frame, 3U);
 }
 
-// [test->fw~conn_proto_004~1]
-static void test_frame_exceeding_capacity_dropped_whole(void)
-{
-    // Leave less free transmit space than one encoded frame needs.
-    uint8_t filler[64];
-    for (size_t i = 0U; i < sizeof(filler); i++)
-    {
-        filler[i] = 0x55U;
-    }
-    while (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) > 8U)
-    {
-        const uint32_t chunk =
-            (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - 8U > sizeof(filler))
-                ? (uint32_t)sizeof(filler)
-                : (IO_serial_txFree(IO_SERIAL_CHANNEL_CDC) - 8U);
-        IO_serial_write(IO_SERIAL_CHANNEL_CDC, filler, chunk);
-    }
-    const uint32_t txLenBefore = HW_USB_sim_txLen();
-
-    const uint8_t payload[16] = { 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U,
-                                  9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U };
-    TEST_ASSERT_FALSE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, sizeof(payload)));
-    TEST_ASSERT_EQUAL_UINT32(txLenBefore, HW_USB_sim_txLen());
-}
-
-/* ---- fw~conn_proto_005: reception + resynchronization ---- */
-
 // [test->fw~conn_proto_005~1]
 static void test_roundtrip_including_zero_length(void)
 {
     const uint8_t payload[5] = { 0x10U, 0x00U, 0x30U, 0x00U, 0x50U };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 5U));
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, NULL, 0U));
+    TEST_ASSERT_TRUE(sendFrame(payload, 5U));
+    TEST_ASSERT_TRUE(sendFrame(NULL, 0U));
 
     (void)loopTxToRx();
     IO_COBSFrame_run();
@@ -240,8 +229,8 @@ static void test_corrupted_frame_discarded_next_delivered(void)
 {
     const uint8_t a[4] = { 0xAAU, 0xABU, 0xACU, 0xADU };
     const uint8_t b[4] = { 0xBAU, 0xBBU, 0xBCU, 0xBDU };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, a, 4U));
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, b, 4U));
+    TEST_ASSERT_TRUE(sendFrame(a, 4U));
+    TEST_ASSERT_TRUE(sendFrame(b, 4U));
 
     uint8_t wire[64];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
@@ -274,7 +263,7 @@ static void test_overlong_garbage_discarded_next_delivered(void)
     HW_USB_sim_injectRx(&delimiter, 1U);
 
     const uint8_t payload[3] = { 0x01U, 0x02U, 0x03U };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 3U));
+    TEST_ASSERT_TRUE(sendFrame(payload, 3U));
     uint8_t wire[32];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
     HW_USB_sim_injectRx(wire, wireLen);
@@ -294,7 +283,7 @@ static void test_empty_segments_skipped(void)
     HW_USB_sim_injectRx(delimiters, 3U);
 
     const uint8_t payload[2] = { 0xC1U, 0xC2U };
-    TEST_ASSERT_TRUE(IO_COBSFrame_send(IO_COBSFRAME_CHANNEL_CDC, payload, 2U));
+    TEST_ASSERT_TRUE(sendFrame(payload, 2U));
     uint8_t wire[32];
     const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
     HW_USB_sim_injectRx(wire, wireLen);
@@ -330,9 +319,7 @@ int main(void)
     RUN_TEST(test_wire_body_contains_no_zero_bytes);
     RUN_TEST(test_encode_into_buffer_matches_the_wire);
 
-    RUN_TEST(test_frames_transmit_in_order);
-    RUN_TEST(test_frame_exceeding_capacity_dropped_whole);
-
+    RUN_TEST(test_frames_received_in_order);
     RUN_TEST(test_roundtrip_including_zero_length);
     RUN_TEST(test_corrupted_frame_discarded_next_delivered);
     RUN_TEST(test_overlong_garbage_discarded_next_delivered);

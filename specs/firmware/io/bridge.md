@@ -12,9 +12,9 @@ bridge and phase; each phase maps to a configured HW_TIM logical channel, and a
 bridge's three phases share one HW_TIM peripheral whose master output enable
 gates the bridge.
 
-See also: [[overview]] (sys~arch_005~1), [[tim]] (HW_TIM supplies the
-complementary PWM), [[bridge-actuation]] (sys~mc_004~1),
-[[motor-control-application]] (fw~mc_015~1 runs the commutation step from
+See also: [[overview]] (`sys~arch_005~1`), [[tim]] (HW_TIM supplies the
+complementary PWM), [[bridge-actuation]] (`sys~mc_004~1`),
+[[motor-control-application]] (`fw~mc_015~1` runs the commutation step from
 the per-cycle callback).
 
 ## Driver configuration and lifecycle
@@ -37,7 +37,7 @@ Acceptance:
 - Each rejection condition returns false.
 
 Covers:
-- sys~arch_005~1
+- `sys~arch_005~1`
 
 Needs: impl, test
 
@@ -57,7 +57,7 @@ Acceptance:
 - Each rejected command returns false and leaves every compare value unchanged.
 
 Covers:
-- sys~mc_004~1
+- `sys~mc_004~1`
 
 Needs: impl, test
 
@@ -65,7 +65,7 @@ Needs: impl, test
 `fw~io_bridge_003~1`
 
 The driver shall set and report the whole-bridge output-enable state through the
-phases' shared master output enable (fw~hal_tim_008~1): while disabled, every
+phases' shared master output enable (`fw~hal_tim_008~1`): while disabled, every
 phase output holds its inactive state and accepted duty commands take effect on
 the outputs at re-enable, and the reported state includes a disable forced by
 the peripheral's break input.
@@ -77,7 +77,7 @@ Acceptance:
 - The reported state reads disabled after a break-input assertion.
 
 Covers:
-- sys~mc_004~1
+- `sys~mc_004~1`
 
 Needs: impl, test
 
@@ -95,7 +95,7 @@ Acceptance:
 - A command on an out-of-range phase returns false.
 
 Covers:
-- sys~mc_004~1
+- `sys~mc_004~1`
 
 Needs: impl, test
 
@@ -121,7 +121,7 @@ Acceptance:
 - A new regular sample changes the reported value at the next read.
 
 Covers:
-- sys~mc_001~1
+- `sys~mc_001~1`
 
 Needs: impl, test
 
@@ -130,7 +130,7 @@ Needs: impl, test
 
 The driver shall form each PWM cycle's phase-current triple from the
 injected U and V samples whose timestamps fall within the configured pair
-window — U and V in amps per fw~io_bridge_005~1's law, W = −(U + V) — with
+window — U and V in amps per `fw~io_bridge_005~1`'s law, W = −(U + V) — with
 a sample arriving outside the window starting a new pair.
 
 Acceptance:
@@ -139,7 +139,7 @@ Acceptance:
 - Two samples farther apart than the pair window form no triple.
 
 Covers:
-- sys~mc_001~1
+- `sys~mc_001~1`
 
 Needs: impl, test
 
@@ -148,7 +148,7 @@ Needs: impl, test
 
 The driver shall invoke a callback registered per bridge, with its
 registered context, once per completed phase-current triple
-(fw~io_bridge_006~1), in the interrupt context of the completing injected
+(`fw~io_bridge_006~1`), in the interrupt context of the completing injected
 conversion.
 
 Acceptance:
@@ -156,6 +156,6 @@ Acceptance:
   context, each after that triple is readable.
 
 Covers:
-- sys~mc_001~1
+- `sys~mc_001~1`
 
 Needs: impl, test
