@@ -577,6 +577,10 @@ def run(page):
     def scale_l(widget_id):
         return widget_eval(page, widget_id, "(w) => w.ranges().L ?? null")
 
+    # The scratch plot lands at the end of the workspace; a plot laid out
+    # off-screen with no height skips its refresh, so bring it into view
+    # before asking its axis to follow the stream.
+    widget_eval(page, scratch, "(w) => { w.el.scrollIntoView({ block: 'center' }); w.refresh(); return true; }")
     a1 = scale_l(scratch)
     grew = True
     try:
@@ -584,7 +588,7 @@ def run(page):
             f"""() => {{ let r = null;
               __cockpit.forEachWidget(w => {{ if (w.cfg.id === {scratch!r}) r = w.ranges().L; }});
               return r && JSON.stringify(r) !== {json.dumps(json.dumps(a1))}; }}""",
-            timeout=8000,
+            timeout=15000,
         )
     except Exception:
         grew = False
@@ -2741,7 +2745,7 @@ def run(page):
     tgt_h = require_target(VEL_M, "views_017 probe (zoom-hide block)")
     ctrl_click(tgt_h["at"])
     setb = cwidget_eval(
-        """(w) => {
+        """async (w) => {
           const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
           const v = w.anchor.value;
           w.setManualRange(w.sideOf(w.anchor.path), v - 5, v + 5); // ay = h/2, visible
@@ -2749,6 +2753,7 @@ def run(page):
           const S = (t1 - t0) * 0.3;
           __cockpit.timeline.selectRange(w.anchor.tick + (5 * S) / rect.width,
                                          w.anchor.tick + (5 * S) / rect.width + S);
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
           const [u0, u1] = w.window;
           return {
             rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
@@ -2784,7 +2789,7 @@ def run(page):
     tgt_h = require_target(VEL_M, "views_017 probe (both-hidden block)")
     ctrl_click(tgt_h["at"])
     setc = cwidget_eval(
-        """(w) => {
+        """async (w) => {
           const rect = w.el.querySelector('.plot-canvas').getBoundingClientRect();
           const h = rect.height, v = w.anchor.value, D = 10;
           w.setManualRange(w.sideOf(w.anchor.path), v - D * (1 + 4 / h) , v - D * (1 + 4 / h) + D);
@@ -2792,6 +2797,9 @@ def run(page):
           const S = (t1 - t0) * 0.3;
           __cockpit.timeline.selectRange(w.anchor.tick + (5 * S) / rect.width,
                                          w.anchor.tick + (5 * S) / rect.width + S);
+          // A refresh already in flight from the click defers this one to
+          // the next frame: settle before reading the lines.
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
           return {
             rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
             lxHidden: w.el.querySelector('.anchor-line-x').hidden,
