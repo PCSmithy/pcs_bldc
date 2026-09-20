@@ -125,8 +125,8 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSt
 #define TASK_PRIORITY_200MS (configMAX_PRIORITIES - 5U)
 
 // --- Task profiling --------------------------------------------------------
-// Per-task worst-case body duration in microseconds (read/reset via
-// profileTakeMaxUs). task_usb blocks on its event queue, so it is not profiled.
+// Per-task worst-case body duration in microseconds. task_usb blocks on its
+// event queue, so it is not profiled.
 typedef enum
 {
     PROFILE_TASK_1MS,
@@ -137,6 +137,18 @@ typedef enum
 } profileTask_E;
 
 static volatile uint32_t profileMaxUs[PROFILE_TASK_COUNT];
+
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+// Sim-only trace window the SIL scenarios watch (app_server_config.c owns it).
+extern uint32_t app_server_simTraceWindow32[];
+#endif
+
+// --- Bridge cycle probe (fw~mc_018) ----------------------------------------
+// Microsecond maxima from cycle-callback entry to the end of the commutation
+// step and to callback exit; the host clears either by writing zero to it.
+// [impl->fw~mc_018~1]
+static volatile uint32_t main_cycleProbe_stepMax_us;
+static volatile uint32_t main_cycleProbe_callbackMax_us;
 
 // --- Per-task heartbeat counters (SIL liveness) ----------------------------
 // One free-running counter per task, bumped once per loop-body iteration.
@@ -158,6 +170,7 @@ static volatile uint32_t serverRuns;
 static bool main_private_hwInit(void);
 static bool main_private_appInit(void);
 static bool main_private_createTasks(void);
+static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context);
 
 // Fold one body execution's duration into the task's window max.
 static void profileUpdate(profileTask_E task, uint32_t durationUs)
@@ -166,18 +179,6 @@ static void profileUpdate(profileTask_E task, uint32_t durationUs)
     {
         profileMaxUs[task] = durationUs;
     }
-}
-
-// Snapshot the task's window max and clear it for the next window. The critical
-// section makes the read-and-clear atomic against the (higher-priority)
-// profiled tasks, so no sample is dropped between the read and the reset.
-static uint32_t profileTakeMaxUs(profileTask_E task)
-{
-    taskENTER_CRITICAL();
-    const uint32_t maxUs = profileMaxUs[task];
-    profileMaxUs[task] = 0U;
-    taskEXIT_CRITICAL();
-    return maxUs;
 }
 
 static void task_1ms(void * params)
@@ -204,13 +205,9 @@ static void task_1ms(void * params)
         app_userControls_run1ms();   // button + dial -> motor mode/velocity commands
         app_motorControl_run1ms();   // in-module overcurrent trip + enable gating (fw~safety_001 / fw~mc_006)
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
-        {
-            // Sim trace window word [0]: the SIL trace scenarios' 1 kHz signal.
-            extern uint32_t app_server_simTraceWindow32[];
-            app_server_simTraceWindow32[0]++;
-        }
+        // Sim trace window word [0]: the SIL trace scenarios' 1 kHz signal.
+        app_server_simTraceWindow32[0]++;
 #endif
-        app_server_sample1ms();      // capture trace watches after the control update (fw~conn_trace_004)
 
         profileUpdate(PROFILE_TASK_1MS, (uint32_t)lib_timer_getTime_us() - profileStartUs);
     }
@@ -307,6 +304,16 @@ static void task_server(void * params)
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
+        // A pass that overran its tick is not made up: back-to-back passes
+        // would each drain the few records that landed during the last one,
+        // fragmenting the stream. The next pass waits a whole tick instead.
+        // Strictly more than one tick: a pass that merely straddles a tick
+        // boundary still wakes on schedule, or the task loses a pass in ten.
+        const TickType_t now = xTaskGetTickCount();
+        if ((TickType_t)(now - lastWake) > pdMS_TO_TICKS(1U))
+        {
+            lastWake = now;
+        }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1U));
         serverRuns++;
         const uint32_t profileStartUs = (uint32_t)lib_timer_getTime_us();
@@ -327,6 +334,37 @@ int __io_putchar(int ch)
     return ch;
 }
 #endif
+
+// The PWM-synchronous cycle, entered from the bridge's per-cycle callback in
+// injected-completion ISR context: no FreeRTOS call, no lib_timer, no printf.
+// [impl->fw~mc_018~1]
+static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context)
+{
+    (void)channel;
+    (void)context;
+    uint32_t entry_us = 0U;
+    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &entry_us);
+
+    // --- commutation step (fw~mc_015): the active method's step lands here ---
+    // An empty step measures zero, and its own counter read arrives with it.
+    main_cycleProbe_stepMax_us = 0U;
+
+#if (BUILD_TARGET == BUILD_TARGET_SIM)
+    // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal,
+    // word [2] its complement - a lockstep pair the coherence test checks.
+    app_server_simTraceWindow32[1]++;
+    app_server_simTraceWindow32[2] = ~app_server_simTraceWindow32[1];
+#endif
+    app_server_sampleCycle();   // capture trace watches after the step (fw~conn_trace_004)
+
+    uint32_t exit_us = 0U;
+    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &exit_us);
+    const uint32_t callbackDuration_us = exit_us - entry_us;
+    if (callbackDuration_us > main_cycleProbe_callbackMax_us)
+    {
+        main_cycleProbe_callbackMax_us = callbackDuration_us;
+    }
+}
 
 // HW-layer init, shared by both targets' entry paths.
 static bool main_private_hwInit(void)
@@ -362,6 +400,8 @@ static bool main_private_appInit(void)
     ok &= IO_serial_init(&IO_serial_config);
     ok &= IO_COBSFrame_init(&IO_COBSFrame_config);
     ok &= app_server_init(&app_server_config);
+    // Last: the callback's first firing must find every module it drives up.
+    ok &= IO_bridge_registerCycleCallback(IO_BRIDGE_CHANNEL_MOTOR, main_private_bridgeCycle, NULL);
     return ok;
 }
 

@@ -21,7 +21,10 @@ Sub-folders are created when a topic gets its first spec.
 - `pd/` — USB-PD sink status: register decode and runtime for the CYPD3177
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
 - `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4
-  gate-driver management); also FOC, motion, trajectory tracking
+  gate-driver management), `fw~mc_006~1` (app_motorControl gating and
+  the PWM-synchronous commutation step), `fw~mc_013~1` (frame transforms
+  and space-vector modulation), the six-step and V/f methods; also FOC,
+  motion, trajectory tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver), `fw~est_velocity_001~1` (encoder-derived
   velocity estimate); also the Kalman observer, sensorless observer, and
@@ -35,9 +38,10 @@ Sub-folders are created when a topic gets its first spec.
 - `conn/` — device↔app connectivity (the firmware side). Per-area sub-topic
   IDs: `fw~conn_serial_*` (IO_serial byte-stream transport over USB CDC),
   `fw~conn_proto_*` (protobuf schema + IO_COBSFrame framing),
-  `fw~conn_server_*` (app_server request dispatch), `fw~conn_trace_*`
-  (app_server trace services: watch streaming, memory read/write,
-  trace capability report)
+  `fw~conn_server_*` (app_server request dispatch, link throughput
+  test), `fw~conn_trace_*` (app_server trace services: PWM-cycle watch
+  sampling and batched streaming, memory read/write, trace capability
+  report)
 - `safety/` — fault state machine, protection thresholds, recovery
   paths
 

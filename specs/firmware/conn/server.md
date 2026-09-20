@@ -27,6 +27,8 @@ The firmware shall answer every received envelope
 Acceptance:
 - A `PingRequest` receives a `Response` with `accepted` set, carrying
   the request's `request_id`.
+- A request received while the sample stream (`fw~conn_trace_009~1`)
+  holds the transmit capacity is answered within 2 ms.
 - An envelope bearing no recognized request payload receives a
   `Response` with `accepted` clear and a non-empty `cause`.
 
@@ -97,5 +99,61 @@ Acceptance:
 
 Covers:
 - sys~safety_001~1
+
+Needs: impl, test
+
+## Diagnostics
+
+### Link throughput test
+`fw~conn_server_005~1`
+
+An accepted `LinkTestRequest` shall stream `LinkTestFrame` messages —
+sequence numbers 0 through the requested count minus 1, each payload
+of the requested size with byte $i$ equal to $(\text{seq} + i) \bmod
+256$ — as many per millisecond as the pass accepts whole frames
+(`fw~conn_server_006~1`), a running test abandoned when the serial channel
+loses the host connection (`fw~conn_serial_005~1`), the request rejected
+when:
+
+| Rejected when |
+|---------------|
+| The payload size is outside 1..256 bytes |
+| The frame count is outside 1..1000000 |
+| A test is in progress |
+
+Acceptance:
+- An accepted request yields exactly the requested count of frames with
+  consecutive sequence numbers and the pattern payload.
+- A request during a test is rejected; a request after the count is
+  reached is accepted.
+- A disconnect ends a running test; a request after reconnect is
+  accepted with sequence numbers restarting at 0.
+- Each rejection condition rejects the request.
+
+Covers:
+- sys~conn_004~1
+
+Needs: impl, test
+
+### Pass transmission
+`fw~conn_server_006~1`
+
+The server shall hand each millisecond pass's frames — replies,
+telemetry, log, samples, and link-test frames — to the serial channel
+as one write, framing each (`fw~conn_proto_002~1`) into a pass buffer
+of 768 bytes — a pass outgrowing the buffer taking one further write per
+fill — a frame taken whole or not at all when the channel's free
+transmit capacity (`fw~conn_serial_006~1`), less what the pass already
+holds, cannot hold it.
+
+Acceptance:
+
+- A pass that produces several frames within the buffer reaches the
+  serial channel as one write carrying them in order.
+- A frame the channel's remaining capacity cannot hold is not written;
+  the pass's earlier frames still leave.
+
+Covers:
+- sys~conn_002~1
 
 Needs: impl, test

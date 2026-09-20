@@ -8,6 +8,7 @@ import { store, subscribe } from "../state.js";
 import { histories } from "./history.js";
 import { meta } from "./watchflow.js";
 import { resolvedColor } from "./appearance.js";
+import { periodLabel } from "./budget.js";
 import { cursor } from "./cursor.js";
 import { formatValue } from "./plotwidget.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
@@ -101,7 +102,7 @@ export class TableWidget {
           <td><span class="legend-bar" style="background:${absent ? "var(--ink-hint)" : resolvedColor(path)}"></span><span class="mono">${esc(path)}</span></td>
           <td class="col-value mono ${absent ? "readout-value--absent" : ""} ${m?.kind === "enum" ? "value--enum" : ""} ${m?.kind === "bool" && v === 0 ? "value--ok" : ""}">${esc(formatValue(v, m?.kind, m?.enums))}</td>
           <td class="col-type">${esc(m?.kind ?? "—")}</td>
-          <td class="col-period mono">${w ? `${w.period_ms} ms` : "—"}</td>
+          <td class="col-period mono">${w ? periodLabel(w.period_cycles) : "—"}</td>
         </tr>`;
       })
       .join("");

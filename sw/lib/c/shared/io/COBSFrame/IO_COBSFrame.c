@@ -19,7 +19,6 @@ typedef struct
     const IO_COBSFrame_config_S * config;
     IO_COBSFrame_channelData_S channelData[IO_COBSFRAME_CHANNEL_COUNT];
     uint8_t txPlain[IO_COBSFRAME_MAX_PAYLOAD + IO_COBSFRAME_CRC_LEN];
-    uint8_t txWire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD)];
 } IO_COBSFrame_data_S;
 
 static IO_COBSFrame_data_S IO_COBSFrame_data;
@@ -187,13 +186,14 @@ void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel)
 }
 
 // [impl->fw~conn_proto_002~1]
-// [impl->fw~conn_proto_004~1]
-bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len)
+bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len,
+                         uint8_t * const out, size_t outMax, size_t * const outLen)
 {
-    bool sent = false;
+    bool encoded = false;
     if ((data->config != NULL) &&
         (channel < data->config->numChannels) &&
-        ((payload != NULL) || (len == 0U)))
+        ((payload != NULL) || (len == 0U)) &&
+        (out != NULL) && (outLen != NULL) && (outMax >= 2U))
     {
         const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];
         if (len <= cfg->maxFrameLen)
@@ -208,21 +208,15 @@ bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const pay
             data->txPlain[len + 2U] = (uint8_t) ((crc >> 16U) & 0xFFU);
             data->txPlain[len + 3U] = (uint8_t) ((crc >> 24U) & 0xFFU);
 
-            size_t encodedLen = 0U;
-            if (lib_cobs_encode(data->txPlain, len + IO_COBSFRAME_CRC_LEN,
-                                &data->txWire[1], sizeof(data->txWire) - 2U,
-                                &encodedLen))
+            size_t bodyLen = 0U;
+            if (lib_cobs_encode(data->txPlain, len + IO_COBSFRAME_CRC_LEN, &out[1], outMax - 2U, &bodyLen))
             {
-                data->txWire[0] = 0x00U;
-                data->txWire[encodedLen + 1U] = 0x00U;
-                const size_t wireLen = encodedLen + 2U;
-                if (IO_serial_txFree(cfg->serialChannel) >= wireLen)
-                {
-                    IO_serial_write(cfg->serialChannel, data->txWire, (uint32_t) wireLen);
-                    sent = true;
-                }
+                out[0] = 0x00U;
+                out[bodyLen + 1U] = 0x00U;
+                *outLen = bodyLen + 2U;
+                encoded = true;
             }
         }
     }
-    return sent;
+    return encoded;
 }

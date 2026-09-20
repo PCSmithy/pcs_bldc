@@ -18,8 +18,9 @@ like end-to-end.
   bench-verified in engineering units; six-step trapezoidal drive spinning
   the motor through the STSPIN32G4 gate driver, with USB-PD sink
   monitoring and overcurrent / encoder-fault protection; and a
-  protobuf-over-USB protocol carrying telemetry, a signal trace engine,
-  and the log stream. FOC and estimation are ahead (see
+  protobuf-over-USB protocol carrying telemetry, a signal trace engine
+  sampling at the 20 kHz PWM rate, a link throughput test, and the log
+  stream. FOC and estimation are ahead (see
   [`docs/motor-sprint.md`](docs/motor-sprint.md)).
 - **Desktop app:** observability slice working on the bench — connect with
   a firmware-identity gate, DWARF-driven signal picker, live WebGL plots

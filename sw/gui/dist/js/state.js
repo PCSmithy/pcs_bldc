@@ -98,8 +98,8 @@ export const store = {
   linkHz: 0,                // measured telemetry arrival rate
   traceStatus: null,        // last TraceStatusInfo
   budgetVerdict: "—",       // 'accepted' | rejection cause | '—'
-  watched: new Map(),       // path -> { period_ms }  (workspace-owned)
-  gapCount: 0,              // cumulative dropped ticks from samples batches
+  watched: new Map(),       // path -> { period_cycles }  (workspace-owned)
+  gapCount: 0,              // cumulative lost points: device drops + host shedding
   // The plot timeline (workspace-owned, see workspace/timeline.js; mutations
   // notify the "timeline" topic). window/pausedSpan are [t0, t1] ms or null.
   timeline: { span_ms: 10_000, mode: "live", window: null, pausedSpan: null },
@@ -211,6 +211,9 @@ export async function attachEvents() {
   await listen("connection", (ev) => {
     if (ev.state === "connected") {
       set({ connection: { state: "connected", port: ev.port, buildId: ev.build_id }, lastPort: ev.port });
+      // The file behind the loaded .elf may have been rebuilt since it was
+      // parsed; gate the new session against what is on disk now.
+      if (store.elf.path) api.loadElf(store.elf.path).catch((e) => set({ connectError: String(e) }));
     } else if (ev.state === "lost") {
       set({ connection: { state: "lost", port: null, buildId: null } });
     } else {
@@ -227,9 +230,18 @@ export async function attachEvents() {
     set({ telemetry: t });
   });
   await listen("log", (l) => notify("log", l.text));
-  await listen("trace-status", (s) => set({ traceStatus: s }));
+  // The core pushes this behind the prior watch list's final batch, so the
+  // event — not the install command's resolution — is where the watch flow
+  // clears its histories.
+  await listen("trace-status", (s) => {
+    set({ traceStatus: s });
+    notify("trace-status", s);
+  });
   await listen("samples", (batch) => {
-    if (batch.dropped_ticks) set({ gapCount: store.gapCount + batch.dropped_ticks });
+    // Device drops and host-side shedding (a batch the core could not hand
+    // to a slow webview) both mean missing data: both count as gaps.
+    const lost = (batch.dropped_records || 0) + (batch.host_dropped_points || 0);
+    if (lost) set({ gapCount: store.gapCount + lost });
     notify("samples", batch);
   });
 }

@@ -46,6 +46,8 @@ bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer
 // (frames from a dead session must not be served to the next one).
 void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel);
 
-// Frame and transmit payload; false (nothing transmitted) when the whole
-// encoded frame exceeds the channel's free transmit capacity.
-bool IO_COBSFrame_send(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len);
+// Frame payload into out (delimiters included), for a caller that batches
+// frames into one transmit; false (nothing written) when the frame exceeds
+// outMax or the channel's frame bound.
+bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len,
+                         uint8_t * const out, size_t outMax, size_t * const outLen);

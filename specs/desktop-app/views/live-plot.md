@@ -13,15 +13,20 @@ The workspace's strip-chart widget ([[workspace]]).
 `app~views_001~1`
 
 A plot widget shall plot each of its signals' demultiplexed
-values (`app~obs_004~1`) against their tick timestamps as one trace
+values (`app~obs_004~1`) against their sample times as one trace
 per signal in the signal's trace appearance (`app~views_011~1`),
-extending as messages arrive, each gap-free run of ticks rendered as
-one connected segment, its samples rendered per `app~views_014~1`.
+extending as messages arrive, each gap-free run of sample times rendered
+as one connected segment, its samples rendered per `app~views_014~1`.
+A signal's marked gaps are bounded at 4096, the oldest coalescing
+pairwise past that bound; the samples between two coalesced gaps are
+not rendered.
 
 Acceptance:
 
-- A trace spanning a tick-count gap renders as separate segments with
+- A trace spanning a sample-time gap renders as separate segments with
   no line across the gap.
+- Past the gap bound, the newest gaps still render as separate
+  segments.
 
 Covers:
 - sys~arch_002~1
@@ -91,7 +96,7 @@ its color, auto-assigned when the signal is first selected and stable
 until changed; a solid, dotted, or dashed line; an optional dot at
 each rendered sample (`app~views_014~1`); and an interpolation,
 applied between consecutive rendered samples within each gap-free run
-of ticks (`app~views_001~1`):
+of sample times (`app~views_001~1`):
 
 | Interpolation | Rendering |
 |---------------|-----------|

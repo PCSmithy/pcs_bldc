@@ -10,7 +10,7 @@ import { store, notify, prefs } from "../state.js";
 import { histories } from "./history.js";
 
 export const SPANS_MS = [5_000, 10_000, 30_000, 60_000];
-const MIN_RANGE_MS = 10; // zoom-in floor across the plot (app~views_009)
+const MIN_RANGE_MS = 1; // zoom-in floor across the plot (app~views_009)
 const LS_KEY = "cockpit.timeline.span.v1";
 
 const tl = () => store.timeline;
@@ -188,7 +188,10 @@ export function initTimeline() {
   renderBar();
 }
 
-const fmtS = (ms) => `${(ms / 1000).toFixed(ms % 1000 ? 2 : 0)} s`;
+// Decimals scale with the shown span so the two ends stay distinct: a
+// one-cycle tick sits on a 0.05 ms grid, so 4 dp is the true resolution.
+const spanDecimals = (span) => (span < 10 ? 4 : span < 2000 ? 3 : 2);
+const fmtS = (ms, span) => `${(ms / 1000).toFixed(spanDecimals(span))} s`;
 
 function renderBar() {
   if (!bar) return;
@@ -205,6 +208,6 @@ function renderBar() {
     </span>
     ${paused
       ? `<button class="btn btn-primary" data-resume>Resume</button>
-         <span class="timeline-readout mono">paused · showing ${fmtS(t.window[0])} – ${fmtS(t.window[1])}</span>`
+         <span class="timeline-readout mono">paused · showing ${fmtS(t.window[0], t.window[1] - t.window[0])} – ${fmtS(t.window[1], t.window[1] - t.window[0])}</span>`
       : `<button class="btn btn-secondary" data-pause>Pause</button>`}`;
 }

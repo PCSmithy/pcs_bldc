@@ -1,11 +1,12 @@
 // Picker interactivity the shell left to the workspace: clicking a row
 // toggles it into the watch list (default 10 ms); the active row grows the
-// 1/10/100 period segmented control; the budget meters (SOLE owner here)
-// render the live preview, falling back to the device's trace status.
+// 20 kHz / 1 ms / 10 ms period segmented control; the budget meters (SOLE
+// owner here) render the live preview, falling back to the device's trace
+// status.
 
 import { store, subscribe } from "../state.js";
 import { addWatch, setPeriod, removeWatch } from "./watchflow.js";
-import { WATCH_CAPACITY } from "./budget.js";
+import { WATCH_CAPACITY, PERIOD_CYCLES, periodLabel } from "./budget.js";
 import { esc } from "../dom.js";
 
 const HOT_FRACTION = 0.85; // sage while comfortable, accent near the limit
@@ -57,9 +58,9 @@ export function initPickerWatchControls() {
       const seg = document.createElement("span");
       seg.className = "seg period-seg";
       seg.innerHTML =
-        [1, 10, 100]
-          .map((p) => `<button data-period="${p}" class="${w.period_ms === p ? "is-selected" : ""}">${p}</button>`)
-          .join("") + `<button data-unwatch title="Stop watching">×</button>`;
+        PERIOD_CYCLES.map(
+          (p) => `<button data-period="${p}" class="${w.period_cycles === p ? "is-selected" : ""}">${periodLabel(p)}</button>`,
+        ).join("") + `<button data-unwatch title="Stop watching">×</button>`;
       row.querySelector(".period-pill")?.replaceWith(seg);
     }
   }
@@ -71,8 +72,8 @@ export function initPickerWatchControls() {
     const p =
       store.budgetPreview ??
       (s && {
-        u: s.ram_worst_tick_bytes,
-        ramMax: s.ram_budget_bytes,
+        u: s.ram_usage_bytes_per_ms,
+        ramMax: s.ram_budget_bytes_per_ms,
         r: s.link_rate_bytes_per_s,
         linkMax: s.link_budget_bytes_per_s,
         count: store.watched.size,
@@ -96,7 +97,7 @@ export function initPickerWatchControls() {
         ${p ? `<span class="budget-count mono">${p.count}/${p.capacity} watched</span>` : ""}
         <span class="budget-status ${verdict !== "accepted" && verdict !== "—" ? "budget-status--rejected" : ""}">${esc(verdict)}</span>
       </div>
-      ${meter("watch RAM", p ? `${p.u} / ${p.ramMax} B` : "— / —", p ? p.u / p.ramMax : 0)}
+      ${meter("watch RAM", p ? `${p.u} / ${p.ramMax} B/ms` : "— / —", p ? p.u / p.ramMax : 0)}
       ${meter("link bandwidth", p ? `${Math.round((p.r / p.linkMax) * 100)} / 100 %` : "— / —", p ? p.r / p.linkMax : 0)}`;
   }
 }

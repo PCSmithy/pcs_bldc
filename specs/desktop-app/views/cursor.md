@@ -15,7 +15,11 @@ comparison anchor with its preview and deltas.
 `app~views_005~1`
 
 The app shall hold at most one cursor time — set by pointing at any
-plot widget, cleared when the pointer leaves every plot widget — each
+plot widget to the sample time nearest the pointer among that widget's
+signals (the earlier of two equidistant) while that sample lies within
+the greater of its signal's sample period and 4 px of the pointer and
+inside the plotted range, and to the pointed time itself otherwise,
+cleared when the pointer leaves every plot widget — each
 plot widget marking a held time and listing, in its cursor readout,
 its own signals' values at that time, rendered per the value
 rendering table (`app~views_013~1`), a signal with no sample there
@@ -26,7 +30,10 @@ Acceptance:
 - Pointing at one plot widget places the cursor mark at the same time
   on every plot widget; leaving them clears every mark.
 - Each plot's readout lists its signals' values at the held time; for
-  a time inside a tick-count gap the readout states the absence.
+  a time inside a sample-time gap the readout states the absence.
+- Pointing between two samples places the cursor on the nearer one, so
+  a one-cycle signal's every sample is reachable beside a slower signal;
+  pointing well inside a sample-time gap holds the pointed time.
 
 See also: [[live-plot]], [[table]]
 

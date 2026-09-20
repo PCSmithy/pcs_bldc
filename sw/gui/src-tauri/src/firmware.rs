@@ -236,6 +236,8 @@ pub fn identity_matches(device_build_id: &str, elf_build_id: &str) -> bool {
     device_build_id == elf_build_id
 }
 
+/// Stays synchronous: the whole parse is ~11 ms in a release build, well
+/// inside a main-thread command.
 // [impl->app~obs_001~1]
 #[tauri::command]
 pub fn load_elf(state: State<FirmwareState>, path: String) -> Result<ElfInfo, String> {

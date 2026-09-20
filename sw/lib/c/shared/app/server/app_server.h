@@ -10,9 +10,13 @@
 
 /* Defines */
 
-// Ring storage overhead past the budget: the worst tick's record header plus
-// the ring's one empty slot, so every list the u-formula admits fully fits.
-#define APP_SERVER_TRACE_RING_OVERHEAD_BYTES (3U)
+// Telemetry cadence: one board.Telemetry per this many 1 ms passes
+// (fw~obs_status_001).
+#define APP_SERVER_TELEMETRY_PERIOD_TICKS (100U) // TODO - make this a board-specific config parameter
+
+// Ring storage past the budget: the ring's own 3-byte record header over the 22
+// records a millisecond can hold, plus the one slot that always stays empty.
+#define APP_SERVER_TRACE_RING_OVERHEAD_BYTES (67U)
 #define APP_SERVER_TRACE_STORAGE_BYTES(budgetBytes) \
     ((budgetBytes) + APP_SERVER_TRACE_RING_OVERHEAD_BYTES)
 
@@ -33,7 +37,7 @@ typedef struct
 {
     uintptr_t location;
     uint8_t sizeBytes;   // 1..8
-    uint8_t period_ms;   // 1, 10, or 100
+    uint8_t group;       // period group: 0 = 1 cycle, 1 = 20 cycles, 2 = 200 cycles
 } app_server_watch_S;
 
 typedef struct
@@ -60,6 +64,10 @@ typedef struct
     void (*handleRequest)(const board_Request * const request, shared_Response * const response);
     // Fill the periodic board.Telemetry; false skips this period.
     bool (*buildTelemetry)(board_Telemetry * const telemetry);
+
+    // Mask the cycle sampler (fw~conn_trace_004) across a one-shot write
+    // (fw~conn_trace_008). NULL where the sampler cannot preempt the server.
+    void (*setSamplerMasked)(bool masked);
 } app_server_config_S;
 
 /* Public Data Declarations */
@@ -73,8 +81,8 @@ bool app_server_init(const app_server_config_S * const config);
 // call from server task
 void app_server_run1ms(void);
 
-// call from periodic 1ms task
-void app_server_sample1ms(void);
+// call from the bridge cycle callback, after the commutation step
+void app_server_sampleCycle(void);
 
 // Capture one byte of standard-output text for the log stream.
 void app_server_logByte(uint8_t byte);

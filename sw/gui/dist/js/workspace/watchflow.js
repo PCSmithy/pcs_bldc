@@ -1,8 +1,8 @@
 // The watch flow: edits to the watched set recompute the budget preview
 // locally, then a debounced commit sends ONE install_watches with the full
 // list. Acceptance updates the meters; a refusal quotes the firmware cause
-// verbatim in the reject dialog and leaves the previous list streaming —
-// nothing is cleared on rejection.
+// verbatim in the reject dialog, rolls the watched set back to the list the
+// device is still streaming, and offers that refused list's fixes.
 // [impl->app~obs_003~1] (UI half: the install/reject presentation)
 
 import { api, store, set, notify, subscribe } from "../state.js";
@@ -23,7 +23,7 @@ let debounceTimer = null;
 function entries() {
   return [...store.watched.entries()].map(([path, w]) => ({
     path,
-    period_ms: w.period_ms,
+    period_cycles: w.period_cycles,
     size: meta.get(path)?.size ?? 4,
   }));
 }
@@ -35,16 +35,16 @@ function renderPreview() {
   set({
     budgetPreview: {
       u: p.u,
-      ramMax: s?.ram_budget_bytes ?? 2048,
+      ramMax: s?.ram_budget_bytes_per_ms ?? 2048,
       r: p.r,
-      linkMax: s?.link_budget_bytes_per_s ?? 1_100_000,
+      linkMax: s?.link_budget_bytes_per_s ?? 480_000,
       count: p.count,
       capacity: WATCH_CAPACITY,
     },
   });
 }
 
-export function addWatch(path, period_ms = 10) {
+export function addWatch(path, period_cycles = 200) {
   if (store.gate !== "matched") return; // gated: never fire while mismatched
   if (!store.watched.has(path) && store.watched.size >= WATCH_CAPACITY) return;
   const sig = store.signals.find((s) => s.path === path);
@@ -52,16 +52,16 @@ export function addWatch(path, period_ms = 10) {
   // An already-watched signal keeps its entry untouched (the drop handler
   // re-adds before joining a widget — a join must not clobber the period).
   if (store.watched.has(path)) return;
-  store.watched.set(path, { period_ms });
-  historyFor(path, period_ms);
+  store.watched.set(path, { period_cycles });
+  historyFor(path, period_cycles);
   afterEdit();
 }
 
-export function setPeriod(path, period_ms) {
+export function setPeriod(path, period_cycles) {
   const w = store.watched.get(path);
   if (!w) return;
-  store.watched.set(path, { ...w, period_ms });
-  historyFor(path, period_ms); // resets that signal's history to the new rate
+  store.watched.set(path, { ...w, period_cycles });
+  historyFor(path, period_cycles); // resets that signal's history to the new rate
   afterEdit();
 }
 
@@ -70,6 +70,29 @@ export function removeWatch(path) {
   releaseColor(path);
   histories.delete(path);
   afterEdit();
+}
+
+/** Make `list` ([{path, period_cycles}]) the watched set, rebuilding each
+ *  history at its period and dropping what the list omits. Colors survive:
+ *  a dropped path may still sit in a widget, and a released slot would be
+ *  handed to another signal. `andCommit` sends the new list; a rollback
+ *  (the device already runs `list`) only restores the app's state. */
+function applyList(list, andCommit) {
+  const keep = new Set(list.map((e) => e.path));
+  for (const path of [...store.watched.keys()]) {
+    if (keep.has(path)) continue;
+    store.watched.delete(path);
+    histories.delete(path);
+  }
+  for (const { path, period_cycles } of list) {
+    store.watched.set(path, { ...store.watched.get(path), period_cycles });
+    historyFor(path, period_cycles); // re-rates the history when the period moved
+  }
+  if (andCommit) afterEdit();
+  else {
+    notify("watched", store.watched);
+    renderPreview();
+  }
 }
 
 function afterEdit() {
@@ -81,6 +104,7 @@ function afterEdit() {
 
 /** Send the full list; the stream restarts from tick 0 on acceptance. */
 let pausedDeferral = false;
+let clearOnStatus = false; // an install is awaiting its trace-status event
 export async function commit() {
   clearTimeout(debounceTimer);
   if (store.gate !== "matched") return;
@@ -92,17 +116,25 @@ export async function commit() {
     return;
   }
   pausedDeferral = false;
-  const list = entries().map(({ path, period_ms }) => ({ path, period_ms }));
+  const list = entries().map(({ path, period_cycles }) => ({ path, period_cycles }));
   const key = JSON.stringify(list);
   if (key === committed) return;
   try {
+    // The clear rides the trace-status EVENT (see initWatchflow): the core
+    // queues it behind the prior list's final batch, so clearing on this
+    // command's resolution could wipe histories the batch then refills.
+    clearOnStatus = true;
     await api.installWatches(list);
     committed = key;
-    for (const h of histories.values()) h.clear();
-    notify("stream-restart");
   } catch (cause) {
+    clearOnStatus = false;
+    // The device still runs the previous list, so the app goes back to it:
+    // a refused period edit left behind would label the signal at a rate
+    // nothing streams, and its history would read as one long gap.
+    const fixes = computeFixes(entries());
+    applyList(JSON.parse(committed || "[]"), false);
     set({ budgetVerdict: String(cause) });
-    showRejectDialog(String(cause));
+    showRejectDialog(String(cause), fixes);
   }
 }
 
@@ -123,6 +155,14 @@ export function initWatchflow() {
     if (store.timeline.mode === "live" && pausedDeferral) commit();
   });
   subscribe("traceStatus", renderPreview);
+  // views_008's clear: only an install we sent clears histories — a plain
+  // status query must leave them alone.
+  subscribe("trace-status", () => {
+    if (!clearOnStatus) return;
+    clearOnStatus = false;
+    for (const h of histories.values()) h.clear();
+    notify("stream-restart");
+  });
   // Snapshot-restored meta is only as fresh as the last session (an old
   // snapshot has no enums; a reloaded ELF may rename them) — every arriving
   // signal list re-resolves the watched paths' meta.
@@ -144,39 +184,46 @@ export function initWatchflow() {
 
 // ── reject dialog: quote the firmware verbatim, suggest app-computed fixes ──
 
-function computeFixes() {
-  const list = entries();
+/** Fixes for the REFUSED list (the rollback has since restored the running
+ *  one), each applying that list with the fix in place. */
+function computeFixes(list) {
   const fixes = [];
-  const fastest = list.filter((e) => e.period_ms === 1);
+  // One-cycle entries dominate both budgets, so they get two fixes: slow
+  // them, or drop them.
+  const fastest = list.filter((e) => e.period_cycles === 1);
   if (fastest.length) {
-    const moved = list.map((e) => (e.period_ms === 1 ? { ...e, period_ms: 10 } : e));
-    const p = preview(moved);
+    const plural = fastest.length > 1 ? "s" : "";
+    const moved = list.map((e) => (e.period_cycles === 1 ? { ...e, period_cycles: 200 } : e));
     fixes.push({
-      label: `Move the ${fastest.length} fastest signal${fastest.length > 1 ? "s" : ""} to 10 ms → ${pctOfLink(p.r)} of link`,
-      apply: () => { for (const e of fastest) setPeriod(e.path, 10); },
+      label: `Move the ${fastest.length} 20 kHz signal${plural} to 10 ms → ${pctOfLink(preview(moved).r)} of link`,
+      apply: () => applyList(moved, true),
+    });
+    const kept = list.filter((e) => e.period_cycles !== 1);
+    fixes.push({
+      label: `Drop the ${fastest.length} 20 kHz signal${plural} → ${pctOfLink(preview(kept).r)} of link`,
+      apply: () => applyList(kept, true),
     });
   }
   if (list.length > 1) {
-    const heaviest = [...list].sort((a, b) => b.size / b.period_ms - a.size / a.period_ms)[0];
-    const p = preview(list.filter((e) => e.path !== heaviest.path));
+    const heaviest = [...list].sort((a, b) => b.size / b.period_cycles - a.size / a.period_cycles)[0];
+    const lighter = list.filter((e) => e.path !== heaviest.path);
     fixes.push({
-      label: `Drop ${heaviest.path.split(".").pop()} → ${pctOfLink(p.r)}`,
-      apply: () => removeWatch(heaviest.path),
+      label: `Drop ${heaviest.path.split(".").pop()} → ${pctOfLink(preview(lighter).r)}`,
+      apply: () => applyList(lighter, true),
     });
   }
   return fixes;
 }
 
 function pctOfLink(r) {
-  const max = store.traceStatus?.link_budget_bytes_per_s ?? 1_100_000;
+  const max = store.traceStatus?.link_budget_bytes_per_s ?? 480_000;
   return `${Math.round((r / max) * 100)} %`;
 }
 
 let closeRejectDialog = null; // replacing a dialog must also release its listener
 
-function showRejectDialog(cause) {
+function showRejectDialog(cause, fixes) {
   closeRejectDialog?.();
-  const fixes = computeFixes();
   const scrim = document.createElement("div");
   scrim.className = "reject-scrim";
   scrim.innerHTML = `

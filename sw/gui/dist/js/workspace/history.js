@@ -1,11 +1,12 @@
-// Per-signal sample history. Ticks are ms at period multiples, so an
-// exact-tick lookup either hits or the sample is absent — never
-// nearest-neighbor across a gap. Storage: preallocated Float64Array rings
+// Per-signal sample history. Ticks are the wire's cycle indices in ms — one
+// PWM cycle is 0.05 ms — at period multiples, so an exact-tick lookup either
+// hits or the sample is absent, never nearest-neighbor across a
+// cycle-index gap. Storage: preallocated Float64Array rings
 // (Float64 — u32 counters exceed an f32 mantissa); a null sample (the
-// wire's non-finite encoding) stores as NaN with its tick in `_nullTicks`
-// so read-out decodes it back exactly. A min/max pyramid serves
-// range-extreme queries in O(log n), keeping envelope decimation
-// (decimate.js, app~views_014) at O(pixel columns).
+// wire's non-finite encoding) stores as NaN and its tick joins the
+// `_nullRuns` spans, so read-out decodes it back exactly. A min/max
+// pyramid serves range-extreme queries in O(log n), keeping envelope
+// decimation (decimate.js, app~views_014) at O(pixel columns).
 
 import { store } from "../state.js";
 
@@ -20,7 +21,63 @@ export function lowerBound(xs, t) {
   return lo;
 }
 
-const CAP_MS = 120_000; // live retention horizon per signal
+/** First index whose span ends past `t` — strictly past when `strict`, at
+ *  or past otherwise. Spans ascend and never overlap, so their ends ascend
+ *  with their starts: every consumer bisects to its first relevant span
+ *  instead of walking the list. */
+function spanIndexPast(spans, t, strict) {
+  let lo = 0, hi = spans.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const end = spans[mid][1];
+    if (strict ? end <= t : end < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Marker spans (gaps, null runs) are capped. A lossy link otherwise pushes
+// one entry per dropped record: the list grows, every frame costs
+// O(entries), frames slow, the host consumes slower, more records drop —
+// the spiral this cap exists to break. Touching spans merge on push, and
+// past the cap the oldest half coalesces pairwise, so old detail coarsens
+// by halves while the newest half keeps full resolution. A coalesced span
+// swallows the samples between its two halves: they still read their own
+// stored values through the accessors (a finite sample never decodes as
+// null), they just stop being rendered — the span is one break.
+const SPAN_CAP = 4096;
+
+/** Append `span`, merging it into the last when they genuinely overlap, and
+ *  keep the list under SPAN_CAP. The test is strict: a gap span's endpoints
+ *  are real samples, so the sample that ends one gap and starts the next
+ *  makes them touch — merging there would swallow that sample and the
+ *  second break. */
+function pushSpan(spans, span) {
+  const last = spans.length ? spans[spans.length - 1] : null;
+  if (last && span[0] < last[1]) {
+    if (span[1] > last[1]) last[1] = span[1];
+    return;
+  }
+  spans.push(span);
+  if (spans.length > SPAN_CAP) {
+    const half = spans.length >> 1;
+    const merged = [];
+    for (let i = 0; i < half; i += 2) {
+      merged.push(i + 1 < half ? [spans[i][0], spans[i + 1][1]] : spans[i]);
+    }
+    spans.splice(0, half, ...merged);
+  }
+}
+
+/** Drop the spans that end below `cut` — one splice, never a shift loop. */
+function trimSpansBelow(spans, cut) {
+  const k = spanIndexPast(spans, cut, false);
+  if (k) spans.splice(0, k);
+}
+
+export const CYCLE_MS = 0.05;  // one PWM cycle at 20 kHz
+
+const CAP_MS = 120_000; // live retention horizon, every period alike
 
 // While paused, the frozen span is sacred: nothing at or after its start is
 // trimmed. Appends continue this much stream time past the pause (Resume
@@ -32,6 +89,13 @@ const PAUSE_CATCHUP_MS = 120_000;
 // samples pool, then advance `start` once (O(1) on the ring).
 const TRIM_SLACK = 4096;
 
+// The wire's u32 cycle index wraps after ~59.65 h of uptime and the tick
+// domain restarts near zero. A tick this far behind the newest is that
+// restart (or a re-armed stream), not a stale batch tail — the same rule the
+// display clock applies in timeline.js. An hour is far past any legitimate
+// backwards step and far short of the wrap span.
+const RESET_MS = 3_600_000;
+
 // Worst-case retention: live CAP_MS, or paused sacred-span-start → catch-up
 // cutoff (max display span 60 s + PAUSE_CATCHUP_MS).
 const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
@@ -41,14 +105,34 @@ const RETAIN_BOUND_MS = Math.max(CAP_MS, 60_000 + PAUSE_CATCHUP_MS);
 // them — partial edge buckets are raw-scanned by the range query.
 const LEVEL_SHIFTS = [4, 7, 10, 13];
 
+// Compaction slides the window by a whole top-level bucket span, keeping
+// every level's alignment (see _compact).
+const COMPACT_ALIGN = 1 << LEVEL_SHIFTS[LEVEL_SHIFTS.length - 1];
+
+/** Stable small hash of a signal path — compaction stagger only. */
+function hashPath(path) {
+  let h = 2166136261;
+  for (let i = 0; i < path.length; i++) h = Math.imul(h ^ path.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
 export class SignalHistory {
-  constructor(period_ms) {
-    this.period = period_ms;
-    const live = Math.ceil(RETAIN_BOUND_MS / period_ms) + 2;
-    // Capacity = live bound + the stale pool + compaction headroom (the
-    // headroom sets how often the tail hits capacity and memmoves back
-    // to 0 — a quarter of the live bound makes that rare).
-    this._cap = live + TRIM_SLACK + Math.max(1024, live >> 2);
+  constructor(period_cycles, path = "") {
+    this.periodCycles = period_cycles;
+    this.period = period_cycles * CYCLE_MS;
+    // Ticks land on 0.05 ms multiples, which binary floats cannot hold
+    // exactly, so the gap test carries half a period of slack — a real gap
+    // is two periods or more.
+    this._gapAfter = this.period * 1.5;
+    const live = Math.ceil(RETAIN_BOUND_MS / this.period) + 2;
+    // Capacity = live bound + the stale pool + compaction headroom, the
+    // headroom setting how often the tail hits capacity and slides back: an
+    // eighth of the live bound puts a 20 kHz signal ~22 s apart. A per-path
+    // offset of up to a quarter of the headroom staggers those slides so
+    // co-watched 20 kHz signals never compact on the same batch.
+    // Cost: ≈18 B/sample (two Float64 rings + pyramid) — ~70 MB at 20 kHz.
+    const headroom = Math.max(32_768, live >> 3);
+    this._cap = live + TRIM_SLACK + headroom - (hashPath(path) % (headroom >> 2));
     this._t = new Float64Array(this._cap);
     this._v = new Float64Array(this._cap);
     this._start = 0;
@@ -64,11 +148,12 @@ export class SignalHistory {
         amax: new Int32Array(n),
       };
     });
-    // Detected gaps as [fromTickExclusive, toTickExclusive] spans, capped
-    // with the same horizon as the samples.
+    // Detected gaps as [fromTickExclusive, toTickExclusive] spans, merged
+    // and capped (pushSpan) and trimmed with the sample horizon.
     this.gaps = [];
-    // Ticks of null-valued samples (stored as NaN), ascending.
-    this._nullTicks = [];
+    // Null-valued samples (stored as NaN) as inclusive [first, last] tick
+    // runs: a persistently null signal costs one entry, not one per sample.
+    this._nullRuns = [];
   }
 
   /** Raw storage view for the envelope query's hot loop (decimate.js):
@@ -106,8 +191,17 @@ export class SignalHistory {
   }
 
   _isNullTick(tick) {
-    const k = lowerBound(this._nullTicks, tick);
-    return k < this._nullTicks.length && this._nullTicks[k] === tick;
+    const k = spanIndexPast(this._nullRuns, tick, false);
+    return k < this._nullRuns.length && this._nullRuns[k][0] <= tick;
+  }
+
+  /** Record a null sample's tick: consecutive nulls (one period apart)
+   *  extend the open run rather than starting a new span. */
+  _pushNullTick(tick) {
+    const runs = this._nullRuns;
+    const last = runs.length ? runs[runs.length - 1] : null;
+    if (last && tick - last[1] <= this._gapAfter) last[1] = tick;
+    else pushSpan(runs, [tick, tick]);
   }
 
   /** Drop all samples and derived state; storage stays allocated. */
@@ -115,7 +209,7 @@ export class SignalHistory {
     this._start = 0;
     this._len = 0;
     this.gaps.length = 0;
-    this._nullTicks.length = 0;
+    this._nullRuns.length = 0;
     // Pyramid needs no wipe: appends restart at storage 0 and every
     // bucket resets when its first covered index is written.
   }
@@ -126,9 +220,15 @@ export class SignalHistory {
     const appendCutoff = paused ? tl.pausedSpan[1] + PAUSE_CATCHUP_MS : Infinity;
     for (const [tick, value] of points) {
       if (tick > appendCutoff) continue; // past the paused catch-up cap
-      const last = this._len ? this._t[this._start + this._len - 1] : null;
+      let last = this._len ? this._t[this._start + this._len - 1] : null;
+      if (last !== null && tick < last - RESET_MS) {
+        this.clear(); // tick domain restarted (index wrap): old samples are gone
+        last = null;
+      }
       if (last !== null && tick <= last) continue; // stale/duplicate batch tail
-      if (last !== null && tick - last > this.period) this.gaps.push([last, tick]);
+      if (last !== null && tick - last > this._gapAfter) {
+        pushSpan(this.gaps, [last, tick]);
+      }
       if (this._start + this._len === this._cap) {
         if (this._len === this._cap) {
           // The ring is entirely live: a single append() call outgrew
@@ -137,7 +237,7 @@ export class SignalHistory {
           // bounds len between calls). Drop an oldest chunk now: retention
           // would drop these samples at call end anyway, and chunking
           // amortizes the compact that must follow.
-          const n = Math.max(1, Math.min(this._len >> 3, TRIM_SLACK));
+          const n = Math.max(COMPACT_ALIGN, Math.min(this._len >> 3, TRIM_SLACK));
           this._start += n;
           this._len -= n;
           this._dropMarkersBelow(this._t[this._start]);
@@ -149,7 +249,7 @@ export class SignalHistory {
       const v = isNull ? NaN : value;
       this._t[e] = tick;
       this._v[e] = v;
-      if (isNull) this._nullTicks.push(tick);
+      if (isNull) this._pushNullTick(tick);
       this._bucketAdd(e, v);
       this._len++;
     }
@@ -162,28 +262,50 @@ export class SignalHistory {
       this._len -= drop;
       this._dropMarkersBelow(this._t[this._start]);
     }
-    while (this.gaps.length && this.gaps[0][1] < horizon) this.gaps.shift();
+    // Samples pool past the horizon until TRIM_SLACK releases them, so the
+    // spans follow the OLDEST RETAINED tick: trimming at the horizon would
+    // strip the gap records of samples still on screen.
+    if (this._len) trimSpansBelow(this.gaps, this._t[this._start]);
   }
 
-  /** Drop null-tick markers (and gaps ending) below the oldest retained
-   *  tick — one splice, not a shift loop (null-heavy trims are O(n) not
-   *  O(n²)). */
+  /** Drop the null runs and gaps ending below the oldest retained tick —
+   *  bisect and splice, never a shift loop. */
   _dropMarkersBelow(cut) {
-    const k = lowerBound(this._nullTicks, cut);
-    if (k) this._nullTicks.splice(0, k);
-    let g = 0;
-    while (g < this.gaps.length && this.gaps[g][1] < cut) g++;
-    if (g) this.gaps.splice(0, g);
+    trimSpansBelow(this._nullRuns, cut);
+    trimSpansBelow(this.gaps, cut);
   }
 
-  /** Tail reached capacity: memmove the live window to 0 and rebuild the
-   *  storage-aligned pyramid. Rare (once per headroom-many appends) and
-   *  O(len) with a tiny constant. */
+  /** Tail reached capacity: slide the live window down by a whole number of
+   *  top-level buckets. Every level's bucket size divides that span, so the
+   *  pyramid slides with the data — bucket b → b - delta>>shift, extreme
+   *  indices - delta — instead of being rebuilt (~5 ms at 3.6 M samples
+   *  against ~55 for a rebuild). Rare: once per headroom-many appends. */
   _compact() {
-    this._t.copyWithin(0, this._start, this._start + this._len);
-    this._v.copyWithin(0, this._start, this._start + this._len);
-    this._start = 0;
-    for (let i = 0; i < this._len; i++) this._bucketAdd(i, this._v[i]);
+    const delta = this._start & ~(COMPACT_ALIGN - 1);
+    const end = this._start + this._len;
+    if (!delta) { // window sits inside the first bucket: rebuild instead
+      this._t.copyWithin(0, this._start, end);
+      this._v.copyWithin(0, this._start, end);
+      this._start = 0;
+      for (let i = 0; i < this._len; i++) this._bucketAdd(i, this._v[i]);
+      return;
+    }
+    this._t.copyWithin(this._start - delta, this._start, end);
+    this._v.copyWithin(this._start - delta, this._start, end);
+    for (const L of this._lv) {
+      const d = delta >> L.shift;
+      const n = Math.ceil(end / (1 << L.shift));
+      L.min.copyWithin(0, d, n);
+      L.max.copyWithin(0, d, n);
+      L.amin.copyWithin(0, d, n);
+      L.amax.copyWithin(0, d, n);
+      // Buckets left entirely below the new window go negative here and
+      // read as empty; they reset when their first index is written again.
+      for (let b = n - d; b-- > 0; ) {
+        if (L.amin[b] >= 0) { L.amin[b] -= delta; L.amax[b] -= delta; }
+      }
+    }
+    this._start -= delta;
   }
 
   /** Fold storage index e (value v) into every level's covering bucket.
@@ -308,13 +430,28 @@ export class SignalHistory {
     return lo - this._start;
   }
 
-  /** Logical index of the next null-valued sample in [i0, i1), or -1. */
+  /** Logical index of the next null-valued sample in [i0, i1), or -1. A
+   *  coalesced run spans finite samples too, so the stored value decides:
+   *  only a NaN is a null. */
   nextNullIndex(i0, i1) {
-    if (!this._nullTicks.length || i0 >= i1) return -1;
-    const k = lowerBound(this._nullTicks, this.tickAtIndex(i0));
-    if (k >= this._nullTicks.length) return -1;
-    const idx = this.indexAtOrAfter(this._nullTicks[k]);
-    return idx < i1 ? idx : -1;
+    if (!this._nullRuns.length || i0 >= i1) return -1;
+    const from = this.tickAtIndex(i0);
+    for (let k = spanIndexPast(this._nullRuns, from, false); k < this._nullRuns.length; k++) {
+      const [a, b] = this._nullRuns[k];
+      let i = this.indexAtOrAfter(Math.max(a, from));
+      if (i >= i1) break; // runs ascend: every later one starts later still
+      for (; i < i1 && this.tickAtIndex(i) <= b; i++) {
+        if (Number.isNaN(this._v[this._start + i])) return i;
+      }
+    }
+    return -1;
+  }
+
+  /** First gap index that can still affect a window starting at `t` (the
+   *  first span ending past it). Bisected: a burst-of-drops gap list must
+   *  cost a frame nothing to skip. */
+  gapIndexFrom(t) {
+    return spanIndexPast(this.gaps, t, true);
   }
 
   newestTick() {
@@ -348,41 +485,52 @@ export class SignalHistory {
   }
 
   /** [ticks, values] within [t0, t1], with an explicit null sample injected
-   *  after each real gap so the plot breaks the line there (the renderer
-   *  splits a trace into runs at null markers). Off the hot path — the
-   *  live refresh goes through decimate.js's ring-native envelope query. */
+   *  per gap so the plot breaks the line there (the renderer splits a trace
+   *  into runs at null markers). A span's endpoints are real samples and
+   *  render; the samples strictly inside it — only a coalesced span has any
+   *  — do not, so the span reads as the one break it is marked as
+   *  (app~views_001). Off the hot path — the live refresh goes through
+   *  decimate.js's ring-native envelope query. */
   windowTable(t0, t1) {
     const xs = [], ys = [];
-    let gi = 0;
+    let gi = this.gapIndexFrom(t0);
     for (let i = this.indexAtOrAfter(t0); i < this._len; i++) {
       const t = this.tickAtIndex(i);
       if (t > t1) break;
+      // Every span closed at or before this sample has had its break: emit
+      // it, then move on. The marker sits one period past the span's start,
+      // between the two real samples the span joins.
       while (gi < this.gaps.length && this.gaps[gi][1] <= t) {
         const [from] = this.gaps[gi];
         if (from >= t0) { xs.push(from + this.period); ys.push(null); }
         gi++;
       }
+      if (gi < this.gaps.length && this.gaps[gi][0] < t) continue; // inside the open span
       xs.push(t);
       ys.push(this.valueAtIndex(i));
     }
     return [xs, ys];
   }
 
-  /** Gap spans clipped to [t0, t1]. */
+  /** Gap spans clipped to [t0, t1] — O(log gaps + spans returned). */
   gapsIn(t0, t1) {
-    return this.gaps
-      .filter(([a, b]) => b > t0 && a < t1)
-      .map(([a, b]) => [Math.max(a, t0), Math.min(b, t1)]);
+    const out = [];
+    for (let i = this.gapIndexFrom(t0); i < this.gaps.length; i++) {
+      const [a, b] = this.gaps[i];
+      if (a >= t1) break;
+      out.push([Math.max(a, t0), Math.min(b, t1)]);
+    }
+    return out;
   }
 }
 
 /** The app-wide history set, keyed by signal path. */
 export const histories = new Map();
 
-export function historyFor(path, period_ms) {
+export function historyFor(path, period_cycles) {
   let h = histories.get(path);
-  if (!h || h.period !== period_ms) {
-    h = new SignalHistory(period_ms);
+  if (!h || h.periodCycles !== period_cycles) {
+    h = new SignalHistory(period_cycles, path);
     histories.set(path, h);
   }
   return h;

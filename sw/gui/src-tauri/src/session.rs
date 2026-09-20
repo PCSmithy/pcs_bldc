@@ -9,8 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, State};
+use serialport::SerialPort;
 
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::emitter::{UiEmitter, UiEvent};
 use crate::protocol::{Client, StreamEvent};
 
 /// Trace-client seam: once installed, receives every raw `Samples` stream
@@ -22,6 +25,7 @@ pub struct Session {
     port_name: String,
     device_build_id: String,
     samples_consumer: Arc<Mutex<Option<SamplesConsumer>>>,
+    ui: Arc<UiEmitter>,
     shutdown: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
 }
@@ -40,6 +44,12 @@ impl Session {
         &self.device_build_id
     }
 
+    /// This session's UI emitter: the only path from a reader thread to the
+    /// webview.
+    pub fn ui_emitter(&self) -> Arc<UiEmitter> {
+        self.ui.clone()
+    }
+
     fn reader_alive(&self) -> bool {
         self.reader.as_ref().is_some_and(|h| !h.is_finished())
     }
@@ -47,9 +57,11 @@ impl Session {
 
 impl Drop for Session {
     /// Every drop path stops the reader and closes the port; the close lowers
-    /// DTR, on which the board clears its watch list itself.
+    /// DTR, on which the board clears its watch list itself. The emitter stops
+    /// with it, so a dead session's queued events never reach the next one.
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.ui.shut_down();
         if let Some(handle) = self.reader.take() {
             let _ = handle.join();
         }
@@ -66,14 +78,14 @@ pub struct PortInfo {
 }
 
 #[derive(Clone, serde::Serialize)]
-struct ConnectionEvent {
-    state: &'static str,
+pub struct ConnectionEvent {
+    pub state: &'static str,
     port: Option<String>,
     build_id: Option<String>,
 }
 
 impl ConnectionEvent {
-    fn down(state: &'static str) -> Self {
+    pub fn down(state: &'static str) -> Self {
         Self {
             state,
             port: None,
@@ -83,13 +95,13 @@ impl ConnectionEvent {
 }
 
 #[derive(Clone, serde::Serialize)]
-struct LogEvent {
-    text: String,
+pub struct LogEvent {
+    pub text: String,
 }
 
 #[derive(Clone, serde::Serialize)]
-struct TelemetryEvent {
-    timestamp_ms: u32,
+pub struct TelemetryEvent {
+    pub timestamp_ms: u32,
     mode: String,
     state: String,
     bus_voltage_v: f32,
@@ -168,24 +180,36 @@ pub fn list_ports() -> Vec<PortInfo> {
 }
 
 /// Open the selected port, start the reader thread, and greet the board;
-/// returns the reported build id.
+/// returns the reported build id. Blocks on the port open and the identity
+/// round trip, so it runs off the main thread.
 // [impl->app~conn_001~1]
 #[tauri::command]
-pub fn connect(
-    app: AppHandle,
-    state: State<SessionState>,
-    trace: State<crate::trace::TraceState>,
+pub async fn connect(app: AppHandle, port: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<SessionState>();
+        let trace = app.state::<crate::trace::TraceState>();
+        connect_blocking(&app, &state, &trace, port)
+    })
+    .await
+    .map_err(|e| format!("connect: {e}"))?
+}
+
+fn connect_blocking(
+    app: &AppHandle,
+    state: &SessionState,
+    trace: &crate::trace::TraceState,
     port: String,
 ) -> Result<String, String> {
     // A fresh connect replaces any existing session whole; a dead session's
     // residual trace points must not leak into the new one.
-    teardown(&state);
-    crate::trace::drop_accumulator(&trace);
+    teardown(state);
+    crate::trace::drop_session_state(trace);
 
     let mut opened = serialport::new(&port, 115_200)
         .timeout(Duration::from_millis(50))
-        .open()
+        .open_native()
         .map_err(|e| format!("open {port}: {e}"))?;
+    grow_driver_queue(&opened);
     // The firmware serves only while the host holds the port open, which it
     // reads from the CDC line state — DTR must be raised explicitly here
     // (pyserial does it implicitly; serialport-rs does not).
@@ -200,14 +224,36 @@ pub fn connect(
     let samples_consumer: Arc<Mutex<Option<SamplesConsumer>>> = Arc::default();
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    let sink_app = app.clone();
+    // Every emit crosses the emitter thread: a webview emit needs the main
+    // thread, and a reader blocked on one stops parsing the replies queued
+    // behind it.
+    let emit_app = app.clone();
+    let ui = Arc::new(UiEmitter::new(Box::new(move |event| match event {
+        UiEvent::Samples(batch) => {
+            let _ = emit_app.emit("samples", batch);
+        }
+        UiEvent::Telemetry(telemetry) => {
+            let _ = emit_app.emit("telemetry", telemetry);
+        }
+        UiEvent::Log(log) => {
+            let _ = emit_app.emit("log", log);
+        }
+        UiEvent::Connection(connection) => {
+            let _ = emit_app.emit("connection", connection);
+        }
+        UiEvent::TraceStatus(status) => {
+            let _ = emit_app.emit("trace-status", status);
+        }
+    }))?);
+
+    let sink_ui = ui.clone();
     let sink_consumer = samples_consumer.clone();
     let mut pump = client.pump(Box::new(move |event| match event {
         StreamEvent::Log(log) => {
-            let _ = sink_app.emit("log", LogEvent { text: log.text });
+            sink_ui.send(UiEvent::Log(LogEvent { text: log.text }));
         }
         StreamEvent::Telemetry(telemetry) => {
-            let _ = sink_app.emit("telemetry", TelemetryEvent::from(telemetry));
+            sink_ui.send(UiEvent::Telemetry(TelemetryEvent::from(telemetry)));
         }
         StreamEvent::Samples(samples) => {
             // Clone the Arc out and call unlocked: a slow emit must not
@@ -220,13 +266,14 @@ pub fn connect(
     }));
 
     let reader_shutdown = shutdown.clone();
-    let reader_app = app.clone();
+    let reader_ui = ui.clone();
     let mut reader_port = opened;
     let reader = std::thread::Builder::new()
         .name("session-reader".into())
         .spawn(move || {
-            let mut buf = [0u8; 1024];
+            let mut buf = [0u8; 4096];
             let mut consecutive_errors = 0u32;
+            let mut lost = false;
             while !reader_shutdown.load(Ordering::Relaxed) {
                 let n = match reader_port.read(&mut buf) {
                     Ok(n) if n > 0 => {
@@ -243,7 +290,7 @@ pub fn connect(
                     _ => {
                         consecutive_errors += 1;
                         if consecutive_errors >= 5 {
-                            let _ = reader_app.emit("connection", ConnectionEvent::down("lost"));
+                            lost = true;
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(20));
@@ -251,6 +298,11 @@ pub fn connect(
                     }
                 };
                 pump.push(&buf[..n]);
+            }
+            // Emitted off the read path: a send that waits for room must not
+            // hold a reader that `Session::drop` is joining.
+            if lost {
+                reader_ui.send(UiEvent::Connection(ConnectionEvent::down("lost")));
             }
         })
         .map_err(|e| format!("spawn reader: {e}"))?;
@@ -260,6 +312,7 @@ pub fn connect(
         port_name: port.clone(),
         device_build_id: String::new(),
         samples_consumer,
+        ui,
         shutdown,
         reader: Some(reader),
     };
@@ -272,11 +325,19 @@ pub fn connect(
     // On any error, dropping `session` stops the reader and closes the port.
     let build_id = match identity {
         Ok(pcs_proto::shared::envelope::Payload::Identity(identity)) => identity.build_id,
-        Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+        Ok(other) => {
+            return Err(format!(
+                "unexpected reply: {}",
+                crate::protocol::payload_kind(&other)
+            ))
+        }
         Err(e) => return Err(e),
     };
     session.device_build_id = build_id.clone();
 
+    // Installed before the edge goes out: a UI that reacts to "connected" by
+    // querying the session must find it there.
+    *state.0.lock().map_err(|_| "session state poisoned")? = Some(session);
     let _ = app.emit(
         "connection",
         ConnectionEvent {
@@ -285,19 +346,22 @@ pub fn connect(
             build_id: Some(build_id.clone()),
         },
     );
-    *state.0.lock().map_err(|_| "session state poisoned")? = Some(session);
     Ok(build_id)
 }
 
+/// Joins the reader thread and closes the port, so it runs off the main
+/// thread. The session's emitter dies with it; this edge is emitted here.
 #[tauri::command]
-pub fn disconnect(
-    app: AppHandle,
-    state: State<SessionState>,
-    trace: State<crate::trace::TraceState>,
-) {
-    crate::trace::drop_accumulator(&trace);
-    if teardown(&state) {
-        let _ = app.emit("connection", ConnectionEvent::down("disconnected"));
+pub async fn disconnect(app: AppHandle) {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        crate::trace::drop_session_state(&app.state::<crate::trace::TraceState>());
+        if teardown(&app.state::<SessionState>()) {
+            let _ = app.emit("connection", ConnectionEvent::down("disconnected"));
+        }
+    })
+    .await;
+    if let Err(e) = joined {
+        eprintln!("disconnect: {e}");
     }
 }
 
@@ -320,14 +384,40 @@ pub fn get_status(state: State<SessionState>) -> SessionStatus {
     }
 }
 
+/// Windows usbser keeps a 4 KB receive queue by default; a few ms of host
+/// latency at hundreds of kB/s overruns it and corrupts frames. A driver that
+/// refuses 1 MB gets one retry at 64 KB — still far above the default.
+#[cfg(windows)]
+fn grow_driver_queue(port: &serialport::COMPort) {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetupComm(handle: *mut std::ffi::c_void, in_queue: u32, out_queue: u32) -> i32;
+    }
+    // SAFETY: a valid open handle; SetupComm only resizes the driver queues.
+    let grown = unsafe {
+        (SetupComm(port.as_raw_handle(), 1 << 20, 1 << 14) != 0)
+            || (SetupComm(port.as_raw_handle(), 1 << 16, 1 << 14) != 0)
+    };
+    if !grown {
+        eprintln!("SetupComm: driver kept its default receive queue; frames may drop");
+    }
+}
+
+#[cfg(not(windows))]
+fn grow_driver_queue(_port: &serialport::TTYPort) {}
+
 /// Drop any existing session (its `Drop` stops the reader); true if one existed.
-fn teardown(state: &State<SessionState>) -> bool {
-    state
+fn teardown(state: &SessionState) -> bool {
+    // The guard is released at the end of this statement, so the reader join
+    // in `Session::drop` runs unlocked — `get_status` is synchronous and
+    // would otherwise block on it.
+    let session = state
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-        .is_some()
+        .take();
+    session.is_some()
 }
 
 #[cfg(test)]

@@ -34,11 +34,14 @@ specs in them yet.
 
 - `mc/` — sensored & sensorless motor control (anchor `sys~mc_001`), torque,
   velocity, position, trajectory tracking; gate-driver management (anchors
-  `sys~mc_002` configuration, `sys~mc_003` fault observability)
+  `sys~mc_002` configuration, `sys~mc_003` fault observability); bridge
+  actuation (`sys~mc_004`), the commutation-method architecture
+  (`sys~mc_005`), and control-loop timing (`sys~mc_006`)
 - `est/` — state estimation, sensorless operation
 - `conn/` — device↔app protocol: schema-defined messages
   (`sys~conn_001`), message framing (`sys~conn_002`), request
-  acknowledgement (`sys~conn_003`)
+  acknowledgement (`sys~conn_003`), link throughput test
+  (`sys~conn_004`)
 - `obs/` — observability: periodic status telemetry (`sys~obs_001`),
   signal selection from firmware debug information (`sys~obs_002`),
   firmware build identity + gate (`sys~obs_003`/`_004`), signal trace

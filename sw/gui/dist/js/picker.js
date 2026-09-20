@@ -7,6 +7,7 @@
 import { icon } from "./icons.js";
 import { api, store, set, subscribe, prefs } from "./state.js";
 import { resolvedColor } from "./workspace/appearance.js";
+import { periodLabel } from "./workspace/budget.js";
 import { $, esc } from "./dom.js";
 
 const groupOf = (path) => path.split(/[.[]/)[0];
@@ -119,7 +120,7 @@ function renderRows() {
           <span class="signal-chip" ${watched ? `style="background:${resolvedColor(sig.path)}"` : ""}></span>
           <span class="signal-name">${esc(shortName)}</span>
           <span class="signal-type">${esc(sig.kind)}</span>
-          ${watched ? `<span class="period-pill">${watched.period_ms} ms</span>` : `<span class="signal-add">add</span>`}
+          ${watched ? `<span class="period-pill">${periodLabel(watched.period_cycles)}</span>` : `<span class="signal-add">add</span>`}
         </div>`;
     }
   }

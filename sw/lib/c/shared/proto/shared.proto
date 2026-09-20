@@ -20,11 +20,13 @@ message Envelope {
   uint32 request_id = 1;
   oneof payload {
     // framework services
-    PingRequest     ping             = 2;
-    Response        response         = 3;
-    LogText         log              = 4;
-    IdentityRequest identity_request = 5;
-    Identity        identity         = 6;
+    PingRequest     ping              = 2;
+    Response        response          = 3;
+    LogText         log               = 4;
+    IdentityRequest identity_request  = 5;
+    Identity        identity          = 6;
+    LinkTestRequest link_test_request = 7;
+    LinkTestFrame   link_test_frame   = 8;
 
     // trace feature: 30..59
     trace.WatchRequest       watch_request        = 30;
@@ -78,4 +80,19 @@ message IdentityRequest {
 // firmware version string.
 message Identity {
   string build_id = 1;
+}
+
+// Start a link throughput test: stream frame_count LinkTestFrames of
+// payload_bytes each, as fast as the transport drains. Answered with
+// Response; a second request while one is running is rejected.
+message LinkTestRequest {
+  uint32 payload_bytes = 1;   // 1..256
+  uint32 frame_count   = 2;   // 1..1000000
+}
+
+// One throughput-test frame; payload byte i is (seq + i) & 0xFF, so the host
+// verifies content without a second channel. Streams with request_id 0.
+message LinkTestFrame {
+  uint32 seq     = 1;
+  bytes  payload = 2;
 }

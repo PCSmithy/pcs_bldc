@@ -25,6 +25,8 @@ reporting failure for received bytes that do not decode as an
 Acceptance:
 - An `Envelope` carrying each payload type encodes and decodes back to
   identical field values.
+- An `Envelope` assembled around an already-encoded payload is
+  byte-identical to the `Envelope` encoded whole.
 - Decoding a truncated `Envelope` encoding reports failure.
 
 Covers:
@@ -48,6 +50,8 @@ Each frame on the wire shall consist of:
 Acceptance:
 - A known `Envelope` encodes to a byte-exact reference frame vector.
 - The body contains no `0x00` byte.
+- A frame encoded into a caller's buffer is byte-identical to the
+  transmitted one; a buffer too short for it takes nothing.
 
 Covers:
 - sys~conn_002~1
@@ -82,16 +86,17 @@ Needs: impl, test
 ### Whole-frame transmission
 `fw~conn_proto_004~1`
 
-On a channel, the frame driver shall hand a frame to the backing serial
-channel only when the serial channel's free transmit capacity
-(`fw~conn_serial_006~1`) holds the entire frame, transmitting accepted
-frames in order and reporting the frame dropped otherwise.
+The server shall hand a frame to the serial channel only when the
+channel's free transmit capacity (`fw~conn_serial_006~1`), less what the
+pass already holds (`fw~conn_server_006~1`), holds the entire frame,
+accepted frames leaving in order and a frame that does not fit reported
+dropped.
 
 Acceptance:
-- A frame within free capacity is transmitted in full, in order with
-  prior frames.
-- A frame exceeding free capacity is dropped whole — no bytes of it
-  reach the transport — and reported dropped.
+- A frame within the remaining capacity leaves in full, in order with
+  the pass's earlier frames.
+- A frame exceeding the remaining capacity is dropped whole — no bytes
+  of it reach the transport — and reported dropped.
 
 Covers:
 - sys~conn_002~1

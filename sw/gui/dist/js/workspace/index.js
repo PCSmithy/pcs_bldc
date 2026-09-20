@@ -5,6 +5,7 @@
 import { store, subscribe, api, notify } from "../state.js";
 import { historyFor, histories } from "./history.js";
 import { initWatchflow, addWatch, setPeriod, removeWatch, commit } from "./watchflow.js";
+import { periodLabel } from "./budget.js";
 import { initLayout, forEachWidget, addWidget, persist } from "./layout.js";
 import { initPickerWatchControls } from "./pickerhooks.js";
 import { initWatchPanel } from "./watchpanel.js";
@@ -47,7 +48,7 @@ export function initWorkspace() {
     for (const sig of batch.signals || []) {
       const w = store.watched.get(sig.path);
       if (!w) continue; // late batch for a signal just removed
-      const h = historyFor(sig.path, w.period_ms);
+      const h = historyFor(sig.path, w.period_cycles);
       h.append(sig.points);
     }
     noteLiveEdge();
@@ -114,7 +115,7 @@ export function initWorkspace() {
   // Test/debug surface (the playwright suite drives the app through this;
   // harmless under Tauri).
   window.__cockpit = {
-    store, api, notify, addWatch, setPeriod, removeWatch, commit,
+    store, api, notify, addWatch, setPeriod, removeWatch, commit, periodLabel,
     addWidget, forEachWidget, setCursorTick, clearCursor, cursor, histories,
     timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow, displayWindow },
     appearance: { of: appearanceOf, set: setAppearance, resolvedColor },

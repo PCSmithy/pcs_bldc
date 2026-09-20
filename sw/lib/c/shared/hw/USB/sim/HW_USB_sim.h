@@ -22,6 +22,9 @@ uint32_t HW_USB_sim_readTx(uint8_t * buffer, uint32_t len);
 // Total bytes transmitted into the loopback since reset.
 uint32_t HW_USB_sim_txLen(void);
 
+// HW_USB_write calls since reset — each one is what a transfer costs.
+uint32_t HW_USB_sim_txWrites(void);
+
 // Inject bytes as if received from the host (readable via HW_USB_read).
 void HW_USB_sim_injectRx(const uint8_t * data, uint32_t len);
 

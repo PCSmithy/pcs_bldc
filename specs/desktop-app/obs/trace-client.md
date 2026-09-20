@@ -14,7 +14,7 @@ services of [[../../firmware/conn/trace|trace]].
 
 The app shall install the selected signals (`app~obs_001~1`) as one
 `WatchRequest` of their resolved address, size, and per-signal period
-entries — each period 1 ms, 10 ms, or 100 ms (`sys~obs_005~1`) —
+entries — each period one PWM cycle, 1 ms, or 10 ms (`sys~obs_005~1`) —
 presenting the reply: the `TraceStatus` budgets and usage on
 acceptance, the rejection `cause` otherwise.
 
@@ -35,15 +35,19 @@ Needs: impl, test
 `app~obs_004~1`
 
 The app shall demultiplex each received `Samples` message into
-per-signal values by assigning its data bytes, in installed
-watch-list order, to the signals whose period divides the message's
-`tick_ms`, decoding each signal's bytes as its resolved scalar type.
+per-signal values by splitting its data bytes into `count` records,
+assigning each record's bytes, in installed watch-list order, to the
+signals of the message's period at cycle index `first_cycle` plus the
+record's ordinal times the period, decoding each signal's bytes as its
+resolved scalar type. Each cycle index maps to a sample time of 50 µs
+per cycle.
 
 Acceptance:
 
-- With watches at 1 ms, 10 ms, and 100 ms periods, every received
-  message's bytes map to exactly the due signals, in list order.
-- A tick-count gap yields values at exactly the received ticks.
+- With watches at the one-cycle, 1 ms, and 10 ms periods, every
+  received message's records map to exactly the signals of its period,
+  in list order, at cycle indices spaced by that period.
+- A cycle-index gap yields values at exactly the received indices.
 - A signal's bytes decode per its scalar type: width, signedness, and
   floating-point format.
 

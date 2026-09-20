@@ -8,6 +8,7 @@ import { store, subscribe } from "../state.js";
 import { histories, lowerBound } from "./history.js";
 import { meta } from "./watchflow.js";
 import { traceDashed } from "./colors.js";
+import { periodLabel } from "./budget.js";
 import { appearanceOf, resolvedColor } from "./appearance.js";
 import { GlTraces, buildTraceGeometry, arcAtX, parseColor, DOT_SIZE_PX } from "./glrender.js";
 import { envelopeTable } from "./decimate.js";
@@ -25,6 +26,7 @@ const WHEEL_ZOOM_BASE = 1.0015;
 const BASE_STROKE_W = 1.5;
 const POINTED_MAX_PX = 40; // app~views_012's pointing threshold
 const CLICK_MAX_PX = 6; // press+release under this is a click; over, a select drag
+const SNAP_MAX_PX = 4; // cursor snapping reaches this far, so a gap stays pointable
 const ANCHOR_HIT_PX = 8; // bare-click release distance to an anchor line
 
 export class PlotWidget {
@@ -166,8 +168,7 @@ export class PlotWidget {
       // The shared cursor is pure window math — it must work (app-wide!)
       // even while this widget's renderer is unavailable.
       const rect = canvas.getBoundingClientRect();
-      const tick = Math.round(this.tickAtPx(ev.clientX - rect.left, rect.width));
-      setCursorTick(tick);
+      setCursorTick(this.snapTime(ev.clientX - rect.left, rect.width));
       this._ptr = { x: ev.clientX, y: ev.clientY };
       this._ctrl = isAnchorModifier(ev);
       this.trackSelect(canvas, ev);
@@ -270,6 +271,39 @@ export class PlotWidget {
   tickAtPx(px, width) {
     const [t0, t1] = this.viewWindow();
     return t0 + (px / Math.max(1, width)) * (t1 - t0);
+  }
+
+  /** The cursor time a pointer x selects: the sample time nearest the
+   *  pointer among this widget's signals (the earlier of two equidistant),
+   *  so every sample of the finest signal is reachable. Snapping is a nudge
+   *  onto the signal's grid, bounded by the greater of that signal's period
+   *  and SNAP_MAX_PX of window time: farther than that — pointing inside a
+   *  gap — or outside the window, the pointer time itself stands, so the
+   *  readout's "no sample" is reachable and the cursor never leaves view. */
+  snapTime(px, width) {
+    const t = this.tickAtPx(px, width);
+    const [t0, t1] = this.viewWindow();
+    let best = null;
+    let bestD = Infinity;
+    let bestPeriod = 0;
+    for (const p of this.cfg.signals) {
+      const h = histories.get(p);
+      if (!h || !h.size) continue;
+      const iR = h.indexAtOrAfter(t);
+      for (const i of [iR - 1, iR]) {
+        if (i < 0 || i >= h.size || h.valueAtIndex(i) === null) continue;
+        const tk = h.tickAtIndex(i);
+        const d = Math.abs(tk - t);
+        if (d < bestD || (d === bestD && tk < best)) {
+          best = tk;
+          bestD = d;
+          bestPeriod = h.period;
+        }
+      }
+    }
+    if (best === null) return t;
+    const bound = Math.max(bestPeriod, ((t1 - t0) / Math.max(1, width)) * SNAP_MAX_PX);
+    return bestD > bound || best < t0 || best > t1 ? t : best;
   }
 
   /** Canvas-relative y (css px) of a value on the given scale group. */
@@ -569,7 +603,7 @@ export class PlotWidget {
         return `<span class="legend-entry" title="${esc(p)}">
           <span class="legend-bar" style="background:${resolvedColor(p)}"></span>
           <span class="legend-name mono">${esc(shortName(p))}</span>
-          <span class="legend-period">${w ? `${w.period_ms}ms` : ""}</span>
+          <span class="legend-period">${w ? periodLabel(w.period_cycles) : ""}</span>
         </span>`;
       })
       .join("");
@@ -846,8 +880,10 @@ export class PlotWidget {
 
   renderXAxis() {
     const [t0, t1] = this.window;
-    // More decimals as the paused zoom narrows, so labels stay distinct.
-    const dp = t1 - t0 < 2000 ? 3 : 1;
+    // More decimals as the paused zoom narrows, so labels stay distinct: a
+    // one-cycle tick sits on a 0.05 ms grid, so 4 dp is the true resolution.
+    const span = t1 - t0;
+    const dp = span < 10 ? 4 : span < 2000 ? 3 : 2;
     const fmt = (t) => `${(t / 1000).toFixed(dp)} s`;
     const html =
       `<span class="mono">${fmt(t0)}</span><span class="mono">${fmt((t0 + t1) / 2)}</span><span class="mono">${fmt(t1)}</span>`;
@@ -859,14 +895,28 @@ export class PlotWidget {
 
   renderGapRibbon() {
     const [t0, t1] = this.window;
-    const spans = new Map(); // merged accent spans across this plot's signals
+    const spans = []; // accent spans across this plot's signals
     for (const p of this.cfg.signals) {
       const h = histories.get(p);
       if (!h) continue;
-      for (const [a, b] of h.gapsIn(t0, t1)) spans.set(`${a}:${b}`, [a, b]);
+      for (const span of h.gapsIn(t0, t1)) spans.push(span);
+    }
+    spans.sort((x, y) => x[0] - y[0]);
+    // Spans closer than the minimum rendered width are one mark: a burst of
+    // drops paints a band, not thousands of elements the frame cannot afford
+    // (and that a reader could not tell apart anyway).
+    const grain = (t1 - t0) * 0.004;
+    const marks = [];
+    for (const [a, b] of spans) {
+      const last = marks[marks.length - 1];
+      if (last && a - last[1] <= grain) {
+        if (b > last[1]) last[1] = b;
+      } else {
+        marks.push([a, b]);
+      }
     }
     const pct = (t) => (((t - t0) / (t1 - t0)) * 100).toFixed(2);
-    const html = [...spans.values()]
+    const html = marks
       .map(([a, b]) => `<span class="gap-span" style="left:${pct(a)}%;width:${Math.max(0.4, pct(b) - pct(a))}%"></span>`)
       .join("");
     if (this._ribbonHtml !== html) {
