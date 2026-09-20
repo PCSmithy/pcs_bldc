@@ -354,11 +354,19 @@ def run(page):
     wait_for_samples(page, VEL_M)
 
     # ── [test->app~views_001~1] traces render; a sample-time gap breaks them ──
-    plot_ready = page.evaluate(
+    # Rendering follows the samples by a frame or more (a runner busy with a
+    # backfill can hold that frame for seconds): wait for the tables, not
+    # just the histories.
+    plots_ready_js = (
         "() => { let n = 0; __cockpit.forEachWidget(w => {"
         "  if (w.renderedTables && [...w.renderedTables().values()].some(([xs]) => xs.length > 40)) n++; });"
         " return n; }"
     )
+    try:
+        page.wait_for_function(f"() => ({plots_ready_js})() === 2", timeout=60000)
+    except Exception:
+        pass
+    plot_ready = page.evaluate(plots_ready_js)
     check("views_001 both plots hold trace data", plot_ready == 2, plot_ready)
     # Wait past a mock gap window (every 5 s), then assert: an explicit null
     # marker in the plot data (the line break) AND an accent gap-ribbon span.
@@ -586,13 +594,21 @@ def run(page):
     page.evaluate("() => __cockpit.timeline.resume()")
     widget_eval(page, scratch, "(w) => { w.el.scrollIntoView({ block: 'center' }); w.refresh(); return true; }")
     a1 = scale_l(scratch)
+    newest1 = page.evaluate(f"() => __cockpit.histories.get({ramp!r}).newestTick()")
+    # Progress-bound, not wall-clock-bound: the mock's stream advances as
+    # fast as the runner lets it (a macOS runner spent 15 s inside one
+    # backfill). Wait for 2 s of stream time, then for the axis to follow.
     grew = True
     try:
         page.wait_for_function(
+            f"() => __cockpit.histories.get({ramp!r}).newestTick() >= {newest1} + 2000",
+            timeout=90000,
+        )
+        page.wait_for_function(
             f"""() => {{ let r = null;
-              __cockpit.forEachWidget(w => {{ if (w.cfg.id === {scratch!r}) r = w.ranges().L; }});
+              __cockpit.forEachWidget(w => {{ if (w.cfg.id === {scratch!r}) {{ w.refresh(); r = w.ranges().L; }} }});
               return r && JSON.stringify(r) !== {json.dumps(json.dumps(a1))}; }}""",
-            timeout=15000,
+            timeout=30000,
         )
     except Exception:
         grew = False
