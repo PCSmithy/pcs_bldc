@@ -601,7 +601,9 @@ def run(page):
         page, scratch,
         "(w) => ({ mode: __cockpit.store.timeline.mode, window: w.window,"
         " newest: __cockpit.histories.get(w.cfg.signals[0])?.newestTick() ?? null,"
-        " size: w.el.querySelector('.plot-canvas').getBoundingClientRect().height })",
+        " size: w.el.querySelector('.plot-canvas').getBoundingClientRect().height,"
+        " conn: __cockpit.store.connection.state, mock: window.__devmockDiag?.(),"
+        " heapMB: Math.round((performance.memory?.usedJSHeapSize ?? 0) / 1048576) })",
     )
     check(
         "views_007 auto axis follows the signal's extents",
@@ -4052,6 +4054,7 @@ def main():
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
         run(page)
         check("no page errors", not errors, errors[:3])
         browser.close()

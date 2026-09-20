@@ -289,11 +289,21 @@ function emitBatchRange(c0, c1) {
   });
 }
 
+// Diagnostic surface for the UI suite: is the stream timer alive?
+const streamDiag = { ticks: 0, emits: 0, lastTickWall: 0 };
+window.__devmockDiag = () => ({
+  connected, watch: watchList.length, streamCycle, ...streamDiag,
+  sinceTickMs: streamDiag.lastTickWall ? Date.now() - streamDiag.lastTickWall : null,
+  visibility: document.visibilityState,
+});
 setInterval(() => {
+  streamDiag.ticks++;
+  streamDiag.lastTickWall = Date.now();
   if (!connected || !watchList.length) return;
   const c0 = streamCycle;
   streamCycle += BATCH_CYCLES;
   emitBatchRange(c0, streamCycle);
+  streamDiag.emits++;
 }, BATCH_CYCLES / CYCLES_PER_MS);
 
 // Live-ish fixtures: 10 Hz telemetry, occasional log lines, a lost event.
