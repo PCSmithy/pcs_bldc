@@ -4039,7 +4039,16 @@ def run_budget(pw):
 
 def main():
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        # The devmock streams on timers; a headless page a CI runner deems
+        # hidden gets them throttled to one wake a minute and the stream
+        # stalls (seen on macOS). Keep timers at full rate.
+        browser = pw.chromium.launch(
+            args=[
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+            ],
+        )
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
