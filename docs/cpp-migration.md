@@ -53,6 +53,7 @@ Measured, not assumed:
 | `dwarf_map` variables | Collected by bare `DW_AT_name` at any nesting depth: a namespace does not hide a variable, but two namespaces with the same variable name collide silently |
 | `dwarf_map` members | Walked only under `DW_TAG_structure_type` / `DW_TAG_union_type`. Members of a `class` (`DW_TAG_class_type`) are invisible — to the SIL and to the desktop app's signal picker, which enumerates every leaf with no filter |
 | `std::array` in DWARF | Its element storage is a member named `_M_elems`, so a traced path becomes `x.duty._M_elems[0]` |
+| MinGW GCC 15.2 LTO with a mixed-language link | Internal compiler error (`choose_baseaddr`, `i386.cc:7447`) in the LTRANS job when `g++` links C and C++ LTO bytecode together — it crashes inside an unrelated C unit. Workaround in `native.cmake`: `-flto` on C units only, so C++ objects link plain into the otherwise-LTO SIL image. Revisit on a GCC upgrade |
 
 Startup and link infrastructure is already C++-ready: `startup_stm32g431vbtx.s`
 calls `__libc_init_array` before `main`, and the linker script carries
@@ -212,6 +213,11 @@ Per module. For `IO_bridge` (476 lines today):
      documents that they run in ISR context.
 3. Leave the `[impl->]` tags where they are. Mark `X_data` and its `data`
    alias `constinit` so the compiler proves constant initialization.
+
+Measured on the first rename (2026-09-28): both toolchains compile
+`IO_bridge.cpp` unchanged with no errors, only the three `-Wpedantic`
+warnings for the array designators; native ctest, debug SIL, and release
+SIL (with the LTO workaround above) pass; the ARM image is byte-identical.
 
 Commit with **structure, names, and behavior identical** — the only diff is
 language mechanics. The oracle is the module's Unity suite plus the SIL
