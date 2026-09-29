@@ -77,16 +77,35 @@ Two consumers read firmware statics by **literal DWARF member path**:
 - The desktop app: the signal picker lists every leaf the ELF exposes, and
   saved layouts and watch lists store those paths.
 
-A lookup that no longer resolves fails at runtime, not at compile time. Rules:
+A lookup that no longer resolves fails at runtime, not at compile time.
 
-- State the host traces lives in a **plain `struct`** (never `class`) with
-  **C arrays** (never `std::array`), at namespace scope under its current
-  name. `constinit` and `constexpr` are fine; the layout is what matters.
-- Changing a traced name or shape is a deliberate interface change: update
-  the SIL paths and add a layout migration in the same commit.
-- Alternatively grow `dwarf_map` to walk `DW_TAG_class_type` and flatten
-  `_M_elems`. Small, but it moves the constraint rather than removing it;
-  decide during the first idiomatic pass.
+**Program of record: `dwarf_map` learns C++ before the first idiomatic
+pass.** Class members are exactly what the host must see once the control
+and estimation modules are classes, so the reader (one crate, shared by the
+SIL and the desktop app) grows:
+
+- members under `DW_TAG_class_type`, private ones included, walked like
+  `structure_type` today;
+- static data members: the defining `DW_TAG_variable` carries only a
+  `DW_AT_specification` back to the member declaration, so variables follow
+  that link for their name the way functions already follow
+  `DW_AT_abstract_origin`;
+- base-class members (`DW_TAG_inheritance`) flattened into the derived
+  object's path;
+- `std::array` flattened so a path reads `x.duty[0]`, not
+  `x.duty._M_elems[0]`, and the leaf enumeration lists it as an array.
+
+It ships with a C++ fixture compiled by the native toolchain in the crate's
+tests, and lands before Phase D (order of work, step 3). Until then the
+mechanical passes change no shapes, so nothing waits on it.
+
+Rules that hold regardless:
+
+- The traced state object stays at namespace scope under its current name;
+  variables resolve by bare name, so two namespaces must not reuse one.
+- Renaming a traced field or object, or moving it into a class, is a
+  deliberate interface change: update the SIL paths and add a layout
+  migration in the same commit.
 
 ## The module template
 
@@ -97,7 +116,7 @@ tests, and the host tooling keep working:
 |---|---|
 | `X.hpp` | The C++ API: `namespace`, types, the class or free functions other C++ modules call |
 | `X.h` | The C facade: today's `X_function` names as `extern "C"` declarations, thin wrappers over the C++ API. Kept while any C consumer remains (`main.c`, channel configs, C tests, Unity mocks) |
-| `X.cpp` | Implementation. The traced state object stays a plain `struct` at namespace scope under its current name |
+| `X.cpp` | Implementation. The traced state object stays at namespace scope under its current name |
 | `test/test_X.cpp` | Unity, unchanged in structure; mock seams for HW/IO functions are `extern "C"` definitions |
 
 Project-side files (`sw/fw/src/**/*_channels.c`, `*_config.c`) stay C: they
@@ -209,9 +228,9 @@ the server tests keeps its C definitions behind the guarded facade.
 Only now introduce idioms: a `Bridge` type over what
 `IO_bridge_channelData_S` holds, `constexpr` for the complementary-phase
 table, `enum class Phase`, a scoped critical-section guard where the module
-pairs the FreeRTOS calls. Step 0 governs the traced state: it stays a plain
-`struct` with C arrays under its current name unless the SIL paths and a
-layout migration change with it.
+pairs the FreeRTOS calls. Step 0 governs the traced state: the object keeps
+its name, and any renamed or relocated field ships with the SIL paths and a
+layout migration.
 
 Separating the language change from the design change is both good practice
 and better pedagogy: the Phase D diff shows what each idiom cost or saved in
@@ -224,13 +243,15 @@ Each step is one PR, held at CI green for review:
 1. Phase A + B for the tree, Phase C for `IO_bridge`.
 2. Phase C for `app_motorControl` (its harness and the server mocks come
    along).
-3. Phase D for both, plus the new C++ transforms library (`fw~mc_013`) and
-   the modulator at the bridge boundary — a `setVoltageVector` entry that
-   reads the bus voltage and applies `fw~mc_014` (spec work: a bridge spec
-   for the entry, via `pcs_spec`).
-4. The V/f method in C++ `app_motorControl` (`fw~mc_010`, `fw~mc_015`,
+3. `dwarf_map` C++ support (Step 0), with its fixture and tests; the SIL
+   and the desktop app pick it up as the shared crate.
+4. Phase D for both modules, plus the new C++ transforms library
+   (`fw~mc_013`) and the modulator at the bridge boundary — a
+   `setVoltageVector` entry that reads the bus voltage and applies
+   `fw~mc_014` (spec work: a bridge spec for the entry, via `pcs_spec`).
+5. The V/f method in C++ `app_motorControl` (`fw~mc_010`, `fw~mc_015`,
    `fw~mc_016`, `fw~mc_017`), SIL coverage, bench spin at reduced voltage.
-5. From here new modules are C++: `app_rotorEstimation`, the FOC current
+6. From here new modules are C++: `app_rotorEstimation`, the FOC current
    loop.
 
 `main.c` stays C: it is board glue and task creation, and every module it
@@ -249,9 +270,6 @@ tools/oft/oft.sh trace specs/ sw/ README.md   # expect 1130 total, 34 defects
 
 ## Open questions
 
-- `dwarf_map` class-type support versus the struct-only rule for traced
-  state (Step 0). Deciding at the first Phase D keeps the mechanical passes
-  unblocked.
 - Whether test files convert to `.cpp` with their module (they can use the
   C++ types directly) or stay C against the facade. Proposal: convert with
   the module.
