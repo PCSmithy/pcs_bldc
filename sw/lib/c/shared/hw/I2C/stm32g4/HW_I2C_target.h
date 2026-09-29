@@ -8,6 +8,10 @@
 
 #include "HW_I2C_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef struct
@@ -25,3 +29,6 @@ typedef struct
 // to these; each drives the HAL's I2C interrupt state machine for the bus.
 void HW_I2C_irqHandlerEv(HW_I2C_bus_E bus);
 void HW_I2C_irqHandlerEr(HW_I2C_bus_E bus);
+#ifdef __cplusplus
+}
+#endif

@@ -6,6 +6,10 @@
 #include "IO_COBSFrame_channels.h"   // IO_COBSFrame_channel_E + IO_COBSFRAME_MAX_PAYLOAD
 #include "IO_serial.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // CRC-32 trailer appended to each payload before COBS encoding.
@@ -51,3 +55,6 @@ void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel);
 // outMax or the channel's frame bound.
 bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const payload, size_t len,
                          uint8_t * const out, size_t outMax, size_t * const outLen);
+#ifdef __cplusplus
+}
+#endif

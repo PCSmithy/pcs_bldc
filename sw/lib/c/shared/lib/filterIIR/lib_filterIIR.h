@@ -4,6 +4,10 @@
 #include "lib_types.h"
 #include "lib_utils.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Defines */
 
@@ -45,3 +49,6 @@ bool lib_filterIIR_init(lib_filterIIR_channel_S * const filter);
 
 // Advance the filter one sample
 void lib_filterIIR_update(lib_filterIIR_channel_S * const filter);
+#ifdef __cplusplus
+}
+#endif

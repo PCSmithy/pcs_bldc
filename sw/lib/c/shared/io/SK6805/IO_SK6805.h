@@ -5,6 +5,10 @@
 #include "HW_SPI_channels.h"      // HW_SPI_channel_E
 #include "IO_SK6805_channels.h"   // IO_SK6805_channel_E + IO_SK6805_PIXEL_COUNT
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // SK6805 wire encoding: one LED string driven from SPI MOSI, each color bit
@@ -49,4 +53,6 @@ void IO_SK6805_clear(IO_SK6805_channel_E channel);
 // (blocking). Returns false if not initialized, the channel is out of range,
 // or the SPI transfer fails.
 bool IO_SK6805_update(IO_SK6805_channel_E channel);
-
+#ifdef __cplusplus
+}
+#endif

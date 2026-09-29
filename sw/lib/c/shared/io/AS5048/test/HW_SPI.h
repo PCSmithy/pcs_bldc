@@ -6,5 +6,11 @@
 #include "lib_types.h"
 #include "HW_SPI_channels.h"
 
-bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t * rxData, size_t length);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t * rxData, size_t length);
+#ifdef __cplusplus
+}
+#endif

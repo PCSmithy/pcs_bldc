@@ -10,6 +10,10 @@
 
 #include "app_motorControl_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 
@@ -85,3 +89,6 @@ void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorContr
 // module. This is the fault-clear action referenced by the trip latch — driven
 // on-device by the user button's fault-clear gesture (fw~mc_007).
 void app_motorControl_clearFault(app_motorControl_channel_E channel);
+#ifdef __cplusplus
+}
+#endif

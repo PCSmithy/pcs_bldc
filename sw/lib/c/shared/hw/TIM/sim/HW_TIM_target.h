@@ -7,6 +7,10 @@
 
 #include "HW_TIM_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 // Count direction, named target-independently so the sim config and SIL tests
@@ -93,3 +97,6 @@ void HW_TIM_advanceTime(uint32_t elapsed_us);
 bool HW_TIM_registerTrgoCallback(HW_TIM_peripheral_E peripheral,
                                  HW_TIM_trgoCallback_F callback,
                                  void * context);
+#ifdef __cplusplus
+}
+#endif

@@ -6,6 +6,10 @@
 #include "HW_TIM.h"
 #include "HW_ADC.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 #define IO_BRIDGE_INJECTED_NONE  (0xFFU)
@@ -91,3 +95,6 @@ bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_pha
 bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
                                      IO_bridge_cycleCallback_F callback,
                                      void * context);
+#ifdef __cplusplus
+}
+#endif

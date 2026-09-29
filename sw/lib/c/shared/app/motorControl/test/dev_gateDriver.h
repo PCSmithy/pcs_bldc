@@ -9,4 +9,11 @@
 #include "lib_types.h"
 #include "dev_gateDriver_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 bool dev_gateDriver_isOperational(dev_gateDriver_channel_E channel);
+#ifdef __cplusplus
+}
+#endif

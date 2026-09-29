@@ -56,6 +56,10 @@ typedef void (*HW_ADC_callback_F)(HW_ADC_channels_E channel,
 // HW_ADC_inputConfig_S / _injectedInputConfig_S / _channelConfig_S / _injectedTrigger_E
 #include "HW_ADC_target.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct
 {
     const HW_ADC_channelConfig_S * channels;
@@ -103,3 +107,6 @@ bool HW_ADC_getInjectedStatus(HW_ADC_channels_E channel,
 bool HW_ADC_getErrorCount(HW_ADC_channels_E channel, uint32_t * const out);
 
 bool HW_ADC_getStatus(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E * const out);
+#ifdef __cplusplus
+}
+#endif

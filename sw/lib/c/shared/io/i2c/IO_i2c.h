@@ -5,6 +5,10 @@
 #include "IO_i2c_channels.h"
 #include "HW_I2C.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 typedef struct
@@ -30,3 +34,6 @@ bool IO_i2c_init(const IO_i2c_config_S * const config);
 // uninitialized, `dev` is out of range, or the HW_I2C transfer fails.
 bool IO_i2c_readReg(IO_i2c_device_E dev, uint16_t reg, uint8_t * buffer, size_t length);
 bool IO_i2c_writeReg(IO_i2c_device_E dev, uint16_t reg, uint8_t * buffer, size_t length);
+#ifdef __cplusplus
+}
+#endif

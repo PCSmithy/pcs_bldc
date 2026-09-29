@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "HW_SPI_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Test controls for the mocked HW_SPI. The driver issues a 16-bit big-endian
 // transfer per frame; the mock returns the channel's injected response and
 // records the last command word.
@@ -19,4 +23,6 @@ void mock_HW_SPI_setTransferOk(HW_SPI_channel_E channel, bool ok);
 
 // The last command word the driver clocked out on `channel`.
 uint16_t mock_HW_SPI_lastCommand(HW_SPI_channel_E channel);
-
+#ifdef __cplusplus
+}
+#endif

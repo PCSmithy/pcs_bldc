@@ -8,6 +8,10 @@
 /* Target Config */
 #include "HW_DMA_target.h"     // HW_DMA_channelConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef struct
@@ -47,3 +51,6 @@ bool HW_DMA_abortTransfer(HW_DMA_channel_E channel);
 
 HW_DMA_status_E HW_DMA_getStatus(HW_DMA_channel_E channel);
 bool HW_DMA_registerCallback(HW_DMA_channel_E channel, HW_DMA_completeCallback_F callback, void * context);
+#ifdef __cplusplus
+}
+#endif

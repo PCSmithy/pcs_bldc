@@ -7,6 +7,10 @@
 /* Target Config */
 #include "HW_OPAMP_target.h"   // HW_OPAMP_channelConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef struct
@@ -24,3 +28,6 @@ typedef struct
 // input/gain and its output routed to the internal ADC input. Returns
 // false on any validation, calibration, or start failure.
 bool HW_OPAMP_init(const HW_OPAMP_config_S * const config);
+#ifdef __cplusplus
+}
+#endif

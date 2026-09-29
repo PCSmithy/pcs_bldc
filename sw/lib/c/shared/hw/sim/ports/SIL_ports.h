@@ -28,6 +28,10 @@
 
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define SIL_PORTS_HANDLE_INVALID  (-1)
 
 typedef enum
@@ -87,5 +91,9 @@ void SIL_ports_write(int32_t handle, double value);
 // peer / an invalid handle — the caller supplies a floating-bus default.
 bool SIL_ports_duplexTransfer(int32_t handle, const uint8_t * const tx, size_t txLen,
                               uint8_t * const rx, size_t rxMax, size_t * const rxLen);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SIL_PORTS_H

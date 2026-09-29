@@ -5,6 +5,10 @@
 // lives in mock_HW_GPIO.c and is driven by the controls in mock_HW_GPIO.h.
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum
 {
     HW_GPIO_PORT_A,
@@ -27,4 +31,6 @@ typedef enum
 // Cached level of input `pin` (single-bit GPIO_PIN_x mask) of `port`;
 // HW_GPIO_LEVEL_LOW until a value is injected via mock_HW_GPIO_setCachedLevel.
 HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
-
+#ifdef __cplusplus
+}
+#endif

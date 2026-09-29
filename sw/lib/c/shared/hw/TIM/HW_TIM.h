@@ -22,6 +22,10 @@ typedef enum
 /* Target Config */
 #include "HW_TIM_target.h"   // HW_TIM_peripheralConfig_S / HW_TIM_channelConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct
 {
     const HW_TIM_peripheralConfig_S * peripherals;
@@ -71,3 +75,6 @@ bool HW_TIM_getMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool * const en
 // Clear a peripheral's latched break status flags (BIF/B2IF/SBIF): a break
 // latches even after the input releases. MOE is untouched.
 bool HW_TIM_clearBreakFlags(HW_TIM_peripheral_E peripheral);
+#ifdef __cplusplus
+}
+#endif

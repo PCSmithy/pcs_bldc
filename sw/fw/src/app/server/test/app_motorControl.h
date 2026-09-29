@@ -6,6 +6,10 @@
 /* Includes */
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef enum
@@ -63,3 +67,6 @@ extern uint32_t                mock_app_motorControl_setModeCalls;
 extern uint32_t                mock_app_motorControl_setVelocityCalls;
 extern uint32_t                mock_app_motorControl_clearFaultCalls;
 void mock_app_motorControl_resetRecorders(void);
+#ifdef __cplusplus
+}
+#endif

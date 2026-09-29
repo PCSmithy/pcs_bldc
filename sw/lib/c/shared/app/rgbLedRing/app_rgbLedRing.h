@@ -7,6 +7,10 @@
 #include "app_motorControl.h"        // motor channel + snapshot (state, setpoint)
 #include "app_rgbLedRing_channels.h" // consumer-provided app_rgbLedRing_channel_E
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // Pip tuning: a pip spreads +/-PIP_HALF_WIDTH_DEG with a linear falloff;
@@ -118,4 +122,6 @@ void app_rgbLedRing_advanceMode(app_rgbLedRing_state_S * state);
 void app_rgbLedRing_renderFrame(app_rgbLedRing_state_S * state, float32_t dialDeg, float32_t motorDeg,
                                 const app_motorControl_snapshot_S * motor, float32_t speedoFullScale_radPerSec,
                                 app_rgbLedRing_rgb_S * pixels, uint16_t ledCount);
-
+#ifdef __cplusplus
+}
+#endif

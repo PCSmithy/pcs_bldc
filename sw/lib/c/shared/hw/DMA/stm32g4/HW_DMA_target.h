@@ -8,6 +8,10 @@
 
 #include "HW_DMA_channels.h"   // project-provided HW_DMA_channel_E
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 // Per-channel configuration. The HAL handle carries the target-specific
@@ -29,3 +33,6 @@ typedef struct
 // for the channel. NVIC enable + the board DMA IRQ handlers are wired with the
 // SPI-DMA integration, where the path is bench-verified.
 void HW_DMA_irqHandler(HW_DMA_channel_E channel);
+#ifdef __cplusplus
+}
+#endif

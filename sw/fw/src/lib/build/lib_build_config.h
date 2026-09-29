@@ -7,9 +7,16 @@
 // build by generate_identity.cmake.
 #include "lib_build_identity.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Public Data Declarations */
 
 // The identity as a named, DWARF-visible object: the board serves it over
 // the protocol, and a host reads it straight out of an image file (the
 // app's identity gate compares the two).
 extern const char lib_build_identityString[];
+#ifdef __cplusplus
+}
+#endif

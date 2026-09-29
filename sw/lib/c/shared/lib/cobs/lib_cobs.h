@@ -3,6 +3,10 @@
 /* Includes */
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // Worst-case COBS-encoded size for a payload of len bytes: one code byte per
@@ -22,3 +26,6 @@ bool lib_cobs_encode(const uint8_t * const input, size_t len,
 bool lib_cobs_decode(const uint8_t * const input, size_t len,
                      uint8_t * const output, size_t outputMax,
                      size_t * const decodedLen);
+#ifdef __cplusplus
+}
+#endif

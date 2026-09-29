@@ -5,6 +5,10 @@
 #include "HW_GPIO.h"              // HW_GPIO_port_E, HW_GPIO_level_E
 #include "dev_switch_channels.h"  // project-provided dev_switch_channel_E
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef enum
@@ -64,4 +68,6 @@ dev_switch_state_E dev_switch_getState(dev_switch_channel_E channel);
 // Debounced active (pressed) state of a channel. false for an out-of-range
 // channel or before init.
 bool dev_switch_isActive(dev_switch_channel_E channel);
-
+#ifdef __cplusplus
+}
+#endif

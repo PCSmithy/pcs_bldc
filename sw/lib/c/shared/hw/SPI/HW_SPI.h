@@ -42,6 +42,10 @@ typedef struct
 /* Target Config */
 #include "HW_SPI_target.h"   // HW_SPI_busConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct
 {
     const HW_SPI_busConfig_S * buses;
@@ -76,3 +80,6 @@ bool HW_SPI_transmitReceive(HW_SPI_channel_E channel, uint8_t * txData, uint8_t 
 
 bool HW_SPI_registerCallback(HW_SPI_channel_E channel, HW_SPI_completeCallback_F callback, void * context);
 HW_SPI_status_E HW_SPI_getStatus(HW_SPI_channel_E channel);
+#ifdef __cplusplus
+}
+#endif
