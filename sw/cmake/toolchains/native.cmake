@@ -45,6 +45,17 @@ add_compile_options(
   -Wall -Wextra -Wpedantic
   -g ${PCS_OPT_LEVEL}
 )
+# C++ units only (generator expression: nothing leaks onto the C build). The
+# subset is fixed by docs/cpp-migration.md: no exceptions, no RTTI, no static
+# destructors or thread-safe local-static guards, no unwind tables.
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-unwind-tables>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-asynchronous-unwind-tables>
+)
 
 # The firmware links as a SHARED library (SIL). On Linux/ELF that requires all
 # objects — including the static libs it pulls in — to be position-independent,

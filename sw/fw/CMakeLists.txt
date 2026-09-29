@@ -6,11 +6,15 @@
 #   tools/build_arm.sh    sw/fw    # cross-compile for STM32G431
 
 cmake_minimum_required(VERSION 3.20)
-project(pcs_bldc_fw LANGUAGES C ASM)
+project(pcs_bldc_fw LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD          11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS        OFF)
+# C++20, not 23: GCC 14 (the ARM toolchain) implements 20 completely.
+set(CMAKE_CXX_STANDARD          20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS        OFF)
 
 if(PCS_TARGET STREQUAL "native")
   enable_testing()
