@@ -37,7 +37,7 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 #define GD_MAIN         (DEV_GATEDRIVER_CHANNEL_MAIN)
 #define ENC_MOTOR       (IO_AS5048_CHANNEL_MOTOR)
 
-// Trip thresholds under test (mirror app_motorControl.c).
+// Trip thresholds under test (mirror app_motorControl.cpp).
 #define PHASE_TRIP_A    (2.0f)
 #define BUS_TRIP_A      (1.5f)
 
@@ -50,7 +50,7 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 // (uint32_t)(duty*period + 0.5f)).
 #define DUTY_COMPARE(duty01) ((uint32_t)(((duty01) * (float32_t)PERIOD) + 0.5f))
 
-// Alignment dwell (mirrors app_motorControl.c's ALIGNMENT_DWELL_TIMER_MS); the
+// Alignment dwell (mirrors app_motorControl.cpp's ALIGNMENT_DWELL_TIMER_MS); the
 // advance margin clears any ms-rounding at the dwell boundary.
 #define ALIGN_ADVANCE_MS (600U)
 

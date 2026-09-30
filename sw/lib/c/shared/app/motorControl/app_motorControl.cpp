@@ -88,8 +88,8 @@ static void app_motorControl_private_updateOvercurrentLatch(
     app_motorControl_channelData_S * const channelData);
 
 /* Private Data Definitions */
-static app_motorControl_data_S app_motorControl_data;
-static app_motorControl_data_S * const data = &app_motorControl_data;
+constinit static app_motorControl_data_S app_motorControl_data = {};
+constinit static app_motorControl_data_S * const data = &app_motorControl_data;
 
 /* Private Function Definitions */
 
@@ -147,7 +147,13 @@ bool app_motorControl_init(const app_motorControl_config_S * const config)
             lib_filterIIR_channel_S filter =
             {
                 .type = LIB_FILTERIIR_TYPE_EMA,
-                .ema.alpha = (VELOCITY_TICK_S / cfg->velocityEstimateFilterTau_s),
+                .ema = {
+                    .alpha = (VELOCITY_TICK_S / cfg->velocityEstimateFilterTau_s),
+                    .y_k = 0.0f,
+                    .y_k_1 = 0.0f,
+                    .x_k = 0.0f,
+                },
+                .init = false,
             };
             channelsValid &= lib_filterIIR_init(&filter);
         }
