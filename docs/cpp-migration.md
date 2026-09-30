@@ -41,7 +41,7 @@ Measured, not assumed:
 
 | Fact | Result |
 |---|---|
-| `arm-none-eabi-g++` present | 14.3.1 (GNU Tools for STM32 14.3.rel1), beside the gcc in use; native MinGW g++ 15.2.0 |
+| `arm-none-eabi-g++` present | Arm GNU Toolchain 15.2.1 (what `arm-none-eabi.cmake` finds); native MinGW g++ 15.2.0 |
 | ARM image at `d0c7376` | 94,304 B flash (72%), 28,920 B RAM (88%) |
 | OFT baseline | `oft.sh trace specs/ sw/ README.md` → 1130 total, 34 defects, all in CLAUDE.md's allowed classes |
 | OFT scans `.cpp` / `.hpp` | Yes — a probe `[impl->fw~io_bridge_001~1]` resolved in both. No config change |
@@ -53,6 +53,7 @@ Measured, not assumed:
 | `dwarf_map` variables | Collected by bare `DW_AT_name` at any nesting depth: a namespace does not hide a variable, but two namespaces with the same variable name collide silently |
 | `dwarf_map` members | Walked only under `DW_TAG_structure_type` / `DW_TAG_union_type`. Members of a `class` (`DW_TAG_class_type`) are invisible — to the SIL and to the desktop app's signal picker, which enumerates every leaf with no filter |
 | `std::array` in DWARF | Its element storage is a member named `_M_elems`, so a traced path becomes `x.duty._M_elems[0]` |
+| `DW_AT_specification` on variables | GCC splits any extern-declared-then-defined global (C too, at `-Og`, DWARF 5) into a nameless definition DIE linked to its declaration; the reader used to drop these — 30 firmware statics (`uwTick`, `SystemCoreClock`, the nanopb descriptors) were invisible to the picker and the SIL until the C++ reader work |
 | MinGW GCC 15.2 LTO with a mixed-language link | Internal compiler error (`choose_baseaddr`, `i386.cc:7447`) in the LTRANS job when `g++` links C and C++ LTO bytecode together — it crashes inside an unrelated C unit. Workaround in `native.cmake`: `-flto` on C units only, so C++ objects link plain into the otherwise-LTO SIL image. Revisit on a GCC upgrade |
 
 Startup and link infrastructure is already C++-ready: `startup_stm32g431vbtx.s`
