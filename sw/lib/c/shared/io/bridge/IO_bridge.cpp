@@ -33,14 +33,14 @@ typedef struct
 
 /* Private Data Definitions */
 
-static IO_bridge_data_S IO_bridge_data;
-static IO_bridge_data_S * const data = &IO_bridge_data;
+constinit static IO_bridge_data_S IO_bridge_data = {};
+constinit static IO_bridge_data_S * const data = &IO_bridge_data;
 
 static const IO_bridge_phase_E IO_bridge_complementaryPhase[IO_BRIDGE_PHASE_COUNT] =
 {
-    [IO_BRIDGE_PHASE_U] = IO_BRIDGE_PHASE_V,
-    [IO_BRIDGE_PHASE_V] = IO_BRIDGE_PHASE_U,
-    [IO_BRIDGE_PHASE_W] = IO_BRIDGE_PHASE_COUNT,
+    IO_BRIDGE_PHASE_V, // U
+    IO_BRIDGE_PHASE_U, // V
+    IO_BRIDGE_PHASE_COUNT, // W: no pair
 };
 
 /* Private Function Declarations */

@@ -12,7 +12,7 @@ add_executable(test_app_motorControl
   mock_IO_AS5048.c
   mock_dev_gateDriver.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../app_motorControl.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../../io/bridge/IO_bridge.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../io/bridge/IO_bridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../lib/timer/lib_timer.c
 )
 target_include_directories(test_app_motorControl PRIVATE
