@@ -30,37 +30,52 @@ static const IO_bridge_channelConfig_S IO_bridge_channelConfig[] =
 {
     [IO_BRIDGE_CHANNEL_MOTOR] =
     {
-        .phaseU = HW_TIM_CHANNEL_PWM_U,
-        .phaseV = HW_TIM_CHANNEL_PWM_V,
-        .phaseW = HW_TIM_CHANNEL_PWM_W,
+        .timeBasePeripheral = HW_TIM_PERIPHERAL_2,
 
-        .phaseCurrent =
+        .phase =
         {
             [IO_BRIDGE_PHASE_U] =
             {
-                .adcChannel        = HW_ADC_CHANNEL_1,
-                .adcInput          = 6U,
-                .injectedIndex     = 0U,
-                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
-                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+                .tim = HW_TIM_CHANNEL_PWM_U,
+                .complementPhase = IO_BRIDGE_PHASE_V,
+                .currentSense =
+                {
+                    .adcChannel        = HW_ADC_CHANNEL_1,
+                    .adcInput          = 6U,
+                    .injectedIndex     = 0U,
+                    .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                    .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+                }
             },
             [IO_BRIDGE_PHASE_V] =
             {
-                .adcChannel        = HW_ADC_CHANNEL_2,
-                .adcInput          = 7U,
-                .injectedIndex     = 0U,
-                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
-                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+                .tim = HW_TIM_CHANNEL_PWM_V,
+                .complementPhase = IO_BRIDGE_PHASE_U,
+                .currentSense =
+                {
+                    .adcChannel        = HW_ADC_CHANNEL_2,
+                    .adcInput          = 7U,
+                    .injectedIndex     = 0U,
+                    .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                    .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+
+                }
             },
             [IO_BRIDGE_PHASE_W] =
             {
-                .adcChannel        = HW_ADC_CHANNEL_1,
-                .adcInput          = 8U,
-                .injectedIndex     = IO_BRIDGE_INJECTED_NONE,
-                .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
-                .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+                .tim = HW_TIM_CHANNEL_PWM_W,
+                .complementPhase = IO_BRIDGE_PHASE_COUNT,
+                .currentSense =
+                {
+                    .adcChannel        = HW_ADC_CHANNEL_1,
+                    .adcInput          = 8U,
+                    .injectedIndex     = IO_BRIDGE_INJECTED_NONE,
+                    .zeroCurrentBias_V = BRIDGE_PHASE_I_BIAS_V,
+                    .voltsPerAmp       = BRIDGE_PHASE_I_V_PER_A,
+                }
             },
         },
+
         .busCurrent =
         {
             .adcChannel        = HW_ADC_CHANNEL_2,
@@ -77,5 +92,4 @@ const IO_bridge_config_S IO_bridge_config =
 {
     .channels    = IO_bridge_channelConfig,
     .numChannels = COUNTOF(IO_bridge_channelConfig),
-    .timeBasePeripheral = HW_TIM_PERIPHERAL_2,
 };

@@ -39,16 +39,21 @@ static IO_bridge_config_S        config;
 static void buildGoodConfig(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR] = (IO_bridge_channelConfig_S){
-        .phaseU = HW_TIM_CHANNEL_PWM_U,
-        .phaseV = HW_TIM_CHANNEL_PWM_V,
-        .phaseW = HW_TIM_CHANNEL_PWM_W,
-        .phaseCurrent = {
-            [IO_BRIDGE_PHASE_U] = { HW_ADC_CHANNEL_1, SENSE_U_IN, SENSE_U_INJ,
-                                    SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_V] = { HW_ADC_CHANNEL_2, SENSE_V_IN, SENSE_V_INJ,
-                                    SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_W] = { HW_ADC_CHANNEL_1, SENSE_W_IN, IO_BRIDGE_INJECTED_NONE,
-                                    SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A },
+        .timeBasePeripheral = TIMEBASE_PERIPH,
+        // U and V are the sampled pair; W is derived, so it carries no complement.
+        .phase = {
+            [IO_BRIDGE_PHASE_U] = { .tim = HW_TIM_CHANNEL_PWM_U,
+                                    .complementPhase = IO_BRIDGE_PHASE_V,
+                                    .currentSense = { HW_ADC_CHANNEL_1, SENSE_U_IN, SENSE_U_INJ,
+                                                      SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A } },
+            [IO_BRIDGE_PHASE_V] = { .tim = HW_TIM_CHANNEL_PWM_V,
+                                    .complementPhase = IO_BRIDGE_PHASE_U,
+                                    .currentSense = { HW_ADC_CHANNEL_2, SENSE_V_IN, SENSE_V_INJ,
+                                                      SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A } },
+            [IO_BRIDGE_PHASE_W] = { .tim = HW_TIM_CHANNEL_PWM_W,
+                                    .complementPhase = IO_BRIDGE_PHASE_COUNT,
+                                    .currentSense = { HW_ADC_CHANNEL_1, SENSE_W_IN, IO_BRIDGE_INJECTED_NONE,
+                                                      SENSE_PHASE_BIAS_V, SENSE_PHASE_V_PER_A } },
         },
         .busCurrent = { HW_ADC_CHANNEL_2, SENSE_BUS_IN, IO_BRIDGE_INJECTED_NONE,
                         0.0f, SENSE_BUS_V_PER_A },
@@ -56,12 +61,13 @@ static void buildGoodConfig(void)
 
     config = (IO_bridge_config_S){
         .channels           = bridgeCfg,
-        .numChannels        = IO_BRIDGE_CHANNEL_COUNT,
-        .timeBasePeripheral = TIMEBASE_PERIPH };
+        .numChannels        = 1U };   // the motor bridge; the second slot is for the multi-bridge checks
 }
 
-// What the per-cycle callback saw when it last ran. The driver keeps its
-// registration in static storage, so every cycle test re-registers its own.
+// What the per-cycle callback saw when it last ran. One call per completed
+// triple, so cycleCalls is how the suite observes a triple forming at all. The
+// driver keeps its registration in static storage, so every cycle test
+// re-registers its own.
 static uint32_t            cycleCalls;
 static void *              cycleContext;
 static IO_bridge_channel_E cycleChannel;
@@ -74,7 +80,7 @@ static void onCycle(IO_bridge_channel_E channel, void * context)
     cycleCalls++;
     cycleChannel = channel;
     cycleContext = context;
-    cycleW_valid = IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &cycleW_amps);
+    cycleW_valid = IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &cycleW_amps);
 }
 
 void setUp(void)
@@ -173,7 +179,7 @@ static void test_init_too_many_channels(void)
 // [test->fw~io_bridge_001~1]
 static void test_init_rejects_out_of_range_phase_channel(void)
 {
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phaseV = HW_TIM_CHANNEL_COUNT;
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_V].tim = HW_TIM_CHANNEL_COUNT;
     TEST_ASSERT_FALSE(IO_bridge_init(&config));
 }
 
@@ -181,8 +187,59 @@ static void test_init_rejects_out_of_range_phase_channel(void)
 static void test_init_rejects_phases_on_different_peripherals(void)
 {
     // Phase W points at a channel owned by a different peripheral.
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phaseW = HW_TIM_CHANNEL_OTHER;
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_W].tim = HW_TIM_CHANNEL_OTHER;
     TEST_ASSERT_FALSE(IO_bridge_init(&config));
+}
+
+// [test->fw~io_bridge_001~1] a phase cannot be its own complement: the pair
+// would complete against its own stamp.
+static void test_init_rejects_self_complement(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_U].complementPhase = IO_BRIDGE_PHASE_U;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+}
+
+// [test->fw~io_bridge_001~1] U names V, V names W: the table is asymmetric, so
+// no pair agrees on its partner.
+static void test_init_rejects_asymmetric_complement_pair(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_V].complementPhase = IO_BRIDGE_PHASE_W;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+}
+
+// [test->fw~io_bridge_001~1] the derived phase carries IO_BRIDGE_PHASE_COUNT and
+// is accepted; naming a phase already paired elsewhere is not.
+static void test_init_accepts_derived_phase_without_complement(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_W].complementPhase = IO_BRIDGE_PHASE_U;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_W].complementPhase = IO_BRIDGE_PHASE_COUNT;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+}
+
+// [test->fw~io_bridge_001~1] an injected ADC channel delivers to one bridge:
+// a second bridge claiming the same channel is rejected
+static void test_init_rejects_two_bridges_sharing_an_injected_adc_channel(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_SECOND] = bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR];
+    config.numChannels = 2U;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+}
+
+// [test->fw~io_bridge_001~1] a second bridge with no injected senses claims
+// no ADC channel, so both bridges initialize and the first keeps its callbacks
+static void test_init_accepts_a_second_bridge_without_injected_senses(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_SECOND] = bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR];
+    for (uint8_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+    {
+        bridgeCfg[IO_BRIDGE_CHANNEL_SECOND].phase[phase].currentSense.injectedIndex = IO_BRIDGE_INJECTED_NONE;
+    }
+    config.numChannels = 2U;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_HW_ADC_getRegistrationCount(HW_ADC_CHANNEL_1));
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_HW_ADC_getRegistrationCount(HW_ADC_CHANNEL_2));
 }
 
 /* ---- fw~io_bridge_002: per-phase duty command ---- */
@@ -341,7 +398,47 @@ static void test_clearBreakFlags_out_of_range_channel_rejected(void)
     TEST_ASSERT_FALSE(IO_bridge_clearBreakFlags(IO_BRIDGE_CHANNEL_COUNT));
 }
 
-/* ---- current-sense readback ---- */
+/* ---- fw~io_bridge_005: sense readout ---- */
+
+// Volts that decode to a given phase current through the bipolar front end.
+static float32_t ampsToVolts(float32_t amps)
+{
+    return SENSE_PHASE_BIAS_V + (amps * SENSE_PHASE_V_PER_A);
+}
+
+// Read one phase's reported current, asserting the read itself succeeded.
+static float32_t phaseAmps(IO_bridge_phase_E phase)
+{
+    float32_t amps = 0.0f;
+    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, phase, &amps));
+    return amps;
+}
+
+// Move to the next PWM trigger. The step is a whole trigger period, so samples
+// either side of it lie outside the pair window and can never pair. Monotonic
+// across tests, since the driver keeps its stamps (it has no reset hook).
+static void nextTrigger(void)
+{
+    static uint32_t now_us = 0U;
+    now_us += TEST_TRIGGER_PERIOD_US;
+    mock_HW_TIM_setCounter(TIMEBASE_PERIPH, now_us);
+}
+
+// Publish one crest sample on a phase's own ADC.
+static void fireInjected(HW_ADC_channels_E adc, uint8_t slot, float32_t amps)
+{
+    mock_HW_ADC_setInjectedVolts(adc, slot, ampsToVolts(amps));
+    mock_HW_ADC_fireInjected(adc, HW_ADC_CONVERSION_STATUS_OK);
+}
+
+// One complete crest pair at a fresh trigger: U then V, so the second completion
+// forms the triple.
+static void fireInjectedPair(float32_t ampsU, float32_t ampsV)
+{
+    nextTrigger();
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsU);
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsV);
+}
 
 static void test_getPhaseCurrent_before_init_fails(void)
 {
@@ -357,18 +454,18 @@ static void test_getBusCurrent_before_init_fails(void)
     TEST_ASSERT_EQUAL_FLOAT(123.0f, amps);
 }
 
-static void test_getInjectedPhaseCurrent_before_init_fails(void)
+// Must run before any completion is fired: the driver holds its samples in
+// static storage that no test resets.
+// [test->fw~io_bridge_005~1]
+static void test_getPhaseCurrent_zero_before_first_sample(void)
 {
-    float32_t amps = 123.0f;
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_EQUAL_FLOAT(123.0f, amps);
-}
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
-static void test_getInjectedUpdateCount_before_init_fails(void)
-{
-    uint32_t count = 99U;
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedUpdateCount(MOTOR, IO_BRIDGE_PHASE_U, &count));
-    TEST_ASSERT_EQUAL_UINT32(99U, count);
+    float32_t amps = 42.0f;
+    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, amps);
+    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &amps));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, amps);
 }
 
 // Bias + gain applied, sign preserved across the zero-current midpoint.
@@ -377,36 +474,63 @@ static void test_getPhaseCurrent_scales_and_signs(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
-    float32_t amps = 0.0f;
+    nextTrigger();
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, SENSE_PHASE_BIAS_V);
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 
-    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_U_IN, 1.85f);   // +2.0 A
-    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, amps);
+    nextTrigger();
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 2.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 
-    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_U_IN, 1.45f);   // -2.0 A
-    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -2.0f, amps);
+    nextTrigger();
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, -2.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 }
 
-// Each phase reads its own configured (ADC channel, IN#): setting only V's cell
-// leaves U and W failing.
+// The phase reader is the injected path only: a regular-sequence sample on the
+// same pin never reaches it.
 // [test->fw~io_bridge_005~1]
-static void test_getPhaseCurrent_routes_to_configured_input(void)
+static void test_getPhaseCurrent_follows_injected_not_regular(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
-    float32_t amps = 0.0f;
-    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_2, SENSE_V_IN, 1.75f);   // +1.0 A on V only
+    nextTrigger();
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 2.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 
-    TEST_ASSERT_TRUE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_V, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, amps);
+    // A fresh regular conversion of U's pin leaves the reported current alone.
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_U_IN, ampsToVolts(-5.0f));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 
-    TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &amps));
+    // The next crest sample does move it.
+    nextTrigger();
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 1.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 }
 
+// An unconfigured phase sense (voltsPerAmp == 0) publishes nothing rather than
+// dividing by zero: the phase holds its last value and no triple forms.
 // [test->fw~io_bridge_005~1]
-static void test_getBusCurrent_scales(void)
+static void test_getPhaseCurrent_unconfigured_sense_publishes_nothing(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_U].currentSense.voltsPerAmp = 0.0f;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    nextTrigger();
+    const float32_t held = phaseAmps(IO_BRIDGE_PHASE_U);
+
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 3.0f);
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, 1.0f);
+
+    TEST_ASSERT_EQUAL_FLOAT(held, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);   // V alone cannot complete a triple
+}
+
+// The bus reader follows the regular sequence, sample to sample.
+// [test->fw~io_bridge_005~1]
+static void test_getBusCurrent_scales_and_follows_regular(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
@@ -414,39 +538,43 @@ static void test_getBusCurrent_scales(void)
     mock_HW_ADC_setVolts(HW_ADC_CHANNEL_2, SENSE_BUS_IN, 0.9f);   // 0.9 / 0.6 = 1.5 A
     TEST_ASSERT_TRUE(IO_bridge_getBusCurrent(MOTOR, &amps));
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.5f, amps);
+
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_2, SENSE_BUS_IN, 0.3f);   // 0.3 / 0.6 = 0.5 A
+    TEST_ASSERT_TRUE(IO_bridge_getBusCurrent(MOTOR, &amps));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.5f, amps);
+}
+
+// An unconfigured bus sense (voltsPerAmp == 0) fails rather than dividing by zero.
+// [test->fw~io_bridge_005~1]
+static void test_getBusCurrent_unconfigured_sense_fails(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].busCurrent.voltsPerAmp = 0.0f;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    float32_t amps = 7.0f;
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_2, SENSE_BUS_IN, 0.9f);
+    TEST_ASSERT_FALSE(IO_bridge_getBusCurrent(MOTOR, &amps));
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, amps);
 }
 
 // A failed ADC read (input never set) propagates as false, leaving the
 // destination unchanged — never a false 0 A to the overcurrent monitor.
 // [test->fw~io_bridge_005~1]
-static void test_getPhaseCurrent_read_failure_propagates(void)
+static void test_getBusCurrent_read_failure_propagates(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
     float32_t amps = 55.0f;
-    TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
+    TEST_ASSERT_FALSE(IO_bridge_getBusCurrent(MOTOR, &amps));
     TEST_ASSERT_EQUAL_FLOAT(55.0f, amps);
 }
 
-// An unconfigured sense (voltsPerAmp == 0) fails rather than dividing by zero.
-// [test->fw~io_bridge_005~1]
-static void test_getPhaseCurrent_unconfigured_sense_fails(void)
-{
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phaseCurrent[IO_BRIDGE_PHASE_U].voltsPerAmp = 0.0f;
-    TEST_ASSERT_TRUE(IO_bridge_init(&config));
-
-    float32_t amps = 7.0f;
-    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_U_IN, 1.85f);
-    TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, amps);
-}
-
-static void test_getPhaseCurrent_out_of_range_phase_rejected(void)
+static void test_getPhaseCurrent_out_of_range_rejected(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
     float32_t amps = 0.0f;
-    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_U_IN, 1.85f);
     TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_COUNT, &amps));
+    TEST_ASSERT_FALSE(IO_bridge_getPhaseCurrent(IO_BRIDGE_CHANNEL_COUNT, IO_BRIDGE_PHASE_U, &amps));
 }
 
 static void test_getCurrent_null_rejected(void)
@@ -456,39 +584,7 @@ static void test_getCurrent_null_rejected(void)
     TEST_ASSERT_FALSE(IO_bridge_getBusCurrent(MOTOR, NULL));
 }
 
-/* ---- crest (injected) current sampling ---- */
-
-// Volts that decode to a given phase current through the bipolar front end.
-static float32_t ampsToVolts(float32_t amps)
-{
-    return SENSE_PHASE_BIAS_V + (amps * SENSE_PHASE_V_PER_A);
-}
-
-// Read one phase's update counter, asserting the accessor itself succeeded.
-static uint32_t injectedCount(IO_bridge_phase_E phase)
-{
-    uint32_t count = 0U;
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedUpdateCount(MOTOR, phase, &count));
-    return count;
-}
-
-// Read one phase's crest current, asserting a sample was published.
-static float32_t injectedAmps(IO_bridge_phase_E phase)
-{
-    float32_t amps = 0.0f;
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedPhaseCurrent(MOTOR, phase, &amps));
-    return amps;
-}
-
-// Move to the next PWM trigger. The step is a whole trigger period, so samples
-// either side of it lie outside the pair window and can never pair. Monotonic
-// across tests, since the driver keeps its stamps (it has no reset hook).
-static void nextTrigger(void)
-{
-    static uint32_t now_us = 0U;
-    now_us += TEST_TRIGGER_PERIOD_US;
-    mock_HW_TIM_setCounter(TIMEBASE_PERIPH, now_us);
-}
+/* ---- fw~io_bridge_006: crest (injected) current sampling ---- */
 
 // One registration per ADC channel carrying an injected phase, however many
 // phases share it: U on ADC1, V on ADC2, W derived so it registers nothing.
@@ -507,127 +603,101 @@ static void test_init_fails_when_injected_registration_fails(void)
 
 static void test_init_rejects_out_of_range_injected_index(void)
 {
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phaseCurrent[IO_BRIDGE_PHASE_U].injectedIndex =
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_U].currentSense.injectedIndex =
         HW_ADC_INJECTED_INPUTS_PER_CHANNEL;
     TEST_ASSERT_FALSE(IO_bridge_init(&config));
 }
 
-// Must run before any completion is fired: the driver holds its samples in
-// static storage that no test resets.
-static void test_getInjectedPhaseCurrent_no_sample_yet_fails(void)
-{
-    TEST_ASSERT_TRUE(IO_bridge_init(&config));
-
-    float32_t amps = 42.0f;
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_W, &amps));
-    TEST_ASSERT_EQUAL_FLOAT(42.0f, amps);
-}
-
-// A completion decodes its slot's counts through the same bias + gain as the
-// regular path, so the sinking leg comes back genuinely negative.
+// Each phase is published by the completion of its own ADC, decoded through its
+// own bias and gain; the other phase holds the value its ADC last gave it.
+// [test->fw~io_bridge_005~1]
 // [test->fw~io_bridge_006~1]
-static void test_injected_completion_decodes_signed_amps(void)
+static void test_injected_each_phase_publishes_on_its_own_completion(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    fireInjectedPair(1.0f, 1.0f);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+
+    // ADC1 alone: U moves to its new sample, V keeps the one ADC2 gave it, and
+    // no triple forms (V's stamp belongs to the previous trigger).
     nextTrigger();
+    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(-4.0f));
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 2.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, phaseAmps(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 
-    float32_t amps = 0.0f;
-
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, 1.95f);   // +3.0 A
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 3.0f, amps);
-
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, 1.25f);   // -4.0 A
+    // ADC2's completion publishes V and completes this trigger's triple.
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_V, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, amps);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, phaseAmps(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(2U, cycleCalls);
 }
 
-// Each completion only touches the phases sitting on its own ADC.
-static void test_injected_completion_routes_by_adc_channel(void)
-{
-    TEST_ASSERT_TRUE(IO_bridge_init(&config));
-    nextTrigger();
-
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, 1.85f);   // +2.0 A
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, 1.85f);   // +2.0 A
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, 1.45f);   // -2.0 A
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-
-    // Only ADC2 completed since U's slot changed, so U still reads the +2.0 A
-    // it was sampled with.
-    float32_t amps = 0.0f;
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, amps);
-    TEST_ASSERT_TRUE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_V, &amps));
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, amps);
-}
-
+// A faulted conversion publishes nothing: the phase holds its last good value
+// and the trigger forms no triple.
 static void test_injected_failed_status_holds_last_good(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
+    fireInjectedPair(2.0f, 2.0f);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+
     nextTrigger();
-
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(2.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    const uint32_t countAfterGood = injectedCount(IO_BRIDGE_PHASE_U);
-
-    // A faulted conversion publishes nothing, neither value nor update.
     mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, 3.0f);
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_FAULT);
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
 
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, injectedAmps(IO_BRIDGE_PHASE_U));
-    TEST_ASSERT_EQUAL_UINT32(countAfterGood, injectedCount(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 }
 
 // W is completed by the second callback of a pair, never the first.
+// [test->fw~io_bridge_006~1]
 static void test_injected_w_completes_only_on_second_callback(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
+
     nextTrigger();
-
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(3.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(-1.0f));
-
-    const uint32_t countBefore = injectedCount(IO_BRIDGE_PHASE_W);
+    const float32_t heldW = phaseAmps(IO_BRIDGE_PHASE_W);
 
     // First of the pair: its partner has no sample at this trigger yet.
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(countBefore, injectedCount(IO_BRIDGE_PHASE_W));
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 3.0f);
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
+    TEST_ASSERT_EQUAL_FLOAT(heldW, phaseAmps(IO_BRIDGE_PHASE_W));
 
-    // Second completes the pair, exactly once.
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -2.0f, injectedAmps(IO_BRIDGE_PHASE_W));
-    TEST_ASSERT_EQUAL_UINT32(countBefore + 1U, injectedCount(IO_BRIDGE_PHASE_W));
+    // Second completes the pair, exactly once: W = -(3 - 1).
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, -1.0f);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -2.0f, phaseAmps(IO_BRIDGE_PHASE_W));
 
     // Once the trigger moves on, a lone U cannot re-pair with V's stale sample.
     nextTrigger();
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(countBefore + 1U, injectedCount(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 }
 
-// Each phase counts its own samples, so U advances alone when V's ADC is quiet.
+// N triggers form N triples, each from that trigger's own pair of samples.
 // [test->fw~io_bridge_006~1]
-static void test_injected_per_phase_counts_advance_independently(void)
+static void test_injected_every_trigger_forms_one_triple(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
-    nextTrigger();
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(1.0f));
+    // Each trigger's pair sums differently, so W proves the triple came from
+    // that trigger's samples and not a carried-over one.
+    static const float32_t ampsU[4] = { 1.0f,  3.0f, -2.0f, 0.5f };
+    static const float32_t ampsV[4] = { 1.0f, -1.0f, -1.0f, 0.25f };
 
-    const uint32_t beforeU = injectedCount(IO_BRIDGE_PHASE_U);
-    const uint32_t beforeV = injectedCount(IO_BRIDGE_PHASE_V);
-
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(beforeU + 1U, injectedCount(IO_BRIDGE_PHASE_U));
-    TEST_ASSERT_EQUAL_UINT32(beforeV, injectedCount(IO_BRIDGE_PHASE_V));
-
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(beforeV + 1U, injectedCount(IO_BRIDGE_PHASE_V));
+    for (uint32_t cycle = 0U; cycle < 4U; cycle++)
+    {
+        fireInjectedPair(ampsU[cycle], ampsV[cycle]);
+        TEST_ASSERT_EQUAL_UINT32(cycle + 1U, cycleCalls);
+        TEST_ASSERT_FLOAT_WITHIN(1e-4f, -(ampsU[cycle] + ampsV[cycle]), phaseAmps(IO_BRIDGE_PHASE_W));
+    }
 }
 
 // A dropped partner leaves W without a same-trigger pair, so it holds its last
@@ -635,31 +705,26 @@ static void test_injected_per_phase_counts_advance_independently(void)
 static void test_injected_dropped_partner_holds_w_then_next_trigger_pairs(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(2.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(2.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, injectedAmps(IO_BRIDGE_PHASE_W));
-    const uint32_t countAfterPair = injectedCount(IO_BRIDGE_PHASE_W);
+    fireInjectedPair(2.0f, 2.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, phaseAmps(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 
     // V's conversion is dropped: U alone cannot complete W.
     nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(5.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, injectedAmps(IO_BRIDGE_PHASE_W));
-    TEST_ASSERT_EQUAL_UINT32(countAfterPair, injectedCount(IO_BRIDGE_PHASE_W));
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 5.0f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -4.0f, phaseAmps(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 
     // The next trigger pairs immediately — no resync, no lost period beyond
     // the one that dropped.
     nextTrigger();
     mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(-3.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, -3.0f);
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, injectedAmps(IO_BRIDGE_PHASE_W));
-    TEST_ASSERT_EQUAL_UINT32(countAfterPair + 1U, injectedCount(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_EQUAL_UINT32(2U, cycleCalls);
 }
 
 // Samples stamped a whole trigger period apart are two different triggers, so
@@ -668,20 +733,17 @@ static void test_injected_dropped_partner_holds_w_then_next_trigger_pairs(void)
 static void test_injected_different_triggers_never_pair(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    const uint32_t paired = injectedCount(IO_BRIDGE_PHASE_W);
+    fireInjectedPair(1.0f, 1.0f);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 
     // U from one trigger, V from the next: both phases update, W does not.
     nextTrigger();
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
     nextTrigger();
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(paired, injectedCount(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 }
 
 // With no time base every stamp would read zero and every sample would look
@@ -689,15 +751,19 @@ static void test_injected_different_triggers_never_pair(void)
 static void test_injected_without_time_base_publishes_nothing(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
-    nextTrigger();
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    const uint32_t beforeU = injectedCount(IO_BRIDGE_PHASE_U);
+    fireInjectedPair(2.0f, 2.0f);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
+
+    nextTrigger();
     mock_HW_TIM_setGetCounterFails(true);
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(2.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 7.0f);
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, 7.0f);
     mock_HW_TIM_setGetCounterFails(false);
 
-    TEST_ASSERT_EQUAL_UINT32(beforeU, injectedCount(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 }
 
 // An unreadable injected slot publishes nothing, so a stale sample is never
@@ -705,24 +771,17 @@ static void test_injected_without_time_base_publishes_nothing(void)
 static void test_injected_unreadable_slot_publishes_nothing(void)
 {
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    const uint32_t before = injectedCount(IO_BRIDGE_PHASE_U);
+    nextTrigger();
+    const float32_t heldU = phaseAmps(IO_BRIDGE_PHASE_U);
+
+    // Nothing has been written to either slot since mock_HW_ADC_reset.
     mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    TEST_ASSERT_EQUAL_UINT32(before, injectedCount(IO_BRIDGE_PHASE_U));
-}
+    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
 
-static void test_getInjected_guards_reject_bad_arguments(void)
-{
-    TEST_ASSERT_TRUE(IO_bridge_init(&config));
-
-    float32_t amps = 0.0f;
-    uint32_t count = 0U;
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_COUNT, &amps));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(IO_BRIDGE_CHANNEL_COUNT, IO_BRIDGE_PHASE_U, &amps));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedPhaseCurrent(MOTOR, IO_BRIDGE_PHASE_U, NULL));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedUpdateCount(MOTOR, IO_BRIDGE_PHASE_COUNT, &count));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedUpdateCount(IO_BRIDGE_CHANNEL_COUNT, IO_BRIDGE_PHASE_U, &count));
-    TEST_ASSERT_FALSE(IO_bridge_getInjectedUpdateCount(MOTOR, IO_BRIDGE_PHASE_U, NULL));
+    TEST_ASSERT_EQUAL_FLOAT(heldU, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
 }
 
 /* ---- fw~io_bridge_007: per-cycle callback ---- */
@@ -745,21 +804,16 @@ static void test_cycle_callback_fires_once_per_pair(void)
     TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
     nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(2.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(2.0f));
-
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 2.0f);
     TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
 
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, 2.0f);
     TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
     TEST_ASSERT_EQUAL_PTR(&cycleToken, cycleContext);
     TEST_ASSERT_EQUAL_INT(MOTOR, cycleChannel);
 
     // The next trigger's pair calls it again, once.
-    nextTrigger();
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjectedPair(2.0f, 2.0f);
     TEST_ASSERT_EQUAL_UINT32(2U, cycleCalls);
 }
 
@@ -771,11 +825,7 @@ static void test_cycle_callback_reads_derived_w(void)
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
     TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(3.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(-1.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjectedPair(3.0f, -1.0f);
 
     TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
     TEST_ASSERT_TRUE(cycleW_valid);
@@ -791,11 +841,7 @@ static void test_cycle_callback_reregistration_replaces(void)
     TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, NULL));
     TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
-    nextTrigger();
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_1, SENSE_U_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_setInjectedVolts(HW_ADC_CHANNEL_2, SENSE_V_INJ, ampsToVolts(1.0f));
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_1, HW_ADC_CONVERSION_STATUS_OK);
-    mock_HW_ADC_fireInjected(HW_ADC_CHANNEL_2, HW_ADC_CONVERSION_STATUS_OK);
+    fireInjectedPair(1.0f, 1.0f);
 
     TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
     TEST_ASSERT_EQUAL_PTR(&cycleToken, cycleContext);
@@ -839,8 +885,6 @@ int main(void)
     RUN_TEST(test_registerCycleCallback_before_init_fails);
     RUN_TEST(test_getPhaseCurrent_before_init_fails);
     RUN_TEST(test_getBusCurrent_before_init_fails);
-    RUN_TEST(test_getInjectedPhaseCurrent_before_init_fails);
-    RUN_TEST(test_getInjectedUpdateCount_before_init_fails);
 
     RUN_TEST(test_init_valid_config);
     RUN_TEST(test_init_null_config);
@@ -848,6 +892,11 @@ int main(void)
     RUN_TEST(test_init_too_many_channels);
     RUN_TEST(test_init_rejects_out_of_range_phase_channel);
     RUN_TEST(test_init_rejects_phases_on_different_peripherals);
+    RUN_TEST(test_init_rejects_self_complement);
+    RUN_TEST(test_init_rejects_asymmetric_complement_pair);
+    RUN_TEST(test_init_accepts_derived_phase_without_complement);
+    RUN_TEST(test_init_rejects_two_bridges_sharing_an_injected_adc_channel);
+    RUN_TEST(test_init_accepts_a_second_bridge_without_injected_senses);
 
     RUN_TEST(test_duty_maps_zero_half_full);
     RUN_TEST(test_duty_routes_to_each_phase);
@@ -865,31 +914,31 @@ int main(void)
     RUN_TEST(test_clearBreakFlags_routes_to_bridge_peripheral);
     RUN_TEST(test_clearBreakFlags_out_of_range_channel_rejected);
 
-    RUN_TEST(test_getPhaseCurrent_scales_and_signs);
-    RUN_TEST(test_getPhaseCurrent_routes_to_configured_input);
-    RUN_TEST(test_getBusCurrent_scales);
-    RUN_TEST(test_getPhaseCurrent_read_failure_propagates);
-    RUN_TEST(test_getPhaseCurrent_unconfigured_sense_fails);
-    RUN_TEST(test_getPhaseCurrent_out_of_range_phase_rejected);
-    RUN_TEST(test_getCurrent_null_rejected);
-
-    // Injected registration + the no-sample-yet check must precede the first
-    // fired completion, which leaves samples in unresettable static storage.
+    // The zero-before-first-sample check and the injected registration checks
+    // must precede the first fired completion, which leaves samples in
+    // unresettable static storage.
+    RUN_TEST(test_getPhaseCurrent_zero_before_first_sample);
     RUN_TEST(test_init_registers_injected_callback_once_per_adc);
     RUN_TEST(test_init_fails_when_injected_registration_fails);
     RUN_TEST(test_init_rejects_out_of_range_injected_index);
-    RUN_TEST(test_getInjectedPhaseCurrent_no_sample_yet_fails);
-    RUN_TEST(test_injected_without_time_base_publishes_nothing);
     RUN_TEST(test_injected_unreadable_slot_publishes_nothing);
 
-    RUN_TEST(test_injected_completion_decodes_signed_amps);
-    RUN_TEST(test_injected_completion_routes_by_adc_channel);
+    RUN_TEST(test_getPhaseCurrent_scales_and_signs);
+    RUN_TEST(test_getPhaseCurrent_follows_injected_not_regular);
+    RUN_TEST(test_getPhaseCurrent_unconfigured_sense_publishes_nothing);
+    RUN_TEST(test_getBusCurrent_scales_and_follows_regular);
+    RUN_TEST(test_getBusCurrent_unconfigured_sense_fails);
+    RUN_TEST(test_getBusCurrent_read_failure_propagates);
+    RUN_TEST(test_getPhaseCurrent_out_of_range_rejected);
+    RUN_TEST(test_getCurrent_null_rejected);
+
+    RUN_TEST(test_injected_each_phase_publishes_on_its_own_completion);
     RUN_TEST(test_injected_failed_status_holds_last_good);
     RUN_TEST(test_injected_w_completes_only_on_second_callback);
-    RUN_TEST(test_injected_per_phase_counts_advance_independently);
+    RUN_TEST(test_injected_every_trigger_forms_one_triple);
     RUN_TEST(test_injected_dropped_partner_holds_w_then_next_trigger_pairs);
     RUN_TEST(test_injected_different_triggers_never_pair);
-    RUN_TEST(test_getInjected_guards_reject_bad_arguments);
+    RUN_TEST(test_injected_without_time_base_publishes_nothing);
 
     RUN_TEST(test_registerCycleCallback_rejects_bad_arguments);
     RUN_TEST(test_cycle_callback_fires_once_per_pair);

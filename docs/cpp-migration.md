@@ -119,7 +119,7 @@ tests, and the host tooling keep working:
 | `X.hpp` | The C++ API: `namespace`, types, the class or free functions other C++ modules call |
 | `X.h` | The C facade: today's `X_function` names as `extern "C"` declarations, thin wrappers over the C++ API. Kept while any C consumer remains (`main.c`, channel configs, C tests, Unity mocks) |
 | `X.cpp` | Implementation. The traced state object stays at namespace scope under its current name |
-| `test/test_X.cpp` | Unity, unchanged in structure; mock seams for HW/IO functions are `extern "C"` definitions |
+| `test/test_X.c` | Unity, in C, against the facade. Private state is observable only by its effects: no accessor, friend, or include-the-unit exists for a test's sake (decision 2026-10-01); the SIL reads DWARF, which is the host's observability path, not a test seam |
 
 Project-side files (`sw/fw/src/**/*_channels.c`, `*_config.c`) stay C: they
 are tables, and the facade header is what they include.
@@ -277,9 +277,6 @@ tools/oft/oft.sh trace specs/ sw/ README.md   # expect 1130 total, 34 defects
 
 ## Open questions
 
-- Whether test files convert to `.cpp` with their module (they can use the
-  C++ types directly) or stay C against the facade. Proposal: convert with
-  the module.
 - Whether the `-O2` link-path list in `sw/lib/c/CMakeLists.txt` (which names
   `io_bridge`) should stay as is; its options apply to the C++ unit
   unchanged, which is the intent.

@@ -30,6 +30,8 @@ configured bridge, returning false on any of:
 | Config  | The config pointer or its channel array is NULL, or the bridge count exceeds the available bridges. |
 | Phase   | A phase's HW_TIM channel is out of range. |
 | Bridge  | The three phases do not resolve to one shared HW_TIM peripheral. |
+| Bridges | An ADC channel carries injected phase senses of more than one bridge. |
+| Phase   | A phase's complement is itself, or names a phase whose own complement is not it (the derived phase carries none). |
 
 Acceptance:
 - A valid configuration initializes every bridge, enables each phase's
@@ -105,12 +107,18 @@ Needs: impl, test
 `fw~io_bridge_005~1`
 
 The driver shall report each configured sense — the three phase currents,
-the bus current, and the bus voltage — from the most recent regular-sequence
-sample of its ADC input as
+the bus current, and the bus voltage — as
 
 value = (V_pin − V_bias) / scale
 
-with V_bias and scale the sense's configured bias and volts per unit,
+with V_bias and scale the sense's configured bias and volts per unit, the
+sample each reads per:
+
+| Sense | Sample reported |
+|-------|-----------------|
+| Phase current | The most recently completed injected-sequence sample of that phase — U and V as sampled at the PWM crest, W as derived (`fw~io_bridge_006~1`) — never a regular-sequence sample; zero before the first |
+| Bus current, bus voltage | The most recent regular-sequence sample of its ADC input |
+
 returning false for a sense whose scale is zero, an out-of-range bridge or
 phase, or an uninitialized driver.
 
@@ -118,7 +126,9 @@ Acceptance:
 - A pin voltage of V_bias reads zero; a pin voltage of V_bias + scale reads
   one unit.
 - A sense with zero scale returns false.
-- A new regular sample changes the reported value at the next read.
+- A new injected sample changes the reported phase current at the next read;
+  a new regular sample of the same input does not.
+- A new regular sample changes the reported bus current at the next read.
 
 Covers:
 - `sys~mc_001~1`
