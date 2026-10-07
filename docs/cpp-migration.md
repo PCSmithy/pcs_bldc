@@ -1,7 +1,10 @@
 # C++ transition plan
 
-Status: **planned, not started.** Baselines measured 2026-09-28 against `main`
-at `d0c7376`.
+Status: **Phases A–D done for `IO_bridge` and `app_motorControl`**
+(branch `introduce_cpp`, 2026-10-06); `dwarf_map` reads C++ layouts. From
+here new control code is C++ and modules convert as they are touched. The
+rulings made so far are in [`cpp-coding-conventions.md`](cpp-coding-conventions.md).
+Baselines below were measured 2026-09-28 against `main` at `d0c7376`.
 
 ## Motivation and scope
 
@@ -121,15 +124,12 @@ tests, and the host tooling keep working:
 | `X.cpp` | Implementation. The traced state object stays at namespace scope under its current name |
 | `test/test_X.c` | Unity, in C, against the facade. Private state is observable only by its effects: no accessor, friend, or include-the-unit exists for a test's sake (decision 2026-10-01); the SIL reads DWARF, which is the host's observability path, not a test seam |
 
-Project-side files (`sw/fw/src/**/*_channels.c`, `*_config.c`) stay C: they
-are tables, and the facade header is what they include.
+Project-side files (`sw/fw/src/**/*_channels.c`, `*_config.c`) convert with
+their module when there is a reason to; a module is not deliberately split
+between the two languages.
 
-Naming (ruling proposed with the first conversion, in a lean sibling
-`docs/cpp-coding-conventions.md`): the facade keeps `IO_bridge_setPhaseDuty`
-style; inside, `namespace io::bridge`, PascalCase types without the `_S` /
-`_E` suffixes, lowerCamel members, `private:` instead of the `_private_`
-infix, `enum class` for enumerations, `constexpr` for constants that were
-macros. Single return, `const` locals, explicit parens carry over unchanged.
+Naming and the class shape are ruled in
+[`cpp-coding-conventions.md`](cpp-coding-conventions.md).
 
 ## Phase A — enable CXX with zero `.cpp` files
 
@@ -232,12 +232,20 @@ the server tests keeps its C definitions behind the guarded facade.
 
 ## Phase D — the actual C++, per module, separate commit
 
-Only now introduce idioms: a `Bridge` type over what
-`IO_bridge_channelData_S` holds, `constexpr` for the complementary-phase
-table, `enum class Phase`, a scoped critical-section guard where the module
-pairs the FreeRTOS calls. Step 0 governs the traced state: the object keeps
-its name, and any renamed or relocated field ships with the SIL paths and a
-layout migration.
+Only now introduce idioms. Done for both modules: a class per channel
+(`Bridge`, `Motor`) whose members own their preconditions, with the C facade
+reduced to a channel-index check and a forward. Deferred, with the reason:
+
+- `enum class` for `IO_bridge_phase_E` / `app_motorControl_mode_E`. A scoped
+  enum does not index an array without a cast, and both types are used as
+  indices with a `COUNT` sentinel at a hundred-odd sites. It lands with the
+  modulator, when the per-phase arrays become a struct indexed by phase and
+  the casts never appear. The mode enum also waits on its C consumers.
+- A `const` channel index via a `constexpr` array builder: a constructor for
+  one field only `init` writes was not worth it.
+
+Step 0 governs the traced state: the object keeps its name, and any renamed
+or relocated field ships with the SIL paths and a layout migration.
 
 Separating the language change from the design change is both good practice
 and better pedagogy: the Phase D diff shows what each idiom cost or saved in
@@ -247,18 +255,18 @@ flash.
 
 Each step is one PR, held at CI green for review:
 
-1. Phase A + B for the tree, Phase C for `IO_bridge`.
-2. Phase C for `app_motorControl` (its harness and the server mocks come
-   along).
-3. `dwarf_map` C++ support (Step 0), with its fixture and tests; the SIL
-   and the desktop app pick it up as the shared crate.
-4. Phase D for both modules, plus the new C++ transforms library
-   (`fw~mc_013`) and the modulator at the bridge boundary — a
-   `setVoltageVector` entry that reads the bus voltage and applies
-   `fw~mc_014` (spec work: a bridge spec for the entry, via `pcs_spec`).
-5. The V/f method in C++ `app_motorControl` (`fw~mc_010`, `fw~mc_015`,
+1. ~~Phase A + B for the tree, Phase C for `IO_bridge`.~~ Done.
+2. ~~Phase C for `app_motorControl`.~~ Done.
+3. ~~`dwarf_map` C++ support (Step 0).~~ Done.
+4. ~~Phase D for both modules.~~ Done; the branch `introduce_cpp` ends here.
+5. The new C++ transforms library (`fw~mc_013`) and the modulator at the
+   bridge boundary — a `setVoltageVector` entry that reads the bus voltage
+   and applies `fw~mc_014` (spec work first: a bridge spec for the entry via
+   `pcs_spec`, which also has to expose the bus voltage `fw~io_bridge_005`
+   already promises). `enum class Phase` lands here.
+6. The V/f method in C++ `app_motorControl` (`fw~mc_010`, `fw~mc_015`,
    `fw~mc_016`, `fw~mc_017`), SIL coverage, bench spin at reduced voltage.
-6. From here new modules are C++: `app_rotorEstimation`, the FOC current
+7. From here new modules are C++: `app_rotorEstimation`, the FOC current
    loop.
 
 `main.c` stays C: it is board glue and task creation, and every module it
@@ -270,10 +278,13 @@ After every phase:
 
 ```bash
 tools/build_native.sh          # includes ctest
-tools/build_arm.sh             # --print-memory-usage against 94,304 B / 28,920 B
+tools/build_arm.sh             # --print-memory-usage against 93,868 B / 28,912 B
 tools/run_sil.sh               # and tools/run_sil.sh --debug (CI's other flavor)
-tools/oft/oft.sh trace specs/ sw/ README.md   # expect 1130 total, 34 defects
+tools/oft/oft.sh trace specs/ sw/ README.md   # every defect in CLAUDE.md's allowed classes
 ```
+
+The ARM figures are the end of `introduce_cpp` (from 94,304 B / 28,920 B at
+`d0c7376`: the class conversions cost nothing).
 
 ## Open questions
 
