@@ -53,7 +53,7 @@ class Motor
         bool init(const app_motorControl_channelConfig_S * config);
         void run1ms();
 
-        bool getSnapshot(app_motorControl_snapshot_S * const snapshot); // Q: could this be a Friend function?
+        bool getSnapshot(app_motorControl_snapshot_S * const snapshot);
         void setVelocity(float32_t velocity_radPerSec);
         void setMode(app_motorControl_mode_E mode);
         void clearFault();

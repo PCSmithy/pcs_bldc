@@ -16,8 +16,8 @@ FreeRTOS task architecture (`task_1ms` > `task_10ms` > `task_usb` >
 (`fw~mc_011`/`fw~mc_012`) with overcurrent and encoder-fault protection,
 phase currents from the 20 kHz injected ADC with a per-cycle callback
 (`fw~io_bridge_006`/`_007`), and a 20 kHz signal trace to the desktop app.
-`IO_bridge` and `app_motorControl` are C++ classes (`docs/cpp-migration.md`);
-new control code is C++. Written ahead of their code, for the next branch:
+`IO_bridge` and `app_motorControl` are C++ classes
+(`docs/cpp-coding-conventions.md`); new control code is C++. Written ahead of their code, for the next branch:
 the V/f + modulation set `fw~mc_010`, `fw~mc_013`–`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`, `modulation.md`).
 

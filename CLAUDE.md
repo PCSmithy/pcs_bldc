@@ -116,8 +116,8 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── backlog.md         Firmware/tooling backlog
 │   ├── motor-sprint.md    Motor-control sprint plan (FOC/estimation ahead)
 │   ├── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
-│   ├── cpp-coding-conventions.md  What C++ adds: class per channel, facade, enums
-│   └── cpp-migration.md   The C++ transition plan + what has landed
+│   └── cpp-coding-conventions.md  What C++ adds: transition policy, class per
+│                                  channel, facade, enums, toolchain gotchas
 │
 └── tools/                Project tooling
     ├── oft/              OpenFastTrace JAR (4.2.2) + wrapper scripts
@@ -494,9 +494,9 @@ naming) is the source-of-truth doc at
 [`docs/c-coding-conventions.md`](docs/c-coding-conventions.md).
 **Read it before writing or reviewing any C in this project.** C++
 modules (`IO_bridge`, `app_motorControl`, and all new control code)
-follow it plus [`docs/cpp-coding-conventions.md`](docs/cpp-coding-conventions.md);
-the transition itself is planned in [`docs/cpp-migration.md`](docs/cpp-migration.md).
-The C doc covers:
+follow it plus [`docs/cpp-coding-conventions.md`](docs/cpp-coding-conventions.md),
+which also carries the transition policy (new control code is C++, modules
+convert as touched). The C doc covers:
 
 - Function / variable / type / macro / enum naming (`_private_` infix,
   `_S`/`_E` type suffixes, etc.).

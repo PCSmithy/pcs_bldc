@@ -46,7 +46,7 @@ add_compile_options(
   -g ${PCS_OPT_LEVEL}
 )
 # C++ units only (generator expression: nothing leaks onto the C build). The
-# subset is fixed by docs/cpp-migration.md: no exceptions, no RTTI, no static
+# subset is fixed by docs/cpp-coding-conventions.md: no exceptions, no RTTI, no static
 # destructors or thread-safe local-static guards, no unwind tables.
 add_compile_options(
   $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>

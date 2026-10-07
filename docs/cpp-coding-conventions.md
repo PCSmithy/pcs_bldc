@@ -6,6 +6,13 @@ locals, lean comments, init functions returning `bool`. This file holds
 only what C++ adds, as ruled by the conversions so far (`IO_bridge`,
 `app_motorControl`). It grows when a new choice is made, not before.
 
+## The transition
+
+New control code is C++; an existing module converts when it is next
+touched for a real change, never as an exercise. `main.c` is board glue
+and converts only when it has a reason to. A converted module keeps its
+C facade while any C consumer remains.
+
 ## Language subset
 
 C++20. No exceptions, RTTI, heap, `<iostream>`, `std::function`,
@@ -61,4 +68,22 @@ Unity tests stay in C against the facade and observe private state only
 through its effects. No accessor, `friend`, or include-the-unit exists
 for a test. The SIL and the desktop app read private members through
 DWARF; a renamed or moved traced field ships with its SIL paths and a
-layout migration in the same commit.
+layout migration in the same commit. The traced object stays at namespace
+scope: `dwarf_map` resolves variables by bare name, so two namespaces must
+not reuse one.
+
+## Gotchas, measured
+
+- C99 array designators (`[PHASE_U] = {...}`) are a `-Wpedantic` warning in
+  C++20; write them positionally. Struct designators must follow
+  declaration order. Compound literals become named temporaries.
+- `volatile v++` / `v += x` are deprecated in C++20; split into load/store.
+- `COUNTOF` has a `__cplusplus` template branch; `_Static_assert` is
+  `static_assert`.
+- MinGW GCC 15.2 ICEs in LTO when `g++` links mixed C/C++ bytecode:
+  `native.cmake` applies `-flto` to C units only. Revisit on a GCC upgrade.
+- `dwarf_map` flattens `std::array` by its storage member's name, which is
+  `_M_elems` under libstdc++ and `__elems_` under libc++ (the macOS SIL);
+  its C++ fixture is a checked-in GCC ELF, so a libc++ regression shows
+  only on the macOS runner.
+- OFT scans `.cpp` / `.hpp` with no config change.
