@@ -53,7 +53,7 @@ fn max_phase_duty(sim: &Sil) -> f64 {
 
 /// The commutation branch the bridge is presenting, read back off the PWM ports: the phase
 /// carrying duty paired with its enabled return leg, indexed in the firmware's branch order
-/// (`app_motorControl.c` six-step table, sector 0 = U high / V low).
+/// (`app_motorControl.cpp` six-step table, sector 0 = U high / V low).
 fn sector_from_ports(sim: &Sil) -> Option<usize> {
     let d = duties(sim);
     let en = enables(sim);
@@ -72,7 +72,7 @@ fn sector_from_ports(sim: &Sil) -> Option<usize> {
 
 /// Electrical degrees the applied field leads the true rotor field by, in [0, 360). The
 /// drive motors for a lead under 180 and brakes above it; the firmware aims for 60..120
-/// (`app_motorControl.c`, the +30 deg bucket bias on a +90 deg lead).
+/// (`app_motorControl.cpp`, the +30 deg bucket bias on a +90 deg lead).
 fn lead_deg(sim: &Sil) -> Option<f64> {
     let field_e = ALIGN_FIELD_RAD_E + (sector_from_ports(sim)? as f64) * SECTOR_RAD_E;
     let rotor_e = plant(sim, "angle") * POLE_PAIRS;

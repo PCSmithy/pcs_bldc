@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Channelizable byte ring buffer.
 //
 // Each ringbuf_t is a channel; the caller owns the backing storage and
@@ -23,4 +27,6 @@ bool   ringbuf_push    (ringbuf_t *rb, uint8_t byte);
 bool   ringbuf_pop     (ringbuf_t *rb, uint8_t *out);
 size_t ringbuf_count   (const ringbuf_t *rb);
 size_t ringbuf_capacity(const ringbuf_t *rb);
-
+#ifdef __cplusplus
+}
+#endif

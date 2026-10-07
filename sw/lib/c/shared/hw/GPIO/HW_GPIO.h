@@ -28,6 +28,10 @@ typedef void (*HW_GPIO_extiCallback_F)(HW_GPIO_port_E port, uint32_t pin, void *
 /* Target Config */
 #include "HW_GPIO_target.h"   // HW_GPIO_portConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // One entry per HW_GPIO_port_E. Dense — index by HW_GPIO_PORT_x.
 typedef struct
 {
@@ -60,3 +64,6 @@ HW_GPIO_level_E HW_GPIO_readCached(HW_GPIO_port_E port, uint32_t pin);
 // `pin` (single-bit GPIO_PIN_x mask), passing `context` back to it. Returns
 // false on an out-of-range port.
 bool HW_GPIO_registerExtiCallback(HW_GPIO_port_E port, uint32_t pin, HW_GPIO_extiCallback_F callback, void * context);
+#ifdef __cplusplus
+}
+#endif

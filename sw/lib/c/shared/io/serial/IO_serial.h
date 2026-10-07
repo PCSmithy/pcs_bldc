@@ -4,6 +4,10 @@
 #include "lib_types.h"
 #include "IO_serial_channels.h"   // IO_serial_channel_E
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 // The transport backing a serial channel. USB CDC is the only one today; a
@@ -44,4 +48,6 @@ bool IO_serial_isConnected(IO_serial_channel_E channel);
 
 // Free transmit capacity on a channel: bytes a write accepts without yielding.
 uint32_t IO_serial_txFree(IO_serial_channel_E channel);
-
+#ifdef __cplusplus
+}
+#endif

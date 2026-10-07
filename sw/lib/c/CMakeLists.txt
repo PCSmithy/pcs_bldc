@@ -17,11 +17,15 @@
 #   e.g. sw/lib/c/shared/lib/ringbuf/  ->  target name: lib_ringbuf
 
 cmake_minimum_required(VERSION 3.20)
-project(pcs_lib_c LANGUAGES C ASM)
+project(pcs_lib_c LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD          11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS        OFF)
+# C++20, not 23: GCC 14 (the ARM toolchain) implements 20 completely.
+set(CMAKE_CXX_STANDARD          20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS        OFF)
 
 # Tests are only meaningful (and runnable) on the native target. Unity
 # (vendored at sw/lib/c/Unity) is only built when tests will be built.

@@ -53,7 +53,9 @@ fn inject(sim: &mut Sil, phase_a: [f64; 3], bus_a: f64) {
 fn firmware_decodes_injected_currents() {
     // The acceptance case: amps injected at the shunt come back out of the firmware's
     // decode as the same amps, locking the model's front-end parameters to its constants.
-    const PHASE_A: [f64; 3] = [1.5, -1.2, 0.0];
+    // W is derived, not sampled (fw~io_bridge_006), so the triple must satisfy KCL for
+    // the firmware's -(U + V) to agree with what the plant was given.
+    const PHASE_A: [f64; 3] = [1.5, -1.2, -0.3];
     const BUS_A: f64 = 0.5;
     const TRIP_A: f64 = 2.5;
 
@@ -105,13 +107,15 @@ fn firmware_sees_full_scale_on_saturation() {
     inject(&mut sim, [INJECTED_A, 0.0, 0.0], 0.0);
 
     let vref = cvar_f64(&sim, "HW_ADC_channelConfig[0].vref");
+    // The config layout is an interface this test tracks: a field moved in the
+    // firmware is a path change here.
     let bias_v = cvar_f64(
         &sim,
-        "IO_bridge_channelConfig[0].phaseCurrent[0].zeroCurrentBias_V",
+        "IO_bridge_channelConfig[0].phase[0].currentSense.zeroCurrentBias_V",
     );
     let volts_per_amp = cvar_f64(
         &sim,
-        "IO_bridge_channelConfig[0].phaseCurrent[0].voltsPerAmp",
+        "IO_bridge_channelConfig[0].phase[0].currentSense.voltsPerAmp",
     );
     let rail_a = (vref - bias_v) / volts_per_amp;
     let decoded = decoded_phase_a(&sim, 0);

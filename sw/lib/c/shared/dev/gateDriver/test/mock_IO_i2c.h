@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "IO_i2c_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Mock IO_i2c with read and write support. An uninjected (device, register)
 // reads back as zeros; a successful write stores its bytes so a subsequent
 // read returns them (readback-verify works against the mock's store).
@@ -41,3 +45,6 @@ size_t mock_IO_i2c_writeCount(void);
 // Copy up to maxWrites of the in-order write log into out; returns the number
 // of writes logged (attempts, including failed ones).
 size_t mock_IO_i2c_getWrites(mock_IO_i2c_write_S * out, size_t maxWrites);
+#ifdef __cplusplus
+}
+#endif

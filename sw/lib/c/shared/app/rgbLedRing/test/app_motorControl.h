@@ -5,6 +5,10 @@
 
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum
 {
     APP_MOTORCONTROL_CHANNEL_MAIN,
@@ -36,3 +40,6 @@ typedef struct
 } app_motorControl_snapshot_S;
 
 bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorControl_snapshot_S * const snapshot);
+#ifdef __cplusplus
+}
+#endif

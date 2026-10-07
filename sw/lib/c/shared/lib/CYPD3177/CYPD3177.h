@@ -4,6 +4,10 @@
 
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// DEFINES
 
 // 7-bit I2C address of the CYPD3177 HPI interface.
@@ -46,3 +50,6 @@ bool     CYPD3177_isContractActive    (uint32_t pdStatus);
 uint32_t CYPD3177_negotiatedVoltage_mV(uint32_t currentPdo);
 uint32_t CYPD3177_negotiatedCurrent_mA(uint32_t currentRdo);
 uint32_t CYPD3177_busVoltage_mV       (uint8_t  busVoltage);
+#ifdef __cplusplus
+}
+#endif

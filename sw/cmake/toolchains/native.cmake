@@ -45,6 +45,17 @@ add_compile_options(
   -Wall -Wextra -Wpedantic
   -g ${PCS_OPT_LEVEL}
 )
+# C++ units only (generator expression: nothing leaks onto the C build). The
+# subset is fixed by docs/cpp-coding-conventions.md: no exceptions, no RTTI, no static
+# destructors or thread-safe local-static guards, no unwind tables.
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-use-cxa-atexit>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-unwind-tables>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-asynchronous-unwind-tables>
+)
 
 # The firmware links as a SHARED library (SIL). On Linux/ELF that requires all
 # objects — including the static libs it pulls in — to be position-independent,
@@ -68,9 +79,13 @@ if(PCS_LTO AND CMAKE_HOST_WIN32)
   # machine-code symbols so the SHARED library's -Wl,--whole-archive fw_hw /
   # -Wl,--export-all-symbols and the DWARF-read statics survive LTO. -flto on
   # compile and link (LTO needs both); no -ffast-math, so FP semantics unchanged.
+  # C units only: MinGW GCC 15.2's LTO code generator crashes (internal
+  # compiler error in choose_baseaddr, i386.cc) when g++ drives a link whose
+  # LTRANS partition mixes C and C++ bytecode. C++ units link as plain
+  # objects into the otherwise-LTO image.
   add_compile_options(
-    $<$<C_COMPILER_ID:GNU>:-flto>
-    $<$<C_COMPILER_ID:GNU>:-ffat-lto-objects>
+    $<$<AND:$<C_COMPILER_ID:GNU>,$<COMPILE_LANGUAGE:C>>:-flto>
+    $<$<AND:$<C_COMPILER_ID:GNU>,$<COMPILE_LANGUAGE:C>>:-ffat-lto-objects>
   )
   # Pass the opt level and -g at link too so the LTO code-gen pass runs at the
   # same level and emits debug info for the merged program.

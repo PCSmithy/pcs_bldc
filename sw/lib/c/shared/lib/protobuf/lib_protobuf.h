@@ -4,6 +4,10 @@
 #include "lib_types.h"
 #include "pb.h"   // pb_msgdesc_t
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // Envelope header worst case, the room lib_protobuf_encodeEnvelope reserves in
@@ -32,3 +36,6 @@ bool lib_protobuf_encodeEnvelope(uint32_t requestId, uint32_t payloadTag,
 bool lib_protobuf_decode(const pb_msgdesc_t * const fields,
                          const uint8_t * const bytes, size_t len,
                          void * const message);
+#ifdef __cplusplus
+}
+#endif

@@ -3,6 +3,10 @@
 /* Includes */
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // USB device peripheral + CDC virtual-serial byte interface. Single-instance —
 // no channel config, so no per-target header. The embedded target drives the
 // TinyUSB device stack; the sim is a loopback.
@@ -44,3 +48,6 @@ uint32_t HW_USB_available(void);
 
 // Read up to len received bytes into buffer; returns the count read.
 uint32_t HW_USB_read(uint8_t * buffer, uint32_t len);
+#ifdef __cplusplus
+}
+#endif

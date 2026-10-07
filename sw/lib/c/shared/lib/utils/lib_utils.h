@@ -26,10 +26,17 @@
  * works even under -std=c11 -Wpedantic. If a non-GCC compiler is ever
  * introduced, this macro will need a fallback.
  */
+#ifdef __cplusplus
+// C++ has no __builtin_types_compatible_p; a reference-to-array template
+// rejects a pointer the same way (no overload matches).
+template <typename T, size_t N>
+constexpr size_t COUNTOF(T (&)[N]) { return N; }
+#else
 #define COUNTOF(arr) \
     (sizeof(arr) / sizeof((arr)[0]) + \
      sizeof(__typeof__(int[1 - 2 * !!__builtin_types_compatible_p( \
          __typeof__(arr), __typeof__(&(arr)[0]))])) * 0)
+#endif
 
 
 

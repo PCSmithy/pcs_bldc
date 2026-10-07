@@ -7,6 +7,10 @@
 #include "lib_types.h"
 #include "HW_I2C_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Register-offset encoding for HW_I2C_memRead / HW_I2C_memWrite.
 typedef enum
 {
@@ -19,3 +23,6 @@ bool HW_I2C_memRead(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                     HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
 bool HW_I2C_memWrite(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                      HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
+#ifdef __cplusplus
+}
+#endif

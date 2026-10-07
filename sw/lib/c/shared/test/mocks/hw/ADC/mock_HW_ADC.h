@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "HW_ADC.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Test controls for the mocked HW_ADC. It holds a per-(channel, IN#) volts
 // value and a "readable" flag on each sequence; getVolts / getInjectedVolts
 // return the stored volts only where a value has been set, mirroring the real
@@ -29,3 +33,6 @@ uint32_t mock_HW_ADC_getRegistrationCount(HW_ADC_channels_E channel);
 void mock_HW_ADC_fireInjected(HW_ADC_channels_E channel, HW_ADC_conversionStatus_E status);
 
 // Set the dispatch sequence later fires run under. Reset leaves it at 1, so
+#ifdef __cplusplus
+}
+#endif

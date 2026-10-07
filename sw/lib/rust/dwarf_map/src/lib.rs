@@ -5,9 +5,13 @@
 //! `object` (PE) + `gimli` (DWARF); native firmware is built `-g`, and at `-O3`
 //! an SRA-decomposed aggregate static gets a composite piece-list location
 //! (some pieces storage-less), which the reader maps per-member. Supports
-//! top-level statics, struct/union members, array indexing (`a[i].b[j]`),
-//! typedef/const/volatile pass-through, and base/enum scalars. Not yet:
-//! pointer-chasing. Name collisions (function-local statics) are last-wins.
+//! top-level statics, struct/union/class members, array indexing (`a[i].b[j]`),
+//! typedef/const/volatile pass-through, and base/enum scalars. C++ shapes:
+//! namespace- and class-scope definitions (named through `DW_AT_specification`),
+//! private and inherited members, `std::array` read as the C array it wraps.
+//! Not yet: pointer-chasing, virtual inheritance. Every variable resolves by its
+//! bare name, so collisions — function-local statics, or two namespaces or
+//! classes reusing one name — are last-wins.
 
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -156,8 +160,12 @@ struct Maps {
     /// fallback for images (ELF + LTO) whose exported data symbols never appear
     /// in the DWARF variable map.
     functions: HashMap<String, u64>,
-    /// struct/union type offset -> (member name -> (member offset, member type offset))
+    /// struct/union/class type offset -> (member name -> (member offset, member
+    /// type offset)). Base-class members are flattened in after collection.
     members: HashMap<usize, HashMap<String, (u64, usize)>>,
+    /// struct/class type offset -> its `DW_TAG_inheritance` bases in declaration
+    /// order: (base's byte offset within the derived object, base type offset).
+    bases: HashMap<usize, Vec<(u64, usize)>>,
     /// typedef/const/volatile/restrict offset -> the type it wraps
     underlying: HashMap<usize, usize>,
     /// array type offset -> element type offset
@@ -212,6 +220,10 @@ impl DwarfMap {
             let unit = dwarf.unit(header)?;
             collect_unit(&dwarf, &unit, &mut maps)?;
         }
+        // C++ post-passes, once every unit's types are known: both need a member
+        // map that collection may fill in either order.
+        flatten_std_arrays(&mut maps);
+        flatten_inherited_members(&mut maps);
         Ok(DwarfMap(maps))
     }
 
@@ -448,15 +460,10 @@ impl DwarfMap {
         Some(ty)
     }
 
-    /// Strip typedef/const/volatile/restrict to the underlying type.
-    fn peel(&self, mut ty: usize) -> usize {
-        for _ in 0..32 {
-            match self.0.underlying.get(&ty) {
-                Some(&u) => ty = u,
-                None => break,
-            }
-        }
-        ty
+    /// Strip typedef/const/volatile/restrict (and the `std::array` wrapper) to
+    /// the underlying type.
+    fn peel(&self, ty: usize) -> usize {
+        peel_ty(&self.0, ty)
     }
 
     fn scalar_kind(&self, ty: usize) -> Option<Scalar> {
@@ -540,6 +547,100 @@ fn wanted(path: &str, includes: &[String]) -> bool {
         .any(|inc| is_ancestor_or_eq(inc, path) || is_ancestor_or_eq(path, inc))
 }
 
+/// Strip typedef/const/volatile/restrict (and the `std::array` wrapper alias) to
+/// the underlying type. Bounded, so malformed cyclic DWARF cannot spin.
+fn peel_ty(maps: &Maps, mut ty: usize) -> usize {
+    for _ in 0..32 {
+        match maps.underlying.get(&ty) {
+            Some(&u) => ty = u,
+            None => break,
+        }
+    }
+    ty
+}
+
+/// The `std::array` member that holds the element storage: libstdc++ (GCC,
+/// MinGW) names it `_M_elems`, libc++ (AppleClang on the macOS SIL) `__elems_`.
+const STD_ARRAY_ELEMS: [&str; 2] = ["_M_elems", "__elems_"];
+
+/// Read a `std::array` as the C array it wraps: its storage is a lone member
+/// of DWARF array type, so alias the wrapper type to that array and drop the
+/// member. A path then reads `x.duty[0]`, not `x.duty._M_elems[0]`, and the
+/// array threshold / `includes` rules apply to it like any other array.
+/// Detection is by the sole-data-member name, never the template spelling, which
+/// varies by standard-library version.
+fn flatten_std_arrays(maps: &mut Maps) {
+    let mut aliases: Vec<(usize, usize, Option<u64>)> = Vec::new();
+    for (&wrapper, members) in &maps.members {
+        if members.len() != 1 {
+            continue;
+        }
+        let Some(&(0, elems)) = STD_ARRAY_ELEMS.iter().find_map(|name| members.get(*name)) else {
+            continue;
+        };
+        let inner = peel_ty(maps, elems);
+        if maps.arrays.contains_key(&inner) {
+            aliases.push((wrapper, inner, maps.sizes.get(&wrapper).copied()));
+        }
+    }
+    for (wrapper, inner, size) in aliases {
+        maps.members.remove(&wrapper);
+        maps.underlying.insert(wrapper, inner);
+        // The wrapper carried the byte size; an `array_type` DIE usually carries
+        // none, and an array *of* `std::array` needs it for element arithmetic.
+        if let Some(size) = size {
+            maps.sizes.entry(inner).or_insert(size);
+        }
+    }
+}
+
+/// Flatten `DW_TAG_inheritance` bases into the derived type's member set, at base
+/// offset + member offset, recursively, so `derived.baseField` resolves and
+/// enumerates as if declared in the derived type. A derived member of the same
+/// name shadows the base's, and among bases the earlier-declared one wins. Virtual
+/// inheritance is out of scope: its base sits at a runtime vtable-derived offset,
+/// not the constant `DW_AT_data_member_location` this reads.
+fn flatten_inherited_members(maps: &mut Maps) {
+    let derived: Vec<usize> = maps.bases.keys().copied().collect();
+    for ty in derived {
+        let mut seen = Vec::new();
+        let inherited = inherited_members(maps, ty, 0, &mut seen);
+        let own = maps.members.entry(ty).or_default();
+        for (name, entry) in inherited {
+            own.entry(name).or_insert(entry);
+        }
+    }
+}
+
+/// Every base-class member of `ty`, each at `base` + the base's own offset + the
+/// member's offset. Depth-first in base declaration order; `seen` guards against
+/// malformed cyclic DWARF.
+fn inherited_members(
+    maps: &Maps,
+    ty: usize,
+    base: u64,
+    seen: &mut Vec<usize>,
+) -> Vec<(String, (u64, usize))> {
+    let mut out = Vec::new();
+    if seen.contains(&ty) {
+        return out;
+    }
+    seen.push(ty);
+    let bases = match maps.bases.get(&ty) {
+        Some(bases) => bases.clone(),
+        None => return out,
+    };
+    for (off, base_ty) in bases {
+        if let Some(members) = maps.members.get(&base_ty) {
+            for (name, &(moff, mty)) in members {
+                out.push((name.clone(), (base + off + moff, mty)));
+            }
+        }
+        out.extend(inherited_members(maps, base_ty, base + off, seen));
+    }
+    out
+}
+
 fn collect_unit(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
@@ -564,12 +665,20 @@ fn collect_unit(
 
         match tag {
             gimli::DW_TAG_variable => {
-                if let (Some(name), Some(loc), Some(ty)) = (
-                    die_name(dwarf, unit, entry),
-                    die_loc(dwarf, unit, entry),
-                    type_goff(unit, entry),
-                ) {
-                    maps.vars.insert(name, (loc, ty));
+                // A C++ definition at namespace or class scope carries only
+                // `DW_AT_specification` plus its location: the name and type live
+                // on the declaration DIE — inside the namespace, or inside the
+                // class for a static data member. Either way the variable resolves
+                // by that bare name, so two classes (like two namespaces) must not
+                // reuse one.
+                if let Some(loc) = die_loc(dwarf, unit, entry) {
+                    let name =
+                        die_name(dwarf, unit, entry).or_else(|| origin_name(dwarf, unit, entry));
+                    let ty = type_goff(unit, entry)
+                        .or_else(|| from_origin(unit, entry, |u, d| type_goff(u, d)));
+                    if let (Some(name), Some(ty)) = (name, ty) {
+                        maps.vars.insert(name, (loc, ty));
+                    }
                 }
             }
             gimli::DW_TAG_subprogram => {
@@ -591,7 +700,9 @@ fn collect_unit(
                 if let Some(&(_, parent, ptag)) = stack.last() {
                     if matches!(
                         ptag,
-                        gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type
+                        gimli::DW_TAG_structure_type
+                            | gimli::DW_TAG_union_type
+                            | gimli::DW_TAG_class_type
                     ) {
                         if let (Some(name), Some(off), Some(ty)) = (
                             die_name(dwarf, unit, entry),
@@ -602,6 +713,22 @@ fn collect_unit(
                                 .entry(parent)
                                 .or_default()
                                 .insert(name, (off, ty));
+                        }
+                    }
+                }
+            }
+            gimli::DW_TAG_inheritance => {
+                // A base class within its derived type: record the base's type and
+                // its constant byte offset for the post-collection flatten pass.
+                if let Some(&(_, parent, ptag)) = stack.last() {
+                    if matches!(
+                        ptag,
+                        gimli::DW_TAG_structure_type | gimli::DW_TAG_class_type
+                    ) {
+                        if let (Some(off), Some(ty)) =
+                            (member_offset(entry), type_goff(unit, entry))
+                        {
+                            maps.bases.entry(parent).or_default().push((off, ty));
                         }
                     }
                 }
@@ -665,7 +792,8 @@ fn collect_unit(
             }
             gimli::DW_TAG_pointer_type
             | gimli::DW_TAG_structure_type
-            | gimli::DW_TAG_union_type => {
+            | gimli::DW_TAG_union_type
+            | gimli::DW_TAG_class_type => {
                 if let (Some(g), Some(sz)) = (goff, byte_size(entry)) {
                     maps.sizes.insert(g, sz);
                 }
@@ -690,24 +818,44 @@ fn die_name(
     Some(s.to_string_lossy().into_owned())
 }
 
-/// Name of the DIE a concrete instance refers back to (`DW_AT_abstract_origin`,
-/// or `DW_AT_specification` for a definition-of-declaration), same unit only —
-/// GCC keeps these unit-local for C.
+/// The DIE this one refers back to: `DW_AT_abstract_origin` (a concrete or cloned
+/// instance) or `DW_AT_specification` (a definition of an out-of-line
+/// declaration). Same unit only — GCC keeps these unit-local.
+fn origin_offset(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<gimli::UnitOffset> {
+    for at in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
+        if let Some(gimli::AttributeValue::UnitRef(off)) = entry.attr_value(at).ok().flatten() {
+            return Some(off);
+        }
+    }
+    None
+}
+
+/// Walk the `DW_AT_abstract_origin` / `DW_AT_specification` chain from `entry`,
+/// applying `pick` at each hop until it yields. A chain, not one hop: a C++
+/// out-of-line definition can reach its declaration through an abstract instance.
+fn from_origin<T>(
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+    pick: impl Fn(&gimli::Unit<Slice>, &gimli::DebuggingInformationEntry<Slice>) -> Option<T>,
+) -> Option<T> {
+    let mut off = origin_offset(entry)?;
+    for _ in 0..8 {
+        let die = unit.entry(off).ok()?;
+        if let Some(value) = pick(unit, &die) {
+            return Some(value);
+        }
+        off = origin_offset(&die)?;
+    }
+    None
+}
+
+/// Name of the DIE `entry` refers back to, through the origin/specification chain.
 fn origin_name(
     dwarf: &gimli::Dwarf<Slice>,
     unit: &gimli::Unit<Slice>,
     entry: &gimli::DebuggingInformationEntry<Slice>,
 ) -> Option<String> {
-    for at in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
-        if let Some(gimli::AttributeValue::UnitRef(off)) = entry.attr_value(at).ok().flatten() {
-            if let Ok(origin) = unit.entry(off) {
-                if let Some(name) = die_name(dwarf, unit, &origin) {
-                    return Some(name);
-                }
-            }
-        }
-    }
-    None
+    from_origin(unit, entry, |u, d| die_name(dwarf, u, d))
 }
 
 /// A static's memory location from its `DW_AT_location` exprloc; anything
@@ -1136,6 +1284,218 @@ mod tests {
         );
         assert_eq!(dw.enum_name(off, 2), Some("FAULT"));
         assert_eq!(dw.enumerators(10), None); // not an enum type
+    }
+
+    /// The C++ fixture: `tests/fixtures/cxx_layout.cpp`, built for Cortex-M4 by
+    /// `arm-none-eabi-g++ -std=c++20 -g3 -O0` and linked (the build command is in
+    /// the .cpp header). Every namespace- and class-scope definition in it carries
+    /// only `DW_AT_specification`, so nothing below resolves without the C++ pass.
+    fn cxx_fixture() -> DwarfMap {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cxx_layout.elf");
+        let bytes = std::fs::read(&path).expect("read C++ fixture");
+        DwarfMap::parse(&bytes).expect("parse C++ fixture")
+    }
+
+    /// `cxx::Layout` @0x90e4: seq@0 u32, bus@4 f32, raw@8 u16[4], duty@16
+    /// array<float,3>, mode@28 Mode. `cxx::Channel` @0x910c: every member private —
+    /// updateCount@0 u32, current@4 f32, adc@8 array<u16,4>, mode@16 Mode.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_class_and_struct_members_resolve() {
+        let dw = cxx_fixture();
+        let at = |p: &str| dw.resolve(p).map(|(a, _)| a);
+
+        assert_eq!(at("layout_data.seq"), Some(0x90e4));
+        assert_eq!(at("layout_data.bus"), Some(0x90e8));
+        assert_eq!(at("layout_data.raw[3]"), Some(0x90f2));
+        assert_eq!(at("layout_data.mode"), Some(0x9100));
+
+        // A `class`: private members resolve exactly like a struct's.
+        assert_eq!(at("channel_data.updateCount"), Some(0x910c));
+        assert_eq!(at("channel_data.current"), Some(0x9110));
+        assert_eq!(at("channel_data.adc[2]"), Some(0x9118));
+        assert_eq!(at("channel_data.mode"), Some(0x911c));
+
+        // Leaf kinds and sizes are the ordinary scalar/enum ones.
+        let kind = |p: &str| dw.resolve(p).map(|(_, l)| l);
+        assert!(matches!(
+            kind("channel_data.updateCount"),
+            Some(Leaf::Scalar(Scalar::U32))
+        ));
+        assert!(matches!(
+            kind("channel_data.current"),
+            Some(Leaf::Scalar(Scalar::F32))
+        ));
+        assert!(matches!(
+            kind("channel_data.adc[2]"),
+            Some(Leaf::Scalar(Scalar::U16))
+        ));
+        let (_, mode) = dw.resolve("channel_data.mode").expect("mode resolves");
+        let Leaf::Enum(off) = mode else {
+            panic!("an `enum class` member must be an enum leaf")
+        };
+        assert_eq!(dw.leaf_size(mode), Some(1));
+        assert_eq!(dw.enum_name(off, 1), Some("Run"));
+
+        // The plain C struct control is unaffected.
+        assert_eq!(at("plain_data.count"), Some(0x90dc));
+        assert_eq!(at("plain_data.gain"), Some(0x90e0));
+    }
+
+    /// A static data member (`cxx::Channel::instances`) and a namespace-scope
+    /// `extern` defined out of line (`cxx::externCounter`) both have definition DIEs
+    /// carrying only `DW_AT_specification` — name and type come from the
+    /// declaration. Both resolve by their bare name.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_specification_linked_definitions_resolve_by_bare_name() {
+        let dw = cxx_fixture();
+        assert_eq!(dw.resolve("instances").map(|(a, _)| a), Some(0x9104));
+        assert_eq!(dw.resolve("externCounter").map(|(a, _)| a), Some(0x9108));
+        // Both are plain anchors too (a whole-object DW_OP_addr).
+        assert_eq!(dw.var_addr("instances"), Some(0x9104));
+        assert_eq!(dw.var_addr("externCounter"), Some(0x9108));
+    }
+
+    /// Bases flatten into the derived member set. `cxx::Derived` @0x9120:
+    /// Base@0 {baseSeq@0, baseGain@4}, Base2@8 {aux@0, auxSeq@4}, derivedSeq@16,
+    /// derivedDuty@20. `cxx::Deeper` @0x9140 inherits Derived@0, so the same names
+    /// resolve one level further down, and adds deepSeq@32.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_base_class_members_resolve_through_the_derived_object() {
+        let dw = cxx_fixture();
+        let at = |p: &str| dw.resolve(p).map(|(a, _)| a);
+
+        assert_eq!(at("derived_data.baseSeq"), Some(0x9120));
+        assert_eq!(at("derived_data.baseGain"), Some(0x9124));
+        // Second base, at its own 8-byte offset.
+        assert_eq!(at("derived_data.aux"), Some(0x9128));
+        assert_eq!(at("derived_data.auxSeq"), Some(0x912c));
+        assert_eq!(at("derived_data.derivedSeq"), Some(0x9130));
+
+        // Recursive: Deeper -> Derived -> {Base, Base2}.
+        assert_eq!(at("deeper_data.baseSeq"), Some(0x9140));
+        assert_eq!(at("deeper_data.aux"), Some(0x9148));
+        assert_eq!(at("deeper_data.derivedSeq"), Some(0x9150));
+        assert_eq!(at("deeper_data.deepSeq"), Some(0x9160));
+    }
+
+    /// A `std::array` reads as the C array it wraps, in both directions: the index
+    /// applies at the member (`duty[0]`, not `duty._M_elems[0]`), and the wrapper
+    /// member name is gone from the namespace entirely.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_std_array_reads_as_a_c_array() {
+        let dw = cxx_fixture();
+        let at = |p: &str| dw.resolve(p).map(|(a, _)| a);
+
+        // array<float,3> at layout_data+16; 4-byte elements.
+        assert_eq!(at("layout_data.duty[0]"), Some(0x90f4));
+        assert_eq!(at("layout_data.duty[2]"), Some(0x90fc));
+        // array<uint16_t,4> at channel_data+8, inside a class, private.
+        assert_eq!(at("channel_data.adc[0]"), Some(0x9114));
+        assert_eq!(at("channel_data.adc[3]"), Some(0x911a));
+        // The wrapper member is not a path step any more.
+        assert_eq!(at("layout_data.duty._M_elems[0]"), None);
+
+        let en = dw.enumerate_leaves(32, &[]);
+        assert!(en.paths.contains(&"layout_data.duty[1]".to_string()));
+        assert!(
+            !en.paths.iter().any(|p| p.contains("_M_elems")),
+            "no std::array wrapper member may appear in the enumeration"
+        );
+        // A std::array obeys the array threshold like any other array.
+        let tight = dw.enumerate_leaves(2, &[]);
+        assert!(!tight
+            .paths
+            .iter()
+            .any(|p| p.starts_with("layout_data.duty[")));
+        assert!(tight.excluded_arrays >= 1);
+        // ...and an `includes` prefix forces just the reached element back in.
+        let forced = dw.enumerate_leaves(2, &["layout_data.duty[1]".to_string()]);
+        assert!(forced.paths.contains(&"layout_data.duty[1]".to_string()));
+        assert!(!forced.paths.contains(&"layout_data.duty[0]".to_string()));
+    }
+
+    /// Enumeration of the whole C++ namespace: every leaf, in offset order, with no
+    /// wrapper members, no exclusions, and nothing skipped as untraceable.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_enumeration_lists_every_leaf() {
+        let dw = cxx_fixture();
+        let en = dw.enumerate_leaves(32, &[]);
+        assert_eq!(
+            en.paths,
+            vec![
+                // A class, private members and all, in offset order.
+                "channel_data.updateCount",
+                "channel_data.current",
+                "channel_data.adc[0]",
+                "channel_data.adc[1]",
+                "channel_data.adc[2]",
+                "channel_data.adc[3]",
+                "channel_data.mode",
+                // Two inheritance levels, flattened at their base offsets.
+                "deeper_data.baseSeq",
+                "deeper_data.baseGain",
+                "deeper_data.aux",
+                "deeper_data.auxSeq",
+                "deeper_data.derivedSeq",
+                "deeper_data.derivedDuty[0]",
+                "deeper_data.derivedDuty[1]",
+                "deeper_data.derivedDuty[2]",
+                "deeper_data.deepSeq",
+                "derived_data.baseSeq",
+                "derived_data.baseGain",
+                "derived_data.aux",
+                "derived_data.auxSeq",
+                "derived_data.derivedSeq",
+                "derived_data.derivedDuty[0]",
+                "derived_data.derivedDuty[1]",
+                "derived_data.derivedDuty[2]",
+                // Specification-linked definitions.
+                "externCounter",
+                "instances",
+                "layout_data.seq",
+                "layout_data.bus",
+                "layout_data.raw[0]",
+                "layout_data.raw[1]",
+                "layout_data.raw[2]",
+                "layout_data.raw[3]",
+                "layout_data.duty[0]",
+                "layout_data.duty[1]",
+                "layout_data.duty[2]",
+                "layout_data.mode",
+                // The plain C control.
+                "plain_data.count",
+                "plain_data.gain",
+            ]
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<String>>()
+        );
+        assert_eq!(
+            (en.excluded_arrays, en.skipped_leaves, en.capped),
+            (0, 0, false)
+        );
+    }
+
+    /// A variable inside `namespace cxx` resolves by its bare name, at any depth —
+    /// the property the SIL and the app's saved layouts depend on, and the reason
+    /// two namespaces must not reuse one name.
+    // [test->app~obs_001~1]
+    #[test]
+    fn cxx_namespaced_variable_resolves_by_bare_name() {
+        let dw = cxx_fixture();
+        // cxx::layout_data, cxx::Channel::instances, cxx::externCounter — no
+        // qualification in the path, and no namespace-qualified spelling either.
+        assert_eq!(dw.var_addr("layout_data"), Some(0x90e4));
+        assert_eq!(dw.var_addr("cxx::layout_data"), None);
+        // Seven top-level variables: five namespace-scope objects, the static data
+        // member, and the global-scope C control.
+        assert_eq!(dw.var_count(), 7);
     }
 
     #[test]

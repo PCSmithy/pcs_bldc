@@ -3,6 +3,10 @@
 /* Includes */
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 /* Typedefs */
@@ -17,4 +21,6 @@
 // Target-independent so the formula is unit-testable on the native target.
 // Returns 0 when fBitHz is 0 (no meaningful bit rate).
 uint32_t HW_SPI_computeTimeoutMs(uint32_t fBitHz, size_t numBytes);
-
+#ifdef __cplusplus
+}
+#endif

@@ -19,6 +19,10 @@
 
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define SIL_IRQ_HANDLE_INVALID  (-1)
 
 // A simulated interrupt handler: any C function the framework calls in the
@@ -79,5 +83,9 @@ int32_t SIL_irq_registerPended(SIL_irq_handler_F handler, uint8_t priority);
 
 // Set an entry pending; a negative handle is a safe no-op.
 void SIL_irq_pend(int32_t handle);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SIL_IRQ_H

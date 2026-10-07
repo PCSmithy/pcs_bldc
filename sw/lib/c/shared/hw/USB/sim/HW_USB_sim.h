@@ -3,6 +3,10 @@
 /* Includes */
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* SIL inspection / control API — native sim target only. */
 
 // Reset all loopback state (disconnected, TX accepting, buffers empty).
@@ -27,4 +31,6 @@ uint32_t HW_USB_sim_txWrites(void);
 
 // Inject bytes as if received from the host (readable via HW_USB_read).
 void HW_USB_sim_injectRx(const uint8_t * data, uint32_t len);
-
+#ifdef __cplusplus
+}
+#endif

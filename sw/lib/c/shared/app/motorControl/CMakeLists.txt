@@ -1,6 +1,6 @@
 
 add_library(app_motorControl STATIC
-  app_motorControl.c
+  app_motorControl.cpp
 )
 target_include_directories(app_motorControl PUBLIC .)
 target_link_libraries(app_motorControl

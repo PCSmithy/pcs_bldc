@@ -8,6 +8,10 @@
 
 #include "lib_protobuf_config.h"   // project schema bindings: shared_/board_ types
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // Telemetry cadence: one board.Telemetry per this many 1 ms passes
@@ -86,3 +90,6 @@ void app_server_sampleCycle(void);
 
 // Capture one byte of standard-output text for the log stream.
 void app_server_logByte(uint8_t byte);
+#ifdef __cplusplus
+}
+#endif

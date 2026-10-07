@@ -7,6 +7,10 @@
 
 #include "pb_decode.h"   // pb_istream_t / pb_field_t for the decode callbacks
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // Per-message wire overhead W (fw~conn_trace_005): the envelope's tags and
@@ -63,3 +67,6 @@ uint32_t app_server_trace_groupPeriodCycles(uint32_t group);
 uint32_t app_server_trace_bufferedBytes(void);
 bool app_server_trace_peek(uint32_t * const group, uint32_t * const cycle, size_t * const dataLen);
 bool app_server_trace_pop(uint8_t * const buffer, size_t bufferLen);
+#ifdef __cplusplus
+}
+#endif

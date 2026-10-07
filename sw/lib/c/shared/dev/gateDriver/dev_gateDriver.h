@@ -5,6 +5,10 @@
 #include "IO_i2c.h"
 #include "dev_gateDriver_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 // LOCK register values: unlock satisfies LOCK == ~NLOCK (fields [3:0]/[7:4]);
@@ -92,3 +96,6 @@ bool dev_gateDriver_isOperational(dev_gateDriver_channel_E channel);
 // Clear the device's latched faults (CLEAR = 0xFF). A deliberate consumer
 // action — the driver never clears runtime faults on its own.
 bool dev_gateDriver_clearFaults(dev_gateDriver_channel_E channel);
+#ifdef __cplusplus
+}
+#endif

@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "HW_I2C.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Test controls for the mocked HW_I2C. IO_i2c issues one memRead/memWrite per
 // register op; the mock records that call's arguments, returns the injected
 // success/failure, and (for reads) fills the caller's buffer with injected bytes.
@@ -33,3 +37,6 @@ void mock_HW_I2C_setResponse(const uint8_t * bytes, size_t length);
 
 // The most recent register transfer's recorded arguments.
 const mock_HW_I2C_call_S * mock_HW_I2C_lastCall(void);
+#ifdef __cplusplus
+}
+#endif

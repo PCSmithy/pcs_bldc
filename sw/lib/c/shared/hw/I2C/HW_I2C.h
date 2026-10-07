@@ -26,6 +26,10 @@ typedef enum
 /* Target Config */
 #include "HW_I2C_target.h"   // HW_I2C_busConfig_S
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct
 {
     const HW_I2C_busConfig_S * buses;
@@ -43,3 +47,6 @@ bool HW_I2C_memRead(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                     HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
 bool HW_I2C_memWrite(HW_I2C_bus_E bus, uint8_t devAddr7, uint16_t memAddr,
                      HW_I2C_memAddrSize_E memAddrSize, uint8_t * data, size_t length);
+#ifdef __cplusplus
+}
+#endif

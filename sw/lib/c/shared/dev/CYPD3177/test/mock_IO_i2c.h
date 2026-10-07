@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "IO_i2c_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Mock IO_i2c; an uninjected (device, register) reads back as zeros.
 
 #define MOCK_IO_I2C_MAX_BYTES (8U)
@@ -13,3 +17,6 @@ void mock_IO_i2c_failReg(IO_i2c_device_E dev, uint16_t reg);
 void mock_IO_i2c_failAll(bool fail);
 size_t          mock_IO_i2c_readCount(void);
 IO_i2c_device_E mock_IO_i2c_lastDevice(void);
+#ifdef __cplusplus
+}
+#endif

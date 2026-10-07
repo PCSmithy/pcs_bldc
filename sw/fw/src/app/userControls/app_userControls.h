@@ -10,6 +10,10 @@
 #include "app_motorControl.h"
 #include "app_rgbLedRing.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef enum
@@ -32,3 +36,6 @@ typedef struct
 
 bool app_userControls_init(const app_userControls_config_S * const config);
 void app_userControls_run1ms(void);
+#ifdef __cplusplus
+}
+#endif

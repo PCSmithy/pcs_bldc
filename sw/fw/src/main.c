@@ -340,10 +340,9 @@ int __io_putchar(int ch)
 // [impl->fw~mc_018~1]
 static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context)
 {
-    (void)channel;
     (void)context;
     uint32_t entry_us = 0U;
-    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &entry_us);
+    (void)HW_TIM_getCounter(IO_bridge_config.channels[channel].timeBasePeripheral, &entry_us);
 
     // --- commutation step (fw~mc_015): the active method's step lands here ---
     // An empty step measures zero, and its own counter read arrives with it.
@@ -358,7 +357,7 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     app_server_sampleCycle();   // capture trace watches after the step (fw~conn_trace_004)
 
     uint32_t exit_us = 0U;
-    (void)HW_TIM_getCounter(IO_bridge_config.timeBasePeripheral, &exit_us);
+    (void)HW_TIM_getCounter(IO_bridge_config.channels[channel].timeBasePeripheral, &exit_us);
     const uint32_t callbackDuration_us = exit_us - entry_us;
     if (callbackDuration_us > main_cycleProbe_callbackMax_us)
     {

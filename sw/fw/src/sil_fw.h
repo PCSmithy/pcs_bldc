@@ -18,6 +18,10 @@
 #include "SIL_ports.h"
 #include "SIL_irq.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Install the port-registration hook vtable (see SIL_ports.h): the seam sim
  * HW drivers use to expose runtime-registered signals ("ports") in native
  * units. Called by the framework BEFORE sil_fw_start so drivers can register
@@ -54,4 +58,6 @@ bool sil_fw_dispatch_isr(SIL_irq_handler_F handler);
 
 /* Tear down the scheduler. */
 void sil_fw_shutdown(void);
-
+#ifdef __cplusplus
+}
+#endif

@@ -32,12 +32,13 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 /* ---- board-shaped constants ---- */
 #define PERIOD          (4000U)         // HW_TIM ARR; duty math is exact against it
 #define BRIDGE_PERIPH   (HW_TIM_PERIPHERAL_1)
+#define TIMEBASE_PERIPH (HW_TIM_PERIPHERAL_2)   // the bridge's 1 us sample time base
 #define MOTOR_BRIDGE    (IO_BRIDGE_CHANNEL_MOTOR)
 #define MOTOR_MC        (APP_MOTORCONTROL_CHANNEL_MAIN)
 #define GD_MAIN         (DEV_GATEDRIVER_CHANNEL_MAIN)
 #define ENC_MOTOR       (IO_AS5048_CHANNEL_MOTOR)
 
-// Trip thresholds under test (mirror app_motorControl.c).
+// Trip thresholds under test (mirror app_motorControl.cpp).
 #define PHASE_TRIP_A    (2.0f)
 #define BUS_TRIP_A      (1.5f)
 
@@ -50,7 +51,7 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 // (uint32_t)(duty*period + 0.5f)).
 #define DUTY_COMPARE(duty01) ((uint32_t)(((duty01) * (float32_t)PERIOD) + 0.5f))
 
-// Alignment dwell (mirrors app_motorControl.c's ALIGNMENT_DWELL_TIMER_MS); the
+// Alignment dwell (mirrors app_motorControl.cpp's ALIGNMENT_DWELL_TIMER_MS); the
 // advance margin clears any ms-rounding at the dwell boundary.
 #define ALIGN_ADVANCE_MS (600U)
 
@@ -66,6 +67,11 @@ static const struct { HW_ADC_channels_E ch; uint8_t in; } phaseSense[IO_BRIDGE_P
 };
 #define BUS_CH          (HW_ADC_CHANNEL_2)
 #define BUS_IN          (11U)
+// U and V each sit at slot 0 of their own ADC's injected sequence; W is derived.
+#define PHASE_U_INJ     (0U)
+#define PHASE_V_INJ     (0U)
+#define PAIR_WINDOW_US  (25U)
+#define CREST_PERIOD_US (50U)
 
 static IO_bridge_channelConfig_S     bridgeCfg[IO_BRIDGE_CHANNEL_COUNT];
 static IO_bridge_config_S            bridgeConfig;
@@ -75,18 +81,20 @@ static app_motorControl_config_S     appConfig;
 static void buildConfigs(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR] = (IO_bridge_channelConfig_S){
-        .phaseU = HW_TIM_CHANNEL_PWM_U,
-        .phaseV = HW_TIM_CHANNEL_PWM_V,
-        .phaseW = HW_TIM_CHANNEL_PWM_W,
-        .phaseCurrent = {
-            [IO_BRIDGE_PHASE_U] = { phaseSense[0].ch, phaseSense[0].in,
-                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_V] = { phaseSense[1].ch, phaseSense[1].in,
-                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
-            [IO_BRIDGE_PHASE_W] = { phaseSense[2].ch, phaseSense[2].in,
-                                    IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A },
+        .timeBasePeripheral = TIMEBASE_PERIPH,
+        .phase = {
+            [IO_BRIDGE_PHASE_U] = { .tim = HW_TIM_CHANNEL_PWM_U, .complementPhase = IO_BRIDGE_PHASE_V,
+                                    .currentSense = { phaseSense[0].ch, phaseSense[0].in,
+                                                      PHASE_U_INJ, PHASE_BIAS_V, PHASE_V_PER_A } },
+            [IO_BRIDGE_PHASE_V] = { .tim = HW_TIM_CHANNEL_PWM_V, .complementPhase = IO_BRIDGE_PHASE_U,
+                                    .currentSense = { phaseSense[1].ch, phaseSense[1].in,
+                                                      PHASE_V_INJ, PHASE_BIAS_V, PHASE_V_PER_A } },
+            [IO_BRIDGE_PHASE_W] = { .tim = HW_TIM_CHANNEL_PWM_W, .complementPhase = IO_BRIDGE_PHASE_COUNT,
+                                    .currentSense = { phaseSense[2].ch, phaseSense[2].in,
+                                                      IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A } },
         },
-        .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A } };
+        .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A },
+        .injectedPairWindow_us = PAIR_WINDOW_US };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN] = (app_motorControl_channelConfig_S){
@@ -119,9 +127,22 @@ static float32_t motorSetpoint(void)
     return s.velocitySetpoint_radPerSec;
 }
 
-static void setPhaseCurrent(IO_bridge_phase_E phase, float32_t amps)
+// Phase currents reach the module only through the bridge's injected (crest)
+// path: U and V are sampled and W derives as -(U + V). The stamp advances per
+// call and never rewinds, so the pair always lands inside the window (the bridge
+// keeps its sample times across tests).
+static void setPhaseCurrentsUV(float32_t ampsU, float32_t ampsV)
 {
-    mock_HW_ADC_setVolts(phaseSense[phase].ch, phaseSense[phase].in, PHASE_BIAS_V + (amps * PHASE_V_PER_A));
+    static uint32_t crest_us = 0U;
+    crest_us += CREST_PERIOD_US;
+    mock_HW_TIM_setCounter(TIMEBASE_PERIPH, crest_us);
+
+    mock_HW_ADC_setInjectedVolts(phaseSense[IO_BRIDGE_PHASE_U].ch, PHASE_U_INJ,
+                                 PHASE_BIAS_V + (ampsU * PHASE_V_PER_A));
+    mock_HW_ADC_setInjectedVolts(phaseSense[IO_BRIDGE_PHASE_V].ch, PHASE_V_INJ,
+                                 PHASE_BIAS_V + (ampsV * PHASE_V_PER_A));
+    mock_HW_ADC_fireInjected(phaseSense[IO_BRIDGE_PHASE_U].ch, HW_ADC_CONVERSION_STATUS_OK);
+    mock_HW_ADC_fireInjected(phaseSense[IO_BRIDGE_PHASE_V].ch, HW_ADC_CONVERSION_STATUS_OK);
 }
 
 static void setBusCurrent(float32_t amps)
@@ -131,9 +152,7 @@ static void setBusCurrent(float32_t amps)
 
 static void setNominalCurrents(void)
 {
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 0.0f);
-    setPhaseCurrent(IO_BRIDGE_PHASE_V, 0.0f);
-    setPhaseCurrent(IO_BRIDGE_PHASE_W, 0.0f);
+    setPhaseCurrentsUV(0.0f, 0.0f);
     setBusCurrent(0.0f);
 }
 
@@ -265,11 +284,11 @@ static void test_phase_overcurrent_trips_and_latches(void)
     driveToRunning(10.0f);
     TEST_ASSERT_TRUE(bridgeEnabled());
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);  // > 2 A
+    setPhaseCurrentsUV(3.0f, 0.0f);            // U > 2 A
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());        // disabled within one cycle
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 0.0f);  // fault cleared physically...
+    setNominalCurrents();                      // fault cleared physically...
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());        // ...but the latch persists
 }
@@ -290,19 +309,21 @@ static void test_current_below_threshold_does_not_trip(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 1.9f);  // just under 2 A
+    setPhaseCurrentsUV(1.9f, 0.0f);            // U and the derived W just under 2 A
     setBusCurrent(1.4f);                       // just under 1.5 A
     app_motorControl_run1ms();
     TEST_ASSERT_TRUE(bridgeEnabled());         // no trip
 }
 
 // [test->fw~safety_001~1]
-// A negative phase-current magnitude trips too (bipolar shunt).
+// A negative phase-current magnitude trips too (bipolar shunt). W is derived, so
+// the scenario is expressed through the sampled legs: U + V = 2.5 A puts W at
+// -2.5 A while neither sampled leg is over the trip.
 static void test_negative_phase_overcurrent_trips(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_W, -2.5f); // |-2.5| > 2 A
+    setPhaseCurrentsUV(1.25f, 1.25f);          // W = -(1.25 + 1.25), |-2.5| > 2 A
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
@@ -336,7 +357,7 @@ static void test_gate_blocks_bridge_when_not_operational(void)
 static void test_gate_blocks_bridge_while_fault_latched(void)
 {
     driveToRunning(10.0f);
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);
+    setPhaseCurrentsUV(3.0f, 0.0f);
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
@@ -377,7 +398,7 @@ static void test_zero_demand_holds_bridge_enabled(void)
         TEST_ASSERT_TRUE(bridgeEnabled());     // does not flap cycle to cycle
     }
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);  // a fault still kills the bridge
+    setPhaseCurrentsUV(3.0f, 0.0f);            // a fault still kills the bridge
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
@@ -392,7 +413,7 @@ static void test_state_view_tracks_disabled_enabled_faulted(void)
     driveToRunning(10.0f);
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());    // commutating
 
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);
+    setPhaseCurrentsUV(3.0f, 0.0f);
     app_motorControl_run1ms();
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());    // tripped
 }
@@ -489,7 +510,7 @@ static void test_velocity_estimate_immune_to_alignment_capture(void)
 static void test_clear_fault_releases_latch_and_resumes(void)
 {
     driveToRunning(10.0f);
-    setPhaseCurrent(IO_BRIDGE_PHASE_U, 3.0f);
+    setPhaseCurrentsUV(3.0f, 0.0f);
     app_motorControl_run1ms();
     TEST_ASSERT_FALSE(bridgeEnabled());
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());

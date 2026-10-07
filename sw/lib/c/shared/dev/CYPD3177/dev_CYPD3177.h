@@ -5,6 +5,10 @@
 #include "IO_i2c.h"
 #include "dev_CYPD3177_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 // Bus, address, and register-offset width live in the IO_i2c device config;
@@ -66,3 +70,6 @@ uint32_t dev_CYPD3177_busVoltage_mV      (dev_CYPD3177_channel_E channel);
 // channel, before init, or a NULL snapshot. The copy is unlocked: a fetch on
 // another task may land between fields, so treat it as telemetry-grade.
 bool dev_CYPD3177_getSnapshot(dev_CYPD3177_channel_E channel, dev_CYPD3177_snapshot_S * const snapshot);
+#ifdef __cplusplus
+}
+#endif

@@ -340,6 +340,9 @@ Canonical examples in tree: `HW_GPIO` (library-side enum, no
 
 ## See also
 
+- What C++ adds on top of these rules — the class per channel, `private:`
+  in place of `_private_`, scoped-enum policy — is in
+  [cpp-coding-conventions.md](cpp-coding-conventions.md).
 - The **channelization pattern** itself (where files live, how library
   and project halves split, CMake target conventions) is documented in
   [CLAUDE.md](../CLAUDE.md#channelization-pattern-canonical-idiom).

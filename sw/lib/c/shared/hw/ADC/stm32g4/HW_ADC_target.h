@@ -7,6 +7,10 @@
 #include "stm32g4xx_hal.h"
 #include "HW_DMA.h"              // HW_DMA_channel_E (DMA-backed transfer mode)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 // One input pin on the regular sequence; inputs[] is indexed by physical IN#.
@@ -75,3 +79,6 @@ typedef struct
 // this; it services every initialized peripheral's handle (the HAL no-ops the
 // one whose flags are clear).
 void HW_ADC_irqHandler(void);
+#ifdef __cplusplus
+}
+#endif

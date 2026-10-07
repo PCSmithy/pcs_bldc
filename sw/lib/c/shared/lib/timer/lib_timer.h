@@ -4,6 +4,10 @@
 #include "lib_types.h"
 #include "lib_utils.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Defines */
 
@@ -175,4 +179,6 @@ static inline lib_timer_state_E lib_timer_runTimerWithRestart(lib_timer_channel_
     }
     return ret;
 }
-
+#ifdef __cplusplus
+}
+#endif

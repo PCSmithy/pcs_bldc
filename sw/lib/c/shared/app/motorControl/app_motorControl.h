@@ -10,6 +10,10 @@
 
 #include "app_motorControl_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 
@@ -22,7 +26,7 @@ typedef enum
     // APP_MOTORCONTROL_MODE_VF_SINUSOIDAL, // TODO
     // APP_MOTORCONTROL_MODE_FOC, // TODO
     APP_MOTORCONTROL_MODE_COUNT,
-} app_motorControl_mode_E;
+} app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
 
 // Coarse bridge state for the operator display (fw~mc_009): DISABLED (bridge
 // dark), ENABLED (bridge driving), or FAULTED (a latched fault holds it off).
@@ -85,3 +89,6 @@ void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorContr
 // module. This is the fault-clear action referenced by the trip latch — driven
 // on-device by the user button's fault-clear gesture (fw~mc_007).
 void app_motorControl_clearFault(app_motorControl_channel_E channel);
+#ifdef __cplusplus
+}
+#endif

@@ -115,7 +115,9 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
 │   ├── backlog.md         Firmware/tooling backlog
 │   ├── motor-sprint.md    Motor-control sprint plan (FOC/estimation ahead)
-│   └── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
+│   ├── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
+│   └── cpp-coding-conventions.md  What C++ adds: transition policy, class per
+│                                  channel, facade, enums, toolchain gotchas
 │
 └── tools/                Project tooling
     ├── oft/              OpenFastTrace JAR (4.2.2) + wrapper scripts
@@ -264,7 +266,8 @@ sufficient to make the tooling aware of a new topic.
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and
-  `[impl->]` tags live in `.rs` files too (the SIL tests carry spec tags).
+  `[impl->]` tags live in `.rs` and `.cpp` files too (the SIL tests carry
+  spec tags; OFT scans C++ sources with no config change).
 
 ### Decisions explicitly deferred (will become specs when made)
 
@@ -489,8 +492,11 @@ Workflow when CubeMX needs to regenerate:
 C code style (naming, MISRA-flavored patterns, init contracts, file
 naming) is the source-of-truth doc at
 [`docs/c-coding-conventions.md`](docs/c-coding-conventions.md).
-**Read it before writing or reviewing any C in this project.** It
-covers:
+**Read it before writing or reviewing any C in this project.** C++
+modules (`IO_bridge`, `app_motorControl`, and all new control code)
+follow it plus [`docs/cpp-coding-conventions.md`](docs/cpp-coding-conventions.md),
+which also carries the transition policy (new control code is C++, modules
+convert as touched). The C doc covers:
 
 - Function / variable / type / macro / enum naming (`_private_` infix,
   `_S`/`_E` type suffixes, etc.).
@@ -667,7 +673,10 @@ is required reading — it's the source of truth for naming,
 MISRA-flavored patterns, init contracts, and module-naming rules.
 Canonical worked examples for those conventions are
 `sw/lib/c/shared/hw/ADC/` (multi-channel) and
-`sw/lib/c/shared/hw/systemClock/` (single-instance).
+`sw/lib/c/shared/hw/systemClock/` (single-instance). For C++ modules,
+add [`docs/cpp-coding-conventions.md`](docs/cpp-coding-conventions.md);
+the worked examples are `sw/lib/c/shared/io/bridge/` and
+`sw/lib/c/shared/app/motorControl/`.
 
 For git commit messages, do not include a "Co-Authored-By: ..." line
 

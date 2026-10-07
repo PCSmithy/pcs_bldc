@@ -32,11 +32,11 @@ pub const VBUS_V: f64 = 24.0;
 /// The gate driver's 200 ms configure + status pass, plus slack.
 pub const GATE_BRINGUP_MS: u64 = 300;
 
-/// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.c`.
+/// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.cpp`.
 pub const ALIGN_DUTY: f64 = 0.1;
 pub const ALIGN_DWELL_MS: u64 = 500;
 
-/// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.c`.
+/// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.cpp`.
 pub const PHASE_TRIP_A: f64 = 2.0;
 pub const BUS_TRIP_A: f64 = 1.5;
 

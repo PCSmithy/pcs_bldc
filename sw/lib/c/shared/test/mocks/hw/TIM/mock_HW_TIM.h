@@ -3,6 +3,10 @@
 #include "lib_types.h"
 #include "HW_TIM.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Test controls for the mocked HW_TIM. It records the compare and output-enable
 // state IO_bridge sets per logical channel, holds a per-peripheral MOE latch,
 // maps each channel to a peripheral, and reports a configurable period so duty
@@ -33,3 +37,6 @@ uint32_t mock_HW_TIM_getCompare(HW_TIM_channels_E channel);
 bool     mock_HW_TIM_getOutputEnabled(HW_TIM_channels_E channel);
 bool     mock_HW_TIM_getMoe(HW_TIM_peripheral_E peripheral);
 uint32_t mock_HW_TIM_getBreakFlagsClearCount(HW_TIM_peripheral_E peripheral);
+#ifdef __cplusplus
+}
+#endif

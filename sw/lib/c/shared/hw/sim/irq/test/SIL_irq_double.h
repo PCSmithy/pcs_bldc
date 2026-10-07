@@ -9,6 +9,10 @@
 /* Includes */
 #include "SIL_irq.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Typedefs */
 
 typedef struct
@@ -37,3 +41,6 @@ extern SIL_irq_double_S SIL_irq_double;
 // Install the fake vtable and clear its log; either registration path hands back
 // registerReturn.
 void SIL_irq_double_install(int32_t registerReturn);
+#ifdef __cplusplus
+}
+#endif

@@ -1,7 +1,7 @@
 # Channelized three-phase motor-bridge driver (target-uniform — actuates the
 # bridge through the HW_TIM output-compare + master-output-enable API and reads
 # the phase/bus current shunts through HW_ADC, so it needs no per-target split).
-add_library(io_bridge STATIC IO_bridge.c)
+add_library(io_bridge STATIC IO_bridge.cpp)
 target_include_directories(io_bridge PUBLIC .)
 target_link_libraries(io_bridge
   PUBLIC

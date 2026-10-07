@@ -6,6 +6,10 @@
 #include "HW_TIM.h"
 #include "HW_ADC.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 #define IO_BRIDGE_INJECTED_NONE  (0xFFU)
@@ -18,7 +22,7 @@ typedef enum
     IO_BRIDGE_PHASE_V,
     IO_BRIDGE_PHASE_W,
     IO_BRIDGE_PHASE_COUNT,
-} IO_bridge_phase_E;
+} IO_bridge_phase_E; // TODO - convert this to `enum class` if/when consumers are C++
 
 // voltsPerAmp of 0 marks the sense as unconfigured and makes the reader fail
 // injectedIndex is the sense's position in that ADC's injected sequence
@@ -35,15 +39,20 @@ typedef struct
 // ISR context (see IO_bridge_registerCycleCallback).
 typedef void (*IO_bridge_cycleCallback_F)(IO_bridge_channel_E channel, void * context);
 
+
 typedef struct
 {
-    HW_TIM_channels_E phaseU;
-    HW_TIM_channels_E phaseV;
-    HW_TIM_channels_E phaseW;
+    HW_TIM_channels_E tim;
+    IO_bridge_phase_E complementPhase;
+    IO_bridge_currentSenseConfig_S currentSense;
+} IO_bridge_phaseConfig_S;
 
-    // Phase-shunt sense (indexed by IO_bridge_phase_E) and the DC-bus input
-    // sense. Read back in engineering units via the getCurrent accessors.
-    IO_bridge_currentSenseConfig_S phaseCurrent[IO_BRIDGE_PHASE_COUNT];
+typedef struct
+{
+    // Free-running 1 us time base the injected callback stamps samples with.
+    HW_TIM_peripheral_E timeBasePeripheral;
+
+    IO_bridge_phaseConfig_S phase[IO_BRIDGE_PHASE_COUNT];
     IO_bridge_currentSenseConfig_S busCurrent;
     uint32_t injectedPairWindow_us; // max time span between U and V phase current
                                    // sample times to consider them as synchronous
@@ -53,9 +62,6 @@ typedef struct
 {
     const IO_bridge_channelConfig_S * channels;
     size_t                            numChannels;
-
-    // Free-running 1 us time base the injected callback stamps samples with.
-    HW_TIM_peripheral_E timeBasePeripheral;
 } IO_bridge_config_S;
 
 /* Public Function Declarations */
@@ -74,15 +80,9 @@ bool IO_bridge_getOutputEnabled(IO_bridge_channel_E channel, bool * const enable
 // upon gate drive boot
 bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel);
 
-// phase current sampled in 1ms task - async to PWM period
 bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
 
 bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps_out);
-
-// phase current sampled at center of center-aligned bright PWM
-bool IO_bridge_getInjectedPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
-
-bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_phase_E phase, uint32_t * const out);
 
 // One callback per bridge; a later registration replaces the earlier. It runs in
 // the injected-completion ISR, which the board places at an NVIC preempt priority
@@ -91,3 +91,6 @@ bool IO_bridge_getInjectedUpdateCount(IO_bridge_channel_E channel, IO_bridge_pha
 bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
                                      IO_bridge_cycleCallback_F callback,
                                      void * context);
+#ifdef __cplusplus
+}
+#endif

@@ -233,7 +233,7 @@ still moves at +0.63 rad/s. Effective commutation lead lands at 136..197°
 fixes, owner's choice: settle detection (capture when |velocity| under a
 floor, dwell as timeout), a longer dwell, a stronger/ramped alignment duty,
 or a two-step align (coarse + settle). The zero-demand shorted-pair braking
-(`app_motorControl.c` else-branch) adds negligible damping (~6e-6 vs
+(`app_motorControl.cpp` else-branch) adds negligible damping (~6e-6 vs
 B=1e-4 Nm·s/rad) and does not rescue the dwell.
 
 ## voyant: declarative transform routes (stateless conversions on the wire)

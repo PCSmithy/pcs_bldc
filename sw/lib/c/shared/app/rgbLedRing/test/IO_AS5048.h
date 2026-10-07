@@ -4,6 +4,10 @@
 // cached-angle read). Implemented as a stub in mock_app_deps.c.
 #include "lib_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum
 {
     IO_AS5048_CHANNEL_MOTOR,
@@ -12,4 +16,6 @@ typedef enum
 } IO_AS5048_channel_E;
 
 bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad);
-
+#ifdef __cplusplus
+}
+#endif

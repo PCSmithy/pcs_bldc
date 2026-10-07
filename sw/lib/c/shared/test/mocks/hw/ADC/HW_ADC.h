@@ -9,6 +9,10 @@
 #include "lib_types.h"
 #include "HW_ADC_channels.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Defines */
 
 #define HW_ADC_INJECTED_INPUTS_PER_CHANNEL  (4U)
@@ -38,3 +42,6 @@ bool HW_ADC_registerInjectedCallback(HW_ADC_channels_E channel,
                                      void * context);
 
 void HW_ADC_setInjectedIrqMasked(bool masked);
+#ifdef __cplusplus
+}
+#endif
