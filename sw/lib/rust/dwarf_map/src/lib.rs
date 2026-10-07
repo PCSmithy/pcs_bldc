@@ -559,22 +559,23 @@ fn peel_ty(maps: &Maps, mut ty: usize) -> usize {
     ty
 }
 
-/// The libstdc++ `std::array` member that holds the element storage.
-const STD_ARRAY_ELEMS: &str = "_M_elems";
+/// The `std::array` member that holds the element storage: libstdc++ (GCC,
+/// MinGW) names it `_M_elems`, libc++ (AppleClang on the macOS SIL) `__elems_`.
+const STD_ARRAY_ELEMS: [&str; 2] = ["_M_elems", "__elems_"];
 
 /// Read a `std::array` as the C array it wraps: its storage is a lone member
-/// `_M_elems` of DWARF array type, so alias the wrapper type to that array and
-/// drop the member. A path then reads `x.duty[0]`, not `x.duty._M_elems[0]`, and
-/// the array threshold / `includes` rules apply to it like any other array.
+/// of DWARF array type, so alias the wrapper type to that array and drop the
+/// member. A path then reads `x.duty[0]`, not `x.duty._M_elems[0]`, and the
+/// array threshold / `includes` rules apply to it like any other array.
 /// Detection is by the sole-data-member name, never the template spelling, which
-/// varies by libstdc++ version.
+/// varies by standard-library version.
 fn flatten_std_arrays(maps: &mut Maps) {
     let mut aliases: Vec<(usize, usize, Option<u64>)> = Vec::new();
     for (&wrapper, members) in &maps.members {
         if members.len() != 1 {
             continue;
         }
-        let Some(&(0, elems)) = members.get(STD_ARRAY_ELEMS) else {
+        let Some(&(0, elems)) = STD_ARRAY_ELEMS.iter().find_map(|name| members.get(*name)) else {
             continue;
         };
         let inner = peel_ty(maps, elems);
