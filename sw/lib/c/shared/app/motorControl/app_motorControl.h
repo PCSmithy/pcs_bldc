@@ -26,7 +26,7 @@ typedef enum
     // APP_MOTORCONTROL_MODE_VF_SINUSOIDAL, // TODO
     // APP_MOTORCONTROL_MODE_FOC, // TODO
     APP_MOTORCONTROL_MODE_COUNT,
-} app_motorControl_mode_E;
+} app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
 
 // Coarse bridge state for the operator display (fw~mc_009): DISABLED (bridge
 // dark), ENABLED (bridge driving), or FAULTED (a latched fault holds it off).
