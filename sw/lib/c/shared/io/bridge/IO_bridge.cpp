@@ -14,18 +14,6 @@
 class Bridge
 {
     public:
-        const IO_bridge_channelConfig_S * config;
-        IO_bridge_channel_E channelIndex; // TODO - make this const, use constexpr to initialize
-        HW_TIM_peripheral_E moePeripheral;
-
-        float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
-        uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
-        uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
-
-        // Published by a task, read by the injected-completion ISR.
-        IO_bridge_cycleCallback_F volatile cycleCallback;
-        void * volatile                    cycleContext;
-
         bool init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S * const channelConfig);
         bool setPhaseDuty(IO_bridge_phase_E phase, float32_t duty01);
         bool setPhaseOutputEnabled(IO_bridge_phase_E phase, bool enabled);
@@ -45,9 +33,20 @@ class Bridge
         }
 
     private:
+        const IO_bridge_channelConfig_S * config;
+        IO_bridge_channel_E channelIndex;
+        HW_TIM_peripheral_E moePeripheral;
+
+        float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
+        uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
+        uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
+
+        // Published by a task, read by the injected-completion ISR.
+        IO_bridge_cycleCallback_F volatile cycleCallback;
+        void * volatile                    cycleContext;
+
         void recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status);
         void completeInjectedPair(uint32_t now);
-        bool getCurrentSense(const IO_bridge_currentSenseConfig_S * sense, float32_t * amps_out);
 };
 
 
@@ -173,7 +172,7 @@ void Bridge::completeInjectedPair(uint32_t now_us)
     void * const callbackContext = this->cycleContext;
     if (callback != NULL)
     {
-        callback((IO_bridge_channel_E)this->channelIndex, callbackContext);
+        callback(this->channelIndex, callbackContext);
     }
 }
 

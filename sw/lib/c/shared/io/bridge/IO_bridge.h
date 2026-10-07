@@ -22,7 +22,7 @@ typedef enum
     IO_BRIDGE_PHASE_V,
     IO_BRIDGE_PHASE_W,
     IO_BRIDGE_PHASE_COUNT,
-} IO_bridge_phase_E;
+} IO_bridge_phase_E; // TODO - convert this to `enum class` if/when consumers are C++
 
 // voltsPerAmp of 0 marks the sense as unconfigured and makes the reader fail
 // injectedIndex is the sense's position in that ADC's injected sequence
