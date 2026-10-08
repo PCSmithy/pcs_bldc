@@ -1,0 +1,3 @@
+add_executable(test_lib_transforms test_transforms.c)
+target_link_libraries(test_lib_transforms PRIVATE lib_transforms unity)
+add_test(NAME lib_transforms COMMAND test_lib_transforms)
