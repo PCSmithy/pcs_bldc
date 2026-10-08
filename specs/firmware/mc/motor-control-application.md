@@ -16,7 +16,7 @@ and writes the duties. The operator interface is the user button
 indication).
 
 See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
-(`fw~io_bridge_002/003/004` the duty and enable path, `fw~io_bridge_007~1`
+(`fw~io_bridge_002/003/004/008` the duty and enable path, `fw~io_bridge_007~1`
 the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
 transform), [[gate-driver]] (dev_gateDriver supplies the operational
 gate), [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
@@ -52,12 +52,14 @@ On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
 enabled, the application shall run the active method's commutation step
 with the speed target, rotor electrical angle, and bus voltage as last
 published by the 1 ms cycle and the cycle's phase currents, and apply the
-step's per-phase duty and per-phase output-enable commands through
-IO_bridge within the same PWM period.
+step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
+voltage vector (`fw~io_bridge_008~1`), and per-phase output enables
+(`fw~io_bridge_004~1`) — through IO_bridge within the same PWM period.
 
 Acceptance:
 - Over N PWM periods while enabled, the active method's step runs N times
-  and each step's duties are on the phase outputs in the following period.
+  and each step's commands are on the phase outputs in the following
+  period.
 - A speed-target or bus-voltage change published by the 1 ms cycle is used
   by the next step.
 

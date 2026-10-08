@@ -7,13 +7,14 @@ tags: [firmware, io, bridge, driver]
 
 The `IO_bridge` driver is the generic io-layer three-phase motor-bridge
 abstraction over `HW_TIM`. It presents normalized per-phase duty commands, a
-per-phase output enable, and a whole-bridge output enable, addressed by logical
-bridge and phase; each phase maps to a configured HW_TIM logical channel, and a
-bridge's three phases share one HW_TIM peripheral whose master output enable
-gates the bridge.
+stationary-frame voltage-vector command, a per-phase output enable, and a
+whole-bridge output enable, addressed by logical bridge and phase; each phase
+maps to a configured HW_TIM logical channel, and a bridge's three phases share
+one HW_TIM peripheral whose master output enable gates the bridge.
 
 See also: [[overview]] (`sys~arch_005~1`), [[tim]] (HW_TIM supplies the
-complementary PWM), [[bridge-actuation]] (`sys~mc_004~1`),
+complementary PWM), [[bridge-actuation]] (`sys~mc_004~1`), [[modulation]]
+(`fw~mc_014~1` turns the voltage vector into duties),
 [[motor-control-application]] (`fw~mc_015~1` runs the commutation step from
 the per-cycle callback).
 
@@ -101,6 +102,26 @@ Covers:
 
 Needs: impl, test
 
+### Voltage-vector command
+`fw~io_bridge_008~1`
+
+The driver shall apply a stationary-frame voltage command (v_α, v_β) to a
+bridge as the three per-phase duties `fw~mc_014~1` produces from it and the
+bridge's bus voltage (`fw~io_bridge_005~1`), returning false, with every
+phase's duty unchanged, when that bus-voltage readout fails.
+
+Acceptance:
+- Each phase's compare value is within one count of its `fw~mc_014~1` duty,
+  for the command and the bus voltage read at the call, times the PWM
+  period.
+- A rejected command returns false and leaves every compare value
+  unchanged.
+
+Covers:
+- `sys~mc_004~1`
+
+Needs: impl, test
+
 ## Current and voltage sense
 
 ### Sense readout in engineering units
@@ -128,7 +149,8 @@ Acceptance:
 - A sense with zero scale returns false.
 - A new injected sample changes the reported phase current at the next read;
   a new regular sample of the same input does not.
-- A new regular sample changes the reported bus current at the next read.
+- A new regular sample of a bus sense's input changes that sense's reported
+  value at the next read.
 
 Covers:
 - `sys~mc_001~1`

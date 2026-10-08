@@ -5,14 +5,14 @@ tags: [firmware, mc, app, driver]
 
 # Frame transforms and space-vector modulation
 
-Pure functions shared by the commutation methods: the transforms between
-phase, stationary (α, β), and rotor (d, q) quantities, and the space-vector
-modulator that turns a stationary-frame voltage command into three
-per-phase duties.
+Pure functions: the transforms between phase, stationary (α, β), and rotor
+(d, q) quantities, and the space-vector modulator that turns a
+stationary-frame voltage command into three per-phase duties.
 
-See also: [[vf-sinusoidal]] (fw~mc_010~1 commands its voltage through the
-modulator), [[motor-control-application]] (fw~mc_016~1 observes the
-rotor-frame currents), [[motor-control]] (sys~mc_001~1).
+See also: [[bridge]] (fw~io_bridge_008~1 applies the modulator's duties),
+[[vf-sinusoidal]] (fw~mc_010~1 commands its voltage through the bridge),
+[[motor-control-application]] (fw~mc_016~1 observes the rotor-frame
+currents), [[motor-control]] (sys~mc_001~1).
 
 ### Frame transforms
 `fw~mc_013~1`
@@ -47,9 +47,9 @@ v_u = v_α, v_v = (−v_α + √3 v_β) / 2, v_w = (−v_α − √3 v_β) / 2
 
 d_x = 0.5 + (v_x − (max(v_u, v_v, v_w) + min(v_u, v_v, v_w)) / 2) / V_bus
 
-where a command whose magnitude exceeds V_bus / √3 is first scaled to
-magnitude V_bus / √3 at its own angle, and a bus voltage of zero yielding
-duties of 0.5.
+for V_bus above zero, a command whose magnitude exceeds V_bus / √3 first
+scaled to magnitude V_bus / √3 at its own angle; for V_bus at or below
+zero, every duty is 0.5.
 
 Rationale:
 - Sector-based SVM and min/max zero-sequence injection yield the same duty

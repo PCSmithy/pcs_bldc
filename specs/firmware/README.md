@@ -22,8 +22,9 @@ Sub-folders are created when a topic gets its first spec.
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
 - `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4
   gate-driver management), `fw~mc_006~1` (app_motorControl gating and
-  the PWM-synchronous commutation step), `fw~mc_013~1` (frame transforms
-  and space-vector modulation), the six-step and V/f methods; also FOC,
+  the PWM-synchronous commutation step), `fw~mc_013~1` / `fw~mc_014~1`
+  (frame transforms, space-vector modulation), the six-step and V/f
+  methods; also FOC,
   motion, trajectory tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver), `fw~est_velocity_001~1` (encoder-derived

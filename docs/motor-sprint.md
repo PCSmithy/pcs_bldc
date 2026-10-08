@@ -19,7 +19,8 @@ phase currents from the 20 kHz injected ADC with a per-cycle callback
 `IO_bridge` and `app_motorControl` are C++ classes
 (`docs/cpp-coding-conventions.md`); new control code is C++. Written ahead of their code, for the next branch:
 the V/f + modulation set `fw~mc_010`, `fw~mc_013`–`fw~mc_017`
-(`specs/firmware/mc/vf-sinusoidal.md`, `modulation.md`).
+(`specs/firmware/mc/vf-sinusoidal.md`, `modulation.md`) and the bridge's
+voltage-vector command `fw~io_bridge_008` (`specs/firmware/io/bridge.md`).
 
 **Read first:**
 1. `CLAUDE.md`, plus the ADC and unhandled-IRQ gotchas at the bottom of this
