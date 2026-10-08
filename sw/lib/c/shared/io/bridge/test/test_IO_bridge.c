@@ -17,16 +17,19 @@
 #define TEST_TRIGGER_PERIOD_US (50U)
 #define MOTOR          (IO_BRIDGE_CHANNEL_MOTOR)
 
-// Current-sense front ends the current tests read back through. Phase shunts
-// are biased (bipolar) INA240-style: i = (v - 1.65) / 0.1; the bus shunt is
-// ground-referenced: i = v / 0.6. IN#s span both ADCs to prove routing.
+// Sense front ends the readers are tested through. Phase shunts are biased
+// (bipolar) INA240-style: i = (v - 1.65) / 0.1; the bus shunt is
+// ground-referenced: i = v / 0.6; the bus voltage divider is 0.15 V/V.
+// IN#s span both ADCs to prove routing.
 #define SENSE_PHASE_BIAS_V   (1.65f)
 #define SENSE_PHASE_V_PER_A  (0.1f)
 #define SENSE_BUS_V_PER_A    (0.6f)
+#define SENSE_BUS_V_PER_V    (0.15f)
 #define SENSE_U_IN           (6U)
 #define SENSE_V_IN           (7U)
 #define SENSE_W_IN           (8U)
 #define SENSE_BUS_IN         (11U)
+#define SENSE_BUS_V_IN       (12U)
 
 // U and V each occupy slot 0 of their own ADC's injected sequence, as on the
 // board; W and the bus shunt have no crest sample.
@@ -57,7 +60,9 @@ static void buildGoodConfig(void)
         },
         .busCurrent = { HW_ADC_CHANNEL_2, SENSE_BUS_IN, IO_BRIDGE_INJECTED_NONE,
                         0.0f, SENSE_BUS_V_PER_A },
-        .injectedPairWindow_us = TEST_PAIR_WINDOW_US };
+        .injectedPairWindow_us = TEST_PAIR_WINDOW_US,
+        .busVoltage = { HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, IO_BRIDGE_INJECTED_NONE,
+                        0.0f, SENSE_BUS_V_PER_V } };
 
     config = (IO_bridge_config_S){
         .channels           = bridgeCfg,
@@ -454,6 +459,14 @@ static void test_getBusCurrent_before_init_fails(void)
     TEST_ASSERT_EQUAL_FLOAT(123.0f, amps);
 }
 
+// [test->fw~io_bridge_005~1]
+static void test_getBusVoltage_before_init_fails(void)
+{
+    float32_t volts = 123.0f;
+    TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(MOTOR, &volts));
+    TEST_ASSERT_EQUAL_FLOAT(123.0f, volts);
+}
+
 // Must run before any completion is fired: the driver holds its samples in
 // static storage that no test resets.
 // [test->fw~io_bridge_005~1]
@@ -509,12 +522,12 @@ static void test_getPhaseCurrent_follows_injected_not_regular(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, phaseAmps(IO_BRIDGE_PHASE_U));
 }
 
-// An unconfigured phase sense (voltsPerAmp == 0) publishes nothing rather than
+// An unconfigured phase sense (voltsPerUnit == 0) publishes nothing rather than
 // dividing by zero: the phase holds its last value and no triple forms.
 // [test->fw~io_bridge_005~1]
 static void test_getPhaseCurrent_unconfigured_sense_publishes_nothing(void)
 {
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_U].currentSense.voltsPerAmp = 0.0f;
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_U].currentSense.voltsPerUnit = 0.0f;
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
     TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
 
@@ -544,11 +557,11 @@ static void test_getBusCurrent_scales_and_follows_regular(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.5f, amps);
 }
 
-// An unconfigured bus sense (voltsPerAmp == 0) fails rather than dividing by zero.
+// An unconfigured bus sense (voltsPerUnit == 0) fails rather than dividing by zero.
 // [test->fw~io_bridge_005~1]
 static void test_getBusCurrent_unconfigured_sense_fails(void)
 {
-    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].busCurrent.voltsPerAmp = 0.0f;
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].busCurrent.voltsPerUnit = 0.0f;
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
 
     float32_t amps = 7.0f;
@@ -567,6 +580,61 @@ static void test_getBusCurrent_read_failure_propagates(void)
     float32_t amps = 55.0f;
     TEST_ASSERT_FALSE(IO_bridge_getBusCurrent(MOTOR, &amps));
     TEST_ASSERT_EQUAL_FLOAT(55.0f, amps);
+}
+
+// The bus-voltage reader scales the divider's regular sample and follows it
+// sample to sample; its own input, independent of the bus-current one.
+// [test->fw~io_bridge_005~1]
+static void test_getBusVoltage_scales_and_follows_regular(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    float32_t volts = 0.0f;
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);   // 3.0 / 0.15 = 20 V
+    TEST_ASSERT_TRUE(IO_bridge_getBusVoltage(MOTOR, &volts));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 20.0f, volts);
+
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 1.8f);   // 1.8 / 0.15 = 12 V
+    TEST_ASSERT_TRUE(IO_bridge_getBusVoltage(MOTOR, &volts));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12.0f, volts);
+
+    // A new bus-current sample leaves the reported bus voltage alone.
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_2, SENSE_BUS_IN, 0.9f);
+    TEST_ASSERT_TRUE(IO_bridge_getBusVoltage(MOTOR, &volts));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12.0f, volts);
+}
+
+// [test->fw~io_bridge_005~1]
+static void test_getBusVoltage_unconfigured_sense_fails(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].busVoltage.voltsPerUnit = 0.0f;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    float32_t volts = 7.0f;
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+    TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(MOTOR, &volts));
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, volts);
+}
+
+// [test->fw~io_bridge_005~1]
+static void test_getBusVoltage_read_failure_propagates(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    float32_t volts = 55.0f;
+    TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(MOTOR, &volts));   // input never set
+    TEST_ASSERT_EQUAL_FLOAT(55.0f, volts);
+}
+
+static void test_getBusVoltage_out_of_range_and_null_rejected(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+
+    float32_t volts = 9.0f;
+    TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(IO_BRIDGE_CHANNEL_COUNT, &volts));
+    TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(MOTOR, NULL));
+    TEST_ASSERT_EQUAL_FLOAT(9.0f, volts);
 }
 
 static void test_getPhaseCurrent_out_of_range_rejected(void)
@@ -885,6 +953,7 @@ int main(void)
     RUN_TEST(test_registerCycleCallback_before_init_fails);
     RUN_TEST(test_getPhaseCurrent_before_init_fails);
     RUN_TEST(test_getBusCurrent_before_init_fails);
+    RUN_TEST(test_getBusVoltage_before_init_fails);
 
     RUN_TEST(test_init_valid_config);
     RUN_TEST(test_init_null_config);
@@ -929,6 +998,10 @@ int main(void)
     RUN_TEST(test_getBusCurrent_scales_and_follows_regular);
     RUN_TEST(test_getBusCurrent_unconfigured_sense_fails);
     RUN_TEST(test_getBusCurrent_read_failure_propagates);
+    RUN_TEST(test_getBusVoltage_scales_and_follows_regular);
+    RUN_TEST(test_getBusVoltage_unconfigured_sense_fails);
+    RUN_TEST(test_getBusVoltage_read_failure_propagates);
+    RUN_TEST(test_getBusVoltage_out_of_range_and_null_rejected);
     RUN_TEST(test_getPhaseCurrent_out_of_range_rejected);
     RUN_TEST(test_getCurrent_null_rejected);
 

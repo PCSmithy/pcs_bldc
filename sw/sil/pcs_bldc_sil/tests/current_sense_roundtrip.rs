@@ -111,11 +111,11 @@ fn firmware_sees_full_scale_on_saturation() {
     // firmware is a path change here.
     let bias_v = cvar_f64(
         &sim,
-        "IO_bridge_channelConfig[0].phase[0].currentSense.zeroCurrentBias_V",
+        "IO_bridge_channelConfig[0].phase[0].currentSense.bias_V",
     );
     let volts_per_amp = cvar_f64(
         &sim,
-        "IO_bridge_channelConfig[0].phase[0].currentSense.voltsPerAmp",
+        "IO_bridge_channelConfig[0].phase[0].currentSense.voltsPerUnit",
     );
     let rail_a = (vref - bias_v) / volts_per_amp;
     let decoded = decoded_phase_a(&sim, 0);

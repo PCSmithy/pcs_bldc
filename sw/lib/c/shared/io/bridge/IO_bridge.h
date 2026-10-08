@@ -24,16 +24,18 @@ typedef enum
     IO_BRIDGE_PHASE_COUNT,
 } IO_bridge_phase_E; // TODO - convert this to `enum class` if/when consumers are C++
 
-// voltsPerAmp of 0 marks the sense as unconfigured and makes the reader fail
+// One analog sense: value = (V_pin - bias_V) / voltsPerUnit, the unit being
+// amps for a current sense and volts for the bus voltage. voltsPerUnit of 0
+// marks the sense as unconfigured and makes the reader fail.
 // injectedIndex is the sense's position in that ADC's injected sequence
 typedef struct
 {
     HW_ADC_channels_E adcChannel;
     uint8_t           adcInput;
     uint8_t           injectedIndex; // Could expand to specify a derived phase channel, solve KCL programmatically, if desired,
-    float32_t         zeroCurrentBias_V;    // for now, IO_bridge assumes phase W is derived
-    float32_t         voltsPerAmp;
-} IO_bridge_currentSenseConfig_S;
+    float32_t         bias_V;        // for now, IO_bridge assumes phase W is derived
+    float32_t         voltsPerUnit;
+} IO_bridge_senseConfig_S;
 
 // Invoked once per completed phase-current triple, in the injected-completion
 // ISR context (see IO_bridge_registerCycleCallback).
@@ -44,7 +46,7 @@ typedef struct
 {
     HW_TIM_channels_E tim;
     IO_bridge_phase_E complementPhase;
-    IO_bridge_currentSenseConfig_S currentSense;
+    IO_bridge_senseConfig_S currentSense;
 } IO_bridge_phaseConfig_S;
 
 typedef struct
@@ -53,9 +55,10 @@ typedef struct
     HW_TIM_peripheral_E timeBasePeripheral;
 
     IO_bridge_phaseConfig_S phase[IO_BRIDGE_PHASE_COUNT];
-    IO_bridge_currentSenseConfig_S busCurrent;
+    IO_bridge_senseConfig_S busCurrent;
     uint32_t injectedPairWindow_us; // max time span between U and V phase current
                                    // sample times to consider them as synchronous
+    IO_bridge_senseConfig_S busVoltage;   // regular-sequence sample, volts per volt
 } IO_bridge_channelConfig_S;
 
 typedef struct
@@ -83,6 +86,8 @@ bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel);
 bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
 
 bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps_out);
+
+bool IO_bridge_getBusVoltage(IO_bridge_channel_E channel, float32_t * const volts_out);
 
 // One callback per bridge; a later registration replaces the earlier. It runs in
 // the injected-completion ISR, which the board places at an NVIC preempt priority
