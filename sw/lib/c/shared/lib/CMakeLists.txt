@@ -10,6 +10,7 @@ add_subdirectory(filterIIR)
 add_subdirectory(protobuf)
 add_subdirectory(timer)
 add_subdirectory(CYPD3177)
+add_subdirectory(transforms)
 # Future modules:
 # add_subdirectory(nvm)
 # add_subdirectory(rtos)

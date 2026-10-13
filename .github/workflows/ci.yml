@@ -44,6 +44,10 @@ jobs:
 
       - name: Install ARM GCC (embedded firmware)
         uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          # Pinned to the 15.2 the native toolchain matches (CLAUDE.md, Build System);
+          # `latest` moved to 15.3.Rel2, whose download fails the action's hash check.
+          release: '15.2.Rel1'
 
       # The native firmware build finds host `gcc`; on Windows that's MinGW, which
       # also provides the <windows.h> the Win32-fiber port needs.

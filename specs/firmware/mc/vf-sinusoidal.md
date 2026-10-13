@@ -11,18 +11,20 @@ voltage vector the modulator applies. The rotor follows the rotating
 stator field.
 
 See also: [[motor-control-application]] (fw~mc_015~1 runs this method's
-step each PWM cycle), [[modulation]] (fw~mc_013~1 and fw~mc_014~1 turn the
-voltage command into duties), [[bridge]] (fw~io_bridge_005~1 supplies the
-bus voltage), [[commutation-method-architecture]] (sys~mc_005~1).
+step each PWM cycle), [[modulation]] (fw~mc_013~1, the inverse Park
+transform), [[bridge]] (fw~io_bridge_008~1 applies the voltage vector at
+the bridge's own bus voltage), [[commutation-method-architecture]]
+(sys~mc_005~1).
 
 ### V/f sinusoidal commutation
 `fw~mc_010~1`
 
 Each commutation step while active, the V/f method shall advance its
 commanded electrical angle θ by ω_e · T_pwm — ω_e the slewed electrical
-frequency (fw~mc_017~1), T_pwm the PWM period — and command, through the
-inverse Park transform and the modulator, the rotor-frame voltage
-(v_d, v_q) = (0, V) at θ with all three phases enabled, where
+frequency (fw~mc_017~1), T_pwm the PWM period — and drive, through the
+inverse Park transform (fw~mc_013~1) and the bridge voltage-vector command
+(fw~io_bridge_008~1), the rotor-frame voltage (v_d, v_q) = (0, V) at θ with
+all three phases enabled, where
 
 | Bus voltage      | V                                          |
 |------------------|--------------------------------------------|

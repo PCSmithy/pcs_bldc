@@ -1,12 +1,14 @@
-//! Current-sense front end — the shunt + amplifier chain from plant currents to ADC
-//! pin volts.
+//! Sense front end — the shunt + amplifier chain from plant currents to ADC pin
+//! volts, and the bus-voltage divider.
 //!
 //! All ports live in the model's own namespace; the sim wiring routes plant currents
 //! in and ADC pin voltages out (see [`crate::wiring::wire_current_sense`]). Inputs:
-//! `vsig:<name>:{i_u,i_v,i_w,i_bus}` (A). Outputs: `vsig:<name>:{i_u_vsense,i_v_vsense,i_w_vsense,i_bus_vsense}`
-//! (V). Transfer per channel: `v = clamp(bias + gain · i, 0, vref)` — the clamp is
-//! the amplifier rails, so fault-level currents saturate at full scale and negative
-//! bus current (regen) reads 0 V, matching the board's ground-referenced INA180.
+//! `vsig:<name>:{i_u,i_v,i_w,i_bus}` (A) and `v_bus` (V). Outputs:
+//! `vsig:<name>:{i_u_vsense,i_v_vsense,i_w_vsense,i_bus_vsense,v_bus_vsense}` (V).
+//! Transfer per channel: `v = clamp(bias + gain · x, 0, vref)` — the clamp is the
+//! amplifier rails, so fault-level currents saturate at full scale and negative bus
+//! current (regen) reads 0 V, matching the board's ground-referenced INA180; the
+//! bus divider clips at the ADC reference (22 V on the board's 0.15 V/V).
 
 use crate::{observe_port, register_port};
 use voyant::{vsig_id, Cadence, Member, MemberCtx, SigHandle, SignalId, StateTable, Value};
@@ -26,6 +28,8 @@ pub struct CurrentSenseParams {
     pub bus_bias_v: f64,
     /// Bus transfer slope (V/A): INA180A2 (50 V/V) across a 12 mΩ shunt.
     pub bus_gain_v_per_a: f64,
+    /// Bus-voltage divider (V/V): 6.8 kΩ over 2.4 kΩ ‖ 2.4 kΩ, ground referenced.
+    pub bus_v_gain_v_per_v: f64,
     /// Amplifier rail (V): outputs clamp to `[0, vref_v]`.
     pub vref_v: f64,
 }
@@ -37,6 +41,7 @@ impl Default for CurrentSenseParams {
             phase_gain_v_per_a: 0.1,
             bus_bias_v: 0.0,
             bus_gain_v_per_a: 0.6,
+            bus_v_gain_v_per_v: 0.15,
             vref_v: 3.3,
         }
     }
@@ -47,9 +52,9 @@ impl Default for CurrentSenseParams {
 pub struct CurrentSenseModel {
     name: String,
     params: CurrentSenseParams,
-    // Pre-resolved handles (resolve-once), filled at enable: 4 inputs, 4 outputs.
-    hin: [Option<SigHandle>; 4],
-    hout: [Option<SigHandle>; 4],
+    // Pre-resolved handles (resolve-once), filled at enable: 5 inputs, 5 outputs.
+    hin: [Option<SigHandle>; 5],
+    hout: [Option<SigHandle>; 5],
 }
 
 impl CurrentSenseModel {
@@ -57,8 +62,8 @@ impl CurrentSenseModel {
         Self {
             name: name.to_string(),
             params: CurrentSenseParams::default(),
-            hin: [None; 4],
-            hout: [None; 4],
+            hin: [None; 5],
+            hout: [None; 5],
         }
     }
 
@@ -90,6 +95,7 @@ impl Member for CurrentSenseModel {
             observe_port(ctx.st, self.hin[2]),
         ];
         let i_bus = observe_port(ctx.st, self.hin[3]);
+        let v_bus = observe_port(ctx.st, self.hin[4]);
 
         let mut i_k_vsense = [self.params.phase_bias_v; 3];
 
@@ -99,12 +105,14 @@ impl Member for CurrentSenseModel {
         }
         let i_bus_vsense = (self.params.bus_bias_v + i_bus * self.params.bus_gain_v_per_a)
             .clamp(0.0, self.params.vref_v);
+        let v_bus_vsense = (v_bus * self.params.bus_v_gain_v_per_v).clamp(0.0, self.params.vref_v);
 
         for (h, v) in self.hout.iter().zip([
             i_k_vsense[0],
             i_k_vsense[1],
             i_k_vsense[2],
             i_bus_vsense,
+            v_bus_vsense,
         ]) {
             if let Some(h) = h {
                 let _ = ctx.st.record_by(*h, Value::F64(v));
@@ -117,9 +125,16 @@ impl Member for CurrentSenseModel {
             for (i, c) in ["i_u", "i_v", "i_w", "i_bus"].iter().enumerate() {
                 self.hin[i] = register_port(st, &self.port_id(c), Some("A"));
             }
-            for (i, c) in ["i_u_vsense", "i_v_vsense", "i_w_vsense", "i_bus_vsense"]
-                .iter()
-                .enumerate()
+            self.hin[4] = register_port(st, &self.port_id("v_bus"), Some("V"));
+            for (i, c) in [
+                "i_u_vsense",
+                "i_v_vsense",
+                "i_w_vsense",
+                "i_bus_vsense",
+                "v_bus_vsense",
+            ]
+            .iter()
+            .enumerate()
             {
                 self.hout[i] = register_port(st, &self.port_id(c), Some("V"));
             }
