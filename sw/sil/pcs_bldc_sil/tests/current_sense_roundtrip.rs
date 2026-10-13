@@ -3,9 +3,10 @@
 //! the rail, and a stuck sense line hides real current from the firmware.
 
 use pcs_bldc_sil::board::{
-    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, PHASE_TRIP_A, SENSE,
+    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, MOTOR, PHASE_TRIP_A,
+    SENSE,
 };
-use pcs_bldc_sil::{vid, Board, Sil};
+use pcs_bldc_sil::{cid, vid, Board, Sil, SOURCE};
 use voyant::SignalId;
 
 /// The 1 ms task needs a few passes to resample after an injection.
@@ -190,5 +191,28 @@ fn stuck_sensor_hides_current() {
     assert!(
         (restored - INJECTED_A).abs() < PHASE_TOL_A,
         "the reconnected line decodes the {INJECTED_A} A still flowing: {restored} A"
+    );
+}
+
+/// The bus voltage reaches the firmware through the divider: the wiring's port name,
+/// the sim ADC's input name, and the board table's IN# all have to agree for this to
+/// hold. 20 V on the plant bus is 3.0 V at ADC1_IN12, and the firmware's regular pass
+/// samples it as 3.0 / 3.3 of the 12-bit span.
+#[test]
+fn bus_voltage_reaches_the_firmware_adc() {
+    let Board { mut sim, .. } = board(0.0);
+    sim.write(&vid(MOTOR, "v_bus"), 20.0).expect("set the bus");
+    sim.run_for_ms(GATE_BRINGUP_MS);
+
+    let pin_v = sim.read_f64(&vid(SOURCE, "ADC1_IN12"));
+    assert!(
+        (pin_v - 3.0).abs() < 1e-6,
+        "a 20 V bus senses 3.0 V at ADC1_IN12, got {pin_v}"
+    );
+    let counts = sim.read_u64(&cid("HW_ADC_data.channelData[0].counts[12]"));
+    let want = ((3.0 / cvar_f64(&sim, "HW_ADC_channelConfig[0].vref")) * 4095.0).round() as u64;
+    assert!(
+        counts.abs_diff(want) <= 1,
+        "ADC1 regular sample of IN12 is {counts} counts, expected {want}"
     );
 }

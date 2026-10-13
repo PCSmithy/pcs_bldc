@@ -1,7 +1,6 @@
 #pragma once
 
 #include "lib_types.h"
-#include <math.h>
 
 #define PI (3.14159265359f)
 
@@ -63,4 +62,3 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 #define SET_BIT_U32(num_ptr, bit) (*(num_ptr) |= (1UL << (bit)))
 #define GET_BIT_U32(num, bit)     (((num) & (1UL << (bit))) != 0UL)
 
-#define L2_NORM_2D(x, y)     (sqrtf((x)*(x) + (y)*(y)))

@@ -1,5 +1,6 @@
 #include "IO_bridge.h"
 #include "lib_transforms.h"
+#include <math.h>   // NAN, INFINITY
 #include "mock_HW_TIM.h"
 #include "mock_HW_ADC.h"
 #include "unity.h"
@@ -701,7 +702,7 @@ static void test_setVoltageVector_lands_the_modulator_duties(void)
         { 0.7071f * limit, 0.7071f * limit },   // on the limit
         { 2.0f * limit, 1.0f * limit },         // over-modulated: clamped at its angle
     };
-    for (size_t i = 0U; i < (sizeof(commands) / sizeof(commands[0])); i++)
+    for (size_t i = 0U; i < COUNTOF(commands); i++)
     {
         TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, commands[i][0], commands[i][1]));
         assertSvmCompares(commands[i][0], commands[i][1], vBus);
@@ -752,6 +753,24 @@ static void test_setVoltageVector_unconfigured_bus_sense_rejected_leaves_compare
     TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, 6.0f, 0.0f));
     TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
     TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+}
+
+// A non-finite command (a law dividing by a dead bus upstream) is rejected before
+// any compare moves.
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_non_finite_command_rejected_leaves_compares(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_U, 0.25f));
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_V, 0.5f));
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_W, 0.75f));
+
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, NAN, 0.0f));
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, 1.0f, INFINITY));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 2U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_EQUAL_UINT32((TEST_PERIOD * 3U) / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
 }
 
 // [test->fw~io_bridge_008~1]
@@ -1135,6 +1154,7 @@ int main(void)
     RUN_TEST(test_setVoltageVector_reads_the_bus_at_each_call);
     RUN_TEST(test_setVoltageVector_unreadable_bus_rejected_leaves_compares);
     RUN_TEST(test_setVoltageVector_unconfigured_bus_sense_rejected_leaves_compares);
+    RUN_TEST(test_setVoltageVector_non_finite_command_rejected_leaves_compares);
     RUN_TEST(test_setVoltageVector_out_of_range_bridge_rejected);
     RUN_TEST(test_getPhaseCurrent_out_of_range_rejected);
     RUN_TEST(test_getCurrent_null_rejected);

@@ -62,7 +62,7 @@ typedef struct
 /* Private Free Function Declarations */
 
 static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period);
-static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t volts, float32_t * const amps_out);
+static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t volts, float32_t * const value_out);
 static bool IO_bridge_private_readRegularSense(const IO_bridge_senseConfig_S * const sense, float32_t * const value_out);
 static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_senseConfig_S * const sense, float32_t * const amps_out);
 static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const config);
@@ -338,9 +338,18 @@ bool Bridge::setVoltageVector(float32_t vAlpha, float32_t vBeta)
                             &duty[IO_BRIDGE_PHASE_W]);
 
         ret = true;
-        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_U].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_U], period_counts));
-        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_V].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_V], period_counts));
-        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_W].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_W], period_counts));
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            ret &= ((duty[phase] >= 0.0f) && (duty[phase] <= 1.0f));
+        }
+        if (ret)
+        {
+            for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+            {
+                ret &= HW_TIM_setCompare(this->config->phase[phase].tim,
+                                            IO_bridge_private_dutyToCompare(duty[phase], period_counts));
+            }
+        }
     }
     return ret;
 }

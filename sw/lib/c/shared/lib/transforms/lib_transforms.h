@@ -4,7 +4,6 @@
 #include "lib_types.h"
 #include "lib_utils.h"
 #include <math.h>
-#include <float.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,11 +13,13 @@ extern "C" {
 /* Defines */
 
 #define LIB_TRANSFORMS_SQRT3 (1.7320508f)
+#define LIB_TRANSFORMS_1_DIV_SQRT3 (0.5773502f)
 
 /* Typedefs */
 
 
 /* Public Function Declarations  */
+// [impl->fw~mc_013~1]
 static inline void lib_transforms_clarke(
     // inputs
     float32_t a,
@@ -36,6 +37,7 @@ static inline void lib_transforms_clarke(
     }
 }
 
+// [impl->fw~mc_013~1]
 static inline void lib_transforms_park(
     // inputs
     float32_t alpha,
@@ -55,6 +57,7 @@ static inline void lib_transforms_park(
     }
 }
 
+// [impl->fw~mc_013~1]
 static inline void lib_transforms_inversePark(
     // inputs
     float32_t d,
@@ -74,6 +77,7 @@ static inline void lib_transforms_inversePark(
     }
 }
 
+// [impl->fw~mc_014~1]
 static inline void lib_transforms_svm(
     // inputs
     float32_t vAlpha,
@@ -87,7 +91,7 @@ static inline void lib_transforms_svm(
 {
     if ((d_u != NULL) && (d_v != NULL) && (d_w != NULL))
     {
-        if (vBus < FLT_EPSILON) // ~0V or below
+        if (vBus <= 0.0f) // ~0V or below
         {
             *d_u = 0.5f;
             *d_v = 0.5f;
@@ -95,13 +99,14 @@ static inline void lib_transforms_svm(
         }
         else // vBus > 0
         {
-            const float32_t limit = vBus / LIB_TRANSFORMS_SQRT3;
-            const float32_t vVectorMag = L2_NORM_2D(vAlpha, vBeta);
+            const float32_t limit_sq = (vBus*vBus) / 3.0f;
+            const float32_t vVectorMag_sq = (vAlpha*vAlpha) + (vBeta*vBeta);
 
             // if current vector magnitude > V bus
-            if (vVectorMag > limit)
+            if (vVectorMag_sq > limit_sq)
             {
-                const float32_t k = limit / vVectorMag;
+                const float32_t vVectorMag = sqrtf(vVectorMag_sq);
+                const float32_t k = vBus * LIB_TRANSFORMS_1_DIV_SQRT3 / vVectorMag; // limit / mag
 
                 // clamp voltage vector
                 vAlpha *= k;
@@ -116,9 +121,11 @@ static inline void lib_transforms_svm(
             const float32_t min_v = MIN_OF3(v_u, v_v, v_w);
             const float32_t offset = ((max_v + min_v) / 2.0f);
 
-            *d_u = 0.5f + (v_u - offset) / vBus;
-            *d_v = 0.5f + (v_v - offset) / vBus;
-            *d_w = 0.5f + (v_w - offset) / vBus;
+            const float32_t invVBus = 1.0f / vBus;
+
+            *d_u = 0.5f + (v_u - offset) * invVBus;
+            *d_v = 0.5f + (v_v - offset) * invVBus;
+            *d_w = 0.5f + (v_w - offset) * invVBus;
         }
     }
 }

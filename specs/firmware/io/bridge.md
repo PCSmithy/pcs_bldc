@@ -108,7 +108,8 @@ Needs: impl, test
 The driver shall apply a stationary-frame voltage command (v_α, v_β) to a
 bridge as the three per-phase duties `fw~mc_014~1` produces from it and the
 bridge's bus voltage (`fw~io_bridge_005~1`), returning false, with every
-phase's duty unchanged, when that bus-voltage readout fails.
+phase's duty unchanged, for a non-finite command or a failed bus-voltage
+readout.
 
 Acceptance:
 - Each phase's compare value is within one count of its `fw~mc_014~1` duty,

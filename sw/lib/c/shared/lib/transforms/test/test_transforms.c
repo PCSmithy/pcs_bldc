@@ -38,7 +38,7 @@ static float tol(double magnitude)
 }
 
 static const double AMPLITUDES[] = { 0.1, 1.0, 10.0, 100.0 };
-#define N_AMPLITUDES (sizeof(AMPLITUDES) / sizeof(AMPLITUDES[0]))
+#define N_AMPLITUDES COUNTOF(AMPLITUDES)
 #define N_ANGLES     (72U)   // 5 degree steps over a full turn
 
 /* ---- fw~mc_013: reference sweeps ---- */
@@ -81,7 +81,7 @@ static void test_clarke_matches_reference_on_unbalanced_sets(void)
         { 5.0, 5.0, 5.0 },     // pure zero-sequence maps to the origin
         { -2.5, 0.75, 10.0 },
     };
-    for (size_t i = 0U; i < (sizeof(sets) / sizeof(sets[0])); i++)
+    for (size_t i = 0U; i < COUNTOF(sets); i++)
     {
         const double a = sets[i][0], b = sets[i][1], c = sets[i][2];
         const double mag = sqrt((a * a) + (b * b) + (c * c));
@@ -251,35 +251,37 @@ static void ref_svm(double vAlpha, double vBeta, double vBus, double d[3])
     if (vBus <= 0.0)
     {
         d[0] = d[1] = d[2] = 0.5;
-        return;
     }
-    const double limit = vBus / sqrt(3.0);
-    const double mag = sqrt((vAlpha * vAlpha) + (vBeta * vBeta));
-    if (mag > limit)
+    else
     {
-        vAlpha *= limit / mag;
-        vBeta  *= limit / mag;
-    }
-    const double axis[3] = { 0.0, TWO_PI_3, -TWO_PI_3 };
-    double v[3];
-    for (int i = 0; i < 3; i++)
-    {
-        v[i] = (vAlpha * cos(axis[i])) + (vBeta * sin(axis[i]));
-    }
-    const double vMax = fmax(v[0], fmax(v[1], v[2]));
-    const double vMin = fmin(v[0], fmin(v[1], v[2]));
-    for (int i = 0; i < 3; i++)
-    {
-        d[i] = 0.5 + ((v[i] - ((vMax + vMin) / 2.0)) / vBus);
+        const double limit = vBus / sqrt(3.0);
+        const double mag = sqrt((vAlpha * vAlpha) + (vBeta * vBeta));
+        if (mag > limit)
+        {
+            vAlpha *= limit / mag;
+            vBeta  *= limit / mag;
+        }
+        const double axis[3] = { 0.0, TWO_PI_3, -TWO_PI_3 };
+        double v[3];
+        for (int i = 0; i < 3; i++)
+        {
+            v[i] = (vAlpha * cos(axis[i])) + (vBeta * sin(axis[i]));
+        }
+        const double vMax = fmax(v[0], fmax(v[1], v[2]));
+        const double vMin = fmin(v[0], fmin(v[1], v[2]));
+        for (int i = 0; i < 3; i++)
+        {
+            d[i] = 0.5 + ((v[i] - ((vMax + vMin) / 2.0)) / vBus);
+        }
     }
 }
 
 static const double BUS_VOLTAGES[] = { 5.0, 12.0, 20.0, 24.0 };
-#define N_BUS (sizeof(BUS_VOLTAGES) / sizeof(BUS_VOLTAGES[0]))
+#define N_BUS COUNTOF(BUS_VOLTAGES)
 
 // Command magnitudes as a fraction of the linear limit V_bus / sqrt(3).
 static const double MAG_FRACTIONS[] = { 0.0, 0.25, 0.5, 0.9, 1.0, 1.3, 2.0 };
-#define N_MAG (sizeof(MAG_FRACTIONS) / sizeof(MAG_FRACTIONS[0]))
+#define N_MAG COUNTOF(MAG_FRACTIONS)
 
 // [test->fw~mc_014~1]
 static void test_svm_matches_reference_including_overmodulation(void)
@@ -342,7 +344,7 @@ static void test_svm_duty_differences_equal_voltage_differences_within_limit(voi
     {
         const double vBus = BUS_VOLTAGES[b];
         const double limit = vBus / sqrt(3.0);
-        for (size_t m = 0U; m < (sizeof(fractions) / sizeof(fractions[0])); m++)
+        for (size_t m = 0U; m < COUNTOF(fractions); m++)
         {
             for (uint32_t k = 0U; k < N_ANGLES; k++)
             {
@@ -414,7 +416,7 @@ static void test_svm_overmodulated_command_keeps_its_angle(void)
 static void test_svm_bus_voltage_at_or_below_zero_gives_half_duties(void)
 {
     const float32_t buses[] = { 0.0f, -0.001f, -24.0f };
-    for (size_t b = 0U; b < (sizeof(buses) / sizeof(buses[0])); b++)
+    for (size_t b = 0U; b < COUNTOF(buses); b++)
     {
         float32_t d[3] = { -1.0f, -1.0f, -1.0f };
         lib_transforms_svm(7.0f, -3.0f, buses[b], &d[0], &d[1], &d[2]);
