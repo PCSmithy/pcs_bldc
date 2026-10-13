@@ -14,6 +14,7 @@ target_include_directories(test_io_bridge PRIVATE
 )
 target_link_libraries(test_io_bridge PRIVATE
   lib_types
+  lib_transforms     # SVM — IO_bridge.cpp includes it
   unity
   mock_hw_TIM
   mock_hw_ADC

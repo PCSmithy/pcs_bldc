@@ -79,6 +79,8 @@ bool IO_bridge_setOutputEnabled(IO_bridge_channel_E channel, bool enabled);
 
 bool IO_bridge_getOutputEnabled(IO_bridge_channel_E channel, bool * const enabled);
 
+bool IO_bridge_setVoltageVector(IO_bridge_channel_E channel, float32_t vAlpha, float32_t vBeta);
+
 // Clear the bridge's latched hardware-break flags. Must be called once
 // upon gate drive boot
 bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel);

@@ -1,4 +1,5 @@
 #include "IO_bridge.h"
+#include "lib_transforms.h"
 #include "mock_HW_TIM.h"
 #include "mock_HW_ADC.h"
 #include "unity.h"
@@ -467,6 +468,16 @@ static void test_getBusVoltage_before_init_fails(void)
     TEST_ASSERT_EQUAL_FLOAT(123.0f, volts);
 }
 
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_before_init_fails(void)
+{
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, 6.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
+}
+
 // Must run before any completion is fired: the driver holds its samples in
 // static storage that no test resets.
 // [test->fw~io_bridge_005~1]
@@ -635,6 +646,122 @@ static void test_getBusVoltage_out_of_range_and_null_rejected(void)
     TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(IO_BRIDGE_CHANNEL_COUNT, &volts));
     TEST_ASSERT_FALSE(IO_bridge_getBusVoltage(MOTOR, NULL));
     TEST_ASSERT_EQUAL_FLOAT(9.0f, volts);
+}
+
+/* ---- voltage-vector command (fw~io_bridge_008) ---- */
+
+// The compare a duty should land on: round(duty x period), as the driver does.
+static uint32_t expectedCompare(float32_t duty)
+{
+    return (uint32_t)((duty * (float32_t)TEST_PERIOD) + 0.5f);
+}
+
+// The three compares against the modulator's duties for (vAlpha, vBeta) at vBus,
+// within one count each.
+static void assertSvmCompares(float32_t vAlpha, float32_t vBeta, float32_t vBus)
+{
+    float32_t dU, dV, dW;
+    lib_transforms_svm(vAlpha, vBeta, vBus, &dU, &dV, &dW);
+    TEST_ASSERT_UINT32_WITHIN(1U, expectedCompare(dU), mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_UINT32_WITHIN(1U, expectedCompare(dV), mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_UINT32_WITHIN(1U, expectedCompare(dW), mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
+}
+
+// Zero command: every phase at mid-rail, whatever the bus.
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_zero_command_centres_every_phase(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);   // 20 V
+
+    TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, 0.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 2U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 2U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 2U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
+}
+
+// Commands in the linear range, on the limit, and over-modulated all land the
+// fw~mc_014 duties at the sensed bus voltage. (6, 0) at 20 V is the hand-checkable
+// one: v = (6, -3, -3), offset 1.5, duties 0.725 / 0.275 / 0.275 -> 2900 / 1100 / 1100.
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_lands_the_modulator_duties(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);   // 20 V
+    const float32_t vBus  = 20.0f;
+    const float32_t limit = vBus / LIB_TRANSFORMS_SQRT3;
+
+    TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, 6.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(2900U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(1100U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_EQUAL_UINT32(1100U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
+
+    const float32_t commands[][2] = {
+        { 0.3f * limit, -0.6f * limit },
+        { 0.7071f * limit, 0.7071f * limit },   // on the limit
+        { 2.0f * limit, 1.0f * limit },         // over-modulated: clamped at its angle
+    };
+    for (size_t i = 0U; i < (sizeof(commands) / sizeof(commands[0])); i++)
+    {
+        TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, commands[i][0], commands[i][1]));
+        assertSvmCompares(commands[i][0], commands[i][1], vBus);
+    }
+}
+
+// The bus is read at each call: the same volts need a wider swing on a lower bus.
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_reads_the_bus_at_each_call(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);   // 20 V
+    TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, 4.0f, 3.0f));
+    assertSvmCompares(4.0f, 3.0f, 20.0f);
+    const uint32_t uAt20 = mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U);
+
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 1.8f);   // 12 V
+    TEST_ASSERT_TRUE(IO_bridge_setVoltageVector(MOTOR, 4.0f, 3.0f));
+    assertSvmCompares(4.0f, 3.0f, 12.0f);
+    TEST_ASSERT_TRUE(mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U) > uAt20);
+}
+
+// A bus-voltage readout that fails (input never sampled) rejects the command and
+// leaves every compare where the last good command put it.
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_unreadable_bus_rejected_leaves_compares(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_U, 0.25f));
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_V, 0.5f));
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_W, 0.75f));
+
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, 6.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 2U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+    TEST_ASSERT_EQUAL_UINT32((TEST_PERIOD * 3U) / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_W));
+}
+
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_unconfigured_bus_sense_rejected_leaves_compares(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].busVoltage.voltsPerUnit = 0.0f;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseDuty(MOTOR, IO_BRIDGE_PHASE_U, 0.25f));
+
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(MOTOR, 6.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(TEST_PERIOD / 4U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_V));
+}
+
+// [test->fw~io_bridge_008~1]
+static void test_setVoltageVector_out_of_range_bridge_rejected(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    mock_HW_ADC_setVolts(HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, 3.0f);
+
+    TEST_ASSERT_FALSE(IO_bridge_setVoltageVector(IO_BRIDGE_CHANNEL_COUNT, 6.0f, 0.0f));
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_HW_TIM_getCompare(HW_TIM_CHANNEL_PWM_U));
 }
 
 static void test_getPhaseCurrent_out_of_range_rejected(void)
@@ -954,6 +1081,7 @@ int main(void)
     RUN_TEST(test_getPhaseCurrent_before_init_fails);
     RUN_TEST(test_getBusCurrent_before_init_fails);
     RUN_TEST(test_getBusVoltage_before_init_fails);
+    RUN_TEST(test_setVoltageVector_before_init_fails);
 
     RUN_TEST(test_init_valid_config);
     RUN_TEST(test_init_null_config);
@@ -1002,6 +1130,12 @@ int main(void)
     RUN_TEST(test_getBusVoltage_unconfigured_sense_fails);
     RUN_TEST(test_getBusVoltage_read_failure_propagates);
     RUN_TEST(test_getBusVoltage_out_of_range_and_null_rejected);
+    RUN_TEST(test_setVoltageVector_zero_command_centres_every_phase);
+    RUN_TEST(test_setVoltageVector_lands_the_modulator_duties);
+    RUN_TEST(test_setVoltageVector_reads_the_bus_at_each_call);
+    RUN_TEST(test_setVoltageVector_unreadable_bus_rejected_leaves_compares);
+    RUN_TEST(test_setVoltageVector_unconfigured_bus_sense_rejected_leaves_compares);
+    RUN_TEST(test_setVoltageVector_out_of_range_bridge_rejected);
     RUN_TEST(test_getPhaseCurrent_out_of_range_rejected);
     RUN_TEST(test_getCurrent_null_rejected);
 

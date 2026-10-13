@@ -32,6 +32,11 @@ const SENSE_OUTPUT_PORTS: [(&str, &str); 4] = [
     ("i_bus_vsense", "ADC2_IN11"),
 ];
 
+/// The bus-voltage pair, appended after the current routes so their indices hold:
+/// the motor's bus into the divider model, the divider's pin voltage onto the ADC.
+const BUS_VOLTAGE_IN: (&str, &str) = ("v_bus", "v_bus");
+const BUS_VOLTAGE_OUT: (&str, &str) = ("v_bus_vsense", "ADC1_IN12");
+
 /// The `(src, dst)` endpoint pairs a wiring helper installed, in its port-table
 /// order. Each pair addresses one route for [`Engine::suspend_route`] /
 /// [`Engine::resume_route`], the fault-injection seam.
@@ -41,8 +46,8 @@ pub struct RouteBundle<const N: usize> {
 
 /// The seven delayed bridge routes [`wire_bridge`] installs.
 pub type BridgeRoutes = RouteBundle<7>;
-/// The eight zero-latency sense routes [`wire_current_sense`] installs.
-pub type CurrentSenseRoutes = RouteBundle<8>;
+/// The ten zero-latency sense routes [`wire_current_sense`] installs.
+pub type CurrentSenseRoutes = RouteBundle<10>;
 
 impl<const N: usize> RouteBundle<N> {
     /// The route endpoints, for suspending or resuming an individual edge.
@@ -88,17 +93,17 @@ pub fn wire_bridge(
     })
 }
 
-/// Bind motor `motor`'s current outputs to sense model `sense`'s inputs, and the
-/// sense model's pin-voltage outputs to firmware `fw`'s ADC ports. All eight routes
-/// are zero-latency: with members registered motor → sense → firmware, the firmware
-/// samples the same tick's plant currents — no artificial sensing delay.
+/// Bind motor `motor`'s current outputs to sense model `sense`'s inputs, the sense
+/// model's pin-voltage outputs to firmware `fw`'s ADC ports, then the bus-voltage pair.
+/// All ten routes are zero-latency: with members registered motor → sense → firmware,
+/// the firmware samples the same tick's plant state — no artificial sensing delay.
 pub fn wire_current_sense(
     eng: &mut Engine,
     motor: &str,
     sense: &str,
     fw: &str,
 ) -> Result<CurrentSenseRoutes, Box<dyn std::error::Error>> {
-    let mut routes = Vec::with_capacity(SENSE_INPUT_PORTS.len() + SENSE_OUTPUT_PORTS.len());
+    let mut routes = Vec::with_capacity(SENSE_INPUT_PORTS.len() + SENSE_OUTPUT_PORTS.len() + 2);
     for (output, input) in SENSE_INPUT_PORTS {
         let src = vsig_id(motor, output)?;
         let dst = vsig_id(sense, input)?;
@@ -111,7 +116,14 @@ pub fn wire_current_sense(
         eng.add_route(src.clone(), dst.clone())?;
         routes.push((src, dst));
     }
+    for (src, dst) in [
+        (vsig_id(motor, BUS_VOLTAGE_IN.0)?, vsig_id(sense, BUS_VOLTAGE_IN.1)?),
+        (vsig_id(sense, BUS_VOLTAGE_OUT.0)?, vsig_id(fw, BUS_VOLTAGE_OUT.1)?),
+    ] {
+        eng.add_route(src.clone(), dst.clone())?;
+        routes.push((src, dst));
+    }
     Ok(RouteBundle {
-        routes: routes.try_into().expect("eight sense routes"),
+        routes: routes.try_into().expect("ten sense routes"),
     })
 }

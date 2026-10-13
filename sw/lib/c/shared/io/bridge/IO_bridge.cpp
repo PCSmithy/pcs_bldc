@@ -1,5 +1,6 @@
 /* Includes */
 #include "lib_types.h"
+#include "lib_transforms.h"
 #include "IO_bridge.h"
 #include "HW_TIM.h"
 
@@ -19,6 +20,7 @@ class Bridge
         bool setPhaseOutputEnabled(IO_bridge_phase_E phase, bool enabled);
         bool setOutputEnabled(bool enabled);
         bool getOutputEnabled(bool * const enabled);
+        bool setVoltageVector(float32_t vAlpha, float32_t vBeta);
         bool clearBreakFlags();
 
         bool getPhaseCurrent(IO_bridge_phase_E phase, float32_t * amps_out);
@@ -317,6 +319,32 @@ bool Bridge::getOutputEnabled(bool * const enabled)
            HW_TIM_getMainOutputEnabled(this->moePeripheral, enabled);
 }
 
+// [impl->fw~io_bridge_008~1] every step that can fail precedes the first compare
+// write, so a rejected command leaves the duties as they were.
+bool Bridge::setVoltageVector(float32_t vAlpha, float32_t vBeta)
+{
+    bool ret = false;
+    float32_t busVoltage = 0.0f;
+    uint32_t period_counts = 0U;
+    if ((this->config != NULL) &&
+        (this->getBusVoltage(&busVoltage)) &&
+        HW_TIM_getPeriod(this->config->phase[IO_BRIDGE_PHASE_U].tim, &period_counts))
+    {
+        // duty [0, 1]
+        float32_t duty[IO_BRIDGE_PHASE_COUNT] = { 0.0f };
+        lib_transforms_svm(vAlpha, vBeta, busVoltage,
+                            &duty[IO_BRIDGE_PHASE_U],
+                            &duty[IO_BRIDGE_PHASE_V],
+                            &duty[IO_BRIDGE_PHASE_W]);
+
+        ret = true;
+        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_U].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_U], period_counts));
+        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_V].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_V], period_counts));
+        ret &= HW_TIM_setCompare(this->config->phase[IO_BRIDGE_PHASE_W].tim, IO_bridge_private_dutyToCompare(duty[IO_BRIDGE_PHASE_W], period_counts));
+    }
+    return ret;
+}
+
 bool Bridge::clearBreakFlags()
 {
     return (this->config != NULL) && HW_TIM_clearBreakFlags(this->moePeripheral);
@@ -429,6 +457,12 @@ bool IO_bridge_setOutputEnabled(IO_bridge_channel_E channel, bool enabled)
 bool IO_bridge_getOutputEnabled(IO_bridge_channel_E channel, bool * const enabled)
 {
     return (channel < IO_BRIDGE_CHANNEL_COUNT) && data->channels[channel].getOutputEnabled(enabled);
+}
+
+// [impl->fw~io_bridge_008~1]
+bool IO_bridge_setVoltageVector(IO_bridge_channel_E channel, float32_t vAlpha, float32_t vBeta)
+{
+    return (channel < IO_BRIDGE_CHANNEL_COUNT) && data->channels[channel].setVoltageVector(vAlpha, vBeta);
 }
 
 bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel)

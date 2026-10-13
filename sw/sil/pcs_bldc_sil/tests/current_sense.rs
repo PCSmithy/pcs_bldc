@@ -28,8 +28,9 @@ fn driven(phase_a: [f64; 3], bus_a: f64) -> (Sil, CurrentSenseParams) {
 
 #[test]
 fn ports_register_with_units() {
-    // All eight ports exist after enable, carrying the canonical units of what they
-    // stand for: currents in amps on the way in, pin voltages in volts on the way out.
+    // All ten ports exist after enable, carrying the canonical units of what they
+    // stand for: currents in amps and the bus voltage in volts on the way in, pin
+    // voltages in volts on the way out.
     let mut sim = Sil::new();
     sim.add_member(CurrentSenseModel::new(SENSE));
     sim.step().expect("engine step");
@@ -39,10 +40,12 @@ fn ports_register_with_units() {
         ("i_v", "A"),
         ("i_w", "A"),
         ("i_bus", "A"),
+        ("v_bus", "V"),
         ("i_u_vsense", "V"),
         ("i_v_vsense", "V"),
         ("i_w_vsense", "V"),
         ("i_bus_vsense", "V"),
+        ("v_bus_vsense", "V"),
     ] {
         let id = vsig_id(SENSE, local).expect("valid vsig id");
         assert_eq!(
@@ -127,4 +130,30 @@ fn regen_reads_zero() {
         v_bus, 0.0,
         "{BUS_A} A of regen reads 0 V on the bus pin, not a negative voltage: {v_bus} V"
     );
+}
+
+#[test]
+fn bus_voltage_divider_scales_and_clips_at_the_reference() {
+    // The divider is a pure gain inside the rail (20 V reads 3.0 V at 0.15 V/V) and
+    // clips at vref above it, so the board's 24 V bus senses as 22 V.
+    let params = CurrentSenseParams::default();
+    let mut sim = Sil::new();
+    sim.add_member(CurrentSenseModel::new(SENSE));
+
+    for (v_bus, want) in [
+        (20.0, 20.0 * params.bus_v_gain_v_per_v),
+        (12.0, 12.0 * params.bus_v_gain_v_per_v),
+        (24.0, params.vref_v),
+        (0.0, 0.0),
+    ] {
+        sim.write(&vid(SENSE, "v_bus"), v_bus).expect("write v_bus");
+        for _ in 0..3 {
+            sim.step().expect("engine step");
+        }
+        let got = sim.read_f64(&vid(SENSE, "v_bus_vsense"));
+        assert!(
+            (got - want).abs() < 1e-9,
+            "v_bus {v_bus} V senses {got} V, expected {want}"
+        );
+    }
 }
