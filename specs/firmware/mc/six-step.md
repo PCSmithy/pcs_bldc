@@ -7,7 +7,8 @@ tags: [firmware, mc, app, driver]
 
 Sensored block commutation: the rotor electrical angle — motor shaft angle
 corrected by a captured alignment offset and scaled by the pole-pair
-count — selects which two phases conduct; the third floats.
+count, zero with the rotor flux on the phase-U axis — selects which two
+phases conduct; the third floats.
 
 See also: [[motor-control-application]] (fw~mc_015~1 runs this method's
 step each PWM cycle), [[bridge]] (`fw~io_bridge_002` duties; per-phase
@@ -26,12 +27,14 @@ maximum:
 
 | Sector (electrical) | Duty d | Duty 0 | Floating |
 |---------------------|--------|--------|----------|
-| 0°–60°     | U | V | W |
-| 60°–120°   | U | W | V |
-| 120°–180°  | V | W | U |
-| 180°–240°  | V | U | W |
-| 240°–300°  | W | U | V |
-| 300°–360°  | W | V | U |
+| 0°–60°     | U | W | V |
+| 60°–120°   | V | W | U |
+| 120°–180°  | V | U | W |
+| 180°–240°  | W | U | V |
+| 240°–300°  | W | V | U |
+| 300°–360°  | U | V | W |
+
+each pattern's stator field lying at its sector's centre.
 
 Acceptance:
 - In each sector, the table row's duty-d phase and duty-0 phase are driven
@@ -49,9 +52,10 @@ Needs: impl, test
 `fw~mc_012~1`
 
 On its first bridge enable after power-up, the six-step method shall drive
-the 0°–60° sector pattern at the configured alignment duty for the
-configured dwell time, then capture the motor shaft angle as the alignment
-offset on which all subsequent enables commutate.
+the phase-U axis pattern — U at the configured alignment duty, V and W
+returning at zero duty — for the configured dwell time, then capture the
+motor shaft angle as the alignment offset: the electrical zero on which all
+subsequent enables commutate.
 
 Acceptance:
 - The first enable applies the alignment pattern for the dwell time, then

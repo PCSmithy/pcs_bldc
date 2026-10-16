@@ -3,6 +3,7 @@
 
 #include "lib_utils.h"
 #include "lib_timer.h"
+#include "lib_transforms.h"
 #include "lib_filterIIR.h"
 
 #include "app_motorControl.h"
@@ -101,6 +102,12 @@ class Motor
 
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
         float32_t phaseCurrent_a[IO_BRIDGE_PHASE_COUNT];
+
+        float32_t iAlpha_a;
+        float32_t iBeta_a;
+        float32_t iD_a;
+        float32_t iQ_a;
+
         float32_t busCurrent;
         bool enable[IO_BRIDGE_PHASE_COUNT];
 };
@@ -318,9 +325,10 @@ void Motor::run1ms()
 
             case DriveState::Aligning:
                 // [impl->fw~mc_012~1]
-                // First enable: drive the alignment pattern for the dwell,
-                // then capture the shaft angle as the offset.
-                SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, false);
+                // First enable: a stator field along the phase-U axis (U
+                // sourcing, V and W returning) parks the rotor flux on U for
+                // the dwell; the shaft angle there is electrical zero.
+                SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, true);
                 if (lib_timer_runTimerWithEnable(&this->alignmentDwell, true) == LIB_TIMER_STATE_EXPIRED)
                 {
                     this->alignmentOffset_rad = rotorPosition_rad;
@@ -346,6 +354,7 @@ void Motor::cycleStep()
 
         bool isAnyPhaseEnabled = (this->driveState == DriveState::Aligning);
 
+        float32_t frameAngle_rad = 0.0f;
         if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
@@ -371,41 +380,59 @@ void Motor::cycleStep()
                     // TODO - compute duty cycle from velocity error
                     const float32_t duty01 = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, APP_MOTORCONTROL_MAX_DUTY_01);
 
-                    // Each branch applies the field at its bucket's LOWER edge
-                    // (0/60/../300 deg), so an unbiased lookup under-rotates the
-                    // field by 0..60 deg. Biasing by +30 deg rounds the target
-                    // to the NEAREST producible field angle instead, keeping the
-                    // effective lead at 60..120 deg for either rotation sign.
-                    const float32_t sector_rad = fmodf((target + RAD_30DEG), TWO_PI);
-                    if (sector_rad < RAD_60DEG)
+                    // A two-phase pattern's field lies at 30/90/../330 deg,
+                    // the centre of its 60 deg sector, so the sector holding the
+                    // target applies the nearest producible field: the effective
+                    // lead stays within 30 deg of the commanded one either way.
+                    if (target < RAD_60DEG)
                     {
-                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);
+                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);   // U+ W-  (30 deg)
                     }
-                    else if (sector_rad < RAD_120DEG)
+                    else if (target < RAD_120DEG)
                     {
-                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);
+                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);   // V+ W-  (90 deg)
                     }
-                    else if (sector_rad < RAD_180DEG)
+                    else if (target < RAD_180DEG)
                     {
-                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);
+                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);   // V+ U- (150 deg)
                     }
-                    else if (sector_rad < RAD_240DEG)
+                    else if (target < RAD_240DEG)
                     {
-                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);
+                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);   // W+ U- (210 deg)
                     }
-                    else if (sector_rad < RAD_300DEG)
+                    else if (target < RAD_300DEG)
                     {
-                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);
+                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);   // W+ V- (270 deg)
                     }
                     else // angle < 360
                     {
-                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);
+                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);   // U+ V- (330 deg)
                     }
                     isAnyPhaseEnabled = true;
+
+                    frameAngle_rad = this->magneticAngle_rad;
                     break;
                 }
             }
         }
+
+        // [impl->fw~mc_016~1]
+        lib_transforms_clarke(
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_U],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_V],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_W],
+            &this->iAlpha_a,
+            &this->iBeta_a
+        );
+
+        lib_transforms_park(
+            this->iAlpha_a,
+            this->iBeta_a,
+            frameAngle_rad,
+            &this->iD_a,
+            &this->iQ_a
+        );
+
 
         // update outputs
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_U, this->enable[IO_BRIDGE_PHASE_U]);

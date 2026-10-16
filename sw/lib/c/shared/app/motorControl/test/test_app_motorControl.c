@@ -245,7 +245,8 @@ static int observedSector(void)
         else if (phaseCompare(phase) > 0U) { dutyD = phase; }
     }
 
-    // (dutyD, floating) per six-step table row (fw~mc_011).
+    // (dutyD, floating) in field-angle order from 330 deg: U+V-, U+W-, V+U-,
+    // V+W-, W+V-, W+U- (fw~mc_011); +3 is the opposite field.
     static const struct { IO_bridge_phase_E dutyD; IO_bridge_phase_E floatP; } table[6] = {
         { IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },   // 0: U d, V 0, W float
         { IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },   // 1: U d, W 0, V float
@@ -582,12 +583,13 @@ static void test_sector_table_drives_correct_phases(void)
         IO_bridge_phase_E duty0;
         IO_bridge_phase_E floatP;
     } cases[6] = {
-        { 270.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W },
-        { 330.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V },
-        {  30.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U },
-        {  90.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },
-        { 150.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },
-        { 210.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U },
+        // rotor + 90 deg lead lands mid-sector: 30 / 90 / 150 / 210 / 270 / 330
+        { 300.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V },
+        {   0.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U },
+        {  60.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },
+        { 120.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },
+        { 180.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U },
+        { 240.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W },
     };
 
     alignAtZero();
@@ -669,8 +671,8 @@ static void test_first_enable_aligns_then_captures_offset(void)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
-    // Dwell cycle 1: alignment pattern (U & V driven, U at align duty, W float),
-    // not yet aligned.
+    // Dwell cycle 1: alignment pattern (U at align duty, V and W returning at
+    // zero duty), not yet aligned.
     tick();
     app_motorControl_snapshot_S snap = { 0 };
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
@@ -678,8 +680,10 @@ static void test_first_enable_aligns_then_captures_offset(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), phaseCompare(IO_BRIDGE_PHASE_U));
     TEST_ASSERT_EQUAL_UINT32(0U, phaseCompare(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(0U, phaseCompare(IO_BRIDGE_PHASE_W));
     TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_U));
-    TEST_ASSERT_TRUE(phaseFloating(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_W));
 
     // Still aligning partway through the dwell.
     advanceTime_ms(200U);
