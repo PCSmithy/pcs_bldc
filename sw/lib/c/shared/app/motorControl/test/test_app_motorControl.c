@@ -156,6 +156,16 @@ static void setNominalCurrents(void)
     setBusCurrent(0.0f);
 }
 
+// One millisecond of the drive loop. On the board the bridge's cycle callback runs
+// twenty times between 1 ms passes: the cycles before a pass fetch the currents it
+// latches on, the cycles after it apply what it decided. One of each stands for them.
+static void tick(void)
+{
+    app_motorControl_cycleStep();
+    app_motorControl_run1ms();
+    app_motorControl_cycleStep();
+}
+
 // Bring the channel to steady commutation: operational, angle fixed, SIX_STEP
 // requested, alignment dwell advanced, then a cycle to begin driving.
 static void driveToRunning(float32_t velocity)
@@ -165,10 +175,10 @@ static void driveToRunning(float32_t velocity)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, velocity);
 
-    app_motorControl_run1ms();          // enters alignment (bridge enabled)
+    tick();          // enters alignment (bridge enabled)
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, captures offset
-    app_motorControl_run1ms();          // commutating
+    tick();          // dwell expires, captures offset
+    tick();          // commutating
 }
 
 // Complete alignment at rotor angle 0 (capturing offset 0), leaving the channel
@@ -179,9 +189,9 @@ static void alignAtZero(void)
     mock_IO_AS5048_setAngle(ENC_MOTOR, 0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
-    app_motorControl_run1ms();          // alignment begins
+    tick();          // alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, offset := 0
+    tick();          // dwell expires, offset := 0
 }
 
 // Set rotor angle (degrees) and signed velocity, then run one commutation cycle.
@@ -189,7 +199,7 @@ static void commutateAt(float32_t rotorDeg, float32_t velocity)
 {
     mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(rotorDeg));
     app_motorControl_setVelocity(MOTOR_MC, velocity);
-    app_motorControl_run1ms();
+    tick();
 }
 
 /* ---- pattern observation (bridge state read back through HW_TIM) ---- */
@@ -285,11 +295,11 @@ static void test_phase_overcurrent_trips_and_latches(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     setPhaseCurrentsUV(3.0f, 0.0f);            // U > 2 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // disabled within one cycle
 
     setNominalCurrents();                      // fault cleared physically...
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // ...but the latch persists
 }
 
@@ -300,7 +310,7 @@ static void test_bus_overcurrent_trips(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     setBusCurrent(2.0f);                       // > 1.5 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -311,7 +321,7 @@ static void test_current_below_threshold_does_not_trip(void)
 
     setPhaseCurrentsUV(1.9f, 0.0f);            // U and the derived W just under 2 A
     setBusCurrent(1.4f);                       // just under 1.5 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_TRUE(bridgeEnabled());         // no trip
 }
 
@@ -324,7 +334,7 @@ static void test_negative_phase_overcurrent_trips(void)
     driveToRunning(10.0f);
 
     setPhaseCurrentsUV(1.25f, 1.25f);          // W = -(1.25 + 1.25), |-2.5| > 2 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -340,14 +350,14 @@ static void test_gate_blocks_bridge_when_not_operational(void)
 
     for (int i = 0; i < 5; i++)
     {
-        app_motorControl_run1ms();
+        tick();
         advanceTime_ms(200U);
         TEST_ASSERT_FALSE(bridgeEnabled());    // held disabled every cycle
     }
 
     // Becoming operational lets the drive proceed.
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    app_motorControl_run1ms();                 // alignment begins -> enabled
+    tick();                 // alignment begins -> enabled
     TEST_ASSERT_TRUE(bridgeEnabled());
 }
 
@@ -358,12 +368,12 @@ static void test_gate_blocks_bridge_while_fault_latched(void)
 {
     driveToRunning(10.0f);
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
     setNominalCurrents();                      // currents nominal, still operational
-    app_motorControl_run1ms();
-    app_motorControl_run1ms();
+    tick();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // stays disabled: latch gates enable
 }
 
@@ -376,7 +386,7 @@ static void test_off_request_disables_bridge_same_cycle(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -399,7 +409,7 @@ static void test_zero_demand_holds_bridge_enabled(void)
     }
 
     setPhaseCurrentsUV(3.0f, 0.0f);            // a fault still kills the bridge
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -414,7 +424,7 @@ static void test_state_view_tracks_disabled_enabled_faulted(void)
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());    // commutating
 
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());    // tripped
 }
 
@@ -451,7 +461,7 @@ static void test_velocity_estimate_converges_to_angle_rate(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
     }
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, motorVelocity());
 }
@@ -470,7 +480,7 @@ static void test_velocity_estimate_smooth_across_wrap(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
     }
     for (uint32_t i = 0U; i < 200U; i++)
     {
@@ -480,7 +490,7 @@ static void test_velocity_estimate_smooth_across_wrap(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
         TEST_ASSERT_FLOAT_WITHIN(5.0f, 50.0f, motorVelocity());
     }
 }
@@ -496,12 +506,12 @@ static void test_velocity_estimate_immune_to_alignment_capture(void)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
-    app_motorControl_run1ms();          // alignment begins
+    tick();          // alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, offset := 170 deg captured
+    tick();          // dwell expires, offset := 170 deg captured
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
 
-    app_motorControl_run1ms();          // and the tick after stays clean
+    tick();          // and the tick after stays clean
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
 }
 
@@ -511,13 +521,13 @@ static void test_clear_fault_releases_latch_and_resumes(void)
 {
     driveToRunning(10.0f);
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());
 
     setNominalCurrents();
     app_motorControl_clearFault(MOTOR_MC);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_TRUE(bridgeEnabled());                                  // drive resumes
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
 }
@@ -532,10 +542,10 @@ static void test_encoder_fault_latches_past_limit(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
     TEST_ASSERT_TRUE(bridgeEnabled());                 // 5 is not > 5
 
-    app_motorControl_run1ms();                         // the 6th
+    tick();                         // the 6th
     TEST_ASSERT_FALSE(bridgeEnabled());
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());
 }
@@ -547,13 +557,13 @@ static void test_encoder_fault_count_resets_on_valid_read(void)
     driveToRunning(10.0f);
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_OK);
-    app_motorControl_run1ms();                         // resets the count
+    tick();                         // resets the count
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
     TEST_ASSERT_TRUE(bridgeEnabled());                 // never 6 in a row
 }
 
@@ -627,6 +637,27 @@ static void test_duty_proportional_and_clamped(void)
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(MAX_DUTY_01), drivenCompare());
 }
 
+/* ---- fw~mc_015: the step owns the outputs ---- */
+
+// [test->fw~mc_015~1]
+// A new angle and target published by the 1 ms pass reach the bridge only when
+// the cycle step runs: the pass alone leaves the compares where the last step
+// put them, the step then lands the commutation for the published inputs.
+static void test_cycle_step_not_the_ms_pass_writes_the_outputs(void)
+{
+    alignAtZero();                                       // aligned; last step applied the alignment pattern
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());
+
+    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(90.0f));
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_run1ms();                           // publishes angle + target, decides Driving
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());   // outputs untouched
+
+    app_motorControl_cycleStep();                        // the step commutates on them
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(0.5f), drivenCompare());
+    TEST_ASSERT_TRUE(bridgeEnabled());
+}
+
 /* ---- fw~mc_012: alignment offset capture ---- */
 
 // [test->fw~mc_012~1]
@@ -640,7 +671,7 @@ static void test_first_enable_aligns_then_captures_offset(void)
 
     // Dwell cycle 1: alignment pattern (U & V driven, U at align duty, W float),
     // not yet aligned.
-    app_motorControl_run1ms();
+    tick();
     app_motorControl_snapshot_S snap = { 0 };
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FALSE(snap.isAligned);
@@ -652,18 +683,18 @@ static void test_first_enable_aligns_then_captures_offset(void)
 
     // Still aligning partway through the dwell.
     advanceTime_ms(200U);
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FALSE(snap.isAligned);
 
     // After the dwell the offset is captured; the following cycle commutates on
     // it, so the electrical angle (rotor 45deg minus offset 45deg) reads ~0.
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_TRUE(snap.isAligned);
 
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.0f, snap.magneticAngle_rad);
 }
@@ -674,10 +705,10 @@ static void test_first_enable_aligns_then_captures_offset(void)
 static void test_subsequent_enable_skips_alignment(void)
 {
     alignAtZero();                 // aligned, offset 0
-    app_motorControl_run1ms();     // commutating
+    tick();     // commutating
 
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
     // Re-enable: one cycle should commutate at the drive duty (0.5), not fall
@@ -737,6 +768,7 @@ int main(void)
     RUN_TEST(test_reversal_flips_drive_direction);
     RUN_TEST(test_duty_proportional_and_clamped);
 
+    RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);
     RUN_TEST(test_subsequent_enable_skips_alignment);
 

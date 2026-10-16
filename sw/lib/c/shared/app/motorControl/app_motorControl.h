@@ -80,6 +80,7 @@ bool app_motorControl_init(const app_motorControl_config_S * const config);
 bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorControl_snapshot_S * const snapshot);
 
 void app_motorControl_run1ms(void);
+void app_motorControl_cycleStep(void);
 
 void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec);
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);

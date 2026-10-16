@@ -347,6 +347,7 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     // --- commutation step (fw~mc_015): the active method's step lands here ---
     // An empty step measures zero, and its own counter read arrives with it.
     main_cycleProbe_stepMax_us = 0U;
+    app_motorControl_cycleStep();
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
     // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal,

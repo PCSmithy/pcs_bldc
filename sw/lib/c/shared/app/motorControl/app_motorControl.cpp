@@ -52,6 +52,7 @@ class Motor
     public:
         bool init(const app_motorControl_channelConfig_S * config);
         void run1ms();
+        void cycleStep();
 
         bool getSnapshot(app_motorControl_snapshot_S * const snapshot);
         void setVelocity(float32_t velocity_radPerSec);
@@ -59,12 +60,23 @@ class Motor
         void clearFault();
 
     private:
+        // What the bridge is doing this millisecond, decided by run1ms from the
+        // mode, the gate, and the alignment latch; cycleStep acts on it.
+        enum class DriveState : uint8_t
+        {
+            Off,        // bridge dark: gate closed, fault latched, or mode OFF
+            Aligning,   // first enable: the alignment pattern for the dwell
+            Driving,    // the active method commutates
+        };
+
+        void fetchPhaseCurrents();
         void updateOvercurrentLatch();
 
         app_motorControl_channelConfig_S const * config;
 
         app_motorControl_mode_E modeCurrent;
         app_motorControl_mode_E modeRequested;
+        DriveState driveState;
 
         float32_t velocitySetpointCurrent_radPerSec;
         float32_t velocitySetpointRequested_radPerSec;
@@ -82,6 +94,7 @@ class Motor
         float32_t alignmentOffset_rad;
         lib_timer_channel_S alignmentDwell;
 
+        bool isDriveAllowed;
         bool faultLatched;
         bool bridgeEnabled;   // last cycle's bridge output-enable, for the state view
         uint16_t encoderFaultCount;   // consecutive invalid encoder reads
@@ -110,6 +123,19 @@ constinit static app_motorControl_data_S * const data = &app_motorControl_data;
 
 /* Private Class Function Definitions */
 
+void Motor::fetchPhaseCurrents()
+{
+    float32_t amps = ZERO;
+
+    for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+    {
+        if (IO_bridge_getPhaseCurrent(this->config->bridge, (IO_bridge_phase_E)phase, &amps))
+        {
+            this->phaseCurrent_a[phase] = amps;
+        }
+    }
+}
+
 // [impl->fw~safety_001~1]
 // Latch an overcurrent fault on any phase-current magnitude above the phase
 // trip or a DC-bus current above the bus trip.
@@ -119,13 +145,9 @@ void Motor::updateOvercurrentLatch()
 
     for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
     {
-        if (IO_bridge_getPhaseCurrent(this->config->bridge, (IO_bridge_phase_E)phase, &amps))
+        if (fabsf(this->phaseCurrent_a[phase]) > OVERCURRENT_PHASE_TRIP_A)
         {
-            this->phaseCurrent_a[phase] = amps;
-            if (fabsf(amps) > OVERCURRENT_PHASE_TRIP_A)
-            {
-                this->faultLatched = true;
-            }
+            this->faultLatched = true;
         }
     }
 
@@ -171,6 +193,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 
         this->modeCurrent = APP_MOTORCONTROL_MODE_OFF;
         this->modeRequested = APP_MOTORCONTROL_MODE_OFF;
+        this->driveState = DriveState::Off;
 
         this->isAligned = false;
         this->alignmentOffset_rad = ZERO;
@@ -191,6 +214,9 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     return isValid;
 }
 
+// Written by run1ms (task) while Off or Aligning, by cycleStep (ISR) while
+// Driving; never both in one state. A cycle that reads a half-written
+// alignment pattern outputs it for one PWM period, and the pattern is static.
 #define SET_DUTY_AND_ENABLE(dU, dV, dW, enU, enV, enW) \
     this->duty[IO_BRIDGE_PHASE_U] = dU; \
     this->duty[IO_BRIDGE_PHASE_V] = dV; \
@@ -263,100 +289,121 @@ void Motor::run1ms()
 
         this->updateOvercurrentLatch();
 
+
         // Apply any requested mode transition up front, so a request (e.g.
         // OFF) takes effect this cycle instead of driving one cycle late.
         this->modeCurrent = this->modeRequested;
 
         // [impl->fw~mc_006~1]
-        const bool driveAllowed =
+        this->isDriveAllowed =
             (dev_gateDriver_isOperational(this->config->gateDriver)) &&
             (!this->faultLatched);
 
-        // compute state
-        bool isAnyPhaseEnabled = false;
-
-        if (!driveAllowed)
+        if ((!this->isDriveAllowed) || (this->modeCurrent == APP_MOTORCONTROL_MODE_OFF))
         {
-            this->velocitySetpointCurrent_radPerSec = ZERO;
-            SET_DUTY_AND_ENABLE(ZERO, ZERO, ZERO, false, false, false);
-            lib_timer_stopTimer(&this->alignmentDwell);
+            this->driveState = DriveState::Off;
         }
         else
+        {
+            this->driveState = this->isAligned ? DriveState::Driving : DriveState::Aligning;
+        }
+
+        switch (this->driveState)
+        {
+            case DriveState::Off:
+                this->velocitySetpointCurrent_radPerSec = ZERO;
+                SET_DUTY_AND_ENABLE(ZERO, ZERO, ZERO, false, false, false);
+                lib_timer_stopTimer(&this->alignmentDwell);
+                break;
+
+            case DriveState::Aligning:
+                // [impl->fw~mc_012~1]
+                // First enable: drive the alignment pattern for the dwell,
+                // then capture the shaft angle as the offset.
+                SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, false);
+                if (lib_timer_runTimerWithEnable(&this->alignmentDwell, true) == LIB_TIMER_STATE_EXPIRED)
+                {
+                    this->alignmentOffset_rad = rotorPosition_rad;
+                    this->isAligned = true;
+                }
+                break;
+
+            case DriveState::Driving:
+                // The active method's step owns the outputs (cycleStep).
+                break;
+        }
+    }
+}
+
+// [impl->fw~mc_015~1] the PWM-synchronous step, in the bridge callback's ISR
+// context: the active method commutates from the inputs run1ms published and
+// the cycle's phase currents, then the bridge takes the outputs.
+void Motor::cycleStep()
+{
+    if (this->config != NULL)
+    {
+        this->fetchPhaseCurrents();
+
+        bool isAnyPhaseEnabled = (this->driveState == DriveState::Aligning);
+
+        if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
             {
                 default:
                 case APP_MOTORCONTROL_MODE_OFF:
-                    this->velocitySetpointCurrent_radPerSec = ZERO;
-                    SET_DUTY_AND_ENABLE(ZERO, ZERO, ZERO, false, false, false);
-                    lib_timer_stopTimer(&this->alignmentDwell);
+                    // Off is DriveState::Off, handled in run1ms.
                     break;
 
                 case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
-                    // [impl->fw~mc_012~1]
-                    // First enable: drive the alignment pattern for the dwell,
-                    // then capture the shaft angle as the offset.
-                    if (!this->isAligned)
-                    {
-                        SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, false);
-                        isAnyPhaseEnabled = true;
-
-                        if (lib_timer_runTimerWithEnable(&this->alignmentDwell, true) == LIB_TIMER_STATE_EXPIRED)
-                        {
-                            this->alignmentOffset_rad = rotorPosition_rad;
-                            this->isAligned = true;
-                        }
-                    }
+                {
                     // [impl->fw~mc_011~1]
                     // Commutate: apply the sector pattern for the rotor
                     // electrical angle advanced by the lead, at a duty
                     // proportional to the target magnitude, clamped to max.
-                    else
+                    this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
+
+                    const float32_t lead_rad = (this->velocitySetpointCurrent_radPerSec >= ZERO) ? RAD_90DEG : -RAD_90DEG;
+                    float32_t target = fmodf((this->magneticAngle_rad + lead_rad), TWO_PI);
+                    if (target < ZERO) { target += TWO_PI; }
+                    this->magneticAngleTarget_rad = target;
+
+                    // TODO - compute duty cycle from velocity error
+                    const float32_t duty01 = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, APP_MOTORCONTROL_MAX_DUTY_01);
+
+                    // Each branch applies the field at its bucket's LOWER edge
+                    // (0/60/../300 deg), so an unbiased lookup under-rotates the
+                    // field by 0..60 deg. Biasing by +30 deg rounds the target
+                    // to the NEAREST producible field angle instead, keeping the
+                    // effective lead at 60..120 deg for either rotation sign.
+                    const float32_t sector_rad = fmodf((target + RAD_30DEG), TWO_PI);
+                    if (sector_rad < RAD_60DEG)
                     {
-                        this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
-
-
-                        const float32_t lead_rad = (this->velocitySetpointCurrent_radPerSec >= ZERO) ? RAD_90DEG : -RAD_90DEG;
-                        float32_t target = fmodf((this->magneticAngle_rad + lead_rad), TWO_PI);
-                        if (target < ZERO) { target += TWO_PI; }
-                        this->magneticAngleTarget_rad = target;
-
-                        // TODO - compute duty cycle from velocity error
-                        const float32_t duty01 = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, APP_MOTORCONTROL_MAX_DUTY_01);
-
-                        // Each branch applies the field at its bucket's LOWER edge
-                        // (0/60/../300 deg), so an unbiased lookup under-rotates the
-                        // field by 0..60 deg. Biasing by +30 deg rounds the target
-                        // to the NEAREST producible field angle instead, keeping the
-                        // effective lead at 60..120 deg for either rotation sign.
-                        const float32_t sector_rad = fmodf((target + RAD_30DEG), TWO_PI);
-                        if (sector_rad < RAD_60DEG)
-                        {
-                            SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);
-                        }
-                        else if (sector_rad < RAD_120DEG)
-                        {
-                            SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);
-                        }
-                        else if (sector_rad < RAD_180DEG)
-                        {
-                            SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);
-                        }
-                        else if (sector_rad < RAD_240DEG)
-                        {
-                            SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);
-                        }
-                        else if (sector_rad < RAD_300DEG)
-                        {
-                            SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);
-                        }
-                        else // angle < 360
-                        {
-                            SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);
-                        }
-                        isAnyPhaseEnabled = true;
+                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);
                     }
+                    else if (sector_rad < RAD_120DEG)
+                    {
+                        SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, false, true);
+                    }
+                    else if (sector_rad < RAD_180DEG)
+                    {
+                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, false, true, true);
+                    }
+                    else if (sector_rad < RAD_240DEG)
+                    {
+                        SET_DUTY_AND_ENABLE(ZERO, duty01, ZERO, true, true, false);
+                    }
+                    else if (sector_rad < RAD_300DEG)
+                    {
+                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, true, false, true);
+                    }
+                    else // angle < 360
+                    {
+                        SET_DUTY_AND_ENABLE(ZERO, ZERO, duty01, false, true, true);
+                    }
+                    isAnyPhaseEnabled = true;
                     break;
+                }
             }
         }
 
@@ -372,9 +419,7 @@ void Motor::run1ms()
         IO_bridge_setOutputEnabled(this->config->bridge, isAnyPhaseEnabled);
 
         this->bridgeEnabled = isAnyPhaseEnabled;
-
     }
-
 }
 
 bool Motor::getSnapshot(app_motorControl_snapshot_S * const snapshot)
@@ -456,6 +501,15 @@ void app_motorControl_run1ms(void)
     for (size_t channel = 0U; channel < APP_MOTORCONTROL_CHANNEL_COUNT; channel++)
     {
         data->channels[channel].run1ms();
+    }
+}
+
+// [impl->fw~mc_015~1]
+void app_motorControl_cycleStep(void)
+{
+    for (size_t channel = 0U; channel < APP_MOTORCONTROL_CHANNEL_COUNT; channel++)
+    {
+        data->channels[channel].cycleStep();
     }
 }
 
