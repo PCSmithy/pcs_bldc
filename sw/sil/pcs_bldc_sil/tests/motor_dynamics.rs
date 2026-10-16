@@ -77,13 +77,15 @@ fn step_n(eng: &mut Sil, n: usize) {
     }
 }
 
-/// (high-side phase, low-side phase) per 60-degree electrical sector, sector 0 starting at
-/// theta_e = pi/6 where the U and V shapes sit on opposite flat tops.
+/// (high-side phase, low-side phase) of the six two-phase patterns, whose stator fields
+/// sit at -30 deg + 60 deg per entry in the phase-U frame.
 const SECTOR_DRIVE: [(usize, usize); 6] = [(0, 1), (0, 2), (1, 2), (1, 0), (2, 0), (2, 1)];
 
+/// The pattern whose field leads the rotor flux (at theta_e) by 60..120 deg: the one
+/// the firmware's six-step would pick for a positive target.
 fn sector_of(theta_e: f64) -> usize {
     let s = (theta_e - (PI / 6.0)).rem_euclid(TAU) / (PI / 3.0);
-    (s as usize).min(5)
+    ((s as usize).min(5) + 3) % 6
 }
 
 /// Commutate for the shaft angle just observed: the two flat-top phases carry current in
@@ -233,7 +235,7 @@ fn locked_rotor_current_matches_analytic() {
 #[test]
 fn alignment_torque_pulls_to_equilibrium() {
     // A held U-high / V-low vector is a torsional spring: from an offset angle the rotor
-    // swings to where the two energized BEMF shapes match (theta_e = 5pi/6) and stops.
+    // swings its flux onto the field, at theta_e = -pi/6 for that pattern, and stops.
     const POLE_PAIRS: u8 = 7;
     const HALF_SETTLE_TICKS: usize = 200; // 200 ms against a ~26 ms dominant pole
     const REST_RAD_S: f64 = 1.0e-3;
@@ -248,8 +250,9 @@ fn alignment_torque_pulls_to_equilibrium() {
         t_c_nm: 0.0,
         v_d: 0.8,
     };
-    let equilibrium = (5.0 * PI / 6.0) / f64::from(POLE_PAIRS);
-    let start = (PI / 2.0) / f64::from(POLE_PAIRS);
+    // The model keeps the shaft in [0, 2pi): -pi/6 reads as 11pi/6, approached from 3pi/2.
+    let equilibrium = (11.0 * PI / 6.0) / f64::from(POLE_PAIRS);
+    let start = (3.0 * PI / 2.0) / f64::from(POLE_PAIRS);
 
     let mut eng = world(params, start, VBUS_V);
     drive(&mut eng, [0.75, 0.25, 0.0], [true, true, false], true);
@@ -286,7 +289,7 @@ fn alignment_torque_pulls_to_equilibrium() {
     );
     assert!(
         (settled.angle - equilibrium).abs() < 0.02,
-        "the shaft converges on theta_e = 5pi/6: {:.6} rad vs {equilibrium:.6} rad",
+        "the shaft converges on theta_e = -pi/6: {:.6} rad vs {equilibrium:.6} rad",
         settled.angle
     );
     assert!(
@@ -677,7 +680,7 @@ fn stiction_parks_rotor_exactly() {
     const FROZEN_TICKS: usize = 50;
 
     let p = MotorParams::default();
-    let eq = (5.0 * PI / 6.0) / f64::from(p.pole_pairs);
+    let eq = (11.0 * PI / 6.0) / f64::from(p.pole_pairs);   // U high / V low parks the flux at -pi/6
     let start = eq - 0.10;
     let stick_band = p.t_c_nm / align_spring(&p, DUTY, MEASURED_VBUS_V);
 
@@ -721,7 +724,7 @@ fn breakaway_threshold_matches_coulomb() {
     const HOLD_TICKS: usize = 200;
 
     let p = MotorParams::default();
-    let eq = (5.0 * PI / 6.0) / f64::from(p.pole_pairs);
+    let eq = (11.0 * PI / 6.0) / f64::from(p.pole_pairs);   // U high / V low parks the flux at -pi/6
     let start = eq - (PI / 2.0) / f64::from(p.pole_pairs); // 90° electrical: max torque
     let duty_star =
         2.0 * p.r_ohm * p.t_c_nm / (3.0_f64.sqrt() * p.ke_v_per_mech_rad_s * MEASURED_VBUS_V);

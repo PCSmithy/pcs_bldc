@@ -68,7 +68,7 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
     // Arm: the alignment dwell drives a known steady current through U and V.
     tap_button(&mut sim);
     sim.run_for_ms(200); // partway into the dwell — current settled, still aligning
-    let expected_a = (ALIGN_DUTY * VBUS_V) / (2.0 * MotorParams::default().r_ohm);
+    let expected_a = (ALIGN_DUTY * VBUS_V) / (1.5 * MotorParams::default().r_ohm);   // U against V and W returning
     assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "alignment pattern is driving");
 
     // The injected slots track the plant through the sense chain: the samples

@@ -122,9 +122,11 @@ fn bemf_shape(theta_e: f64) -> f64 {
     debug_assert!(theta_e.is_finite());
 
     // Sinusoidal machine (bench-measured, 4.1% rms vs pure sine —
-    // tools/trace_analysis/bemf_spin).
+    // tools/trace_analysis/bemf_spin). Standard convention: phase-U flux
+    // linkage cos(theta_e), so its BEMF shape is -sin(theta_e) and the rotor
+    // d-axis sits at theta_e.
     let t = theta_e.rem_euclid(TAU);
-    t.sin()
+    -t.sin()
 }
 
 impl MotorModel {
