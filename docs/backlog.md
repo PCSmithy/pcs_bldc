@@ -58,10 +58,20 @@ overflows in bursts whenever a higher task spikes; at -O2 the 1 ms and
 nominal rate and the stream is clean. The remaining interrupt cost is our
 own code (step, vector, sample recording, sampler), not the HAL.
 Decided: -O2 is the embedded default, with pcs_debug_path(<target>) as
-the per-module -Og opt-in for a debugging session. sys~mc_006 needs four
-20 kHz watches, so headroom beyond today's two is the goal.
+the per-module -Og opt-in for a debugging session.
 
-Target: under 20 us for the whole interrupt under drive.
+Server round (same evening): Samples hand-encoded around the bulk pop,
+CRC in place with COBS straight from the payload (lib_cobs_encode2),
+the CRC unit (HW_CRC), word copies for 4-byte entries. Five 20 kHz
+4-byte watches under sinusoidal drive: server ~946 passes/s (from ~217),
+pass max 1.4 ms, ring 8-30% full, 7% idle, no drops. That clears
+sys~mc_006's four-watch case with margin. Remaining per-byte cost is COBS
+(5.5% of samples), the FIFO/packet copies (~9%), and the sampler itself
+with five entries (~11%); the 1 ms task's blocking SPI encoder read
+(~2.5%) is the next non-trace item.
+
+Target: under 20 us for the whole interrupt under drive (now 24 us with
+five watches sampling; 16-17 us with none).
 
 **Where:** `sw/fw/src/main.c` (probes), `sw/lib/c/shared/io/bridge/`,
 `sw/lib/c/shared/app/motorControl/`, `sw/lib/c/shared/lib/transforms/`,
