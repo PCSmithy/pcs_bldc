@@ -377,7 +377,8 @@ def run(port: str, baud: int, args):
 
     commands = []
     if args.set_mode is not None:
-        mode = board_pb2.MODE_SIX_STEP_TRAP if args.set_mode == "six_step" else board_pb2.MODE_OFF
+        mode = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
+                "sinusoidal": board_pb2.MODE_SINUSOIDAL}[args.set_mode]
         commands.append(("set_mode", mode))
     if args.set_velocity is not None:
         commands.append(("set_velocity", args.set_velocity))
@@ -528,7 +529,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", help="serial port (e.g. COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=115200, help="ignored by USB CDC")
-    ap.add_argument("--set-mode", choices=["off", "six_step"], help="send a SetMode command on connect")
+    ap.add_argument("--set-mode", choices=["off", "six_step", "sinusoidal"], help="send a SetMode command on connect")
     ap.add_argument("--set-velocity", type=float, metavar="RAD_PER_S", help="send a SetVelocity command on connect")
     ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
     ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_CYCLES",
