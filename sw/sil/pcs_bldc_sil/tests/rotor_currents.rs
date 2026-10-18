@@ -9,8 +9,8 @@
 
 mod common;
 
-use common::{f64_at, plant, spin_up, tap_button};
-use pcs_bldc_sil::board::{board, fault_latched, ALIGN_DWELL_MS, GATE_BRINGUP_MS, SENSE};
+use common::{f64_at, plant, spin_up, tap_button, GRID_US};
+use pcs_bldc_sil::board::{board, board_with, fault_latched, ALIGN_DWELL_MS, DIAL, GATE_BRINGUP_MS, SENSE};
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil};
 use std::f64::consts::TAU;
 
@@ -166,5 +166,40 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
         ((t_mean - predicted) / t_mean).abs() < 0.35,
         "T = 1.5 ke I_q within the 1 ms-angle slack: {t_mean:.4} vs {predicted:.4} Nm"
     );
+    assert!(!fault_latched(&sim), "no fault through the spin");
+}
+
+// [test->fw~mc_019~1]
+#[test]
+fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
+    // Full dial under six-step on the 50 us grid, past 300 rad/s electrical: every
+    // cycle's angle, read after the step that produced it, is within the spec's 3 deg
+    // of the plant's rotor angle, a millisecond after the last encoder sample included.
+    let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
+    spin_up(&mut sim);
+    let mut deg = 90.0;
+    while deg < 180.0 {
+        deg += 10.0;
+        sim.write(&vid(DIAL, "angle[deg]"), deg).expect("turn the dial");
+        sim.run_for_ms(20);
+    }
+    sim.run_for_ms(500);
+    let omega_e = plant(&sim, "velocity") * POLE_PAIRS;
+    assert!(omega_e > 300.0, "spinning past 300 rad/s electrical: {omega_e:.0}");
+
+    let mut worst_deg = 0.0_f64;
+    let (mut c, mut s_) = (0.0_f64, 0.0_f64);
+    for _ in 0..2000 {
+        sim.step().expect("engine step");
+        let theta_fw = f64_at(&sim, "app_motorControl_data.channels[0].magneticAngle_rad");
+        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let err = (theta_fw - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+        worst_deg = worst_deg.max(err.abs().to_degrees());
+        c += err.cos();
+        s_ += err.sin();
+    }
+    let mean_deg = s_.atan2(c).to_degrees();
+    println!("rotor_currents: per-cycle angle at {omega_e:.0} rad/s electrical: mean error {mean_deg:+.2} deg, worst {worst_deg:.2} deg over 2000 cycles");
+    assert!(worst_deg < 3.0, "every cycle within 3 deg of the rotor: worst {worst_deg:.2} deg");
     assert!(!fault_latched(&sim), "no fault through the spin");
 }

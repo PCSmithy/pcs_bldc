@@ -35,8 +35,6 @@ static const IO_bridge_channelConfig_S IO_bridge_channelConfig[] =
 {
     [IO_BRIDGE_CHANNEL_MOTOR] =
     {
-        .timeBasePeripheral = HW_TIM_PERIPHERAL_2,
-
         .phase =
         {
             [IO_BRIDGE_PHASE_U] =

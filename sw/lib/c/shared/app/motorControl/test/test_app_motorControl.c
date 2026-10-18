@@ -32,7 +32,6 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 /* ---- board-shaped constants ---- */
 #define PERIOD          (4000U)         // HW_TIM ARR; duty math is exact against it
 #define BRIDGE_PERIPH   (HW_TIM_PERIPHERAL_1)
-#define TIMEBASE_PERIPH (HW_TIM_PERIPHERAL_2)   // the bridge's 1 us sample time base
 #define MOTOR_BRIDGE    (IO_BRIDGE_CHANNEL_MOTOR)
 #define MOTOR_MC        (APP_MOTORCONTROL_CHANNEL_MAIN)
 #define GD_MAIN         (DEV_GATEDRIVER_CHANNEL_MAIN)
@@ -81,7 +80,6 @@ static app_motorControl_config_S     appConfig;
 static void buildConfigs(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR] = (IO_bridge_channelConfig_S){
-        .timeBasePeripheral = TIMEBASE_PERIPH,
         .phase = {
             [IO_BRIDGE_PHASE_U] = { .tim = HW_TIM_CHANNEL_PWM_U, .complementPhase = IO_BRIDGE_PHASE_V,
                                     .currentSense = { phaseSense[0].ch, phaseSense[0].in,
@@ -105,7 +103,8 @@ static void buildConfigs(void)
         .encoder = ENC_MOTOR,
         // One pole pair keeps electrical angle == rotor angle, so a commutation
         // test can place the field in a chosen sector by setting the rotor angle.
-        .motorPolePairs = 1U };
+        .motorPolePairs = 1U,
+        .pwmPeriod_s = 50.0e-6f };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
 }
 
@@ -128,14 +127,12 @@ static float32_t motorSetpoint(void)
 }
 
 // Phase currents reach the module only through the bridge's injected (crest)
-// path: U and V are sampled and W derives as -(U + V). The stamp advances per
-// call and never rewinds, so the pair always lands inside the window (the bridge
-// keeps its sample times across tests).
+// path: U and V are sampled and W derives as -(U + V). The bridge stamps them
+// off the fake clock, which steps one PWM period per call so each pair is its
+// own crest (the bridge keeps its sample times across tests).
 static void setPhaseCurrentsUV(float32_t ampsU, float32_t ampsV)
 {
-    static uint32_t crest_us = 0U;
-    crest_us += CREST_PERIOD_US;
-    mock_HW_TIM_setCounter(TIMEBASE_PERIPH, crest_us);
+    g_now_us += CREST_PERIOD_US;
 
     mock_HW_ADC_setInjectedVolts(phaseSense[IO_BRIDGE_PHASE_U].ch, PHASE_U_INJ,
                                  PHASE_BIAS_V + (ampsU * PHASE_V_PER_A));
@@ -639,6 +636,45 @@ static void test_duty_proportional_and_clamped(void)
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(MAX_DUTY_01), drivenCompare());
 }
 
+/* ---- fw~mc_019: the per-cycle rotor angle ---- */
+
+static float32_t motorAngle_rad(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.magneticAngle_rad;
+}
+
+// [test->fw~mc_019~1]
+// Between 1 ms passes the angle advances by the electrical velocity once per
+// cycle: with the estimate settled at 2 deg/ms (pole pairs 1), twenty cycles of
+// 50 us carry it 2 deg past the last publish, and the next pass re-anchors it
+// on the encoder.
+static void test_cycle_step_advances_the_angle_between_passes(void)
+{
+    const float32_t stepPerMs_rad = DEG2RAD(2.0f);
+    float32_t angle = 0.0f;
+    for (uint32_t i = 0U; i < 80U; i++)              // 8 filter time constants
+    {
+        angle += stepPerMs_rad;
+        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+        tick();
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.05f * 2000.0f * 0.001f, stepPerMs_rad / 0.001f, motorVelocity());
+
+    const float32_t published = motorAngle_rad();    // one cycle past the last pass
+    for (uint32_t cycle = 0U; cycle < 20U; cycle++)
+    {
+        app_motorControl_cycleStep();
+    }
+    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), published + stepPerMs_rad, motorAngle_rad());
+
+    angle += stepPerMs_rad;                           // the encoder moved on as well
+    mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+    app_motorControl_run1ms();                        // re-anchors on the encoder
+    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), angle, motorAngle_rad());
+}
+
 /* ---- fw~mc_015: the step owns the outputs ---- */
 
 // [test->fw~mc_015~1]
@@ -742,6 +778,13 @@ static void test_init_rejects_zero_max_velocity(void)
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
+static void test_init_rejects_zero_pwm_period(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].pwmPeriod_s = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -772,12 +815,14 @@ int main(void)
     RUN_TEST(test_reversal_flips_drive_direction);
     RUN_TEST(test_duty_proportional_and_clamped);
 
+    RUN_TEST(test_cycle_step_advances_the_angle_between_passes);
     RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);
     RUN_TEST(test_subsequent_enable_skips_alignment);
 
     RUN_TEST(test_init_rejects_zero_pole_pairs);
     RUN_TEST(test_init_rejects_zero_max_velocity);
+    RUN_TEST(test_init_rejects_zero_pwm_period);
 
     return UNITY_END();
 }

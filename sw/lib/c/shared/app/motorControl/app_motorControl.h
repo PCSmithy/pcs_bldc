@@ -50,6 +50,7 @@ typedef struct
     IO_AS5048_channel_E encoder; // TODO - abstract IO_AS5048 into a multi-encoder dev_encoder
 
     uint8_t motorPolePairs;
+    float32_t pwmPeriod_s;   // the bridge's PWM period: the step's time base
 } app_motorControl_channelConfig_S;
 
 typedef struct

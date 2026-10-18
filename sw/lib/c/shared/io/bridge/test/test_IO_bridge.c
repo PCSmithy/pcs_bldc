@@ -3,6 +3,7 @@
 #include <math.h>   // NAN, INFINITY
 #include "mock_HW_TIM.h"
 #include "mock_HW_ADC.h"
+#include "lib_timer.h"
 #include "unity.h"
 
 // The motor bridge's three phases share HW_TIM_PERIPHERAL_1 via channels
@@ -38,13 +39,22 @@
 #define SENSE_U_INJ          (0U)
 #define SENSE_V_INJ          (0U)
 
+// lib_timer bottoms out on the mock's free-running counter, which nextTrigger()
+// moves: the driver stamps every injected sample through it.
+static uint32_t testNow_us(void)
+{
+    uint32_t now_us = 0U;
+    (void)HW_TIM_getCounter(TIMEBASE_PERIPH, &now_us);
+    return now_us;
+}
+const lib_timer_config_S lib_timer_config = { .getTime_us = testNow_us };
+
 static IO_bridge_channelConfig_S bridgeCfg[IO_BRIDGE_CHANNEL_COUNT];
 static IO_bridge_config_S        config;
 
 static void buildGoodConfig(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR] = (IO_bridge_channelConfig_S){
-        .timeBasePeripheral = TIMEBASE_PERIPH,
         // U and V are the sampled pair; W is derived, so it carries no complement.
         .phase = {
             [IO_BRIDGE_PHASE_U] = { .tim = HW_TIM_CHANNEL_PWM_U,
@@ -960,26 +970,6 @@ static void test_injected_different_triggers_never_pair(void)
     TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
 }
 
-// With no time base every stamp would read zero and every sample would look
-// simultaneous, so the driver publishes nothing rather than pair blindly.
-static void test_injected_without_time_base_publishes_nothing(void)
-{
-    TEST_ASSERT_TRUE(IO_bridge_init(&config));
-    TEST_ASSERT_TRUE(IO_bridge_registerCycleCallback(MOTOR, onCycle, &cycleToken));
-
-    fireInjectedPair(2.0f, 2.0f);
-    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
-
-    nextTrigger();
-    mock_HW_TIM_setGetCounterFails(true);
-    fireInjected(HW_ADC_CHANNEL_1, SENSE_U_INJ, 7.0f);
-    fireInjected(HW_ADC_CHANNEL_2, SENSE_V_INJ, 7.0f);
-    mock_HW_TIM_setGetCounterFails(false);
-
-    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, phaseAmps(IO_BRIDGE_PHASE_U));
-    TEST_ASSERT_EQUAL_UINT32(1U, cycleCalls);
-}
-
 // An unreadable injected slot publishes nothing, so a stale sample is never
 // overwritten by a reading the ADC did not take.
 static void test_injected_unreadable_slot_publishes_nothing(void)
@@ -1165,7 +1155,6 @@ int main(void)
     RUN_TEST(test_injected_every_trigger_forms_one_triple);
     RUN_TEST(test_injected_dropped_partner_holds_w_then_next_trigger_pairs);
     RUN_TEST(test_injected_different_triggers_never_pair);
-    RUN_TEST(test_injected_without_time_base_publishes_nothing);
 
     RUN_TEST(test_registerCycleCallback_rejects_bad_arguments);
     RUN_TEST(test_cycle_callback_fires_once_per_pair);

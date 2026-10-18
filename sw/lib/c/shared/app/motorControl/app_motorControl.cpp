@@ -70,7 +70,15 @@ class Motor
             Driving,    // the active method commutates
         };
 
+        // helper functions
+        void updateMagneticAngle();
+
+
+        // called per PWM cycle
         void fetchPhaseCurrents();
+        void updateRotorPosition();
+
+        // called in run1ms()
         void updateOvercurrentLatch();
 
         app_motorControl_channelConfig_S const * config;
@@ -130,6 +138,12 @@ constinit static app_motorControl_data_S * const data = &app_motorControl_data;
 
 /* Private Class Function Definitions */
 
+void Motor::updateMagneticAngle()
+{
+    const float32_t magneticOffset = fmodf((this->mechanicalAngle_rad * this->config->motorPolePairs), TWO_PI);
+    this->magneticAngle_rad = magneticOffset < ZERO ? (magneticOffset + TWO_PI) : magneticOffset;
+}
+
 void Motor::fetchPhaseCurrents()
 {
     float32_t amps = ZERO;
@@ -140,6 +154,19 @@ void Motor::fetchPhaseCurrents()
         {
             this->phaseCurrent_a[phase] = amps;
         }
+    }
+}
+
+// [impl->fw~mc_019~1]
+// [impl->fw~mc_019~1] the 1 ms sample advanced one PWM period per cycle at
+// the electrical velocity; run1ms re-anchors it on the next encoder read.
+void Motor::updateRotorPosition()
+{
+    if (this->velocitySeeded)
+    {
+        this->mechanicalAngle_rad += this->velocityMeasured_radPerSec * this->config->pwmPeriod_s;
+
+        this->updateMagneticAngle();
     }
 }
 
@@ -180,6 +207,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     // at config time rather than defend at every use.
     isValid &= (channelConfig->motorPolePairs > 0U);
     isValid &= (channelConfig->maxVelocity_radPerSec > ZERO);
+    isValid &= (channelConfig->pwmPeriod_s > ZERO);
 
     lib_filterIIR_channel_S filter =
     {
@@ -244,8 +272,7 @@ void Motor::run1ms()
         (void)IO_AS5048_readAngle(this->config->encoder, NULL, NULL, &rotorPosition_rad);
         this->mechanicalAngle_rad = rotorPosition_rad - this->alignmentOffset_rad;
 
-        const float32_t magneticOffset = fmodf((this->mechanicalAngle_rad * this->config->motorPolePairs), TWO_PI);
-        this->magneticAngle_rad = magneticOffset < ZERO ? (magneticOffset + TWO_PI) : magneticOffset;
+        this->updateMagneticAngle();
 
         // [impl->fw~est_velocity_001~1] Wrapped per-tick angle derivative,
         // EMA-filtered; the first tick only seeds the previous angle.
@@ -351,6 +378,8 @@ void Motor::cycleStep()
     if (this->config != NULL)
     {
         this->fetchPhaseCurrents();
+
+        this->updateRotorPosition();
 
         bool isAnyPhaseEnabled = (this->driveState == DriveState::Aligning);
 

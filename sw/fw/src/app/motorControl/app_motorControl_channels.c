@@ -22,6 +22,7 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
         .velocityEstimateFilterTau_s = 0.01f,   // 10 ms (fw~est_velocity_001 bounds)
         .encoder = IO_AS5048_CHANNEL_MOTOR,
         .motorPolePairs = 14U,
+        .pwmPeriod_s = 50.0e-6f,   // TIM1 at 20 kHz (HW_TIM_channels)
     },
 };
 

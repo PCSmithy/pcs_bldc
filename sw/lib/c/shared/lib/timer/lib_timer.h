@@ -52,6 +52,8 @@ void lib_timer_run(void); // run periodically to catch overflows
 uint64_t lib_timer_getTime_us(void);
 uint32_t lib_timer_getTime_ms(void);
 
+uint32_t lib_timer_getHWCount_us(void); // direct HW count read, no overflow
+
 /* Static Inline Functions */
 static inline void lib_timer_init(lib_timer_channel_S * timer, lib_timer_precision_E precision, uint64_t duration)
 {
