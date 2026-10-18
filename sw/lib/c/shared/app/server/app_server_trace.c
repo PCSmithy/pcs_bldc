@@ -110,6 +110,24 @@ static uint32_t app_server_trace_private_ringUsed(void)
     return ((head >= tail)) ? (head - tail) : ((head + capacity) - tail);
 }
 
+// A run copy: the ring's runs are mostly one entry of a few bytes, where a
+// memcpy call costs more than the loop; longer runs go to memcpy.
+#define APP_SERVER_TRACE_SMALL_COPY_BYTES (16U)
+static void app_server_trace_private_copy(uint8_t * const dst, const uint8_t * const src, uint32_t len)
+{
+    if (len <= APP_SERVER_TRACE_SMALL_COPY_BYTES)
+    {
+        for (uint32_t i = 0U; i < len; i++)
+        {
+            dst[i] = src[i];
+        }
+    }
+    else
+    {
+        (void) memcpy(dst, src, len);
+    }
+}
+
 // Write len bytes at the rolling ring index, in at most two runs around the
 // wrap; returns the advanced index. The caller publishes data->head only
 // after the whole record is written.
@@ -118,10 +136,10 @@ static uint32_t app_server_trace_private_ringWrite(uint32_t index, const uint8_t
     const uint32_t capacity = app_server_trace_private_capacity();
     uint8_t * const storage = data->config->sampleStorage;
     const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
-    (void) memcpy(&storage[index], bytes, firstRun);
+    app_server_trace_private_copy(&storage[index], bytes, firstRun);
     if (firstRun < len)
     {
-        (void) memcpy(storage, &bytes[firstRun], len - firstRun);
+        app_server_trace_private_copy(storage, &bytes[firstRun], len - firstRun);
     }
     index += len;
     if (index >= capacity)
@@ -138,10 +156,10 @@ static uint32_t app_server_trace_private_ringRead(uint32_t index, uint8_t * cons
     const uint32_t capacity = app_server_trace_private_capacity();
     const uint8_t * const storage = data->config->sampleStorage;
     const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
-    (void) memcpy(bytes, &storage[index], firstRun);
+    app_server_trace_private_copy(bytes, &storage[index], firstRun);
     if (firstRun < len)
     {
-        (void) memcpy(&bytes[firstRun], storage, len - firstRun);
+        app_server_trace_private_copy(&bytes[firstRun], storage, len - firstRun);
     }
     index += len;
     if (index >= capacity)
