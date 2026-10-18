@@ -32,7 +32,6 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 /* ---- board-shaped constants ---- */
 #define PERIOD          (4000U)         // HW_TIM ARR; duty math is exact against it
 #define BRIDGE_PERIPH   (HW_TIM_PERIPHERAL_1)
-#define TIMEBASE_PERIPH (HW_TIM_PERIPHERAL_2)   // the bridge's 1 us sample time base
 #define MOTOR_BRIDGE    (IO_BRIDGE_CHANNEL_MOTOR)
 #define MOTOR_MC        (APP_MOTORCONTROL_CHANNEL_MAIN)
 #define GD_MAIN         (DEV_GATEDRIVER_CHANNEL_MAIN)
@@ -67,6 +66,10 @@ static const struct { HW_ADC_channels_E ch; uint8_t in; } phaseSense[IO_BRIDGE_P
 };
 #define BUS_CH          (HW_ADC_CHANNEL_2)
 #define BUS_IN          (11U)
+#define BUS_V_CH        (HW_ADC_CHANNEL_1)   // bus-voltage divider, 0.15 V/V, as on the board
+#define BUS_V_IN        (12U)
+#define BUS_V_PER_V     (0.15f)
+#define TEST_VBUS_V     (24.0f)
 // U and V each sit at slot 0 of their own ADC's injected sequence; W is derived.
 #define PHASE_U_INJ     (0U)
 #define PHASE_V_INJ     (0U)
@@ -81,7 +84,6 @@ static app_motorControl_config_S     appConfig;
 static void buildConfigs(void)
 {
     bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR] = (IO_bridge_channelConfig_S){
-        .timeBasePeripheral = TIMEBASE_PERIPH,
         .phase = {
             [IO_BRIDGE_PHASE_U] = { .tim = HW_TIM_CHANNEL_PWM_U, .complementPhase = IO_BRIDGE_PHASE_V,
                                     .currentSense = { phaseSense[0].ch, phaseSense[0].in,
@@ -94,7 +96,8 @@ static void buildConfigs(void)
                                                       IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A } },
         },
         .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A },
-        .injectedPairWindow_us = PAIR_WINDOW_US };
+        .injectedPairWindow_us = PAIR_WINDOW_US,
+        .busVoltage = { BUS_V_CH, BUS_V_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_V } };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN] = (app_motorControl_channelConfig_S){
@@ -105,7 +108,10 @@ static void buildConfigs(void)
         .encoder = ENC_MOTOR,
         // One pole pair keeps electrical angle == rotor angle, so a commutation
         // test can place the field in a chosen sector by setting the rotor angle.
-        .motorPolePairs = 1U };
+        .motorPolePairs = 1U,
+        .pwmPeriod_s = 50.0e-6f,
+        .maxVoltage_V = 10.0f,
+        .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
 }
 
@@ -128,14 +134,12 @@ static float32_t motorSetpoint(void)
 }
 
 // Phase currents reach the module only through the bridge's injected (crest)
-// path: U and V are sampled and W derives as -(U + V). The stamp advances per
-// call and never rewinds, so the pair always lands inside the window (the bridge
-// keeps its sample times across tests).
+// path: U and V are sampled and W derives as -(U + V). The bridge stamps them
+// off the fake clock, which steps one PWM period per call so each pair is its
+// own crest (the bridge keeps its sample times across tests).
 static void setPhaseCurrentsUV(float32_t ampsU, float32_t ampsV)
 {
-    static uint32_t crest_us = 0U;
-    crest_us += CREST_PERIOD_US;
-    mock_HW_TIM_setCounter(TIMEBASE_PERIPH, crest_us);
+    g_now_us += CREST_PERIOD_US;
 
     mock_HW_ADC_setInjectedVolts(phaseSense[IO_BRIDGE_PHASE_U].ch, PHASE_U_INJ,
                                  PHASE_BIAS_V + (ampsU * PHASE_V_PER_A));
@@ -150,10 +154,26 @@ static void setBusCurrent(float32_t amps)
     mock_HW_ADC_setVolts(BUS_CH, BUS_IN, amps * BUS_V_PER_A);
 }
 
+// The bus-voltage divider the bridge reads for its voltage-vector command.
+static void setBusVoltage(float32_t volts)
+{
+    mock_HW_ADC_setVolts(BUS_V_CH, BUS_V_IN, volts * BUS_V_PER_V);
+}
+
 static void setNominalCurrents(void)
 {
     setPhaseCurrentsUV(0.0f, 0.0f);
     setBusCurrent(0.0f);
+}
+
+// One millisecond of the drive loop. On the board the bridge's cycle callback runs
+// twenty times between 1 ms passes: the cycles before a pass fetch the currents it
+// latches on, the cycles after it apply what it decided. One of each stands for them.
+static void tick(void)
+{
+    app_motorControl_cycleStep();
+    app_motorControl_run1ms();
+    app_motorControl_cycleStep();
 }
 
 // Bring the channel to steady commutation: operational, angle fixed, SIX_STEP
@@ -165,10 +185,10 @@ static void driveToRunning(float32_t velocity)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, velocity);
 
-    app_motorControl_run1ms();          // enters alignment (bridge enabled)
+    tick();          // enters alignment (bridge enabled)
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, captures offset
-    app_motorControl_run1ms();          // commutating
+    tick();          // dwell expires, captures offset
+    tick();          // commutating
 }
 
 // Complete alignment at rotor angle 0 (capturing offset 0), leaving the channel
@@ -179,9 +199,9 @@ static void alignAtZero(void)
     mock_IO_AS5048_setAngle(ENC_MOTOR, 0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
-    app_motorControl_run1ms();          // alignment begins
+    tick();          // alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, offset := 0
+    tick();          // dwell expires, offset := 0
 }
 
 // Set rotor angle (degrees) and signed velocity, then run one commutation cycle.
@@ -189,7 +209,7 @@ static void commutateAt(float32_t rotorDeg, float32_t velocity)
 {
     mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(rotorDeg));
     app_motorControl_setVelocity(MOTOR_MC, velocity);
-    app_motorControl_run1ms();
+    tick();
 }
 
 /* ---- pattern observation (bridge state read back through HW_TIM) ---- */
@@ -235,7 +255,8 @@ static int observedSector(void)
         else if (phaseCompare(phase) > 0U) { dutyD = phase; }
     }
 
-    // (dutyD, floating) per six-step table row (fw~mc_011).
+    // (dutyD, floating) in field-angle order from 330 deg: U+V-, U+W-, V+U-,
+    // V+W-, W+V-, W+U- (fw~mc_011); +3 is the opposite field.
     static const struct { IO_bridge_phase_E dutyD; IO_bridge_phase_E floatP; } table[6] = {
         { IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },   // 0: U d, V 0, W float
         { IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },   // 1: U d, W 0, V float
@@ -262,6 +283,7 @@ void setUp(void)
     (void)IO_bridge_init(&bridgeConfig);
     (void)app_motorControl_init(&appConfig);
     setNominalCurrents();
+    setBusVoltage(TEST_VBUS_V);
 }
 
 void tearDown(void) {}
@@ -285,11 +307,11 @@ static void test_phase_overcurrent_trips_and_latches(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     setPhaseCurrentsUV(3.0f, 0.0f);            // U > 2 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // disabled within one cycle
 
     setNominalCurrents();                      // fault cleared physically...
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // ...but the latch persists
 }
 
@@ -300,7 +322,7 @@ static void test_bus_overcurrent_trips(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     setBusCurrent(2.0f);                       // > 1.5 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -311,7 +333,7 @@ static void test_current_below_threshold_does_not_trip(void)
 
     setPhaseCurrentsUV(1.9f, 0.0f);            // U and the derived W just under 2 A
     setBusCurrent(1.4f);                       // just under 1.5 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_TRUE(bridgeEnabled());         // no trip
 }
 
@@ -324,7 +346,7 @@ static void test_negative_phase_overcurrent_trips(void)
     driveToRunning(10.0f);
 
     setPhaseCurrentsUV(1.25f, 1.25f);          // W = -(1.25 + 1.25), |-2.5| > 2 A
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -340,14 +362,14 @@ static void test_gate_blocks_bridge_when_not_operational(void)
 
     for (int i = 0; i < 5; i++)
     {
-        app_motorControl_run1ms();
+        tick();
         advanceTime_ms(200U);
         TEST_ASSERT_FALSE(bridgeEnabled());    // held disabled every cycle
     }
 
     // Becoming operational lets the drive proceed.
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    app_motorControl_run1ms();                 // alignment begins -> enabled
+    tick();                 // alignment begins -> enabled
     TEST_ASSERT_TRUE(bridgeEnabled());
 }
 
@@ -358,12 +380,12 @@ static void test_gate_blocks_bridge_while_fault_latched(void)
 {
     driveToRunning(10.0f);
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
     setNominalCurrents();                      // currents nominal, still operational
-    app_motorControl_run1ms();
-    app_motorControl_run1ms();
+    tick();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // stays disabled: latch gates enable
 }
 
@@ -376,7 +398,7 @@ static void test_off_request_disables_bridge_same_cycle(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -399,7 +421,7 @@ static void test_zero_demand_holds_bridge_enabled(void)
     }
 
     setPhaseCurrentsUV(3.0f, 0.0f);            // a fault still kills the bridge
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
 
@@ -414,7 +436,7 @@ static void test_state_view_tracks_disabled_enabled_faulted(void)
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());    // commutating
 
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());    // tripped
 }
 
@@ -451,7 +473,7 @@ static void test_velocity_estimate_converges_to_angle_rate(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
     }
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, motorVelocity());
 }
@@ -470,7 +492,7 @@ static void test_velocity_estimate_smooth_across_wrap(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
     }
     for (uint32_t i = 0U; i < 200U; i++)
     {
@@ -480,7 +502,7 @@ static void test_velocity_estimate_smooth_across_wrap(void)
             angle -= 6.2831853f;
         }
         mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        app_motorControl_run1ms();
+        tick();
         TEST_ASSERT_FLOAT_WITHIN(5.0f, 50.0f, motorVelocity());
     }
 }
@@ -496,12 +518,12 @@ static void test_velocity_estimate_immune_to_alignment_capture(void)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
-    app_motorControl_run1ms();          // alignment begins
+    tick();          // alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();          // dwell expires, offset := 170 deg captured
+    tick();          // dwell expires, offset := 170 deg captured
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
 
-    app_motorControl_run1ms();          // and the tick after stays clean
+    tick();          // and the tick after stays clean
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
 }
 
@@ -511,13 +533,13 @@ static void test_clear_fault_releases_latch_and_resumes(void)
 {
     driveToRunning(10.0f);
     setPhaseCurrentsUV(3.0f, 0.0f);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());
 
     setNominalCurrents();
     app_motorControl_clearFault(MOTOR_MC);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_TRUE(bridgeEnabled());                                  // drive resumes
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
 }
@@ -532,10 +554,10 @@ static void test_encoder_fault_latches_past_limit(void)
     TEST_ASSERT_TRUE(bridgeEnabled());
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
     TEST_ASSERT_TRUE(bridgeEnabled());                 // 5 is not > 5
 
-    app_motorControl_run1ms();                         // the 6th
+    tick();                         // the 6th
     TEST_ASSERT_FALSE(bridgeEnabled());
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());
 }
@@ -547,13 +569,13 @@ static void test_encoder_fault_count_resets_on_valid_read(void)
     driveToRunning(10.0f);
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_OK);
-    app_motorControl_run1ms();                         // resets the count
+    tick();                         // resets the count
 
     mock_IO_AS5048_setStatus(ENC_MOTOR, IO_AS5048_STATUS_FAULT);
-    for (int i = 0; i < 5; i++) { app_motorControl_run1ms(); }
+    for (int i = 0; i < 5; i++) { tick(); }
     TEST_ASSERT_TRUE(bridgeEnabled());                 // never 6 in a row
 }
 
@@ -572,12 +594,13 @@ static void test_sector_table_drives_correct_phases(void)
         IO_bridge_phase_E duty0;
         IO_bridge_phase_E floatP;
     } cases[6] = {
-        { 270.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W },
-        { 330.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V },
-        {  30.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U },
-        {  90.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },
-        { 150.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },
-        { 210.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U },
+        // rotor + 90 deg lead lands mid-sector: 30 / 90 / 150 / 210 / 270 / 330
+        { 300.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V },
+        {   0.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U },
+        {  60.0f, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_W },
+        { 120.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V },
+        { 180.0f, IO_BRIDGE_PHASE_W, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_U },
+        { 240.0f, IO_BRIDGE_PHASE_U, IO_BRIDGE_PHASE_V, IO_BRIDGE_PHASE_W },
     };
 
     alignAtZero();
@@ -627,6 +650,176 @@ static void test_duty_proportional_and_clamped(void)
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(MAX_DUTY_01), drivenCompare());
 }
 
+/* ---- fw~mc_020: sensored sinusoidal commutation ---- */
+
+// The stator voltage vector the bridge was handed, recovered from the three
+// compares: duties off the period, the zero-sequence offset cancelling in the
+// differences (fw~mc_014), scaled by the bus voltage the bridge read.
+static void vectorFromCompares(float32_t * const angleDeg, float32_t * const magnitude_V)
+{
+    const float32_t dU = (float32_t)phaseCompare(IO_BRIDGE_PHASE_U) / (float32_t)PERIOD;
+    const float32_t dV = (float32_t)phaseCompare(IO_BRIDGE_PHASE_V) / (float32_t)PERIOD;
+    const float32_t dW = (float32_t)phaseCompare(IO_BRIDGE_PHASE_W) / (float32_t)PERIOD;
+    const float32_t vAlpha = TEST_VBUS_V * ((2.0f * dU) - dV - dW) / 3.0f;
+    const float32_t vBeta  = TEST_VBUS_V * (dV - dW) / 1.7320508f;
+    *angleDeg    = atan2f(vBeta, vAlpha) * 180.0f / 3.14159265f;
+    *magnitude_V = sqrtf((vAlpha * vAlpha) + (vBeta * vBeta));
+}
+
+static float32_t wrapDeg(float32_t deg)
+{
+    while (deg > 180.0f)  { deg -= 360.0f; }
+    while (deg <= -180.0f) { deg += 360.0f; }
+    return deg;
+}
+
+// [test->fw~mc_020~1]
+// (0, V) at the rotor angle lands the stator vector 90 deg ahead of the rotor
+// for a positive target and 90 deg behind for a negative one, at
+// |V| = (|target| / max velocity) x V_max, clamped at V_max.
+static void test_sinusoidal_vector_sits_on_the_q_axis(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+
+    static const struct { float32_t rotorDeg; float32_t velocity; float32_t leadDeg; float32_t volts; } cases[] = {
+        {  30.0f,  10.0f,  90.0f,  5.0f },   // half scale
+        {  30.0f, -10.0f, -90.0f,  5.0f },   // reversed
+        { 200.0f,  20.0f,  90.0f, 10.0f },   // full scale
+        { 200.0f,  30.0f,  90.0f, 10.0f },   // past full scale: setVelocity saturates, V holds V_max
+        { 300.0f,  -4.0f, -90.0f,  2.0f },
+    };
+    for (size_t i = 0U; i < COUNTOF(cases); i++)
+    {
+        // A jump in the encoder reads as a velocity for a few filter time
+        // constants, which the per-cycle angle (fw~mc_019) would extrapolate;
+        // hold the angle until the estimate decays so the frame is the encoder's.
+        commutateAt(cases[i].rotorDeg, cases[i].velocity);
+        for (uint32_t settle = 0U; settle < 40U; settle++)
+        {
+            tick();
+        }
+        float32_t angleDeg = 0.0f;
+        float32_t volts = 0.0f;
+        vectorFromCompares(&angleDeg, &volts);
+        TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, wrapDeg(angleDeg - (cases[i].rotorDeg + cases[i].leadDeg)));
+        TEST_ASSERT_FLOAT_WITHIN(0.05f, cases[i].volts, volts);
+        TEST_ASSERT_TRUE(bridgeEnabled());
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_U));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_V));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_W));
+    }
+}
+
+// [test->fw~mc_020~1]
+static void test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    commutateAt(45.0f, 0.0f);
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
+}
+
+/* ---- method selection ---- */
+
+static app_motorControl_mode_E motorModeNow(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.mode;
+}
+
+static app_motorControl_mode_E selectedMode(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.selectedMode;
+}
+
+// A method request selects it; OFF disables and leaves the selection, so the
+// next enable runs the same method. The default comes from the config.
+static void test_selected_method_survives_off(void)
+{
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SIX_STEP_TRAP, selectedMode());   // config default
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SINUSOIDAL, selectedMode());
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_OFF, motorModeNow());
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SINUSOIDAL, selectedMode());
+}
+
+static void test_init_rejects_off_default_mode(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].defaultMode = APP_MOTORCONTROL_MODE_OFF;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
+/* ---- fw~mc_019: the per-cycle rotor angle ---- */
+
+static float32_t motorAngle_rad(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.magneticAngle_rad;
+}
+
+// [test->fw~mc_019~1]
+// Between 1 ms passes the angle advances by the electrical velocity once per
+// cycle: with the estimate settled at 2 deg/ms (pole pairs 1), twenty cycles of
+// 50 us carry it 2 deg past the last publish, and the next pass re-anchors it
+// on the encoder.
+static void test_cycle_step_advances_the_angle_between_passes(void)
+{
+    const float32_t stepPerMs_rad = DEG2RAD(2.0f);
+    float32_t angle = 0.0f;
+    for (uint32_t i = 0U; i < 80U; i++)              // 8 filter time constants
+    {
+        angle += stepPerMs_rad;
+        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+        tick();
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.05f * 2000.0f * 0.001f, stepPerMs_rad / 0.001f, motorVelocity());
+
+    const float32_t published = motorAngle_rad();    // one cycle past the last pass
+    for (uint32_t cycle = 0U; cycle < 20U; cycle++)
+    {
+        app_motorControl_cycleStep();
+    }
+    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), published + stepPerMs_rad, motorAngle_rad());
+
+    angle += stepPerMs_rad;                           // the encoder moved on as well
+    mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
+    app_motorControl_run1ms();                        // re-anchors on the encoder
+    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), angle, motorAngle_rad());
+}
+
+/* ---- fw~mc_015: the step owns the outputs ---- */
+
+// [test->fw~mc_015~1]
+// A new angle and target published by the 1 ms pass reach the bridge only when
+// the cycle step runs: the pass alone leaves the compares where the last step
+// put them, the step then lands the commutation for the published inputs.
+static void test_cycle_step_not_the_ms_pass_writes_the_outputs(void)
+{
+    alignAtZero();                                       // aligned; last step applied the alignment pattern
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());
+
+    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(90.0f));
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_run1ms();                           // publishes angle + target, decides Driving
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());   // outputs untouched
+
+    app_motorControl_cycleStep();                        // the step commutates on them
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(0.5f), drivenCompare());
+    TEST_ASSERT_TRUE(bridgeEnabled());
+}
+
 /* ---- fw~mc_012: alignment offset capture ---- */
 
 // [test->fw~mc_012~1]
@@ -638,32 +831,34 @@ static void test_first_enable_aligns_then_captures_offset(void)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
-    // Dwell cycle 1: alignment pattern (U & V driven, U at align duty, W float),
-    // not yet aligned.
-    app_motorControl_run1ms();
+    // Dwell cycle 1: alignment pattern (U at align duty, V and W returning at
+    // zero duty), not yet aligned.
+    tick();
     app_motorControl_snapshot_S snap = { 0 };
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FALSE(snap.isAligned);
     TEST_ASSERT_TRUE(bridgeEnabled());
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), phaseCompare(IO_BRIDGE_PHASE_U));
     TEST_ASSERT_EQUAL_UINT32(0U, phaseCompare(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(0U, phaseCompare(IO_BRIDGE_PHASE_W));
     TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_U));
-    TEST_ASSERT_TRUE(phaseFloating(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_W));
 
     // Still aligning partway through the dwell.
     advanceTime_ms(200U);
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FALSE(snap.isAligned);
 
     // After the dwell the offset is captured; the following cycle commutates on
     // it, so the electrical angle (rotor 45deg minus offset 45deg) reads ~0.
     advanceTime_ms(ALIGN_ADVANCE_MS);
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_TRUE(snap.isAligned);
 
-    app_motorControl_run1ms();
+    tick();
     (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
     TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.0f, snap.magneticAngle_rad);
 }
@@ -674,10 +869,10 @@ static void test_first_enable_aligns_then_captures_offset(void)
 static void test_subsequent_enable_skips_alignment(void)
 {
     alignAtZero();                 // aligned, offset 0
-    app_motorControl_run1ms();     // commutating
+    tick();     // commutating
 
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
-    app_motorControl_run1ms();
+    tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
     // Re-enable: one cycle should commutate at the drive duty (0.5), not fall
@@ -704,6 +899,20 @@ static void test_init_rejects_zero_max_velocity(void)
 {
     buildConfigs();
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].maxVelocity_radPerSec = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
+static void test_init_rejects_zero_pwm_period(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].pwmPeriod_s = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
+static void test_init_rejects_zero_max_voltage(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].maxVoltage_V = 0.0f;
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
@@ -737,11 +946,19 @@ int main(void)
     RUN_TEST(test_reversal_flips_drive_direction);
     RUN_TEST(test_duty_proportional_and_clamped);
 
+    RUN_TEST(test_sinusoidal_vector_sits_on_the_q_axis);
+    RUN_TEST(test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up);
+    RUN_TEST(test_selected_method_survives_off);
+    RUN_TEST(test_init_rejects_off_default_mode);
+    RUN_TEST(test_cycle_step_advances_the_angle_between_passes);
+    RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);
     RUN_TEST(test_subsequent_enable_skips_alignment);
 
     RUN_TEST(test_init_rejects_zero_pole_pairs);
     RUN_TEST(test_init_rejects_zero_max_velocity);
+    RUN_TEST(test_init_rejects_zero_pwm_period);
+    RUN_TEST(test_init_rejects_zero_max_voltage);
 
     return UNITY_END();
 }

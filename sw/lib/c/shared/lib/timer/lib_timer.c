@@ -68,3 +68,8 @@ uint32_t lib_timer_getTime_ms(void)
     lib_timer_private_update();
     return data->currentTime_us / 1000U;
 }
+
+uint32_t lib_timer_getHWCount_us(void)
+{
+    return (data->config->getTime_us != NULL) ? data->config->getTime_us() : 0U;
+}

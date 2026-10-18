@@ -245,8 +245,12 @@ void app_userControls_run1ms(void)
 
         // set outputs — only on change, so the controls and app commands
         // share the request state by order of arrival (fw~conn_server_002).
+        // An enable runs whichever method is selected (the board default, or
+        // the host's last SetMode).
+        app_motorControl_snapshot_S motorSnapshot = { 0 };
+        (void)app_motorControl_getSnapshot(data->config->motor, &motorSnapshot);
         const app_motorControl_mode_E modeOut =
-            ((data->mode == APP_USERCONTROLS_MODE_VELOCITY)) ? APP_MOTORCONTROL_MODE_SIX_STEP_TRAP
+            ((data->mode == APP_USERCONTROLS_MODE_VELOCITY)) ? motorSnapshot.selectedMode
                                                              : APP_MOTORCONTROL_MODE_OFF;
         if ((!data->outputsSeeded) || (modeOut != data->modeSent))
         {

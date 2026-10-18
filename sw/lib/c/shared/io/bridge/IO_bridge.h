@@ -51,9 +51,6 @@ typedef struct
 
 typedef struct
 {
-    // Free-running 1 us time base the injected callback stamps samples with.
-    HW_TIM_peripheral_E timeBasePeripheral;
-
     IO_bridge_phaseConfig_S phase[IO_BRIDGE_PHASE_COUNT];
     IO_bridge_senseConfig_S busCurrent;
     uint32_t injectedPairWindow_us; // max time span between U and V phase current
@@ -94,7 +91,8 @@ bool IO_bridge_getBusVoltage(IO_bridge_channel_E channel, float32_t * const volt
 // One callback per bridge; a later registration replaces the earlier. It runs in
 // the injected-completion ISR, which the board places at an NVIC preempt priority
 // above configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY: it and everything it reaches
-// must make no FreeRTOS call, *FromISR included, and no lib_timer call.
+// must make no FreeRTOS call, *FromISR included, and no lib_timer call beyond
+// lib_timer_getHWCount_us, which only reads the counter.
 bool IO_bridge_registerCycleCallback(IO_bridge_channel_E channel,
                                      IO_bridge_cycleCallback_F callback,
                                      void * context);

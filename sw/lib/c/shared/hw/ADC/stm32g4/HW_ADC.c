@@ -1,6 +1,7 @@
 /* Includes */
 
 #include "lib_types.h"
+#include "lib_timer.h"
 
 #include "HW_ADC.h"
 #include "stm32g4xx_hal.h"
@@ -75,6 +76,12 @@ typedef struct
     const HW_ADC_config_S * config;
 
     HW_ADC_channelData_S channelData[HW_ADC_CHANNEL_COUNT];
+
+    // Interrupt duration probe (fw~hal_adc_011): microseconds from handler
+    // entry to exit on the free-running time base, the latest and the
+    // maximum; the host clears the maximum by writing zero.
+    volatile uint32_t irqDuration_us;
+    volatile uint32_t irqDurationMax_us;
 
     bool initialized;
 } HW_ADC_data_S;
@@ -650,10 +657,12 @@ void HW_ADC_private_errorCallback(ADC_HandleTypeDef * hadc)
     }
 }
 
+// [impl->fw~hal_adc_011~1]
 void HW_ADC_irqHandler(void)
 {
     if (data->initialized)
     {
+        const uint32_t entry_us = lib_timer_getHWCount_us();
         for (size_t channel = 0U; channel < data->config->numChannels; channel++)
         {
             // Only handles HAL_ADC_Init ran on (a channel with no enabled
@@ -662,6 +671,12 @@ void HW_ADC_irqHandler(void)
             {
                 HAL_ADC_IRQHandler(&data->channelData[channel].hadc);
             }
+        }
+        const uint32_t duration_us = lib_timer_getHWCount_us() - entry_us;
+        data->irqDuration_us = duration_us;
+        if (duration_us > data->irqDurationMax_us)
+        {
+            data->irqDurationMax_us = duration_us;
         }
     }
 }

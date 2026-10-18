@@ -20,7 +20,10 @@ use common::{connected_world, drain_tx, inject, set_u32, u64_at, GRID_US};
 /// word [2] is word [1]'s complement, written in the same callback.
 const WINDOW_BASE: u32 = 0x2000_0000;
 
-/// The cycle-callback duration probe's observed-maximum statics.
+/// The cycle-callback duration probe's statics: the latest callback's
+/// durations and the observed maxima.
+const STEP_LAST: &str = "main_cycleProbe_step_us";
+const CALLBACK_LAST: &str = "main_cycleProbe_callback_us";
 const STEP_MAX: &str = "main_cycleProbe_stepMax_us";
 const CALLBACK_MAX: &str = "main_cycleProbe_callbackMax_us";
 
@@ -365,8 +368,11 @@ fn the_cycle_callback_probe_clears_and_re_arms() {
     // budgets below are fw~mc_018's contract, not a measurement.
     let step_max = u64_at(&sim, STEP_MAX);
     let callback_max = u64_at(&sim, CALLBACK_MAX);
-    assert_eq!(step_max, 0, "the empty commutation step measures zero");
+    assert_eq!(step_max, 0, "an intra-callback duration quantizes to zero");
     assert_eq!(callback_max, 0, "an intra-callback duration quantizes to zero");
+    // The latest callback's durations never exceed the standing maxima.
+    assert!(u64_at(&sim, STEP_LAST) <= step_max, "latest step duration within its maximum");
+    assert!(u64_at(&sim, CALLBACK_LAST) <= callback_max, "latest callback duration within its maximum");
     assert!(step_max <= STEP_BUDGET_US, "step maximum {step_max} us");
     assert!(callback_max <= CALLBACK_BUDGET_US, "callback maximum {callback_max} us");
 

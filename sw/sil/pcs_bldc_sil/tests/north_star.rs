@@ -8,6 +8,9 @@ use pcs_bldc_sil::board::{
     INPUT_LEVEL_PB10, MOTOR, PHASE_TRIP_A, VBUS_V,
 };
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil, BRIDGE_PORTS};
+
+mod common;
+use common::{select_method, MODE_SIX_STEP_TRAP};
 use std::f64::consts::{PI, TAU};
 use voyant::Value;
 
@@ -30,7 +33,10 @@ const MAX_DUTY_01: f64 = 0.9;
 
 /// Electrical angle at which the (U high, V low) alignment vector holds the rotor for this
 /// trapezoidal shape: where the U and V BEMF shapes meet with U on its falling edge.
-const ALIGN_FIELD_RAD_E: f64 = 5.0 * PI / 6.0;
+const ALIGN_FIELD_RAD_E: f64 = 0.0;
+/// The field of sector 0 (U high, V low), electrical: the two-phase patterns sit at
+/// -30 deg + 60 deg per sector in the phase-U frame.
+const SECTOR0_FIELD_RAD_E: f64 = -PI / 6.0;
 /// One six-step branch advances the applied field by 60 electrical degrees.
 const SECTOR_RAD_E: f64 = PI / 3.0;
 
@@ -72,9 +78,9 @@ fn sector_from_ports(sim: &Sil) -> Option<usize> {
 
 /// Electrical degrees the applied field leads the true rotor field by, in [0, 360). The
 /// drive motors for a lead under 180 and brakes above it; the firmware aims for 60..120
-/// (`app_motorControl.cpp`, the +30 deg bucket bias on a +90 deg lead).
+/// (`app_motorControl.cpp`: a +90 deg lead quantized to the nearest sector field).
 fn lead_deg(sim: &Sil) -> Option<f64> {
-    let field_e = ALIGN_FIELD_RAD_E + (sector_from_ports(sim)? as f64) * SECTOR_RAD_E;
+    let field_e = SECTOR0_FIELD_RAD_E + (sector_from_ports(sim)? as f64) * SECTOR_RAD_E;
     let rotor_e = plant(sim, "angle") * POLE_PAIRS;
     Some((field_e - rotor_e).rem_euclid(TAU).to_degrees())
 }
@@ -143,6 +149,8 @@ fn boot_and_arm(sim: &mut Sil) {
     assert!(!fault_latched(sim), "no fault before drive");
     assert_eq!(max_phase_duty(sim), 0.0, "bridge dark before the arm");
 
+    select_method(sim, MODE_SIX_STEP_TRAP);
+    assert_eq!(max_phase_duty(sim), 0.0, "selection leaves the bridge dark");
     tap_button(sim);
 }
 
@@ -163,14 +171,14 @@ fn alignment_equilibrium_rad(start_rad: f64) -> f64 {
 // [test->fw~hal_gpio_004~1]
 #[test]
 fn alignment_pulls_rotor_and_captures_offset() {
-    // Alignment is a torsional spring: 0.1 duty across U-V drives 0.1*Vbus/2R through the
-    // windings and the rotor is pulled to where the U and V BEMF shapes meet.
+    // Alignment is a torsional spring: 0.1 duty on U against V and W returning drives
+    // 0.1*Vbus/(1.5R) through U and the rotor flux is pulled onto the U axis.
     const CURRENT_BAND_A: f64 = 0.015;
     const VELOCITY_FLOOR_RAD_S: f64 = 0.05;
     const OFFSET_MATCH_RAD: f64 = 0.01;
 
     let params = MotorParams::default();
-    let expected_current_a = (ALIGN_DUTY * VBUS_V) / (2.0 * params.r_ohm);
+    let expected_current_a = (ALIGN_DUTY * VBUS_V) / (1.5 * params.r_ohm);
     let equilibrium = alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
 
     let Board { mut sim, .. } = board(INITIAL_ANGLE_RAD);
@@ -186,7 +194,7 @@ fn alignment_pulls_rotor_and_captures_offset() {
     );
     assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "U enabled");
     assert_eq!(port(&sim, "PWM_V_enabled"), 1.0, "V enabled");
-    assert_eq!(port(&sim, "PWM_W_enabled"), 0.0, "W held off");
+    assert_eq!(port(&sim, "PWM_W_enabled"), 1.0, "W returning");
     assert_eq!(port(&sim, MOE), 1.0, "master output enable on");
 
     // --- Ride the dwell, sampling the plant's answer every millisecond ------------------
@@ -276,12 +284,17 @@ fn alignment_pulls_rotor_and_captures_offset() {
         peak_velocity > VELOCITY_FLOOR_RAD_S,
         "the alignment vector swings the rotor: peak |velocity| {peak_velocity:.6} rad/s"
     );
-    let min_angle = angle.iter().cloned().fold(f64::INFINITY, f64::min);
+    // The alignment spring is 1.5*ke*I*pp (~1.3 Nm/rad) against t_c = 4.4e-3 Nm of
+    // stiction, so the shaft parks within t_c/K (~0.0035 rad) of the equilibrium.
+    const STICK_BAND_RAD: f64 = 0.005;
     assert!(
-        (min_angle < equilibrium) && (angle[0] > equilibrium),
-        "the shaft crosses the equilibrium {equilibrium:.6} rad on its way in: swept \
-         {:.6} -> {min_angle:.6} rad",
+        (angle_at_latch - equilibrium).abs() < (angle[0] - equilibrium).abs(),
+        "the shaft moves toward the equilibrium {equilibrium:.6} rad: {:.6} -> {angle_at_latch:.6}",
         angle[0]
+    );
+    assert!(
+        offset_err_rad.abs() < STICK_BAND_RAD,
+        "the shaft parks within the stick band of the equilibrium: {offset_err_rad:+.6} rad"
     );
     assert!(
         offset_err_rad.abs() < (PI / POLE_PAIRS),

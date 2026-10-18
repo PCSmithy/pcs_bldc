@@ -23,7 +23,7 @@ typedef enum
 {
     APP_MOTORCONTROL_MODE_OFF,
     APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
-    // APP_MOTORCONTROL_MODE_VF_SINUSOIDAL, // TODO
+    APP_MOTORCONTROL_MODE_SINUSOIDAL,
     // APP_MOTORCONTROL_MODE_FOC, // TODO
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
@@ -50,6 +50,9 @@ typedef struct
     IO_AS5048_channel_E encoder; // TODO - abstract IO_AS5048 into a multi-encoder dev_encoder
 
     uint8_t motorPolePairs;
+    float32_t pwmPeriod_s;   // the bridge's PWM period: the step's time base
+    float32_t maxVoltage_V;  // V_max: the voltage a full-scale target commands (fw~mc_020)
+    app_motorControl_mode_E defaultMode;   // the method selected at power-up; never OFF
 } app_motorControl_channelConfig_S;
 
 typedef struct
@@ -68,6 +71,7 @@ typedef struct
     float32_t                magneticAngle_rad;            // rotor electrical angle
     float32_t                velocitySetpoint_radPerSec;   // signed commanded speed target
     float32_t                velocityMeasured_radPerSec;   // encoder-derived estimate (fw~est_velocity_001)
+    app_motorControl_mode_E  selectedMode;                 // the method an enable runs; OFF leaves it selected
 } app_motorControl_snapshot_S;
 
 /* Public Function Declarations */
@@ -80,6 +84,7 @@ bool app_motorControl_init(const app_motorControl_config_S * const config);
 bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorControl_snapshot_S * const snapshot);
 
 void app_motorControl_run1ms(void);
+void app_motorControl_cycleStep(void);
 
 void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec);
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);

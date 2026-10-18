@@ -6,7 +6,7 @@
 
 use pcs_bldc_sil::board::{
     fault_latched, ALIGN_DWELL_MS, DIAL, GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW,
-    INPUT_LEVEL_PB10, MOTOR,
+    INPUT_LEVEL_PB10, MOTOR, USB_RX_REG,
 };
 use pcs_bldc_sil::wire::frame;
 use pcs_bldc_sil::{cid, vid, Sil, SilOptions, SOURCE};
@@ -59,10 +59,37 @@ pub fn tap_button(sim: &mut Sil) {
     sim.run_for_ms(320); // APP_USERCONTROLS_DOUBLE_TAP_WINDOW_MS plus slack
 }
 
-/// Bring the gate driver up, align, and dial the shaft to a steady spin — the
-/// operating point the current-sense suites measure against.
+/// `board.Mode` values, as `board.proto` numbers them.
+pub const MODE_OFF: u64 = 0;
+pub const MODE_SIX_STEP_TRAP: u64 = 1;
+pub const MODE_SINUSOIDAL: u64 = 2;
+
+/// Select a commutation method over the protocol: `SetMode(method)` selects (and
+/// enables), `SetMode(OFF)` disables with the selection kept, so the next button
+/// enable runs it. The board world's USB comes up connected for the exchange.
+pub fn select_method(sim: &mut Sil, method: u64) {
+    sim.write(&cid("HW_USB_sim_data.connected"), true)
+        .expect("connect the host");
+    for (id, mode) in [(1u64, method), (2u64, MODE_OFF)] {
+        // board.Request { set_mode (1) { mode (1) } } in the envelope's board_request (60).
+        let mut set_mode = Vec::new();
+        if mode != 0 {
+            set_mode.push(0x08);
+            proto::put_varint(mode, &mut set_mode);
+        }
+        let mut request = vec![0x0A, set_mode.len() as u8];
+        request.extend_from_slice(&set_mode);
+        inject(sim, &proto::envelope(id, proto::F_BOARD_REQUEST, &request));
+        sim.run_for_ms(5);
+        let _ = drain_tx(sim);
+    }
+}
+
+/// Bring the gate driver up, select six-step, align, and dial the shaft to a
+/// steady spin — the operating point the current-sense suites measure against.
 pub fn spin_up(sim: &mut Sil) {
     sim.run_for_ms(GATE_BRINGUP_MS);
+    select_method(sim, MODE_SIX_STEP_TRAP);
     tap_button(sim);
     sim.run_for_ms(ALIGN_DWELL_MS + 100);
     assert!(
@@ -171,7 +198,7 @@ pub fn assert_status(sim: &Sil, path: &str, want: &Status, why: &str) {
 
 /// How many `rx[]` elements the protocol suites register for command writes;
 /// must cover the longest injected frame.
-pub const RX_REG: usize = 128;
+pub const RX_REG: usize = USB_RX_REG;
 
 /// A world whose firmware is booted with the host connected and the sim USB
 /// capture drained: the starting point of every protocol scenario.
@@ -233,6 +260,7 @@ pub mod proto {
     pub const F_READ_REQUEST: u32 = 34;
     pub const F_READ_REPLY: u32 = 35;
     pub const F_WRITE_REQUEST: u32 = 36;
+    pub const F_BOARD_REQUEST: u32 = 60;
 
     pub fn put_varint(mut v: u64, out: &mut Vec<u8>) {
         loop {

@@ -128,6 +128,9 @@ static void app_server_config_private_handleRequest(const board_Request * const 
                 case board_Mode_MODE_SIX_STEP_TRAP:
                     requestedMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP;
                     break;
+                case board_Mode_MODE_SINUSOIDAL:
+                    requestedMode = APP_MOTORCONTROL_MODE_SINUSOIDAL;
+                    break;
                 default:
                     modeKnown = false;
                     break;
@@ -225,9 +228,18 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
     (void) HW_ADC_getVolts(APP_SERVER_VBUS_I_CHANNEL, APP_SERVER_VBUS_I_INPUT, &vbusI_v);
 
     telemetry->timestamp_ms = (uint32_t) (xTaskGetTickCount() * portTICK_PERIOD_MS);
-    telemetry->mode = ((snapshot.mode == APP_MOTORCONTROL_MODE_SIX_STEP_TRAP))
-                          ? board_Mode_MODE_SIX_STEP_TRAP
-                          : board_Mode_MODE_OFF;
+    switch (snapshot.mode)
+    {
+        case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
+            telemetry->mode = board_Mode_MODE_SIX_STEP_TRAP;
+            break;
+        case APP_MOTORCONTROL_MODE_SINUSOIDAL:
+            telemetry->mode = board_Mode_MODE_SINUSOIDAL;
+            break;
+        default:
+            telemetry->mode = board_Mode_MODE_OFF;
+            break;
+    }
     switch (snapshot.state)
     {
         case APP_MOTORCONTROL_STATE_ENABLED:

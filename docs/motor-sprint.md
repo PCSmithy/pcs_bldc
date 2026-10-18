@@ -17,10 +17,16 @@ FreeRTOS task architecture (`task_1ms` > `task_10ms` > `task_usb` >
 phase currents from the 20 kHz injected ADC with a per-cycle callback
 (`fw~io_bridge_006`/`_007`), and a 20 kHz signal trace to the desktop app.
 `IO_bridge` and `app_motorControl` are C++ classes
-(`docs/cpp-coding-conventions.md`); new control code is C++. Written ahead of their code, for the next branch:
-the V/f + modulation set `fw~mc_010`, `fw~mc_013`–`fw~mc_017`
-(`specs/firmware/mc/vf-sinusoidal.md`, `modulation.md`) and the bridge's
-voltage-vector command `fw~io_bridge_008` (`specs/firmware/io/bridge.md`).
+(`docs/cpp-coding-conventions.md`); new control code is C++. The transforms
+and modulator (`fw~mc_013`/`_014`), the bridge's voltage-vector command
+(`fw~io_bridge_008`), the PWM-synchronous step (`fw~mc_015`) and the
+rotor-frame current observation (`fw~mc_016`) are in. Written ahead of
+their code, for the next branch: the sensored sinusoidal method
+`fw~mc_020` and the per-cycle rotor angle `fw~mc_019`
+(`specs/firmware/mc/sinusoidal.md`, `motor-control-application.md`).
+Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+(`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
+scheduled with sensorless FOC under Milestone 3.
 
 **Read first:**
 1. `CLAUDE.md`, plus the ADC and unhandled-IRQ gotchas at the bottom of this
@@ -51,9 +57,12 @@ control path and the protective plumbing before any closed loop.
   driver (enable, gate-drive settings, dead-time coherence with TIM1),
   surface and latch its fault/nFAULT line. New `hal`/`drivers`-topic spec(s)
   under `sys~mc_001`.
-- **Open-loop commutation.** V/f (scalar) or six-step first spins at reduced
-  bus voltage / current-limited, to confirm phase ordering, sense polarity,
-  and mechanical rotation.
+- **Open-loop commutation.** Six-step first spins at reduced bus voltage /
+  current-limited, confirming phase ordering, sense polarity, and
+  mechanical rotation. Done.
+- **Sensored sinusoidal commutation** (`fw~mc_020`, voltage-mode on the
+  per-cycle rotor angle `fw~mc_019`): the SVM path on the bench, and the
+  d/q frame FOC closes its loops in.
 - **Software overcurrent trip** off the already-verified phase-current sense
   channels (INA240 phase I, VBUS I): a fast poll/ISR threshold that disables
   the bridge. This is the standing safety net for everything after.

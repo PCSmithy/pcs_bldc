@@ -1,6 +1,7 @@
 /* Includes */
 #include "lib_types.h"
 #include "lib_transforms.h"
+#include "lib_timer.h"
 #include "IO_bridge.h"
 #include "HW_TIM.h"
 
@@ -194,13 +195,10 @@ void Bridge::completeInjectedPair(uint32_t now_us)
 
 void Bridge::recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status)
 {
-    // Without a time base the pair window is meaningless: every stamp would
-    // read zero and every sample would look simultaneous.
-    uint32_t now_us;
-    if ((this->config != NULL) &&
-        (HW_TIM_getCounter(this->config->timeBasePeripheral, &now_us)) &&
-        (status == HW_ADC_CONVERSION_STATUS_OK))
+    if ((this->config != NULL) && (status == HW_ADC_CONVERSION_STATUS_OK))
     {
+        // The free-running microsecond count, a plain counter read: ISR-safe.
+        const uint32_t now_us = lib_timer_getHWCount_us();
         // lookup which phase measurement this ADC channel maps to
         for (uint8_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++) // TODO - memoize this / derive it statically at as a LUT at init
         {
