@@ -3,6 +3,48 @@
 Deferred firmware tasks — parked here so they aren't lost, with enough scope
 detail to pick up cold. SIL-specific items live in `sil/backlog.md`.
 
+## 20 kHz interrupt hot path
+
+**When:** next — the interrupt starves the server and USB tasks under drive,
+so the trace stream stops; FOC adds a current loop to the same step.
+
+**What it is:** measured 2026-10-17 at `-Og` with the probes
+(`HW_ADC_data.irqDuration_us`, `main_cycleProbe_{step,callback}_us`) and a
+600-sample DWT PC profile over SWD, 50 us cycle:
+
+| | drive off | sinusoidal |
+|---|---|---|
+| whole ADC interrupt | 36-37 us | 44 us (max 47) |
+| callback | 23 us | 29-30 us (max 32) |
+| commutation step | 19 us | 27 us (max 30) |
+
+Under drive 92% of samples sit on the interrupt path; the server task ran
+no pass and the USB task no wake in 2 s, and the 1 ms task lost a fifth
+of its passes. Profile shares under drive: trig with its argument
+reduction 12.5%, injected sample recording + HAL value reads 13%, HAL ADC
+dispatch 12%, voltage vector (SVM, compare writes, period reads) 12%,
+time-base reads 10%, enable writes through HAL PWM start 7%, `fmodf` 5%,
+trace sampling 3%. `-O2` gains only ~2 us: the cost is HAL and library
+calls, not arithmetic.
+
+Fixes, in payoff order, each measured on the probes before the next:
+
+1. One sine/cosine pair per cycle on the CORDIC, shared by Park and
+   inverse Park; angle held as a fraction of a turn so the wrap replaces
+   `fmodf` (~17%).
+2. One time-base read per cycle, passed down (~10%).
+3. Phase/main enables written only on change (~7%).
+4. Duty writes as direct compare-register writes with a cached period.
+5. Memoised ADC-channel-to-phase lookup; trim the HAL value reads.
+6. Flash prefetch on (`FLASH_ACR` PRFTEN is clear at 4 wait states).
+7. Last: bypass `HAL_ADC_IRQHandler` with a direct JEOS path (~12%).
+
+Target: under 20 us for the whole interrupt under drive.
+
+**Where:** `sw/fw/src/main.c` (probes), `sw/lib/c/shared/io/bridge/`,
+`sw/lib/c/shared/app/motorControl/`, `sw/lib/c/shared/lib/transforms/`,
+`sw/lib/c/shared/hw/{ADC,TIM}/stm32g4/`, a new `hw/CORDIC`.
+
 ## USB link: double-buffered bulk IN
 
 **When:** when the trace needs more than ~500 kB/s sustained — e.g. more
