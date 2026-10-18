@@ -20,6 +20,10 @@ typedef struct
     // the hardware MOE bit, which a break event can clear behind our back.
     bool moeCommanded[HW_TIM_PERIPHERAL_COUNT];
 
+    // Last-applied CCx enable per channel. The bridge re-asserts every PWM
+    // cycle; only a change pays the HAL start path or the register stop.
+    bool outputEnabled[HW_TIM_CHANNEL_COUNT];
+
     const HW_TIM_config_S * config;
     bool initialized;
 } HW_TIM_data_S;
@@ -330,7 +334,11 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
         const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
         TIM_HandleTypeDef * const htim = &data->htim[channelConfig->peripheral];
         bool ok = true;
-        if (enabled)
+        if (enabled == data->outputEnabled[channel])
+        {
+            // already in the requested state
+        }
+        else if (enabled)
         {
             ok = (HAL_TIM_PWM_Start(htim, channelConfig->channel) == HAL_OK);
             if (ok && channelConfig->complementary)
@@ -367,6 +375,10 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
             // HAL_TIM_PWM(N)_Start's READY-state gate passes.
             TIM_CHANNEL_STATE_SET(htim, channelConfig->channel, HAL_TIM_CHANNEL_STATE_READY);
             TIM_CHANNEL_N_STATE_SET(htim, channelConfig->channel, HAL_TIM_CHANNEL_STATE_READY);
+        }
+        if (ok)
+        {
+            data->outputEnabled[channel] = enabled;
         }
         ret = ok;
     }
