@@ -398,9 +398,6 @@ static void app_server_private_drainSamples(void)
     bool progressing = true;
     while (progressing)
     {
-        uint32_t group = 0U;
-        uint32_t cycle = 0U;
-        size_t recordLen = 0U;
         progressing = false;
         shared_Envelope * const env = &data->txEnvelope;
         trace_Samples * const samples = &env->payload.samples;
@@ -410,54 +407,23 @@ static void app_server_private_drainSamples(void)
         // records held back instead leave whole once capacity returns.
         const uint32_t fullWire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
             sizeof(samples->data.bytes) + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
-        if ((budget >= fullWire) && app_server_trace_peek(&group, &cycle, &recordLen) &&
-            (buffered >= (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)))
+        if (budget >= fullWire)
         {
-            const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
-            // Only the Samples fields the payload encoder reads are written:
-            // zeroing the whole envelope costs more than encoding the message.
-            samples->period_cycles = periodCycles;
-            samples->first_cycle = cycle;
-            samples->count = 0U;
-            samples->data.size = 0U;
-
+            uint32_t group = 0U;
+            uint32_t cycle = 0U;
             size_t used = 0U;
-            uint32_t nextCycle = cycle;
-            bool batching = true;
-            while (batching)
+            const uint32_t count = app_server_trace_popRun(samples->data.bytes, sizeof(samples->data.bytes),
+                                                           &buffered, &group, &cycle, &used);
+            if (count > 0U)
             {
-                if (((used + recordLen) > sizeof(samples->data.bytes)) ||
-                    (buffered < (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)) ||
-                    !app_server_trace_pop(&samples->data.bytes[used],
-                                          sizeof(samples->data.bytes) - used))
-                {
-                    batching = false;
-                }
-                else
-                {
-                    buffered -= APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen;
-                    used += recordLen;
-                    samples->count++;
-                    nextCycle += periodCycles;
-
-                    // Only a run of one group's records whose cycle indices
-                    // still step by its period can share the message: a gap
-                    // left by an overflow starts a new one.
-                    uint32_t nextGroup = 0U;
-                    uint32_t peekedCycle = 0U;
-                    size_t peekedLen = 0U;
-                    batching = app_server_trace_peek(&nextGroup, &peekedCycle, &peekedLen) &&
-                               (nextGroup == group) &&
-                               (peekedCycle == nextCycle);
-                    recordLen = peekedLen;
-                }
-            }
-
-            if (samples->count > 0U)
-            {
+                // Only the Samples fields the payload encoder reads are written:
+                // zeroing the whole envelope costs more than encoding the message.
+                samples->period_cycles = app_server_trace_groupPeriodCycles(group);
+                samples->first_cycle = cycle;
+                samples->count = count;
+                samples->data.size = (pb_size_t) used;
                 // The records are already popped: a failed send drops them and
                 // ends the pass, the host reading the loss as a cycle-index gap.
-                samples->data.size = (pb_size_t) used;
                 const bool sent = app_server_private_sendSamples(samples);
                 const uint32_t wire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
                     used + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);

@@ -60,13 +60,19 @@ bool app_server_trace_write(const trace_WriteRequest * const request,
 // group.
 uint32_t app_server_trace_groupPeriodCycles(uint32_t group);
 
-// Consumer side: the oldest buffered record's group, cycle index, and data
-// length, or false when the ring is empty. Pop moves that record's data out.
+// Consumer side.
 
 // Bytes buffered right now: each record's data plus its overhead.
 uint32_t app_server_trace_bufferedBytes(void);
-bool app_server_trace_peek(uint32_t * const group, uint32_t * const cycle, size_t * const dataLen);
-bool app_server_trace_pop(uint8_t * const buffer, size_t bufferLen);
+
+// Moves the run of records at the ring's tail out as one block: the oldest
+// record, then following records of its group whose cycle indices step by
+// the group's period, each whole, while the data fits maxBytes and the
+// records lie within *ringBudget bytes of the ring (a pass's snapshot, which
+// the call reduces by what it took). Returns the record count, with the
+// run's group, first cycle index, and data length; zero takes nothing.
+uint32_t app_server_trace_popRun(uint8_t * const buffer, size_t maxBytes, uint32_t * const ringBudget,
+                                 uint32_t * const group, uint32_t * const firstCycle, size_t * const dataLen);
 #ifdef __cplusplus
 }
 #endif

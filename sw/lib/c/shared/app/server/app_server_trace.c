@@ -110,35 +110,48 @@ static uint32_t app_server_trace_private_ringUsed(void)
     return ((head >= tail)) ? (head - tail) : ((head + capacity) - tail);
 }
 
-// Write len bytes at the rolling ring index; returns the advanced index. The
-// caller publishes data->head only after the whole record is written.
+// Write len bytes at the rolling ring index, in at most two runs around the
+// wrap; returns the advanced index. The caller publishes data->head only
+// after the whole record is written.
 static uint32_t app_server_trace_private_ringWrite(uint32_t index, const uint8_t * const bytes, uint32_t len)
 {
     const uint32_t capacity = app_server_trace_private_capacity();
     uint8_t * const storage = data->config->sampleStorage;
-    for (uint32_t i = 0U; i < len; i++)
+    const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
+    (void) memcpy(&storage[index], bytes, firstRun);
+    if (firstRun < len)
     {
-        storage[index] = bytes[i];
-        index++;
-        if (index >= capacity)
-        {
-            index = 0U;
-        }
+        (void) memcpy(storage, &bytes[firstRun], len - firstRun);
+    }
+    index += len;
+    if (index >= capacity)
+    {
+        index -= capacity;
+    }
+    return index;
+}
+
+// Read len bytes from the rolling ring index, in at most two runs around the
+// wrap; returns the advanced index.
+static uint32_t app_server_trace_private_ringRead(uint32_t index, uint8_t * const bytes, uint32_t len)
+{
+    const uint32_t capacity = app_server_trace_private_capacity();
+    const uint8_t * const storage = data->config->sampleStorage;
+    const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
+    (void) memcpy(bytes, &storage[index], firstRun);
+    if (firstRun < len)
+    {
+        (void) memcpy(&bytes[firstRun], storage, len - firstRun);
+    }
+    index += len;
+    if (index >= capacity)
+    {
+        index -= capacity;
     }
     return index;
 }
 
 // Byte at `offset` past the tail, without consuming (offset < capacity).
-static uint8_t app_server_trace_private_ringPeek(uint32_t offset)
-{
-    const uint32_t capacity = app_server_trace_private_capacity();
-    uint32_t index = data->tail + offset;
-    if (index >= capacity)
-    {
-        index -= capacity;
-    }
-    return data->config->sampleStorage[index];
-}
 
 // Open or close the sampler's gate. The fences keep the plain accesses either
 // side of the publish from crossing it.
@@ -370,20 +383,17 @@ static void app_server_trace_private_capture(uint32_t group, uint32_t cycle)
         // The free-space check read tail: fence before reusing space the
         // consumer just released.
         APP_SERVER_TRACE_BARRIER_ACQUIRE();
-        const uint8_t header[APP_SERVER_TRACE_RECORD_HEADER_BYTES] = {
+        const uint8_t header[APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES] = {
             (uint8_t) (dataLen & 0xFFU),
             (uint8_t) ((dataLen >> 8U) & 0xFFU),
             (uint8_t) group,
-        };
-        const uint8_t cycleBytes[APP_SERVER_TRACE_CYCLE_BYTES] = {
             (uint8_t) (cycle & 0xFFU),
             (uint8_t) ((cycle >> 8U) & 0xFFU),
             (uint8_t) ((cycle >> 16U) & 0xFFU),
             (uint8_t) ((cycle >> 24U) & 0xFFU),
         };
         uint32_t index = data->head;
-        index = app_server_trace_private_ringWrite(index, header, APP_SERVER_TRACE_RECORD_HEADER_BYTES);
-        index = app_server_trace_private_ringWrite(index, cycleBytes, APP_SERVER_TRACE_CYCLE_BYTES);
+        index = app_server_trace_private_ringWrite(index, header, APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES);
         const app_server_watch_S * const list = data->active;
         for (uint32_t i = 0U; i < (uint32_t) state->count; i++)
         {
@@ -619,65 +629,77 @@ uint32_t app_server_trace_bufferedBytes(void)
     return (data->config != NULL) ? app_server_trace_private_ringUsed() : 0U;
 }
 
-bool app_server_trace_peek(uint32_t * const group, uint32_t * const cycle, size_t * const dataLen)
+// [impl->fw~conn_trace_009~1] consecutive records of one group leave together,
+// in capture order
+uint32_t app_server_trace_popRun(uint8_t * const buffer, size_t maxBytes, uint32_t * const ringBudget,
+                                 uint32_t * const group, uint32_t * const firstCycle, size_t * const dataLen)
 {
-    bool ret = false;
-    if ((data->config != NULL) && (group != NULL) && (cycle != NULL) && (dataLen != NULL) &&
-        (app_server_trace_private_ringUsed() > 0U))
+    uint32_t count = 0U;
+    if ((data->config != NULL) && (buffer != NULL) && (ringBudget != NULL) &&
+        (group != NULL) && (firstCycle != NULL) && (dataLen != NULL))
     {
-        // The used check read head: fence before reading the record bytes.
-        APP_SERVER_TRACE_BARRIER_ACQUIRE();
-        *dataLen = ((size_t) app_server_trace_private_ringPeek(0U)) |
-                   (((size_t) app_server_trace_private_ringPeek(1U)) << 8U);
-        *group = (uint32_t) app_server_trace_private_ringPeek(2U);
-        *cycle = ((uint32_t) app_server_trace_private_ringPeek(3U)) |
-                 (((uint32_t) app_server_trace_private_ringPeek(4U)) << 8U) |
-                 (((uint32_t) app_server_trace_private_ringPeek(5U)) << 16U) |
-                 (((uint32_t) app_server_trace_private_ringPeek(6U)) << 24U);
-        ret = true;
-    }
-    return ret;
-}
-
-bool app_server_trace_pop(uint8_t * const buffer, size_t bufferLen)
-{
-    bool ret = false;
-    if ((data->config != NULL) && (buffer != NULL) &&
-        (app_server_trace_private_ringUsed() > 0U))
-    {
-        // The used check read head: fence before reading the record bytes.
-        APP_SERVER_TRACE_BARRIER_ACQUIRE();
-        const size_t len = ((size_t) app_server_trace_private_ringPeek(0U)) |
-                           (((size_t) app_server_trace_private_ringPeek(1U)) << 8U);
-        if (len <= bufferLen)
+        // Only records within the caller's snapshot of the ring are taken.
+        uint32_t available = app_server_trace_private_ringUsed();
+        if (available > *ringBudget)
         {
-            const uint32_t dataOffset = APP_SERVER_TRACE_RECORD_HEADER_BYTES +
-                                        APP_SERVER_TRACE_CYCLE_BYTES;
+            available = *ringBudget;
+        }
+        // The used check read head: fence before reading the record bytes.
+        APP_SERVER_TRACE_BARRIER_ACQUIRE();
+        const uint32_t startTail = data->tail;
+        uint32_t index = startTail;
+        uint32_t runGroup = 0U;
+        uint32_t period = 0U;
+        uint32_t expectedCycle = 0U;
+        size_t used = 0U;
+        bool taking = true;
+        while (taking)
+        {
+            taking = false;
+            if (available >= APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES)
+            {
+                uint8_t header[APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES];
+                const uint32_t dataIndex = app_server_trace_private_ringRead(index, header, APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES);
+                const size_t len = ((size_t) header[0]) | (((size_t) header[1]) << 8U);
+                const uint32_t recordGroup = header[2];
+                const uint32_t cycle = ((uint32_t) header[3]) |
+                                       (((uint32_t) header[4]) << 8U) |
+                                       (((uint32_t) header[5]) << 16U) |
+                                       (((uint32_t) header[6]) << 24U);
+                const uint32_t recordBytes = APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + (uint32_t) len;
+                // Whole records only; the run holds one group with its cycle
+                // indices stepping by the period, so a gap starts a new run.
+                const bool fits = (available >= recordBytes) && ((used + len) <= maxBytes);
+                const bool continues = (count == 0U) ||
+                                       ((recordGroup == runGroup) && (cycle == expectedCycle));
+                if (fits && continues)
+                {
+                    if (count == 0U)
+                    {
+                        runGroup = recordGroup;
+                        period = app_server_trace_groupPeriodCycles(recordGroup);
+                        *firstCycle = cycle;
+                    }
+                    index = app_server_trace_private_ringRead(dataIndex, &buffer[used], (uint32_t) len);
+                    used += len;
+                    available -= recordBytes;
+                    expectedCycle = cycle + period;
+                    count++;
+                    taking = true;
+                }
+            }
+        }
+        if (count > 0U)
+        {
             const uint32_t capacity = app_server_trace_private_capacity();
-            // The data lies in at most two runs around the wrap: copy them
-            // whole rather than a byte at a time through the peek.
-            uint32_t start = data->tail + dataOffset;
-            if (start >= capacity)
-            {
-                start -= capacity;
-            }
-            const uint32_t firstRun = ((start + (uint32_t) len) > capacity) ? (capacity - start) : (uint32_t) len;
-            (void) memcpy(buffer, &data->config->sampleStorage[start], firstRun);
-            if (firstRun < (uint32_t) len)
-            {
-                (void) memcpy(&buffer[firstRun], data->config->sampleStorage, (uint32_t) len - firstRun);
-            }
-
-            uint32_t newTail = data->tail + dataOffset + (uint32_t) len;
-            if (newTail >= capacity)
-            {
-                newTail -= capacity;
-            }
-            // Publish last: the record stays owned until fully copied out.
+            const uint32_t consumed = ((index >= startTail)) ? (index - startTail) : ((index + capacity) - startTail);
+            *ringBudget -= consumed;
+            *group = runGroup;
+            *dataLen = used;
+            // Publish last: the records stay owned until fully copied out.
             APP_SERVER_TRACE_BARRIER_RELEASE();
-            data->tail = newTail;
-            ret = true;
+            data->tail = index;
         }
     }
-    return ret;
+    return count;
 }
