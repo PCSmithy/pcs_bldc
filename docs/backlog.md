@@ -41,11 +41,24 @@ Fixes, in payoff order, each measured on the probes before the next:
 8. Trace capture: word copies into the sample ring instead of the byte
    loop (~8% of samples with a fast watch list active).
 
-Items 1-6 landed on `isr_hot_path` (one commit each, readings in the
-messages). With the trace streaming under drive the server task still
-completes only ~150 passes/s: its per-record cost (ring pops, protobuf,
-COBS, CRC at -Og) on the ~15% of the core it gets is now the limit, not
-the interrupt alone. Next: items 7 and 8, then profile the server pass.
+Items 1-8 landed on `isr_hot_path` (one commit each, readings in the
+messages), plus the server-path targets at -O2 (`pcs_hot_path`), a bulk
+record pop in the drain, and a bridge-level enable cache. Readings under
+sinusoidal drive with two 20 kHz watches streaming, 2026-10-17 evening:
+
+| control path | whole interrupt | server passes/s | server pass max |
+|---|---|---|---|
+| -Og (default) | 25 us | ~200 | 5.6 ms |
+| -O2 (whole image) | 24 us | ~970 | 2.0 ms |
+
+At -Og the server gets ~20% of the core and spends all of it, so the ring
+overflows in bursts whenever a higher task spikes; at -O2 the 1 ms and
+10 ms tasks and the kernel shrink enough that the server runs at its
+nominal rate and the stream is clean. The remaining interrupt cost is our
+own code (step, vector, sample recording, sampler), not the HAL.
+Decision pending: -O2 as the embedded default with a per-target -Og
+opt-in for the module under debug. sys~mc_006 needs four 20 kHz watches,
+so headroom beyond today's two is the goal.
 
 Target: under 20 us for the whole interrupt under drive.
 
