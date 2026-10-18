@@ -1,6 +1,7 @@
 /* Includes */
 #include "IO_COBSFrame.h"
 #include "lib_crc32.h"
+#include <string.h>
 
 /* Private Data Definitions */
 
@@ -198,10 +199,7 @@ bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const p
         const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];
         if (len <= cfg->maxFrameLen)
         {
-            for (size_t i = 0U; i < len; i++)
-            {
-                data->txPlain[i] = payload[i];
-            }
+            (void) memcpy(data->txPlain, payload, len);
             const uint32_t crc = lib_crc32_compute(data->txPlain, len);
             data->txPlain[len]      = (uint8_t) (crc & 0xFFU);
             data->txPlain[len + 1U] = (uint8_t) ((crc >> 8U) & 0xFFU);
