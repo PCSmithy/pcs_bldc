@@ -246,6 +246,7 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 const HW_TIM_channelConfig_S * const channelConfig = &config->channels[ch];
                 TIM_TypeDef * const instance = data->htim[channelConfig->peripheral].Instance;
                 data->period[ch] = data->htim[channelConfig->peripheral].Init.Period;
+                data->outputEnabled[ch] = false;   // the HAL init left every CCx unit off
                 switch (channelConfig->channel)
                 {
                     case TIM_CHANNEL_1: data->ccr[ch] = &instance->CCR1; break;
