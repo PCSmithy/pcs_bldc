@@ -3,6 +3,7 @@ target_include_directories(hw_ADC PUBLIC . ..)
 target_link_libraries(hw_ADC
   PUBLIC
     lib_types
+    lib_timer          # interrupt duration probe time base
     stm32g4_hal        # for ADC_HandleTypeDef + HAL_ADC_* prototypes
     pcs_ADC_channels   # consumer-provided HW_ADC_channels.h path
     hw_DMA

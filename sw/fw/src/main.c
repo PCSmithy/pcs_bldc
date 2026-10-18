@@ -144,9 +144,13 @@ extern uint32_t app_server_simTraceWindow32[];
 #endif
 
 // --- Bridge cycle probe (fw~mc_018) ----------------------------------------
-// Microsecond maxima from cycle-callback entry to the end of the commutation
-// step and to callback exit; the host clears either by writing zero to it.
+// Microseconds from cycle-callback entry to the end of the commutation step
+// and to callback exit: the latest cycle's, and the maxima, which the host
+// clears by writing zero. The trace captures inside the callback, so a record
+// carries the previous cycle's callback duration.
 // [impl->fw~mc_018~1]
+static volatile uint32_t main_cycleProbe_step_us;
+static volatile uint32_t main_cycleProbe_callback_us;
 static volatile uint32_t main_cycleProbe_stepMax_us;
 static volatile uint32_t main_cycleProbe_callbackMax_us;
 
@@ -344,10 +348,14 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     (void)context;
     const uint32_t entry_us = lib_timer_getHWCount_us();
 
-    // --- commutation step (fw~mc_015): the active method's step lands here ---
-    // An empty step measures zero, and its own counter read arrives with it.
-    main_cycleProbe_stepMax_us = 0U;
+    // --- commutation step (fw~mc_015) ---
     app_motorControl_cycleStep();
+    const uint32_t stepDuration_us = lib_timer_getHWCount_us() - entry_us;
+    main_cycleProbe_step_us = stepDuration_us;
+    if (stepDuration_us > main_cycleProbe_stepMax_us)
+    {
+        main_cycleProbe_stepMax_us = stepDuration_us;
+    }
 
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
     // Sim trace window word [1]: the SIL trace scenarios' per-cycle signal,
@@ -359,6 +367,7 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
 
     const uint32_t exit_us = lib_timer_getHWCount_us();
     const uint32_t callbackDuration_us = exit_us - entry_us;
+    main_cycleProbe_callback_us = callbackDuration_us;
     if (callbackDuration_us > main_cycleProbe_callbackMax_us)
     {
         main_cycleProbe_callbackMax_us = callbackDuration_us;

@@ -98,14 +98,17 @@ Needs: impl, test
 ### Cycle callback duration probe
 `fw~mc_018~1`
 
-The firmware shall hold, as readable statics, the maximum observed
-durations in microseconds, measured on the bridge's free-running
-microsecond time base, from bridge cycle callback entry to the end of
-the commutation step and from entry to callback exit, each maximum
-cleared by writing zero to it (`fw~conn_trace_008~1`).
+The firmware shall hold, as readable statics, the durations in
+microseconds, measured on the bridge's free-running microsecond time
+base, from bridge cycle callback entry to the end of the commutation
+step and from entry to callback exit: the latest callback's, and the
+maximum observed, each maximum cleared by writing zero to it
+(`fw~conn_trace_008~1`).
 
 Acceptance:
 
+- After each callback, the latest-duration statics equal that
+  callback's durations, within 1 µs.
 - After N callbacks, each maximum equals the largest of the N
   corresponding durations, within 1 µs.
 - Writing zero to a maximum restarts it from the next callback.

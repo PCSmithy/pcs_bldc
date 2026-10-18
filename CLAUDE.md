@@ -264,7 +264,9 @@ sufficient to make the tooling aware of a new topic.
     core), `fw~hal_opamp_002` (needs a sim OPAMP→ADC path; see
     `docs/sil/backlog.md`), `fw~mc_018` (its duration bounds are
     bench-only, verified from the traced maxima — the sim clock cannot
-    resolve intra-callback durations; the probe mechanics are SIL-tested).
+    resolve intra-callback durations; the probe mechanics are SIL-tested),
+    `fw~hal_adc_011` (the ADC interrupt duration probe lives in the
+    stm32g4 driver; the sim has no ADC interrupt, so it is bench-only).
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and
