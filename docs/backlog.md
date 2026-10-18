@@ -12,11 +12,11 @@ so the trace stream stops; FOC adds a current loop to the same step.
 (`HW_ADC_data.irqDuration_us`, `main_cycleProbe_{step,callback}_us`) and a
 600-sample DWT PC profile over SWD, 50 us cycle:
 
-| | drive off | sinusoidal |
-|---|---|---|
-| whole ADC interrupt | 36-37 us | 44 us (max 47) |
-| callback | 23 us | 29-30 us (max 32) |
-| commutation step | 19 us | 27 us (max 30) |
+| | drive off | sinusoidal | after items 1-6, off | after items 1-6, sinusoidal |
+|---|---|---|---|---|
+| whole ADC interrupt | 36-37 us | 44 us (max 47) | 25 us | 28 us (max 33) |
+| callback | 23 us | 29-30 us (max 32) | 13-14 us | 17 us (max 21) |
+| commutation step | 19 us | 27 us (max 30) | 10 us | 13 us (max 14) |
 
 Under drive 92% of samples sit on the interrupt path; the server task ran
 no pass and the USB task no wake in 2 s, and the 1 ms task lost a fifth
@@ -38,6 +38,14 @@ Fixes, in payoff order, each measured on the probes before the next:
 5. Memoised ADC-channel-to-phase lookup; trim the HAL value reads.
 6. Flash prefetch on (`FLASH_ACR` PRFTEN is clear at 4 wait states).
 7. Last: bypass `HAL_ADC_IRQHandler` with a direct JEOS path (~12%).
+8. Trace capture: word copies into the sample ring instead of the byte
+   loop (~8% of samples with a fast watch list active).
+
+Items 1-6 landed on `isr_hot_path` (one commit each, readings in the
+messages). With the trace streaming under drive the server task still
+completes only ~150 passes/s: its per-record cost (ring pops, protobuf,
+COBS, CRC at -Og) on the ~15% of the core it gets is now the limit, not
+the interrupt alone. Next: items 7 and 8, then profile the server pass.
 
 Target: under 20 us for the whole interrupt under drive.
 
