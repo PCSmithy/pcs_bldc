@@ -62,6 +62,10 @@ bool HW_CORDIC_sinCos(float32_t theta_rad, float32_t * const sin_out, float32_t 
         {
             turns += 1.0f;
         }
+        if (turns >= 1.0f)
+        {
+            turns = 0.0f;   // a tiny negative angle rounded up to a whole turn
+        }
         CORDIC->WDATA = (uint32_t) (turns * HW_CORDIC_TURN_TO_WORD);
 
         while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U)

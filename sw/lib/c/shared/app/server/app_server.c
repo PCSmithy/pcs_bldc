@@ -26,8 +26,8 @@
 // Bound on the disconnect-edge RX flush of a dead session's queued bytes.
 #define APP_SERVER_RX_DRAIN_MAX_BYTES (4096U)
 
-// Envelope bytes a Samples message costs beyond its data: the envelope tag and
-// length plus the period, first-cycle, count, and data-field varints. The
+// Bound on the envelope bytes a Samples message costs beyond its data: the
+// head and tail maxima below (a few bytes over the encoded size). The
 // framing rest of fw~conn_trace_005's W is IO_COBSFRAME_WIRE_MAX's own.
 #define APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD (APP_SERVER_SAMPLES_HEAD_MAX + APP_SERVER_SAMPLES_TAIL_MAX)
 
@@ -88,11 +88,11 @@ typedef struct
 static app_server_data_S app_server_data;
 static app_server_data_S * const data = &app_server_data;
 
-// The Samples payload encodes past the header reserve into txBytes, so a schema
-// growth that outruns the staging buffer is a build break, not a lost stream.
-_Static_assert((sizeof(((app_server_data_S *) 0)->txBytes) - LIB_PROTOBUF_ENVELOPE_HEADER_MAX) >=
-                   trace_Samples_size,
-               "txBytes cannot hold the worst-case Samples payload");
+// A Samples run lands in txBytes behind room for the message head, with the
+// tail after it: the buffer holds the worst case or the build breaks.
+_Static_assert(sizeof(((app_server_data_S *) 0)->txBytes) >=
+                   (APP_SERVER_SAMPLES_HEAD_MAX + APP_SERVER_SAMPLES_DATA_MAX + APP_SERVER_SAMPLES_TAIL_MAX),
+               "txBytes cannot hold the worst-case Samples frame");
 
 // The mid-pass retry places a frame into an emptied stage, so the stage holds
 // the largest frame the frame driver can produce.
@@ -174,34 +174,36 @@ static bool app_server_private_sendSamplesRun(uint32_t periodCycles, uint32_t fi
 {
     uint8_t * const dataStart = &data->txBytes[APP_SERVER_SAMPLES_HEAD_MAX];
 
+    // Every field is written, zero or not: a proto3 reader takes an absent
+    // field and a present zero alike, so only the bytes differ from nanopb's.
     uint8_t * tail = &dataStart[dataLen];
-    *tail = (uint8_t) (trace_Samples_period_cycles_tag << 3U);
+    *tail = (uint8_t) ((uint32_t) trace_Samples_period_cycles_tag << 3U);
     tail++;
     tail += lib_protobuf_varint(periodCycles, tail);
-    *tail = (uint8_t) (trace_Samples_count_tag << 3U);
+    *tail = (uint8_t) ((uint32_t) trace_Samples_count_tag << 3U);
     tail++;
     tail += lib_protobuf_varint(count, tail);
     const size_t tailLen = (size_t) (tail - &dataStart[dataLen]);
 
     uint8_t fields[APP_SERVER_SAMPLES_HEAD_MAX];
-    size_t f = 0U;
-    fields[f] = (uint8_t) (trace_Samples_first_cycle_tag << 3U);
-    f++;
-    f += lib_protobuf_varint(firstCycle, &fields[f]);
-    fields[f] = (uint8_t) ((trace_Samples_data_tag << 3U) | 2U);
-    f++;
-    f += lib_protobuf_varint((uint32_t) dataLen, &fields[f]);
-    const size_t messageLen = f + dataLen + tailLen;
+    size_t fieldsLen = 0U;
+    fields[fieldsLen] = (uint8_t) ((uint32_t) trace_Samples_first_cycle_tag << 3U);
+    fieldsLen++;
+    fieldsLen += lib_protobuf_varint(firstCycle, &fields[fieldsLen]);
+    fields[fieldsLen] = (uint8_t) (((uint32_t) trace_Samples_data_tag << 3U) | 2U);
+    fieldsLen++;
+    fieldsLen += lib_protobuf_varint((uint32_t) dataLen, &fields[fieldsLen]);
+    const size_t messageLen = fieldsLen + dataLen + tailLen;
 
     uint8_t envelope[APP_SERVER_SAMPLES_HEAD_MAX];
-    size_t e = 0U;
-    e += lib_protobuf_varint((shared_Envelope_samples_tag << 3U) | 2U, &envelope[e]);
-    e += lib_protobuf_varint((uint32_t) messageLen, &envelope[e]);
+    size_t envelopeLen = 0U;
+    envelopeLen += lib_protobuf_varint(((uint32_t) shared_Envelope_samples_tag << 3U) | 2U, &envelope[envelopeLen]);
+    envelopeLen += lib_protobuf_varint((uint32_t) messageLen, &envelope[envelopeLen]);
 
-    uint8_t * const frame = dataStart - (e + f);
-    (void) memcpy(frame, envelope, e);
-    (void) memcpy(&frame[e], fields, f);
-    return app_server_private_stageFrame(frame, e + f + dataLen + tailLen);
+    uint8_t * const frame = dataStart - (envelopeLen + fieldsLen);
+    (void) memcpy(frame, envelope, envelopeLen);
+    (void) memcpy(&frame[envelopeLen], fields, fieldsLen);
+    return app_server_private_stageFrame(frame, envelopeLen + fieldsLen + dataLen + tailLen);
 }
 
 // Transmit capacity available to the streams: whatever exceeds the reply reserve.

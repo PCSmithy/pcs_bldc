@@ -69,7 +69,12 @@ bool lib_cobs_encode(const uint8_t * const input, size_t len,
                      uint8_t * const output, size_t outputMax,
                      size_t * const encodedLen)
 {
-    return (input != NULL) && lib_cobs_encode2(input, len, NULL, 0U, output, outputMax, encodedLen);
+    bool success = false;
+    if (input != NULL)
+    {
+        success = lib_cobs_encode2(input, len, NULL, 0U, output, outputMax, encodedLen);
+    }
+    return success;
 }
 
 // [impl->fw~conn_proto_002~1]

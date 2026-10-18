@@ -50,6 +50,10 @@ static inline float32_t lib_transforms_wrapAngle(float32_t angle)
     {
         turns += 1.0f;
     }
+    if (turns >= 1.0f)
+    {
+        turns = 0.0f;   // a tiny negative angle rounded up to a whole turn
+    }
     return turns * LIB_TRANSFORMS_2PI;
 }
 

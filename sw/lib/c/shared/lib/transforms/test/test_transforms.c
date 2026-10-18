@@ -237,6 +237,9 @@ static void test_wrap_angle_lands_in_one_turn(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-5f, twoPi - 1.0f, lib_transforms_wrapAngle(-1.0f));
     TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.5f, lib_transforms_wrapAngle((7.0f * twoPi) + 0.5f));
     TEST_ASSERT_FLOAT_WITHIN(1e-5f, twoPi - 0.5f, lib_transforms_wrapAngle((-3.0f * twoPi) - 0.5f));
+    // A negative angle too small to survive the add lands on zero, not 2 pi.
+    TEST_ASSERT_TRUE(lib_transforms_wrapAngle(-1.0e-8f) < twoPi);
+    TEST_ASSERT_TRUE(lib_transforms_wrapAngle(-1.0e-30f) < twoPi);
     for (int k = -720; k <= 720; k++)
     {
         const float32_t wrapped = lib_transforms_wrapAngle((float32_t)k * 0.05f);

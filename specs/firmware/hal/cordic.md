@@ -8,8 +8,9 @@ tags: [firmware, hal, cordic, driver]
 The `HW_CORDIC` driver is the hw-layer abstraction over the MCU's
 trigonometric coprocessor. It returns the sine and cosine of an angle in
 one call, for the per-PWM-cycle transforms that otherwise spend their
-budget in library trigonometry. The sim computes the same values with the
-C library.
+budget in library trigonometry. It serves one caller context at a time,
+the commutation step in the PWM-cycle interrupt. The sim computes the same
+values with the C library.
 
 See also: [[overview]] (sys~arch_005~1), [[control-loop-timing]]
 (sys~mc_006~1, the budget the coprocessor serves), [[modulation]]

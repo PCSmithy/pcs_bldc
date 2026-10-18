@@ -41,10 +41,12 @@ Fixes, in payoff order, each measured on the probes before the next:
 8. Trace capture: word copies into the sample ring instead of the byte
    loop (~8% of samples with a fast watch list active).
 
-Items 1-8 landed on `isr_hot_path` (one commit each, readings in the
-messages), plus the server-path targets at -O2 (first per target, then
-the whole image), a bulk
-record pop in the drain, and a bridge-level enable cache. Readings under
+Items 1-4 and 6-8 landed on `isr_hot_path` (one commit each, readings in
+the messages): item 1 kept the angle in radians (the wrap truncates whole
+turns in float), item 2 became a direct TIM2 register read, item 5's
+lookup memoisation was not done (the ADC and sense scales are resolved at
+init instead). Then the server-path targets at -O2 (first per target,
+then the whole image) and a bulk record pop in the drain. Readings under
 sinusoidal drive with two 20 kHz watches streaming, 2026-10-17 evening:
 
 | control path | whole interrupt | server passes/s | server pass max |

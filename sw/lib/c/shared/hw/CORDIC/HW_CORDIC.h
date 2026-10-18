@@ -1,7 +1,10 @@
 #pragma once
 
 // Sine and cosine of an angle from the trigonometric coprocessor: one
-// write and two reads on the target, libm in the sim. Single-instance.
+// write and two reads on the target, libm in the sim. Single-instance and
+// one caller context at a time: a caller that preempts an evaluation
+// between its write and its reads takes the other's results. The caller
+// is the commutation step in the PWM-cycle interrupt.
 
 /* Includes */
 #include "lib_types.h"

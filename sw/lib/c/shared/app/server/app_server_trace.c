@@ -175,8 +175,6 @@ static uint32_t app_server_trace_private_ringRead(uint32_t index, uint8_t * cons
     return index;
 }
 
-// Byte at `offset` past the tail, without consuming (offset < capacity).
-
 // Open or close the sampler's gate. The fences keep the plain accesses either
 // side of the publish from crossing it.
 static void app_server_trace_private_publish(uint32_t count)

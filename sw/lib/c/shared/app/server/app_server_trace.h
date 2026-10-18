@@ -60,9 +60,7 @@ bool app_server_trace_write(const trace_WriteRequest * const request,
 // group.
 uint32_t app_server_trace_groupPeriodCycles(uint32_t group);
 
-// Consumer side.
-
-// Bytes buffered right now: each record's data plus its overhead.
+// Consumer side. Bytes buffered right now: each record's data plus its overhead.
 uint32_t app_server_trace_bufferedBytes(void);
 
 // Moves the run of records at the ring's tail out as one block: the oldest

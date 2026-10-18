@@ -27,7 +27,9 @@ static void lib_timer_config_private_exitCritical(void)
 
 // Read on every 20 kHz cycle, several times: on the target the counter
 // register is read directly, sparing the validated HW_TIM path; the sim
-// keeps that path so SIL time flows from the sim timer.
+// keeps that path so SIL time flows from the sim timer. TIM2 is
+// HW_TIM_PERIPHERAL_2, the 1 us time base in HW_TIM_channels: moving the
+// time base means changing both.
 static uint32_t lib_timer_config_private_getTime_us(void)
 {
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)

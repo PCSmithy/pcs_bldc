@@ -14,6 +14,16 @@ void tearDown(void) {}
 
 /* ---- fw~hal_cordic_001: init contract ---- */
 
+// [test->fw~hal_cordic_002~1] runs first: the driver starts uninitialised.
+static void test_before_init_returns_false_and_leaves_outputs(void)
+{
+    float32_t s = 7.0f;
+    float32_t c = 7.0f;
+    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, &s, &c));
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, s);
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, c);
+}
+
 // [test->fw~hal_cordic_001~1]
 static void test_init_null_config_rejected(void)
 {
@@ -59,6 +69,7 @@ static void test_reference_angles(void)
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_before_init_returns_false_and_leaves_outputs);
     RUN_TEST(test_init_null_config_rejected);
     RUN_TEST(test_init_valid_config_accepted);
     RUN_TEST(test_null_output_rejected_and_untouched);

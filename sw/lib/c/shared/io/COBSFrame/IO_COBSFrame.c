@@ -2,6 +2,11 @@
 #include "IO_COBSFrame.h"
 #include "HW_CRC.h"
 
+/* Defines */
+
+// IEEE CRC-32 of "123456789": proves the CRC unit before any frame trusts it.
+#define IO_COBSFRAME_CRC_CHECK_VALUE (0xCBF43926U)
+
 /* Private Data Definitions */
 
 typedef struct
@@ -115,6 +120,14 @@ bool IO_COBSFrame_init(const IO_COBSFrame_config_S * const config)
                 success = false;
                 break;
             }
+        }
+
+        // The CRC comes from HW_CRC: before its init the unit answers zero, which
+        // would sign every frame wrong and reject every received one, silently.
+        static const uint8_t check[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+        if (success && (HW_CRC_compute32(check, sizeof(check)) != IO_COBSFRAME_CRC_CHECK_VALUE))
+        {
+            success = false;
         }
 
         if (success)
