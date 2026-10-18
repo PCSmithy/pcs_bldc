@@ -9,6 +9,5 @@ add_library(nanopb STATIC
   pb_encode.c
   pb_decode.c
 )
-pcs_hot_path(nanopb)   # server path: see sw/cmake/pcs_hot_path.cmake
 
 target_include_directories(nanopb PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

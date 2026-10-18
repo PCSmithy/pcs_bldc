@@ -2,7 +2,6 @@
 # frames (fw~conn_proto). Target-independent — dual-target through io_serial's
 # HW_USB seam; native carries a Unity suite over the HW_USB sim loopback.
 add_library(io_COBSFrame STATIC IO_COBSFrame.c)
-pcs_hot_path(io_COBSFrame)   # server path: see sw/cmake/pcs_hot_path.cmake
 target_include_directories(io_COBSFrame PUBLIC .)
 target_link_libraries(io_COBSFrame
   PUBLIC

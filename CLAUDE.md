@@ -301,9 +301,10 @@ the two targets. Build dirs are under `build/` (gitignored).
   host `gcc`/`g++`, applies dev compile flags.
 - `sw/cmake/toolchains/arm-none-eabi.cmake` — sets `PCS_TARGET=embedded`,
   finds `arm-none-eabi-gcc` on PATH or in standard install locations,
-  applies Cortex-M4F MCU flags. Default `-Og`; the protocol server's
-  byte-work targets opt into `-O2` via `pcs_hot_path(<target>)`
-  (`sw/cmake/pcs_hot_path.cmake`).
+  applies Cortex-M4F MCU flags. Default `-O2` (`-g3` kept); opt one
+  module into `-Og` for a debugging session with `pcs_debug_path(<target>)`
+  in its CMakeLists (`sw/cmake/pcs_debug_path.cmake`), or configure with
+  `-DPCS_OPT_LEVEL=-Og` after a `--clean`.
 
 ### Build invocations
 

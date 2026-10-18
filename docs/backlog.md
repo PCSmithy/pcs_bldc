@@ -42,7 +42,8 @@ Fixes, in payoff order, each measured on the probes before the next:
    loop (~8% of samples with a fast watch list active).
 
 Items 1-8 landed on `isr_hot_path` (one commit each, readings in the
-messages), plus the server-path targets at -O2 (`pcs_hot_path`), a bulk
+messages), plus the server-path targets at -O2 (first per target, then
+the whole image), a bulk
 record pop in the drain, and a bridge-level enable cache. Readings under
 sinusoidal drive with two 20 kHz watches streaming, 2026-10-17 evening:
 
@@ -56,9 +57,9 @@ overflows in bursts whenever a higher task spikes; at -O2 the 1 ms and
 10 ms tasks and the kernel shrink enough that the server runs at its
 nominal rate and the stream is clean. The remaining interrupt cost is our
 own code (step, vector, sample recording, sampler), not the HAL.
-Decision pending: -O2 as the embedded default with a per-target -Og
-opt-in for the module under debug. sys~mc_006 needs four 20 kHz watches,
-so headroom beyond today's two is the goal.
+Decided: -O2 is the embedded default, with pcs_debug_path(<target>) as
+the per-module -Og opt-in for a debugging session. sys~mc_006 needs four
+20 kHz watches, so headroom beyond today's two is the goal.
 
 Target: under 20 us for the whole interrupt under drive.
 

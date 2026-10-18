@@ -4,7 +4,6 @@
 # board.Request/board.Telemetry hooks and the project-generated schema
 # bindings (lib_protobuf_config).
 add_library(app_server STATIC app_server.c app_server_trace.c)
-pcs_hot_path(app_server)   # server path: see sw/cmake/pcs_hot_path.cmake
 target_include_directories(app_server PUBLIC .)
 target_link_libraries(app_server
   PUBLIC

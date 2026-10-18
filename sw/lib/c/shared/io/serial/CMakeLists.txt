@@ -2,7 +2,6 @@
 # transport only through the HW_USB CDC API). Dual-target: native links the
 # HW_USB sim loopback and carries a Unity suite.
 add_library(io_serial STATIC IO_serial.c)
-pcs_hot_path(io_serial)   # server path: see sw/cmake/pcs_hot_path.cmake
 target_include_directories(io_serial PUBLIC .)
 target_link_libraries(io_serial
   PUBLIC

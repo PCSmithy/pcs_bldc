@@ -53,15 +53,17 @@ set(_mcu_flags
   -mthumb
 )
 
-# Optimization level. -Og optimizes for the debugging experience: it keeps the
-# flashed image roughly 40% smaller than -O0 while preserving sane single-
-# stepping and live variables, so it is the default. Override at configure time
-# without editing this file:
+# Optimization level. -O2 is the default: the 20 kHz control path and the
+# protocol server share one core, and -Og left the server too little of it
+# (docs/backlog.md). -g3 stays, so breakpoints and variables still work,
+# with the usual reordering. Override at configure time without editing
+# this file (an existing build dir keeps its cached value: --clean it):
+#   -DPCS_OPT_LEVEL=-Og   whole-image debugging
 #   -DPCS_OPT_LEVEL=-O0   source-faithful deep debugging (largest)
-#   -DPCS_OPT_LEVEL=-Os   minimum size (poor debuggability)
-set(PCS_OPT_LEVEL "-Og" CACHE STRING "Optimization level for the embedded build")
-# The server-path targets opt into a higher level (pcs_hot_path(<target>)).
-include(${CMAKE_CURRENT_LIST_DIR}/../pcs_hot_path.cmake)
+#   -DPCS_OPT_LEVEL=-Os   minimum size
+# or opt one module into -Og with pcs_debug_path(<target>) in its CMakeLists.
+set(PCS_OPT_LEVEL "-O2" CACHE STRING "Optimization level for the embedded build")
+include(${CMAKE_CURRENT_LIST_DIR}/../pcs_debug_path.cmake)
 
 add_compile_options(
   ${_mcu_flags}
