@@ -670,9 +670,27 @@ void HW_ADC_irqHandler(void)
         {
             // Only handles HAL_ADC_Init ran on (a channel with no enabled
             // inputs never gets one; its Instance stays NULL).
-            if (data->channelData[channel].hadc.Instance != NULL)
+            ADC_HandleTypeDef * const hadc = &data->channelData[channel].hadc;
+            if (hadc->Instance != NULL)
             {
-                HAL_ADC_IRQHandler(&data->channelData[channel].hadc);
+                // The per-cycle case, an injected sequence complete and
+                // nothing else pending, skips the HAL's generic dispatch and
+                // does what it would: the callback, then the flags cleared.
+                // Anything else pending goes to the HAL.
+                const uint32_t pending = hadc->Instance->ISR & hadc->Instance->IER;
+                if (pending == ADC_FLAG_JEOS)
+                {
+                    HW_ADC_private_injectedConversionSequenceCompleteCallback(hadc);
+                    __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+                }
+                else if (pending != 0U)
+                {
+                    HAL_ADC_IRQHandler(hadc);
+                }
+                else
+                {
+                    // this ADC did not raise the shared interrupt
+                }
             }
         }
         const uint32_t duration_us = lib_timer_getHWCount_us() - entry_us;
