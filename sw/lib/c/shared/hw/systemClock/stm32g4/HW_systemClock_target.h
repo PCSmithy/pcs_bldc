@@ -14,4 +14,5 @@ typedef struct
     RCC_ClkInitTypeDef RCC_ClkInitStruct;
     uint32_t PWREx_ControlVoltageScaling;
     uint32_t FLASH_latency;
+    bool     FLASH_prefetch;   // prefetch buffer, off at reset; worth it at any wait state above zero
 } HW_systemClock_config_S;
