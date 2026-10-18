@@ -115,7 +115,13 @@ static uint32_t app_server_trace_private_ringUsed(void)
 #define APP_SERVER_TRACE_SMALL_COPY_BYTES (16U)
 static void app_server_trace_private_copy(uint8_t * const dst, const uint8_t * const src, uint32_t len)
 {
-    if (len <= APP_SERVER_TRACE_SMALL_COPY_BYTES)
+    if (len == 4U)
+    {
+        // The common entry width: a fixed-size memcpy compiles to one word
+        // load and store (unaligned access is allowed on this core).
+        (void) memcpy(dst, src, 4U);
+    }
+    else if (len <= APP_SERVER_TRACE_SMALL_COPY_BYTES)
     {
         for (uint32_t i = 0U; i < len; i++)
         {
