@@ -21,7 +21,16 @@ host's retry. The peripheral supports double-buffered bulk endpoints
 room for a second 64-byte IN buffer.
 
 **Where:** `sw/lib/c/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c`
-(vendored; carry the patch or upstream it), `tusb_config.h`. Re-measure
+(vendored; carry the patch or upstream it), `tusb_config.h`.
+
+**Vendored patch already carried (2026-10-17):** `class/cdc/cdc_device.c`
+sizes the RX stream's OUT transfer at `BULK_PACKET_SIZE` instead of
+`CFG_TUD_CDC_EP_BUFSIZE`. With a 256-byte transfer the fsdev DCD completes
+only on a short packet, so a host frame that is an exact multiple of 64 B
+(a four-watch `WatchRequest` is 64 B on the wire) stalled until the next
+frame. The IN side keeps the 512-byte transfer. Re-apply on a TinyUSB
+upgrade; the SIL's USB model has no packetization, so only the bench sees
+it (`docs/sil/backlog.md`). Re-measure
 with the link test; then raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S` and
 its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
 

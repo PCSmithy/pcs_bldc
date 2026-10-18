@@ -279,7 +279,10 @@ void cdcd_init(void) {
     p_cdc->line_coding.data_bits = 8;
 
     tu_edpt_stream_init(&p_cdc->stream.rx, false, false, false, p_cdc->stream.rx_ff_buf, CFG_TUD_CDC_RX_BUFSIZE,
-                        p_epbuf->epout, CFG_TUD_CDC_EP_BUFSIZE);
+                        // pcs_bldc: one packet per OUT transfer. A multi-packet transfer only
+                        // completes on a short packet, so a host frame that is an exact
+                        // multiple of the packet size would wait for the next frame.
+                        p_epbuf->epout, BULK_PACKET_SIZE);
 
     // TX fifo can be configured to change to overwritable if not connected (DTR bit not set). Without DTR we do not
     // know if data is actually polled by terminal. This way the most current data is prioritized.

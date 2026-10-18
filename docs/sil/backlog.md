@@ -528,3 +528,18 @@ stalls (a breakpoint stalls the paced loop — resync rather than sprint on
 resume); docs. Natural host is the **realtime/paced run mode**, so this
 sequences after fast mode + Python bindings (D3) and the realtime dashboard
 (D4), per the owner's ordering.
+
+## Sim USB: packetize the host-to-device stream
+
+**When:** before the next protocol change that grows a request, or the next
+TinyUSB upgrade.
+
+**What it is:** the sim USB hands the firmware whatever bytes a check
+injected, so a frame that is an exact multiple of the 64 B full-speed bulk
+packet looks like any other. On the board such a frame has no short packet
+behind it and a multi-packet OUT transfer never completes (found 2026-10-17
+with a four-watch `WatchRequest`, 64 B on the wire; fixed by a vendored
+TinyUSB patch, `docs/backlog.md`). Model the packet boundary in the sim USB:
+deliver injected bytes in 64 B packets and apply the transfer-completion
+rule the DCD uses, so a `fast_trace` scenario sending a 64 B request
+reproduces the stall.
