@@ -44,6 +44,7 @@ class Bridge
         float32_t phaseAmpsPerVolt[IO_BRIDGE_PHASE_COUNT];   // sense scales inverted at init
         float32_t busAmpsPerVolt;
         float32_t busVoltsPerVolt;
+        bool outputEnabled[IO_BRIDGE_PHASE_COUNT];   // last enable applied to the timer
 
         float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
         uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
@@ -290,6 +291,10 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
+            for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
+            {
+                this->outputEnabled[p] = ret;
+            }
         }
     }
     return ret;
@@ -312,11 +317,27 @@ bool Bridge::setPhaseDuty(IO_bridge_phase_E phase, float32_t duty01)
     return ret;
 }
 
+// The step re-asserts every cycle; only a change reaches the timer.
 bool Bridge::setPhaseOutputEnabled(IO_bridge_phase_E phase, bool enabled)
 {
-    return (this->config != NULL) &&
-           (phase < IO_BRIDGE_PHASE_COUNT) &&
-           HW_TIM_setOutputEnabled(this->config->phase[phase].tim, enabled);
+    bool ret = false;
+    if ((this->config != NULL) && (phase < IO_BRIDGE_PHASE_COUNT))
+    {
+        if (enabled == this->outputEnabled[phase])
+        {
+            ret = true;
+        }
+        else if (HW_TIM_setOutputEnabled(this->config->phase[phase].tim, enabled))
+        {
+            this->outputEnabled[phase] = enabled;
+            ret = true;
+        }
+        else
+        {
+            // the timer refused; the cached state still matches it
+        }
+    }
+    return ret;
 }
 
 bool Bridge::setOutputEnabled(bool enabled)
