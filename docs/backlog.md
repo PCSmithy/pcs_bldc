@@ -92,7 +92,7 @@ unnecessary for the first 20 kHz slice.
 
 ## SVM formulation comparison
 
-**When:** after the V/f branch lands with the sector-based modulator
+**When:** after the sinusoidal branch lands with the sector-based modulator
 (`fw~mc_014~1`) and its reference test.
 
 **What it is:** `fw~mc_014~1` pins the duty triple, not the algorithm, so a

@@ -6,20 +6,23 @@ tags: [firmware, mc, app, driver]
 # Motor-control application
 
 The `app_motorControl` module owns the drive loop across two cadences. The
-1 ms cycle owns the inputs and the gate: encoder angle, speed target, mode
-selection, bus voltage, fault latching, and bridge enable. The
+1 ms cycle owns the inputs and the gate: it reads the encoder and publishes
+the rotor angle and velocity estimate, the speed target, mode selection,
+bus voltage, fault latching, alignment, and bridge enable. The
 PWM-synchronous cycle, entered from the bridge's per-cycle callback that
 `main.c` composes around the duration probe (`fw~mc_018~1`), runs the active
-commutation method's step from those inputs and the cycle's phase currents
-and writes the duties. The operator interface is the user button
-(gestures), the dial encoder (speed target), and the LED ring (state
-indication).
+commutation method's step on the per-cycle rotor angle, those inputs, and
+the cycle's phase currents, and writes the bridge commands. The operator
+interface is the user button (gestures), the dial encoder (speed target),
+and the LED ring (state indication).
 
 See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
 (`fw~io_bridge_002/003/004/008` the duty and enable path, `fw~io_bridge_007~1`
 the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
-transform), [[gate-driver]] (dev_gateDriver supplies the operational
-gate), [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
+transform), [[velocity]] (`fw~est_velocity_001~1`, the velocity estimate),
+[[six-step]], [[sinusoidal]], [[vf-sinusoidal]] (the commutation methods),
+[[gate-driver]] (dev_gateDriver supplies the operational gate),
+[[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
 
 ## Dispatch and gating
 
@@ -28,8 +31,8 @@ gate), [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
 
 The application shall hold the bridge enabled exactly while an enable
 request stands with dev_gateDriver_isOperational true, no fault latched,
-and the active method driving at least one phase, and otherwise disabled
-with zero duties.
+and the active method or the alignment pattern (`fw~mc_012~1`) driving at
+least one phase, and otherwise disabled with zero duties.
 
 Acceptance:
 - An enable request with the gate driver not operational, or with a fault
@@ -49,10 +52,11 @@ Needs: impl, test
 `fw~mc_015~1`
 
 On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
-enabled, the application shall run the active method's commutation step
-with the speed target, rotor electrical angle, and bus voltage as last
-published by the 1 ms cycle and the cycle's phase currents, and apply the
-step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
+enabled with the alignment offset captured (`fw~mc_012~1`), the application
+shall run the active method's commutation step with the speed target and
+bus voltage as last published by the 1 ms cycle, the per-cycle rotor
+electrical angle (`fw~mc_019~1`), and the cycle's phase currents, and apply
+the step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
 voltage vector (`fw~io_bridge_008~1`), and per-phase output enables
 (`fw~io_bridge_004~1`) — through IO_bridge within the same PWM period.
 
@@ -75,16 +79,16 @@ Each commutation step, the application shall transform the cycle's phase
 currents into the rotor frame (`fw~mc_013~1`) at the active method's frame
 angle and hold the result as the drive's I_d and I_q:
 
-| Method   | Frame angle                                                                |
-|----------|----------------------------------------------------------------------------|
-| Six-step | Rotor electrical angle from the encoder and alignment offset (`fw~mc_011~1`) |
-| V/f      | Commanded electrical angle (`fw~mc_010~1`)                                   |
+| Method                        | Frame angle                                      |
+|-------------------------------|--------------------------------------------------|
+| Six-step, sensored sinusoidal | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
+| V/f                           | Commanded electrical angle (`fw~mc_010~1`)       |
 
 Acceptance:
 - With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and
   I_q = 0; with the frame angle at 90°, I_d = 0 and I_q = −I.
-- Under V/f at constant ω_e with the phase currents rotating at ω_e, I_d and
-  I_q are constant.
+- At constant speed with the phase currents rotating at the electrical
+  frequency, I_d and I_q hold within 5% of their magnitude.
 
 Covers:
 - `sys~mc_001~1`
@@ -108,6 +112,47 @@ Acceptance:
 
 Covers:
 - `sys~mc_006~1`
+
+Needs: impl, test
+
+## Rotor angle
+
+### Per-cycle rotor electrical angle
+`fw~mc_019~1`
+
+Each PWM cycle, the application shall hold the rotor electrical angle —
+the shaft angle less the alignment offset (fw~mc_012~1), times the
+pole-pair count, as sampled by the 1 ms cycle — advanced by the electrical
+velocity, the pole-pair count times the velocity estimate
+(fw~est_velocity_001~1), over the time since that sample, wrapped to
+[0, 2π).
+
+Acceptance:
+- At a constant 300 rad/s electrical, every PWM cycle's angle is within 3°
+  of the rotor's electrical angle.
+
+Covers:
+- `sys~mc_005~1`
+
+Needs: impl, test
+
+### Alignment offset capture
+`fw~mc_012~1`
+
+On the first bridge enable after power-up, the application shall drive the
+phase-U axis pattern — U at the configured alignment duty, V and W
+returning at zero duty — for the configured dwell time, then capture the
+motor shaft angle as the alignment offset: the electrical zero on which
+every subsequent enable commutates.
+
+Acceptance:
+- The first enable applies the alignment pattern for the dwell time, then
+  captures the offset, then the active method commutates.
+- Subsequent enables commutate immediately with the stored offset.
+- A zero speed target during commutation leaves the stored offset in use.
+
+Covers:
+- `sys~mc_005~1`
 
 Needs: impl, test
 

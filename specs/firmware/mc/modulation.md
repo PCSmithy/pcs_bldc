@@ -10,7 +10,8 @@ Pure functions: the transforms between phase, stationary (α, β), and rotor
 stationary-frame voltage command into three per-phase duties.
 
 See also: [[bridge]] (fw~io_bridge_008~1 applies the modulator's duties),
-[[vf-sinusoidal]] (fw~mc_010~1 commands its voltage through the bridge),
+[[sinusoidal]] (fw~mc_020~1) and [[vf-sinusoidal]] (fw~mc_010~1) command
+their voltage through the bridge,
 [[motor-control-application]] (fw~mc_016~1 observes the rotor-frame
 currents), [[motor-control]] (sys~mc_001~1).
 

@@ -223,9 +223,11 @@ sufficient to make the tooling aware of a new topic.
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
-- **Firmware specs** (`specs/firmware/`), traced to code, except the V/f
-  + modulation set (`fw~mc_010`, `fw~mc_013`–`fw~mc_017`) written ahead of
-  its implementation in `docs/motor-sprint.md`'s next branch:
+- **Firmware specs** (`specs/firmware/`), traced to code, except the
+  sensored sinusoidal set (`fw~mc_019`, `fw~mc_020`) written ahead of its
+  implementation on `docs/motor-sprint.md`'s next branch, and the V/f
+  method (`fw~mc_010`, `fw~mc_017`) deferred there as the sensorless
+  start-up ramp:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
     file per peripheral, per-peripheral sub-topic IDs).
   - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
@@ -235,8 +237,8 @@ sufficient to make the tooling aware of a new topic.
     `io/bridge.md` (IO_bridge three-phase actuation + current sense),
     `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
-    + `mc/six-step.md` + `mc/vf-sinusoidal.md` + `mc/modulation.md`
-    (app_motorControl and the transform/SVM math),
+    + `mc/six-step.md` + `mc/sinusoidal.md` + `mc/vf-sinusoidal.md` +
+    `mc/modulation.md` (app_motorControl and the transform/SVM math),
     `safety/overcurrent.md` + `safety/encoder-fault.md`.
 - **Desktop-app specs** (`specs/desktop-app/`) — `app~` specs across
   `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,

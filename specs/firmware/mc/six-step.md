@@ -5,23 +5,21 @@ tags: [firmware, mc, app, driver]
 
 # Six-step encoder-commutated method
 
-Sensored block commutation: the rotor electrical angle — motor shaft angle
-corrected by a captured alignment offset and scaled by the pole-pair
-count, zero with the rotor flux on the phase-U axis — selects which two
+Sensored block commutation: the rotor electrical angle selects which two
 phases conduct; the third floats.
 
 See also: [[motor-control-application]] (fw~mc_015~1 runs this method's
-step each PWM cycle), [[bridge]] (`fw~io_bridge_002` duties; per-phase
-float via `fw~io_bridge_004` output disable).
+step each PWM cycle, fw~mc_019~1 supplies the rotor electrical angle and
+the alignment offset is fw~mc_012~1), [[bridge]] (`fw~io_bridge_002`
+duties; per-phase float via `fw~io_bridge_004` output disable).
 
 ### Six-step commutation
 `fw~mc_011~1`
 
 While active with the bridge enabled, the six-step method shall apply the
-commutation pattern of the sector containing the rotor electrical angle —
-derived from the motor shaft angle, the stored alignment offset
-(fw~mc_012~1), and the configured pole-pair count — advanced by the
-configured lead angle in the direction of the signed speed target, at a
+commutation pattern of the sector containing the rotor electrical angle
+(fw~mc_019~1) advanced by the configured lead angle in the direction of
+the signed speed target, at a
 duty proportional to the target magnitude clamped to the configured
 maximum:
 
@@ -42,27 +40,6 @@ Acceptance:
 - Reversing the target sign reverses the sector progression.
 - The applied duty is proportional to the target magnitude, clamped to the
   configured maximum.
-
-Covers:
-- sys~mc_005~1
-
-Needs: impl, test
-
-### Alignment offset capture
-`fw~mc_012~1`
-
-On its first bridge enable after power-up, the six-step method shall drive
-the phase-U axis pattern — U at the configured alignment duty, V and W
-returning at zero duty — for the configured dwell time, then capture the
-motor shaft angle as the alignment offset: the electrical zero on which all
-subsequent enables commutate.
-
-Acceptance:
-- The first enable applies the alignment pattern for the dwell time, then
-  captures the offset, then begins commutation.
-- Subsequent enables commutate immediately with the stored offset.
-- A zero speed target during commutation does not re-trigger alignment; the
-  stored offset is retained.
 
 Covers:
 - sys~mc_005~1
