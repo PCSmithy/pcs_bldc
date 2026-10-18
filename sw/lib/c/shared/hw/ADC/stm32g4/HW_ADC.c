@@ -38,6 +38,7 @@ typedef struct
 
     // Decoded resolution (bits) for the volts conversion.
     uint8_t numBits;
+    float32_t voltsPerCount;   // vref over full scale, so a volts read is one multiply
 
     // Regular-sequence results, indexed by physical IN# (sparse storage,
     // matches user's inputs[] indexing). Undefined until the channel's first
@@ -509,6 +510,8 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
             data->channelData[channel].rankOrder[r] = rankOrder[r];
         }
         data->channelData[channel].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
+        data->channelData[channel].voltsPerCount =
+            channelConfig->vref / (float32_t)((1UL << data->channelData[channel].numBits) - 1UL);
     }
 
     return ret;
@@ -784,10 +787,7 @@ bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * 
         uint32_t counts = 0U;
         if (HW_ADC_getCount(channel, inputIndex, &counts))
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
-            const uint32_t maxCounts = (1UL << data->channelData[channel].numBits) - 1UL;
-
-            *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
+            *out = (float32_t)counts * data->channelData[channel].voltsPerCount;
             ret = true;
         }
     }
@@ -819,10 +819,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
         uint32_t counts = 0U;
         if (HW_ADC_getInjectedCount(channel, injectedIndex, &counts))
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
-            const uint32_t maxCounts = (1UL << data->channelData[channel].numBits) - 1UL;
-
-            *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
+            *out = (float32_t)counts * data->channelData[channel].voltsPerCount;
             ret = true;
         }
     }

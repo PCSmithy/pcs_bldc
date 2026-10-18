@@ -41,6 +41,9 @@ class Bridge
         IO_bridge_channel_E channelIndex;
         HW_TIM_peripheral_E moePeripheral;
         uint32_t period_counts;   // the shared timer's period, read once at init
+        float32_t phaseAmpsPerVolt[IO_BRIDGE_PHASE_COUNT];   // sense scales inverted at init
+        float32_t busAmpsPerVolt;
+        float32_t busVoltsPerVolt;
 
         float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
         uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
@@ -64,9 +67,10 @@ typedef struct
 /* Private Free Function Declarations */
 
 static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period);
-static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t volts, float32_t * const value_out);
-static bool IO_bridge_private_readRegularSense(const IO_bridge_senseConfig_S * const sense, float32_t * const value_out);
-static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_senseConfig_S * const sense, float32_t * const amps_out);
+static float32_t IO_bridge_private_unitsPerVolt(const IO_bridge_senseConfig_S * const sense);
+static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t volts, float32_t * const value_out);
+static bool IO_bridge_private_readRegularSense(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t * const value_out);
+static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t * const amps_out);
 static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const config);
 
 /* Private Data Definitions */
@@ -82,39 +86,45 @@ static uint32_t IO_bridge_private_dutyToCompare(float32_t duty, uint32_t period)
     return (uint32_t)((duty * (float32_t)period) + 0.5f);
 }
 
+// The sense scale inverted once at init; zero marks an unconfigured sense.
+static float32_t IO_bridge_private_unitsPerVolt(const IO_bridge_senseConfig_S * const sense)
+{
+    return (sense->voltsPerUnit != 0.0f) ? (1.0f / sense->voltsPerUnit) : 0.0f;
+}
+
 // value = (V_pin - V_bias) / scale
 // [impl->fw~io_bridge_005~1]
-static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t volts, float32_t * const value_out)
+static bool IO_bridge_private_decodeSense(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t volts, float32_t * const value_out)
 {
     bool ret = false;
-    if (sense->voltsPerUnit != 0.0f)
+    if (unitsPerVolt != 0.0f)
     {
-        *value_out = (volts - sense->bias_V) / sense->voltsPerUnit;
+        *value_out = (volts - sense->bias_V) * unitsPerVolt;
         ret = true;
     }
     return ret;
 }
 
 // The conversion off the sense's most recent regular-sequence sample.
-static bool IO_bridge_private_readRegularSense(const IO_bridge_senseConfig_S * const sense, float32_t * const value_out)
+static bool IO_bridge_private_readRegularSense(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t * const value_out)
 {
     bool ret = false;
     float32_t volts = 0.0f;
     if (HW_ADC_getVolts(sense->adcChannel, sense->adcInput, &volts))
     {
-        ret = IO_bridge_private_decodeSense(sense, volts, value_out);
+        ret = IO_bridge_private_decodeSense(sense, unitsPerVolt, volts, value_out);
     }
     return ret;
 }
 
 // Same conversion off the sense's injected sequence slot (the PWM-crest sample).
-static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_senseConfig_S * const sense, float32_t * const amps_out)
+static bool IO_bridge_private_readInjectedCurrent(const IO_bridge_senseConfig_S * const sense, float32_t unitsPerVolt, float32_t * const amps_out)
 {
     bool ret = false;
     float32_t volts = 0.0f;
     if (HW_ADC_getInjectedVolts(sense->adcChannel, sense->injectedIndex, &volts))
     {
-        ret = IO_bridge_private_decodeSense(sense, volts, amps_out);
+        ret = IO_bridge_private_decodeSense(sense, unitsPerVolt, volts, amps_out);
     }
     return ret;
 }
@@ -208,7 +218,7 @@ void Bridge::recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversio
                 (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE))
             {
                 float32_t amps = 0.0f;
-                if (IO_bridge_private_readInjectedCurrent(sense, &amps))
+                if (IO_bridge_private_readInjectedCurrent(sense, this->phaseAmpsPerVolt[phase], &amps))
                 {
                     this->current_amps[phase] = amps;
                     this->updateCount[phase] += 1U;
@@ -270,6 +280,12 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
             this->channelIndex  = channel;
             this->config        = channelConfig;
             this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
+            for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
+            {
+                this->phaseAmpsPerVolt[p] = IO_bridge_private_unitsPerVolt(&channelConfig->phase[p].currentSense);
+            }
+            this->busAmpsPerVolt  = IO_bridge_private_unitsPerVolt(&channelConfig->busCurrent);
+            this->busVoltsPerVolt = IO_bridge_private_unitsPerVolt(&channelConfig->busVoltage);
             ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
@@ -373,7 +389,7 @@ bool Bridge::getBusCurrent(float32_t * amps_out)
     bool ret = false;
     if ((this->config != NULL) && (amps_out != NULL))
     {
-        ret = IO_bridge_private_readRegularSense(&this->config->busCurrent, amps_out);
+        ret = IO_bridge_private_readRegularSense(&this->config->busCurrent, this->busAmpsPerVolt, amps_out);
     }
     return ret;
 }
@@ -384,7 +400,7 @@ bool Bridge::getBusVoltage(float32_t * volts_out)
     bool ret = false;
     if ((this->config != NULL) && (volts_out != NULL))
     {
-        ret = IO_bridge_private_readRegularSense(&this->config->busVoltage, volts_out);
+        ret = IO_bridge_private_readRegularSense(&this->config->busVoltage, this->busVoltsPerVolt, volts_out);
     }
     return ret;
 }
