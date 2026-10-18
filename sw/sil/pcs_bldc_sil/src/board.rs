@@ -32,6 +32,10 @@ pub const VBUS_V: f64 = 24.0;
 /// The gate driver's 200 ms configure + status pass, plus slack.
 pub const GATE_BRINGUP_MS: u64 = 300;
 
+/// `rx[]` elements registered for protocol injection; covers the longest frame a
+/// scenario sends.
+pub const USB_RX_REG: usize = 128;
+
 /// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.cpp`.
 pub const ALIGN_DUTY: f64 = 0.1;
 pub const ALIGN_DWELL_MS: u64 = 500;
@@ -84,6 +88,11 @@ pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
     let mut fwm = sim.load_firmware(SOURCE);
     fwm.register_cvar_in_state_table(INPUT_LEVEL_PB10);
     fwm.register_cvar_in_state_table(I2C_STATUS_REG);
+    // The sim USB rx ring, so a scenario can hand the firmware a protocol
+    // request (method selection over SetMode).
+    for i in 0..USB_RX_REG {
+        fwm.register_cvar_in_state_table(&format!("HW_USB_sim_data.rx[{i}]"));
+    }
     let fw_member = sim.add_member(fwm);
 
     // The plant's shaft angle is the encoder's input — no check ever writes it.

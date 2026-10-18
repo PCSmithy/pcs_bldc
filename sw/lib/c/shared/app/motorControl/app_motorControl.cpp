@@ -85,6 +85,7 @@ class Motor
 
         app_motorControl_mode_E modeCurrent;
         app_motorControl_mode_E modeRequested;
+        app_motorControl_mode_E modeSelected;   // the method an enable runs; OFF keeps it
         DriveState driveState;
 
         float32_t velocitySetpointCurrent_radPerSec;
@@ -108,7 +109,12 @@ class Motor
         bool bridgeEnabled;   // last cycle's bridge output-enable, for the state view
         uint16_t encoderFaultCount;   // consecutive invalid encoder reads
 
+        // setpoint
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
+        float32_t vAlpha_v;
+        float32_t vBeta_v;
+
+        // measured
         float32_t phaseCurrent_a[IO_BRIDGE_PHASE_COUNT];
 
         float32_t iAlpha_a;
@@ -117,6 +123,7 @@ class Motor
         float32_t iQ_a;
 
         float32_t busCurrent;
+        float32_t busVoltage;
         bool enable[IO_BRIDGE_PHASE_COUNT];
 };
 
@@ -208,6 +215,9 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->motorPolePairs > 0U);
     isValid &= (channelConfig->maxVelocity_radPerSec > ZERO);
     isValid &= (channelConfig->pwmPeriod_s > ZERO);
+    isValid &= (channelConfig->maxVoltage_V > ZERO);
+    isValid &= (channelConfig->defaultMode > APP_MOTORCONTROL_MODE_OFF);
+    isValid &= (channelConfig->defaultMode < APP_MOTORCONTROL_MODE_COUNT);
 
     lib_filterIIR_channel_S filter =
     {
@@ -228,6 +238,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 
         this->modeCurrent = APP_MOTORCONTROL_MODE_OFF;
         this->modeRequested = APP_MOTORCONTROL_MODE_OFF;
+        this->modeSelected = channelConfig->defaultMode;
         this->driveState = DriveState::Off;
 
         this->isAligned = false;
@@ -252,13 +263,17 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 // Written by run1ms (task) while Off or Aligning, by cycleStep (ISR) while
 // Driving; never both in one state. A cycle that reads a half-written
 // alignment pattern outputs it for one PWM period, and the pattern is static.
+#define SET_ENABLE(enU, enV, enW) \
+    this->enable[IO_BRIDGE_PHASE_U] = enU; \
+    this->enable[IO_BRIDGE_PHASE_V] = enV; \
+    this->enable[IO_BRIDGE_PHASE_W] = enW;
+
+
 #define SET_DUTY_AND_ENABLE(dU, dV, dW, enU, enV, enW) \
     this->duty[IO_BRIDGE_PHASE_U] = dU; \
     this->duty[IO_BRIDGE_PHASE_V] = dV; \
     this->duty[IO_BRIDGE_PHASE_W] = dW; \
-    this->enable[IO_BRIDGE_PHASE_U] = enU; \
-    this->enable[IO_BRIDGE_PHASE_V] = enV; \
-    this->enable[IO_BRIDGE_PHASE_W] = enW;
+    SET_ENABLE(enU, enV, enW)
 
 
 void Motor::run1ms()
@@ -323,6 +338,12 @@ void Motor::run1ms()
 
         this->updateOvercurrentLatch();
 
+        float32_t busVoltage = 0.0f;
+        if (IO_bridge_getBusVoltage(this->config->bridge, &busVoltage))
+        {
+            this->busVoltage = busVoltage;
+        }
+
 
         // Apply any requested mode transition up front, so a request (e.g.
         // OFF) takes effect this cycle instead of driving one cycle late.
@@ -381,7 +402,13 @@ void Motor::cycleStep()
 
         this->updateRotorPosition();
 
-        bool isAnyPhaseEnabled = (this->driveState == DriveState::Aligning);
+        if (this->driveState == DriveState::Driving)
+        {
+            this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
+        }
+
+        bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
+        bool isVectorControl = false;
 
         float32_t frameAngle_rad = 0.0f;
         if (this->driveState == DriveState::Driving)
@@ -395,11 +422,12 @@ void Motor::cycleStep()
 
                 case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
                 {
+                    frameAngle_rad = this->magneticAngle_rad;
+
                     // [impl->fw~mc_011~1]
                     // Commutate: apply the sector pattern for the rotor
                     // electrical angle advanced by the lead, at a duty
                     // proportional to the target magnitude, clamped to max.
-                    this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
 
                     const float32_t lead_rad = (this->velocitySetpointCurrent_radPerSec >= ZERO) ? RAD_90DEG : -RAD_90DEG;
                     float32_t target = fmodf((this->magneticAngle_rad + lead_rad), TWO_PI);
@@ -437,9 +465,28 @@ void Motor::cycleStep()
                     {
                         SET_DUTY_AND_ENABLE(duty01, ZERO, ZERO, true, true, false);   // U+ V- (330 deg)
                     }
-                    isAnyPhaseEnabled = true;
+                    break;
+                }
 
+                // [impl->fw~mc_020~1]
+                case APP_MOTORCONTROL_MODE_SINUSOIDAL:
+                {
+                    isVectorControl = true;
                     frameAngle_rad = this->magneticAngle_rad;
+
+                    // compute rotor frame voltage
+                    const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
+                    const float32_t V = SIGN(this->velocitySetpointCurrent_radPerSec) * velocityPercent * this->config->maxVoltage_V;
+
+                    lib_transforms_inversePark(
+                        0.0f,
+                        V,
+                        this->magneticAngle_rad,
+                        &this->vAlpha_v,
+                        &this->vBeta_v
+                    );
+
+                    SET_ENABLE(true, true, true);
                     break;
                 }
             }
@@ -462,18 +509,24 @@ void Motor::cycleStep()
             &this->iQ_a
         );
 
-
         // update outputs
+        if (isVectorControl)
+        {
+            IO_bridge_setVoltageVector(this->config->bridge, this->vAlpha_v, this->vBeta_v);
+        }
+        else
+        {
+            IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_U, this->duty[IO_BRIDGE_PHASE_U]);
+            IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_V, this->duty[IO_BRIDGE_PHASE_V]);
+            IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_W, this->duty[IO_BRIDGE_PHASE_W]);
+        }
+
+
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_U, this->enable[IO_BRIDGE_PHASE_U]);
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_V, this->enable[IO_BRIDGE_PHASE_V]);
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_W, this->enable[IO_BRIDGE_PHASE_W]);
 
-        IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_U, this->duty[IO_BRIDGE_PHASE_U]);
-        IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_V, this->duty[IO_BRIDGE_PHASE_V]);
-        IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_W, this->duty[IO_BRIDGE_PHASE_W]);
-
         IO_bridge_setOutputEnabled(this->config->bridge, isAnyPhaseEnabled);
-
         this->bridgeEnabled = isAnyPhaseEnabled;
     }
 }
@@ -484,6 +537,7 @@ bool Motor::getSnapshot(app_motorControl_snapshot_S * const snapshot)
     if ((this->config != NULL) && (snapshot != NULL))
     {
         snapshot->mode              = this->modeCurrent;
+        snapshot->selectedMode      = this->modeSelected;
         snapshot->isAligned         = this->isAligned;
         snapshot->magneticAngle_rad = this->magneticAngle_rad;
         snapshot->velocitySetpoint_radPerSec = this->velocitySetpointCurrent_radPerSec;
@@ -521,6 +575,10 @@ void Motor::setMode(app_motorControl_mode_E mode)
     if ((this->config != NULL) && (mode < APP_MOTORCONTROL_MODE_COUNT))
     {
         this->modeRequested = mode;
+        if (mode != APP_MOTORCONTROL_MODE_OFF)
+        {
+            this->modeSelected = mode;   // a method request selects it; OFF only disables
+        }
     }
 }
 

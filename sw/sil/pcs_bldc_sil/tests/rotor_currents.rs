@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{f64_at, plant, spin_up, tap_button, GRID_US};
+use common::{f64_at, plant, select_method, spin_up, tap_button, GRID_US, MODE_SINUSOIDAL, MODE_SIX_STEP_TRAP};
 use pcs_bldc_sil::board::{board, board_with, fault_latched, ALIGN_DWELL_MS, DIAL, GATE_BRINGUP_MS, SENSE};
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil};
 use std::f64::consts::TAU;
@@ -36,6 +36,7 @@ fn aligned_world() -> Sil {
             .unwrap_or_else(|e| panic!("suspend {src} -> {dst}: {e}"));
     }
     sim.run_for_ms(GATE_BRINGUP_MS);
+    select_method(&mut sim, MODE_SIX_STEP_TRAP);
     tap_button(&mut sim);
     sim.run_for_ms(ALIGN_DWELL_MS + 100);
     assert!(
@@ -201,5 +202,107 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
     let mean_deg = s_.atan2(c).to_degrees();
     println!("rotor_currents: per-cycle angle at {omega_e:.0} rad/s electrical: mean error {mean_deg:+.2} deg, worst {worst_deg:.2} deg over 2000 cycles");
     assert!(worst_deg < 3.0, "every cycle within 3 deg of the rotor: worst {worst_deg:.2} deg");
+    assert!(!fault_latched(&sim), "no fault through the spin");
+}
+
+/// The stator voltage vector the firmware commanded, from the three duty ports
+/// and the bus voltage it read: the zero sequence cancels in the differences.
+fn commanded_vector(sim: &Sil) -> (f64, f64) {
+    let d = [
+        plant_port(sim, "PWM_U_duty"),
+        plant_port(sim, "PWM_V_duty"),
+        plant_port(sim, "PWM_W_duty"),
+    ];
+    let v_bus = f64_at(sim, "app_motorControl_data.channels[0].busVoltage");
+    let v_alpha = v_bus * ((2.0 * d[0]) - d[1] - d[2]) / 3.0;
+    let v_beta = v_bus * (d[1] - d[2]) / 3f64.sqrt();
+    (v_alpha, v_beta)
+}
+
+fn plant_port(sim: &Sil, name: &str) -> f64 {
+    sim.read_f64(&vid(pcs_bldc_sil::SOURCE, name))
+}
+
+// [test->fw~mc_020~1]
+#[test]
+fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
+    // Sensored sinusoidal at half dial on the 50 us grid: the commanded vector sits
+    // 90 deg ahead of the plant's rotor at |V| = 0.5 V_max, the line-to-line duty
+    // differences are sinusoids at the electrical frequency (within 2% of their
+    // amplitude), and the current rides on q.
+    const V_MAX: f64 = 8.0;   // maxVoltage_V in app_motorControl_channels.c
+    let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    select_method(&mut sim, MODE_SINUSOIDAL);
+    tap_button(&mut sim);
+    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    let mut deg = 0.0;
+    while deg < 90.0 {
+        deg += 10.0;
+        sim.write(&vid(DIAL, "angle[deg]"), deg).expect("turn the dial");
+        sim.run_for_ms(20);
+    }
+    sim.run_for_ms(500);
+    let velocity = plant(&sim, "velocity");
+    assert!(velocity > 2.0, "the shaft spins forward under sinusoidal drive: {velocity:.2} rad/s");
+
+    let (mut c, mut s_) = (0.0_f64, 0.0_f64);
+    let mut mag_sum = 0.0;
+    let (mut sxx, mut sxy, mut sx, mut sy, mut syy, mut n) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut sc, mut ss, mut scc, mut sss, mut scs, mut syc, mut sys) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut i_d = Vec::new();
+    let mut i_q = Vec::new();
+    for _ in 0..2000 {
+        sim.step().expect("engine step");
+        let (va, vb) = commanded_vector(&sim);
+        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let lead = (vb.atan2(va) - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+        c += lead.cos();
+        s_ += lead.sin();
+        mag_sum += (va * va + vb * vb).sqrt();
+        // line-to-line duty difference U-V against a sinusoid in theta_e:
+        // y = A cos(theta) + B sin(theta) + C, least squares.
+        let y = plant_port(&sim, "PWM_U_duty") - plant_port(&sim, "PWM_V_duty");
+        let (cs, sn) = (theta_e.cos(), theta_e.sin());
+        sc += cs; ss += sn; scc += cs * cs; sss += sn * sn; scs += cs * sn;
+        syc += y * cs; sys += y * sn; sy += y; syy += y * y; n += 1.0;
+        let _ = (&mut sxx, &mut sxy, &mut sx);
+        i_d.push(f64_at(&sim, "app_motorControl_data.channels[0].iD_a"));
+        i_q.push(f64_at(&sim, "app_motorControl_data.channels[0].iQ_a"));
+    }
+    let lead_deg = s_.atan2(c).to_degrees();
+    let mag = mag_sum / n;
+    // Solve the 3x3 normal equations for (A, B, C).
+    let m = [[scc, scs, sc], [scs, sss, ss], [sc, ss, n]];
+    let r = [syc, sys, sy];
+    let det = |a: &[[f64; 3]; 3]| {
+        a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+    };
+    let dm = det(&m);
+    let col = |k: usize| {
+        let mut a = m;
+        for i in 0..3 { a[i][k] = r[i]; }
+        det(&a) / dm
+    };
+    let (a_fit, b_fit, c_fit) = (col(0), col(1), col(2));
+    let amplitude = (a_fit * a_fit + b_fit * b_fit).sqrt();
+    let residual_rms = {
+        // sum (y - A cos - B sin - C)^2 expanded through the accumulated sums
+        let sse = syy - 2.0 * (a_fit * syc + b_fit * sys + c_fit * sy)
+            + a_fit * a_fit * scc + b_fit * b_fit * sss + c_fit * c_fit * n
+            + 2.0 * (a_fit * b_fit * scs + a_fit * c_fit * sc + b_fit * c_fit * ss);
+        (sse.max(0.0) / n).sqrt()
+    };
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / (v.len() as f64);
+    println!(
+        "rotor_currents: sinusoidal at {velocity:.1} rad/s: vector lead {lead_deg:+.2} deg, |V| {mag:.3} V \
+         (0.5 V_max = {:.3}); U-V duty sinusoid amplitude {amplitude:.4}, residual {:.2}%; I_d {:+.3} A, I_q {:+.3} A",
+        0.5 * V_MAX, 100.0 * residual_rms / amplitude, mean(&i_d), mean(&i_q)
+    );
+    assert!((lead_deg - 90.0).abs() < 3.0, "the vector leads the rotor by 90 deg: {lead_deg:.2}");
+    assert!((mag - 0.5 * V_MAX).abs() < 0.05 * V_MAX, "|V| at half scale: {mag:.3} V");
+    assert!(residual_rms < 0.02 * amplitude, "line-to-line duties are sinusoids: residual {:.2}%", 100.0 * residual_rms / amplitude);
+    assert!(mean(&i_q) > 0.0, "a forward spin carries positive I_q");
     assert!(!fault_latched(&sim), "no fault through the spin");
 }

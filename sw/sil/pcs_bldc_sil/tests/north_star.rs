@@ -8,6 +8,9 @@ use pcs_bldc_sil::board::{
     INPUT_LEVEL_PB10, MOTOR, PHASE_TRIP_A, VBUS_V,
 };
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil, BRIDGE_PORTS};
+
+mod common;
+use common::{select_method, MODE_SIX_STEP_TRAP};
 use std::f64::consts::{PI, TAU};
 use voyant::Value;
 
@@ -146,6 +149,8 @@ fn boot_and_arm(sim: &mut Sil) {
     assert!(!fault_latched(sim), "no fault before drive");
     assert_eq!(max_phase_duty(sim), 0.0, "bridge dark before the arm");
 
+    select_method(sim, MODE_SIX_STEP_TRAP);
+    assert_eq!(max_phase_duty(sim), 0.0, "selection leaves the bridge dark");
     tap_button(sim);
 }
 

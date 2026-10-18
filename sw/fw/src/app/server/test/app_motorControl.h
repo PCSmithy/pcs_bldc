@@ -22,6 +22,7 @@ typedef enum
 {
     APP_MOTORCONTROL_MODE_OFF,
     APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
+    APP_MOTORCONTROL_MODE_SINUSOIDAL,
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E;
 
@@ -41,6 +42,7 @@ typedef struct
     float32_t                magneticAngle_rad;
     float32_t                velocitySetpoint_radPerSec;
     float32_t                velocityMeasured_radPerSec;
+    app_motorControl_mode_E  selectedMode;
 } app_motorControl_snapshot_S;
 
 /* Defines */

@@ -66,6 +66,10 @@ static const struct { HW_ADC_channels_E ch; uint8_t in; } phaseSense[IO_BRIDGE_P
 };
 #define BUS_CH          (HW_ADC_CHANNEL_2)
 #define BUS_IN          (11U)
+#define BUS_V_CH        (HW_ADC_CHANNEL_1)   // bus-voltage divider, 0.15 V/V, as on the board
+#define BUS_V_IN        (12U)
+#define BUS_V_PER_V     (0.15f)
+#define TEST_VBUS_V     (24.0f)
 // U and V each sit at slot 0 of their own ADC's injected sequence; W is derived.
 #define PHASE_U_INJ     (0U)
 #define PHASE_V_INJ     (0U)
@@ -92,7 +96,8 @@ static void buildConfigs(void)
                                                       IO_BRIDGE_INJECTED_NONE, PHASE_BIAS_V, PHASE_V_PER_A } },
         },
         .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A },
-        .injectedPairWindow_us = PAIR_WINDOW_US };
+        .injectedPairWindow_us = PAIR_WINDOW_US,
+        .busVoltage = { BUS_V_CH, BUS_V_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_V } };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN] = (app_motorControl_channelConfig_S){
@@ -104,7 +109,9 @@ static void buildConfigs(void)
         // One pole pair keeps electrical angle == rotor angle, so a commutation
         // test can place the field in a chosen sector by setting the rotor angle.
         .motorPolePairs = 1U,
-        .pwmPeriod_s = 50.0e-6f };
+        .pwmPeriod_s = 50.0e-6f,
+        .maxVoltage_V = 10.0f,
+        .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
 }
 
@@ -145,6 +152,12 @@ static void setPhaseCurrentsUV(float32_t ampsU, float32_t ampsV)
 static void setBusCurrent(float32_t amps)
 {
     mock_HW_ADC_setVolts(BUS_CH, BUS_IN, amps * BUS_V_PER_A);
+}
+
+// The bus-voltage divider the bridge reads for its voltage-vector command.
+static void setBusVoltage(float32_t volts)
+{
+    mock_HW_ADC_setVolts(BUS_V_CH, BUS_V_IN, volts * BUS_V_PER_V);
 }
 
 static void setNominalCurrents(void)
@@ -270,6 +283,7 @@ void setUp(void)
     (void)IO_bridge_init(&bridgeConfig);
     (void)app_motorControl_init(&appConfig);
     setNominalCurrents();
+    setBusVoltage(TEST_VBUS_V);
 }
 
 void tearDown(void) {}
@@ -636,6 +650,116 @@ static void test_duty_proportional_and_clamped(void)
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(MAX_DUTY_01), drivenCompare());
 }
 
+/* ---- fw~mc_020: sensored sinusoidal commutation ---- */
+
+// The stator voltage vector the bridge was handed, recovered from the three
+// compares: duties off the period, the zero-sequence offset cancelling in the
+// differences (fw~mc_014), scaled by the bus voltage the bridge read.
+static void vectorFromCompares(float32_t * const angleDeg, float32_t * const magnitude_V)
+{
+    const float32_t dU = (float32_t)phaseCompare(IO_BRIDGE_PHASE_U) / (float32_t)PERIOD;
+    const float32_t dV = (float32_t)phaseCompare(IO_BRIDGE_PHASE_V) / (float32_t)PERIOD;
+    const float32_t dW = (float32_t)phaseCompare(IO_BRIDGE_PHASE_W) / (float32_t)PERIOD;
+    const float32_t vAlpha = TEST_VBUS_V * ((2.0f * dU) - dV - dW) / 3.0f;
+    const float32_t vBeta  = TEST_VBUS_V * (dV - dW) / 1.7320508f;
+    *angleDeg    = atan2f(vBeta, vAlpha) * 180.0f / 3.14159265f;
+    *magnitude_V = sqrtf((vAlpha * vAlpha) + (vBeta * vBeta));
+}
+
+static float32_t wrapDeg(float32_t deg)
+{
+    while (deg > 180.0f)  { deg -= 360.0f; }
+    while (deg <= -180.0f) { deg += 360.0f; }
+    return deg;
+}
+
+// [test->fw~mc_020~1]
+// (0, V) at the rotor angle lands the stator vector 90 deg ahead of the rotor
+// for a positive target and 90 deg behind for a negative one, at
+// |V| = (|target| / max velocity) x V_max, clamped at V_max.
+static void test_sinusoidal_vector_sits_on_the_q_axis(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+
+    static const struct { float32_t rotorDeg; float32_t velocity; float32_t leadDeg; float32_t volts; } cases[] = {
+        {  30.0f,  10.0f,  90.0f,  5.0f },   // half scale
+        {  30.0f, -10.0f, -90.0f,  5.0f },   // reversed
+        { 200.0f,  20.0f,  90.0f, 10.0f },   // full scale
+        { 200.0f,  30.0f,  90.0f, 10.0f },   // past full scale: setVelocity saturates, V holds V_max
+        { 300.0f,  -4.0f, -90.0f,  2.0f },
+    };
+    for (size_t i = 0U; i < COUNTOF(cases); i++)
+    {
+        // A jump in the encoder reads as a velocity for a few filter time
+        // constants, which the per-cycle angle (fw~mc_019) would extrapolate;
+        // hold the angle until the estimate decays so the frame is the encoder's.
+        commutateAt(cases[i].rotorDeg, cases[i].velocity);
+        for (uint32_t settle = 0U; settle < 40U; settle++)
+        {
+            tick();
+        }
+        float32_t angleDeg = 0.0f;
+        float32_t volts = 0.0f;
+        vectorFromCompares(&angleDeg, &volts);
+        TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, wrapDeg(angleDeg - (cases[i].rotorDeg + cases[i].leadDeg)));
+        TEST_ASSERT_FLOAT_WITHIN(0.05f, cases[i].volts, volts);
+        TEST_ASSERT_TRUE(bridgeEnabled());
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_U));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_V));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_W));
+    }
+}
+
+// [test->fw~mc_020~1]
+static void test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    commutateAt(45.0f, 0.0f);
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_EQUAL_UINT32(PERIOD / 2U, phaseCompare(IO_BRIDGE_PHASE_W));
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
+}
+
+/* ---- method selection ---- */
+
+static app_motorControl_mode_E motorModeNow(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.mode;
+}
+
+static app_motorControl_mode_E selectedMode(void)
+{
+    app_motorControl_snapshot_S snap = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &snap);
+    return snap.selectedMode;
+}
+
+// A method request selects it; OFF disables and leaves the selection, so the
+// next enable runs the same method. The default comes from the config.
+static void test_selected_method_survives_off(void)
+{
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SIX_STEP_TRAP, selectedMode());   // config default
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SINUSOIDAL, selectedMode());
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_OFF, motorModeNow());
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_SINUSOIDAL, selectedMode());
+}
+
+static void test_init_rejects_off_default_mode(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].defaultMode = APP_MOTORCONTROL_MODE_OFF;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 /* ---- fw~mc_019: the per-cycle rotor angle ---- */
 
 static float32_t motorAngle_rad(void)
@@ -785,6 +909,13 @@ static void test_init_rejects_zero_pwm_period(void)
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
+static void test_init_rejects_zero_max_voltage(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].maxVoltage_V = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -815,6 +946,10 @@ int main(void)
     RUN_TEST(test_reversal_flips_drive_direction);
     RUN_TEST(test_duty_proportional_and_clamped);
 
+    RUN_TEST(test_sinusoidal_vector_sits_on_the_q_axis);
+    RUN_TEST(test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up);
+    RUN_TEST(test_selected_method_survives_off);
+    RUN_TEST(test_init_rejects_off_default_mode);
     RUN_TEST(test_cycle_step_advances_the_angle_between_passes);
     RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);
@@ -823,6 +958,7 @@ int main(void)
     RUN_TEST(test_init_rejects_zero_pole_pairs);
     RUN_TEST(test_init_rejects_zero_max_velocity);
     RUN_TEST(test_init_rejects_zero_pwm_period);
+    RUN_TEST(test_init_rejects_zero_max_voltage);
 
     return UNITY_END();
 }
