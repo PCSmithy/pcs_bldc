@@ -24,6 +24,11 @@ typedef struct
     // cycle; only a change pays the HAL start path or the register stop.
     bool outputEnabled[HW_TIM_CHANNEL_COUNT];
 
+    // Per-channel compare register and period, resolved at init so the
+    // per-cycle duty write is a bounds check and a store.
+    volatile uint32_t * ccr[HW_TIM_CHANNEL_COUNT];
+    uint32_t period[HW_TIM_CHANNEL_COUNT];
+
     const HW_TIM_config_S * config;
     bool initialized;
 } HW_TIM_data_S;
@@ -236,6 +241,20 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 data->moeCommanded[p] = false;
                 initOk = HW_TIM_private_initPeripheral(config, (HW_TIM_peripheral_E)p, &data->htim[p]);
             }
+            for (size_t ch = 0U; (ch < config->numChannels) && initOk; ch++)
+            {
+                const HW_TIM_channelConfig_S * const channelConfig = &config->channels[ch];
+                TIM_TypeDef * const instance = data->htim[channelConfig->peripheral].Instance;
+                data->period[ch] = data->htim[channelConfig->peripheral].Init.Period;
+                switch (channelConfig->channel)
+                {
+                    case TIM_CHANNEL_1: data->ccr[ch] = &instance->CCR1; break;
+                    case TIM_CHANNEL_2: data->ccr[ch] = &instance->CCR2; break;
+                    case TIM_CHANNEL_3: data->ccr[ch] = &instance->CCR3; break;
+                    case TIM_CHANNEL_4: data->ccr[ch] = &instance->CCR4; break;
+                    default:            initOk = false;                   break;
+                }
+            }
             data->initialized = initOk;
             ret = initOk;
         }
@@ -280,8 +299,7 @@ bool HW_TIM_getPeriod(HW_TIM_channels_E channel, uint32_t * const out)
         (channel < HW_TIM_CHANNEL_COUNT) &&
         ((size_t)channel < data->config->numChannels))
     {
-        const HW_TIM_peripheral_E peripheral = data->config->channels[channel].peripheral;
-        *out = data->htim[peripheral].Init.Period;
+        *out = data->period[channel];
         ret = true;
     }
     return ret;
@@ -293,15 +311,11 @@ bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts)
     bool ret = false;
     if ((data->initialized) &&
         (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
+        ((size_t)channel < data->config->numChannels) &&
+        (counts <= data->period[channel]))
     {
-        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
-        TIM_HandleTypeDef * const htim = &data->htim[channelConfig->peripheral];
-        if (counts <= htim->Init.Period)
-        {
-            __HAL_TIM_SET_COMPARE(htim, channelConfig->channel, counts);
-            ret = true;
-        }
+        *data->ccr[channel] = counts;
+        ret = true;
     }
     return ret;
 }

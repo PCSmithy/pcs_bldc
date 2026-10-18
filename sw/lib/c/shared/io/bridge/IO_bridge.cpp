@@ -40,6 +40,7 @@ class Bridge
         const IO_bridge_channelConfig_S * config;
         IO_bridge_channel_E channelIndex;
         HW_TIM_peripheral_E moePeripheral;
+        uint32_t period_counts;   // the shared timer's period, read once at init
 
         float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
         uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
@@ -269,7 +270,8 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
             this->channelIndex  = channel;
             this->config        = channelConfig;
             this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
-            ret = (HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
+            ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
+                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
                    HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
         }
@@ -288,13 +290,8 @@ bool Bridge::setPhaseDuty(IO_bridge_phase_E phase, float32_t duty01)
         (duty01 >= 0.0f) &&
         (duty01 <= 1.0f))
     {
-        const HW_TIM_channels_E timChannel = this->config->phase[phase].tim;
-        uint32_t period = 0U;
-        if (HW_TIM_getPeriod(timChannel, &period))
-        {
-            const uint32_t compare = IO_bridge_private_dutyToCompare(duty01, period);
-            ret = HW_TIM_setCompare(timChannel, compare);
-        }
+        const uint32_t compare = IO_bridge_private_dutyToCompare(duty01, this->period_counts);
+        ret = HW_TIM_setCompare(this->config->phase[phase].tim, compare);
     }
     return ret;
 }
@@ -323,10 +320,8 @@ bool Bridge::setVoltageVector(float32_t vAlpha, float32_t vBeta)
 {
     bool ret = false;
     float32_t busVoltage = 0.0f;
-    uint32_t period_counts = 0U;
     if ((this->config != NULL) &&
-        (this->getBusVoltage(&busVoltage)) &&
-        HW_TIM_getPeriod(this->config->phase[IO_BRIDGE_PHASE_U].tim, &period_counts))
+        (this->getBusVoltage(&busVoltage)))
     {
         // duty [0, 1]
         float32_t duty[IO_BRIDGE_PHASE_COUNT] = { 0.0f };
@@ -345,7 +340,7 @@ bool Bridge::setVoltageVector(float32_t vAlpha, float32_t vBeta)
             for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
             {
                 ret &= HW_TIM_setCompare(this->config->phase[phase].tim,
-                                            IO_bridge_private_dutyToCompare(duty[phase], period_counts));
+                                            IO_bridge_private_dutyToCompare(duty[phase], this->period_counts));
             }
         }
     }
