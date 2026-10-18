@@ -47,6 +47,7 @@ add_library(lib_protobuf_config STATIC
   generated/trace.pb.c
   generated/board.pb.c
 )
+pcs_hot_path(lib_protobuf_config)   # server path: see sw/cmake/pcs_hot_path.cmake
 target_include_directories(lib_protobuf_config PUBLIC . generated)
 target_link_libraries(lib_protobuf_config PUBLIC lib_types nanopb)
 

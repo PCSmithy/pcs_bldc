@@ -60,6 +60,8 @@ set(_mcu_flags
 #   -DPCS_OPT_LEVEL=-O0   source-faithful deep debugging (largest)
 #   -DPCS_OPT_LEVEL=-Os   minimum size (poor debuggability)
 set(PCS_OPT_LEVEL "-Og" CACHE STRING "Optimization level for the embedded build")
+# The server-path targets opt into a higher level (pcs_hot_path(<target>)).
+include(${CMAKE_CURRENT_LIST_DIR}/../pcs_hot_path.cmake)
 
 add_compile_options(
   ${_mcu_flags}

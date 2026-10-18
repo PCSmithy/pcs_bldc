@@ -16,6 +16,7 @@ add_library(tinyusb STATIC
   class/cdc/cdc_device.c
   portable/st/stm32_fsdev/dcd_stm32_fsdev.c
 )
+pcs_hot_path(tinyusb)   # server path: see sw/cmake/pcs_hot_path.cmake
 
 # TinyUSB sources include each other relative to this root (e.g.
 # "device/usbd.h", "common/tusb_common.h").

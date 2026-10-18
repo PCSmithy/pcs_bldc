@@ -94,3 +94,6 @@ if(PCS_LTO AND CMAKE_HOST_WIN32)
     ${PCS_OPT_LEVEL} -g
   )
 endif()
+
+# pcs_hot_path(<target>) is a no-op here; defined so the CMakeLists can call it.
+include(${CMAKE_CURRENT_LIST_DIR}/../pcs_hot_path.cmake)
