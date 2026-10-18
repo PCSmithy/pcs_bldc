@@ -96,6 +96,15 @@ host's retry. The peripheral supports double-buffered bulk endpoints
 (`dcd_stm32_fsdev.c` enables it for isochronous only) and the PMA has
 room for a second 64-byte IN buffer.
 
+**Link budget vs the physical path (2026-10-18):** the trace admits a
+watch list against a fixed 480 kB/s link budget, but the link measured
+241 kB/s wire through an external VIA VL817 hub (four full-speed packets
+per ms through its transaction translator) and 603 kB/s on a root port.
+Behind the hub a five-watch 20 kHz list was admitted and overflowed the
+ring continuously; nothing on the device can tell the two apart. Either
+measure the link at connect (the link test exists) and admit against the
+measurement, or document "root port only" for 20 kHz work.
+
 **Where:** `sw/lib/c/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c`
 (vendored; carry the patch or upstream it), `tusb_config.h`.
 
@@ -131,6 +140,13 @@ nor any host-side loss count: deframe/decode failures are silent and
 surface as device drops. (4) An in-flight request keeps the duplicated
 port handle open for up to its 500 ms timeout after disconnect,
 delaying the DTR drop the board clears its list on.
+
+**Backlog growth when the webview lags (2026-10-18):** with five 20 kHz
+watches streaming and the link unable to carry them, the renderer process
+ran at over a core and its working set grew ~57 MB/s to 5 GB before a
+restart; a fresh instance reached 1 GB within a minute. The core's
+shedding path (`host_dropped_points`) did not keep the backlog bounded.
+Find where the points or batch events accumulate and bound it.
 
 **Where:** `sw/gui/src-tauri/src/{trace.rs,emitter.rs,session.rs,protocol.rs}`,
 `sw/lib/c/shared/proto/trace.proto` for (1), `app~conn_003`/`app~obs_003`.
