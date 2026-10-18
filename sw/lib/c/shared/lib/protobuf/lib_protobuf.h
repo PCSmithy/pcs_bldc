@@ -14,6 +14,9 @@ extern "C" {
 // front of the payload: request_id key+varint (6) and payload key (5) + length (5).
 #define LIB_PROTOBUF_ENVELOPE_HEADER_MAX (16U)
 
+// Varint bytes of value into out (out holds at least 5); returns the count.
+size_t lib_protobuf_varint(uint32_t value, uint8_t * const out);
+
 /* Public Function Declarations */
 
 // Encode message (described by fields) into buffer; false when the encoding

@@ -24,8 +24,7 @@ bool lib_protobuf_encode(const pb_msgdesc_t * const fields, const void * const m
     return success;
 }
 
-// Varint bytes of value into out (out holds at least 5); returns the count.
-static size_t lib_protobuf_private_varint(uint32_t value, uint8_t * const out)
+size_t lib_protobuf_varint(uint32_t value, uint8_t * const out)
 {
     size_t n = 0U;
     uint32_t v = value;
@@ -60,10 +59,10 @@ bool lib_protobuf_encodeEnvelope(uint32_t requestId, uint32_t payloadTag,
             {
                 header[n] = 0x08U;   // field 1, varint
                 n++;
-                n += lib_protobuf_private_varint(requestId, &header[n]);
+                n += lib_protobuf_varint(requestId, &header[n]);
             }
-            n += lib_protobuf_private_varint((payloadTag << 3U) | 2U, &header[n]);
-            n += lib_protobuf_private_varint((uint32_t) stream.bytes_written, &header[n]);
+            n += lib_protobuf_varint((payloadTag << 3U) | 2U, &header[n]);
+            n += lib_protobuf_varint((uint32_t) stream.bytes_written, &header[n]);
             (void) memmove(&buffer[n], &buffer[headerMax], stream.bytes_written);
             (void) memcpy(buffer, header, n);
             *encodedLen = n + stream.bytes_written;
