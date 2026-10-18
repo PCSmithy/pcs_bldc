@@ -114,7 +114,7 @@ static void test_park_matches_reference_over_sweep(void)
             ref_park(alpha, beta, theta, &expD, &expQ);
 
             float32_t d = 0.0f, q = 0.0f;
-            lib_transforms_park((float32_t)alpha, (float32_t)beta, (float32_t)theta, &d, &q);
+            lib_transforms_park((float32_t)alpha, (float32_t)beta, sinf((float32_t)theta), cosf((float32_t)theta), &d, &q);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expD, d);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expQ, q);
@@ -138,7 +138,7 @@ static void test_inverse_park_matches_reference_over_sweep(void)
             ref_inverse_park(d, q, theta, &expAlpha, &expBeta);
 
             float32_t alpha = 0.0f, beta = 0.0f;
-            lib_transforms_inversePark((float32_t)d, (float32_t)q, (float32_t)theta, &alpha, &beta);
+            lib_transforms_inversePark((float32_t)d, (float32_t)q, sinf((float32_t)theta), cosf((float32_t)theta), &alpha, &beta);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expAlpha, alpha);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expBeta, beta);
@@ -161,9 +161,9 @@ static void test_park_then_inverse_park_returns_input(void)
             const float32_t betaIn  = (float32_t)(A * -0.95);
 
             float32_t d = 0.0f, q = 0.0f;
-            lib_transforms_park(alphaIn, betaIn, theta, &d, &q);
+            lib_transforms_park(alphaIn, betaIn, sinf(theta), cosf(theta), &d, &q);
             float32_t alphaOut = 0.0f, betaOut = 0.0f;
-            lib_transforms_inversePark(d, q, theta, &alphaOut, &betaOut);
+            lib_transforms_inversePark(d, q, sinf(theta), cosf(theta), &alphaOut, &betaOut);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), alphaIn, alphaOut);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), betaIn, betaOut);
@@ -215,14 +215,33 @@ static void test_park_spot_values(void)
     float32_t d = 0.0f, q = 0.0f;
 
     // Frame at 0: identity.
-    lib_transforms_park(0.25f, -0.75f, 0.0f, &d, &q);
+    lib_transforms_park(0.25f, -0.75f, 0.0f, 1.0f, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.25f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, q);
 
     // Frame at 90 degrees: (d, q) = (beta, -alpha).
-    lib_transforms_park(0.25f, -0.75f, (float32_t)(PI_D / 2.0), &d, &q);
+    lib_transforms_park(0.25f, -0.75f, 1.0f, 0.0f, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.25f, q);
+}
+
+// Whole turns drop away and negatives land in [0, 2 pi); the float wrap
+// holds 1e-5 out to seven turns.
+static void test_wrap_angle_lands_in_one_turn(void)
+{
+    const float32_t twoPi = (float32_t)(2.0 * PI_D);
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.0f, lib_transforms_wrapAngle(0.0f));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, (float32_t)PI_D, lib_transforms_wrapAngle((float32_t)PI_D));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.0f, lib_transforms_wrapAngle(twoPi));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, lib_transforms_wrapAngle(twoPi + 1.0f));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, twoPi - 1.0f, lib_transforms_wrapAngle(-1.0f));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.5f, lib_transforms_wrapAngle((7.0f * twoPi) + 0.5f));
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, twoPi - 0.5f, lib_transforms_wrapAngle((-3.0f * twoPi) - 0.5f));
+    for (int k = -720; k <= 720; k++)
+    {
+        const float32_t wrapped = lib_transforms_wrapAngle((float32_t)k * 0.05f);
+        TEST_ASSERT_TRUE((wrapped >= 0.0f) && (wrapped < twoPi));
+    }
 }
 
 static void test_null_output_leaves_both_outputs_untouched(void)
@@ -231,10 +250,10 @@ static void test_null_output_leaves_both_outputs_untouched(void)
 
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, &x, NULL);
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, NULL, &x);
-    lib_transforms_park(1.0f, 2.0f, 0.5f, &x, NULL);
-    lib_transforms_park(1.0f, 2.0f, 0.5f, NULL, &x);
-    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, &x, NULL);
-    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, NULL, &x);
+    lib_transforms_park(1.0f, 2.0f, 0.5f, 0.5f, &x, NULL);
+    lib_transforms_park(1.0f, 2.0f, 0.5f, 0.5f, NULL, &x);
+    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, 0.5f, &x, NULL);
+    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, 0.5f, NULL, &x);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, &x, &x, NULL);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, &x, NULL, &x);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, NULL, &x, &x);
@@ -448,6 +467,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_clarke_matches_reference_over_balanced_sweep);
+    RUN_TEST(test_wrap_angle_lands_in_one_turn);
     RUN_TEST(test_clarke_matches_reference_on_unbalanced_sets);
     RUN_TEST(test_park_matches_reference_over_sweep);
     RUN_TEST(test_inverse_park_matches_reference_over_sweep);

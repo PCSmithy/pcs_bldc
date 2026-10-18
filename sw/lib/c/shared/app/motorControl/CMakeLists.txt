@@ -9,12 +9,13 @@ target_link_libraries(app_motorControl
     lib_timer
     lib_transforms
     lib_filterIIR
+    hw_CORDIC
     io_bridge
     io_AS5048
     dev_gateDriver
     pcs_motorControl_channels
   PRIVATE
-    m   # fmodf — glibc keeps libm separate; harmless on MinGW/macOS/newlib
+    m   # libm — glibc keeps it separate; harmless on MinGW/macOS/newlib
 )
 
 if(PCS_TARGET STREQUAL "native")

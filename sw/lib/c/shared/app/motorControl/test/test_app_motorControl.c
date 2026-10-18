@@ -18,6 +18,7 @@
 #include "mock_HW_TIM.h"
 #include "mock_HW_ADC.h"
 #include "lib_timer.h"
+#include "HW_CORDIC.h"
 #include "unity.h"
 
 /* ---- fake clock: the only thing lib_timer bottoms out on ---- */
@@ -273,8 +274,11 @@ static int observedSector(void)
     return sector;
 }
 
+static const HW_CORDIC_config_S cordicConfig = { 0 };
+
 void setUp(void)
 {
+    (void)HW_CORDIC_init(&cordicConfig);
     mock_HW_TIM_reset(PERIOD);
     mock_HW_ADC_reset();
     mock_IO_AS5048_reset();
