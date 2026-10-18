@@ -15,6 +15,6 @@ target_include_directories(test_io_COBSFrame PRIVATE
 # freertos_host_hooks: hw_USB pulls the kernel (HW_USB_run's vTaskDelay); the
 # test never starts the scheduler, so it needs the vApplication* hook stubs.
 target_link_libraries(test_io_COBSFrame PRIVATE
-  lib_types lib_cobs lib_crc32 hw_USB unity freertos_host_hooks
+  lib_types lib_cobs hw_CRC hw_USB unity freertos_host_hooks
 )
 add_test(NAME io_COBSFrame COMMAND test_io_COBSFrame)

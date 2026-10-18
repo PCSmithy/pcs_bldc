@@ -142,6 +142,31 @@ static void test_decode_rejects_output_overflow(void)
     TEST_ASSERT_FALSE(lib_cobs_decode(enc, 5U, dec, 3U, &decLen));
 }
 
+// Two segments encode exactly as their concatenation would, with the split
+// landing before, on, and after a zero and across the 254-byte block edge.
+static void test_encode2_matches_the_joined_encode(void)
+{
+    uint8_t joined[600];
+    for (size_t i = 0U; i < sizeof(joined); i++)
+    {
+        joined[i] = (uint8_t) ((i % 11U == 5U) ? 0U : ((i * 13U) + 1U));
+    }
+    const size_t splits[] = { 0U, 1U, 4U, 5U, 6U, 253U, 254U, 255U, 300U, 596U, 600U };
+    for (size_t k = 0U; k < (sizeof(splits) / sizeof(splits[0])); k++)
+    {
+        const size_t split = splits[k];
+        uint8_t expected[700];
+        uint8_t actual[700];
+        size_t expectedLen = 0U;
+        size_t actualLen = 0U;
+        TEST_ASSERT_TRUE(lib_cobs_encode(joined, sizeof(joined), expected, sizeof(expected), &expectedLen));
+        TEST_ASSERT_TRUE(lib_cobs_encode2(joined, split, &joined[split], sizeof(joined) - split,
+                                          actual, sizeof(actual), &actualLen));
+        TEST_ASSERT_EQUAL_size_t(expectedLen, actualLen);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, actual, expectedLen);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -154,6 +179,7 @@ int main(void)
     RUN_TEST(test_254_nonzero_block_boundary);
     RUN_TEST(test_long_roundtrip_with_scattered_zeros);
     RUN_TEST(test_encode_rejects_small_output);
+    RUN_TEST(test_encode2_matches_the_joined_encode);
     RUN_TEST(test_decode_rejects_embedded_zero);
     RUN_TEST(test_decode_rejects_overrunning_code);
     RUN_TEST(test_decode_rejects_empty_input);

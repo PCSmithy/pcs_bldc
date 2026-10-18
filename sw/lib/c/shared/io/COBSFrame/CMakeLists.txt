@@ -7,7 +7,7 @@ target_link_libraries(io_COBSFrame
   PUBLIC
     lib_types
     lib_cobs
-    lib_crc32
+    hw_CRC
     io_serial
     pcs_COBSFrame_channels     # consumer-provided IO_COBSFrame_channels.h path
 )
