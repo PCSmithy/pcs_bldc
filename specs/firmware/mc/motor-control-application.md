@@ -20,7 +20,8 @@ See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
 (`fw~io_bridge_002/003/004/008` the duty and enable path, `fw~io_bridge_007~1`
 the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
 transform), [[velocity]] (`fw~est_velocity_001~1`, the velocity estimate),
-[[six-step]], [[sinusoidal]], [[vf-sinusoidal]] (the commutation methods),
+[[six-step]], [[sinusoidal]], [[foc]], [[vf-sinusoidal]] (the commutation
+methods),
 [[gate-driver]] (dev_gateDriver supplies the operational gate),
 [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
 
@@ -73,29 +74,6 @@ Covers:
 
 Needs: impl, test
 
-### Rotor-frame current observation
-`fw~mc_016~1`
-
-Each commutation step, the application shall transform the cycle's phase
-currents into the rotor frame (`fw~mc_013~1`) at the active method's frame
-angle and hold the result as the drive's I_d and I_q:
-
-| Method                        | Frame angle                                      |
-|-------------------------------|--------------------------------------------------|
-| Six-step, sensored sinusoidal | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
-| V/f                           | Commanded electrical angle (`fw~mc_010~1`)       |
-
-Acceptance:
-- With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and
-  I_q = 0; with the frame angle at 90°, I_d = 0 and I_q = −I.
-- At constant speed with the phase currents rotating at the electrical
-  frequency, I_d and I_q hold within 5% of their magnitude.
-
-Covers:
-- `sys~mc_001~1`
-
-Needs: impl, test
-
 ### Cycle callback duration probe
 `fw~mc_018~1`
 
@@ -116,6 +94,60 @@ Acceptance:
 
 Covers:
 - `sys~mc_006~1`
+
+Needs: impl, test
+
+## Phase currents
+
+### Rotor-frame current observation
+`fw~mc_016~1`
+
+Each commutation step, the application shall transform the drive's phase
+currents (`fw~mc_025~1`) into the rotor frame (`fw~mc_013~1`) at the active
+method's frame angle and hold the result as the drive's I_d and I_q:
+
+| Method                                        | Frame angle                                      |
+|-----------------------------------------------|--------------------------------------------------|
+| Six-step, sensored sinusoidal, field-oriented | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
+| V/f                                           | Commanded electrical angle (`fw~mc_010~1`)       |
+
+Acceptance:
+- With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and
+  I_q = 0; with the frame angle at 90°, I_d = 0 and I_q = −I.
+- At constant speed with the phase currents rotating at the electrical
+  frequency, I_d and I_q hold within 5% of their magnitude.
+
+Covers:
+- `sys~mc_001~1`
+
+Needs: impl, test
+
+### Zero-current offset calibration
+`fw~mc_025~1`
+
+The application shall hold as the drive's phase currents, for each bridge
+cycle callback (`fw~io_bridge_007~1`), the bridge-reported currents
+(`fw~io_bridge_005~1`, `fw~io_bridge_006~1`) less per-phase offsets, the
+callbacks with the bridge disabled counted in blocks of the configured
+length from reset and from each disable, and the offsets set
+
+| At                                                       | Offsets |
+|----------------------------------------------------------|---------|
+| Reset                                                    | zero |
+| A bridge enable with a block completed since the disable | each phase's mean reported current over the latest such block |
+| A bridge enable with no block completed                  | unchanged |
+
+Acceptance:
+- With the bridge disabled and the reported phase currents held at
+  (I_u, I_v, −I_u − I_v) through a full block, the drive's phase currents
+  after the next enable are the reported currents less that triple, within
+  10 mA.
+- An enable after fewer disabled callbacks than a block leaves the drive's
+  phase currents corrected by the previous enable's offsets.
+- A configuration with a block of zero callbacks is rejected at init.
+
+Covers:
+- `sys~mc_001~1`
 
 Needs: impl, test
 
