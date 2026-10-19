@@ -3960,6 +3960,151 @@ def run(page):
     page.keyboard.up("Control")
 
 
+    # ═══ CPU load widget ═══
+    fresh_boot(page)
+
+    # ── [test->app~views_021~1] the launcher adds the preset
+    # ── [test->app~views_020~1] empty before
+    #    any sample ──
+    page.click(".launcher-fab")
+    cpu0 = page.evaluate(
+        """() => {
+          document.querySelector(".launcher-menu [data-workspace='new-cpuload']").click();
+          let w = null; __cockpit.forEachWidget(x => { if (x.toJSON().type === 'cpuload') w = x; });
+          if (!w) return null;
+          return {
+            id: w.cfg.id,
+            wedges: w.toJSON().wedges,
+            title: w.el.querySelector('.widget-title').textContent,
+            empty: w.el.classList.contains('cpu-widget--empty'),
+            emptyShown: getComputedStyle(w.el.querySelector('.cpu-empty')).display !== 'none',
+            centre: w.el.querySelector('.cpu-idle-pct').textContent,
+            pcts: [...w.el.querySelectorAll('.cpu-pct')].map(e => e.textContent),
+            watched: w.cfg.signals.every(p => __cockpit.store.watched.get(p)?.period_cycles === 200),
+            noNaN: !w.el.textContent.includes('NaN'),
+          };
+        }"""
+    )
+    preset = [
+        {"path": f"app_cpuLoad_data.taskTime_us[{i}]", "label": lab,
+         "role": "idle" if lab == "idle" else "task"}
+        for i, lab in enumerate(["other", "idle", "1 ms", "10 ms", "200 ms", "usb", "server"])
+    ] + [{"path": "HW_ADC_data.irqTime_us", "label": "cycle ISR", "role": "interrupt"}]
+    check(
+        "views_020 launcher adds a CPU load widget holding the preset, watched at 10 ms",
+        cpu0 is not None and cpu0["wedges"] == preset and cpu0["title"] == "CPU load"
+        and cpu0["watched"],
+        cpu0,
+    )
+    check(
+        "views_020 empty state before any sample: no share shown, no NaN",
+        cpu0 is not None and cpu0["empty"] and cpu0["emptyShown"] and cpu0["centre"] == "—"
+        and all(p == "—" for p in cpu0["pcts"]) and cpu0["noNaN"],
+        cpu0,
+    )
+    zero = page.evaluate(
+        "() => __cockpit.cpuLoad.shares(['task', 'idle', 'interrupt'], [0, 0, 0])"
+    )
+    check("views_020 T = 0 yields no shares", zero is None, zero)
+
+    # ── [test->app~views_020~1] shares match the devmock's known rates ──
+    cpu_id = cpu0["id"]
+    page.wait_for_function(
+        "() => (__cockpit.histories.get('HW_ADC_data.irqTime_us')?.size || 0) > 200",
+        timeout=8000,
+    )
+    page.wait_for_timeout(300)
+    rates = {"other": 0.05, "idle": 0.40, "1 ms": 0.15, "10 ms": 0.08,
+             "200 ms": 0.02, "usb": 0.10, "server": 0.20}
+    isr = 0.45
+    expected = {lab: r * (1 - isr) for lab, r in rates.items()}
+    expected["cycle ISR"] = isr
+    live = widget_eval(
+        page, cpu_id,
+        """(w) => { w.refresh(); return {
+          empty: w.el.classList.contains('cpu-widget--empty'),
+          rows: [...w.el.querySelectorAll('.cpu-legend-row')].map(r => [
+            r.querySelector('.cpu-label').textContent,
+            parseFloat(r.querySelector('.cpu-pct').textContent)]),
+          centre: w.el.querySelector('.cpu-idle-pct').textContent,
+          sum: w.shares.reduce((a, s) => a + s, 0),
+        }; }""",
+    )
+    rows_ok = len(live["rows"]) == 8 and all(
+        abs(pct - expected[lab] * 100) <= 0.15 for lab, pct in live["rows"]
+    )
+    check(
+        "views_020 each wedge's share matches the counter arithmetic, summing to 100 %",
+        not live["empty"] and rows_ok and abs(live["sum"] - 1) < 1e-9,
+        (live, expected),
+    )
+    centre = live["centre"]
+    check(
+        "views_020 the centre shows the idle share",
+        abs(float(centre.replace("%", "")) - expected["idle"] * 100) <= 0.15,
+        centre,
+    )
+
+    # ── [test->app~views_020~1] a counter wrapping past 2^32 keeps its share
+    #    (the devmock's idle counter wraps at 50 s, inside the 30 s strip) ──
+    wrap = widget_eval(
+        page, cpu_id,
+        """(w) => {
+          const h = __cockpit.histories.get('app_cpuLoad_data.taskTime_us[1]');
+          let wrapped = null;
+          for (let i = 1; i < h.size; i++) {
+            if (h.valueAtIndex(i) < h.valueAtIndex(i - 1)) { wrapped = h.tickAtIndex(i); break; }
+          }
+          const cols = w.strip.filter(Boolean);
+          const idle = cols.map(s => s[1]);
+          return { wrapped, n: cols.length, min: Math.min(...idle), max: Math.max(...idle) };
+        }""",
+    )
+    check(
+        "views_020 a counter wrap inside the strip keeps every window's idle share",
+        wrap["wrapped"] is not None and wrap["n"] >= 250
+        and abs(wrap["min"] - expected["idle"]) < 1e-4
+        and abs(wrap["max"] - expected["idle"]) < 1e-4,
+        wrap,
+    )
+    wrap_fn = page.evaluate(
+        "() => __cockpit.cpuLoad.shares(['idle', 'task', 'interrupt'],"
+        " [((5 - (2 ** 32 - 395)) % 2 ** 32 + 2 ** 32) % 2 ** 32, 600, 100])"
+    )
+    check(
+        "views_020 shares from a wrapped delta",
+        wrap_fn is not None and abs(wrap_fn[0] - 0.4 * 0.9) < 1e-12
+        and abs(wrap_fn[2] - 0.1) < 1e-12,
+        wrap_fn,
+    )
+
+    # ── [test->app~views_021~1] label, role, and removal edits survive a
+    #    restart ──
+    page.click(f"[data-widget-id='{cpu_id}'] [data-axesconfig]")
+    page.wait_for_selector(".axes-popover--wide")
+    label_input = page.locator(
+        ".axes-popover .axes-row[data-path='app_cpuLoad_data.taskTime_us[0]'] [data-wedgelabel]"
+    )
+    label_input.fill("misc")
+    label_input.press("Enter")
+    page.click(".axes-popover .axes-row[data-path='app_cpuLoad_data.taskTime_us[5]'] [data-role='idle']")
+    page.click(".axes-popover .axes-row[data-path='app_cpuLoad_data.taskTime_us[4]'] [data-deselect]")
+    page.keyboard.press("Escape")
+    edited = widget_eval(page, cpu_id, "(w) => w.toJSON().wedges")
+    restart(
+        page, load_elf=True,
+        wait_js="() => { let n = 0; __cockpit.forEachWidget(w => { if (w.toJSON().type === 'cpuload') n++; }); return n === 1; }",
+    )
+    restored = widget_eval(page, cpu_id, "(w) => w && w.toJSON().wedges")
+    want = [dict(e) for e in preset if e["label"] != "200 ms"]
+    want[0]["label"] = "misc"
+    want[4]["role"] = "idle"
+    check(
+        "views_020 wedge label, role, and removal edits survive a restart",
+        edited == want and restored == want,
+        (edited, restored),
+    )
+
 BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"
 # "off": run the budget scenario for error coverage but skip the numeric
 # asserts — software-GL hosts (CI's SwiftShader) measure far under the

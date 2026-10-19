@@ -61,6 +61,20 @@ for (const s of signals) {
   if (ENUMS[s.path]) s.enums = ENUMS[s.path];
 }
 signals.push({ path: "task1msRuns", kind: "u32", size: 4, readonly: false });
+// CPU load counters: cumulative µs at a fixed share of mock time. The task
+// and idle rates partition elapsed time; the ISR's runs on top of them.
+// The idle counter starts near 2^32 so it wraps at 50 s of stream time.
+const CPU_COUNTERS = new Map([
+  ["app_cpuLoad_data.taskTime_us[0]", { rate: 0.05 }],
+  ["app_cpuLoad_data.taskTime_us[1]", { rate: 0.40, offset: 2 ** 32 - 0.40 * 50e6 }],
+  ["app_cpuLoad_data.taskTime_us[2]", { rate: 0.15 }],
+  ["app_cpuLoad_data.taskTime_us[3]", { rate: 0.08 }],
+  ["app_cpuLoad_data.taskTime_us[4]", { rate: 0.02 }],
+  ["app_cpuLoad_data.taskTime_us[5]", { rate: 0.10 }],
+  ["app_cpuLoad_data.taskTime_us[6]", { rate: 0.20 }],
+  ["HW_ADC_data.irqTime_us", { rate: 0.45 }],
+]);
+for (const path of CPU_COUNTERS.keys()) signals.push({ path, kind: "u32", size: 4, readonly: false });
 signals.push({ path: "serverRuns", kind: "u32", size: 4, readonly: false });
 let n = signals.length;
 for (let i = 0; n + i < 704; i++) {
@@ -252,6 +266,8 @@ function phaseOf(path) {
 }
 
 function waveform(path, kind, t) {
+  const cpu = CPU_COUNTERS.get(path);
+  if (cpu) return Math.floor((cpu.offset ?? 0) + cpu.rate * t * 1000) % 2 ** 32;
   const phase = phaseOf(path);
   if (kind === "bool") return Math.sin(t / 700 + phase) > 0 ? 1 : 0;
   if (kind === "enum") return Math.floor(t / 2000 + phase) % 4;

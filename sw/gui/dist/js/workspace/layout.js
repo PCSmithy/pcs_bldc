@@ -9,6 +9,7 @@
 import { store, notify, subscribe, prefs } from "../state.js";
 import { PlotWidget } from "./plotwidget.js";
 import { TableWidget } from "./tablewidget.js";
+import { CpuLoadWidget } from "./cpuloadwidget.js";
 import { addWatch, meta } from "./watchflow.js";
 import { restoreColors, colorSlots } from "./colors.js";
 import { appearanceEntries, restoreAppearance } from "./appearance.js";
@@ -49,6 +50,7 @@ export function initLayout() {
   subscribe("workspace-create", (kind) => {
     if (kind === "new-plot") addWidget({ type: "plot", signals: [] });
     if (kind === "new-table") addWidget({ type: "table", signals: [] });
+    if (kind === "new-cpuload") addWidget({ type: "cpuload" });
   });
 
   restore();
@@ -75,6 +77,7 @@ function wireLauncher(workspace) {
     <div class="launcher-menu" role="menu" hidden>
       <button role="menuitem" data-workspace="new-plot">Add plot</button>
       <button role="menuitem" data-workspace="new-table">Add table</button>
+      <button role="menuitem" data-workspace="new-cpuload">Add CPU load</button>
     </div>
     <button class="launcher-fab" aria-label="Add a widget" aria-haspopup="menu"
       aria-expanded="false">+</button>`;
@@ -168,7 +171,8 @@ export function addWidget(cfg, at = null) {
   cfg.id = cfg.id ?? `w${nextId++}`;
   if (at) { cfg.x = at.x; cfg.y = at.y; }
   normalizeGeometry(cfg);
-  const widget = cfg.type === "table" ? new TableWidget(cfg, hooks) : new PlotWidget(cfg, hooks);
+  const Widget = { table: TableWidget, cpuload: CpuLoadWidget }[cfg.type] ?? PlotWidget;
+  const widget = new Widget(cfg, hooks);
   widgets.push(widget);
   canvas.appendChild(widget.el);
   applyGeometry(widget);

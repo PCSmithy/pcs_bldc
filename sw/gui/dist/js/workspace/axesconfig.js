@@ -1,5 +1,6 @@
 // Widget configuration popover. Plots get the full surface (axis sides,
-// scale modes, appearance editor, remove); tables get rows + remove only.
+// scale modes, appearance editor, remove); tables get rows + remove only;
+// a CPU load widget's rows edit each wedge's label and role.
 // Removing a signal's last holder also removes its watch (watchflow path).
 // [impl->app~views_007~1] (the axes-configuration surface)
 // [impl->app~views_011~1] (the appearance editor)
@@ -28,7 +29,7 @@ export function toggleAxesConfig(widget, anchor) {
   }
   closeAxesConfig();
   const el = document.createElement("div");
-  el.className = "axes-popover";
+  el.className = isCpuLoad(widget) ? "axes-popover axes-popover--wide" : "axes-popover";
   el.setAttribute("role", "dialog");
   el.setAttribute("aria-label", "Widget configuration");
   document.body.appendChild(el);
@@ -49,6 +50,29 @@ function position(el, anchor) {
 
 function isPlot(widget) {
   return typeof widget.setSide === "function";
+}
+
+function isCpuLoad(widget) {
+  return typeof widget.setWedge === "function";
+}
+
+const ROLE_LABELS = [["task", "task"], ["idle", "idle"], ["interrupt", "irq"]];
+
+function wedgeRows(widget) {
+  return widget.cfg.wedges
+    .map(
+      (w, i) => `<div class="axes-row" data-path="${esc(w.path)}">
+        <span class="legend-bar" style="background:${widget.colorOf(i)}"></span>
+        <input class="wedge-label mono" data-wedgelabel value="${esc(w.label)}"
+          title="${esc(w.path)}" aria-label="Wedge label">
+        <span class="seg side-seg" role="group" aria-label="Wedge role">
+          ${ROLE_LABELS.map(([role, label]) =>
+            `<button data-role="${role}" class="${w.role === role ? "is-selected" : ""}">${label}</button>`).join("")}
+        </span>
+        <button class="axes-remove" data-deselect>remove</button>
+      </div>`,
+    )
+    .join("");
 }
 
 /** The per-signal appearance editor (app~views_011): color swatches (the six
@@ -103,8 +127,9 @@ function render() {
   if (!open) return;
   const { el, widget } = open;
   const plot = isPlot(widget);
+  const cpu = isCpuLoad(widget);
 
-  const rows = widget.cfg.signals
+  const rows = cpu ? wedgeRows(widget) : widget.cfg.signals
     .map((path) => {
       const color = resolvedColor(path);
       const side = plot ? widget.sideOf(path) : null;
@@ -154,7 +179,7 @@ function render() {
     : "";
 
   el.innerHTML = `
-    <div class="axes-title display">${plot ? "Axes" : "Signals"}</div>
+    <div class="axes-title display">${plot ? "Axes" : cpu ? "Wedges" : "Signals"}</div>
     <div class="axes-rows">${rows || `<div class="axes-empty">no signals — drop one on the widget</div>`}</div>
     ${scales}
     <div class="axes-foot"><button class="btn btn-secondary" data-removewidget>Remove widget</button></div>`;
@@ -194,6 +219,11 @@ function wire(el, widget) {
       render();
       return;
     }
+    if (ev.target.dataset.role && row) {
+      widget.setWedge(row.dataset.path, { role: ev.target.dataset.role });
+      render();
+      return;
+    }
     if (ev.target.dataset.deselect !== undefined && row) {
       const path = row.dataset.path;
       widget.removeSignal(path);
@@ -218,6 +248,11 @@ function wire(el, widget) {
 
   // The native color input commits on change (close of the OS picker).
   el.addEventListener("change", (ev) => {
+    if ("wedgelabel" in ev.target.dataset) {
+      const path = ev.target.closest(".axes-row").dataset.path;
+      widget.setWedge(path, { label: ev.target.value.trim() || shortName(path) });
+      return;
+    }
     if ("colorpick" in ev.target.dataset) {
       const editor = ev.target.closest(".axes-appearance");
       if (editor) {
