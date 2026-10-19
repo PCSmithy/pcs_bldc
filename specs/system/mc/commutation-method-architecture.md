@@ -24,8 +24,7 @@ Acceptance:
   leaves the bridge disabled.
 
 Covers:
-- (project goal: README.md, "Field-oriented motor control" — first-spin
-  commutation methods exercising the actuation path ahead of the FOC
-  inner loop.)
+- (project goal: README.md, "Field-oriented motor control" — the
+  selectable commutation methods, the FOC inner loop among them.)
 
 Needs: fw, test
