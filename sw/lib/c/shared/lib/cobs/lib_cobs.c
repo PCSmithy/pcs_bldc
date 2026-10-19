@@ -4,46 +4,75 @@
 /* Public Function Definitions */
 
 // [impl->fw~conn_proto_002~1]
+// The encoder's position between segments: the open block's code slot, the
+// write index, and the block's running code.
+typedef struct
+{
+    size_t codeIndex;
+    size_t out;
+    uint8_t code;
+} lib_cobs_private_encoder_S;
+
+static void lib_cobs_private_encodeSegment(lib_cobs_private_encoder_S * const enc,
+                                           const uint8_t * const input, size_t len,
+                                           uint8_t * const output)
+{
+    for (size_t i = 0U; i < len; i++)
+    {
+        if (input[i] == 0U)
+        {
+            output[enc->codeIndex] = enc->code;
+            enc->codeIndex = enc->out;
+            enc->out++;
+            enc->code = 1U;
+        }
+        else
+        {
+            output[enc->out] = input[i];
+            enc->out++;
+            enc->code++;
+            // A full 254-byte block: close it and start the next.
+            if (enc->code == 0xFFU)
+            {
+                output[enc->codeIndex] = enc->code;
+                enc->codeIndex = enc->out;
+                enc->out++;
+                enc->code = 1U;
+            }
+        }
+    }
+}
+
+bool lib_cobs_encode2(const uint8_t * const input1, size_t len1,
+                      const uint8_t * const input2, size_t len2,
+                      uint8_t * const output, size_t outputMax,
+                      size_t * const encodedLen)
+{
+    bool success = false;
+    if (((input1 != NULL) || (len1 == 0U)) &&
+        ((input2 != NULL) || (len2 == 0U)) &&
+        (output != NULL) &&
+        (encodedLen != NULL) &&
+        (outputMax >= LIB_COBS_ENCODED_MAX(len1 + len2)))
+    {
+        lib_cobs_private_encoder_S enc = { .codeIndex = 0U, .out = 1U, .code = 1U };
+        lib_cobs_private_encodeSegment(&enc, input1, len1, output);
+        lib_cobs_private_encodeSegment(&enc, input2, len2, output);
+        output[enc.codeIndex] = enc.code;
+        *encodedLen = enc.out;
+        success = true;
+    }
+    return success;
+}
+
 bool lib_cobs_encode(const uint8_t * const input, size_t len,
                      uint8_t * const output, size_t outputMax,
                      size_t * const encodedLen)
 {
     bool success = false;
-    if ((input != NULL) &&
-        (output != NULL) &&
-        (encodedLen != NULL) &&
-        (outputMax >= LIB_COBS_ENCODED_MAX(len)))
+    if (input != NULL)
     {
-        size_t codeIndex = 0U;
-        size_t out = 1U;
-        uint8_t code = 1U;
-        for (size_t i = 0U; i < len; i++)
-        {
-            if (input[i] == 0U)
-            {
-                output[codeIndex] = code;
-                codeIndex = out;
-                out++;
-                code = 1U;
-            }
-            else
-            {
-                output[out] = input[i];
-                out++;
-                code++;
-                // A full 254-byte block: close it and start the next.
-                if (code == 0xFFU)
-                {
-                    output[codeIndex] = code;
-                    codeIndex = out;
-                    out++;
-                    code = 1U;
-                }
-            }
-        }
-        output[codeIndex] = code;
-        *encodedLen = out;
-        success = true;
+        success = lib_cobs_encode2(input, len, NULL, 0U, output, outputMax, encodedLen);
     }
     return success;
 }

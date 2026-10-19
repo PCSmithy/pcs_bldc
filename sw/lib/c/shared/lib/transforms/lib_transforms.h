@@ -14,6 +14,8 @@ extern "C" {
 
 #define LIB_TRANSFORMS_SQRT3 (1.7320508f)
 #define LIB_TRANSFORMS_1_DIV_SQRT3 (0.5773502f)
+#define LIB_TRANSFORMS_2PI (6.2831853f)
+#define LIB_TRANSFORMS_1_DIV_2PI (0.15915494f)
 
 /* Typedefs */
 
@@ -37,12 +39,33 @@ static inline void lib_transforms_clarke(
     }
 }
 
+// Angle wrapped into [0, 2 pi) with no library call: whole turns truncate
+// away in float, so it costs two conversions and two multiplies. Precision
+// falls with magnitude; fine up to a few turns.
+static inline float32_t lib_transforms_wrapAngle(float32_t angle)
+{
+    float32_t turns = angle * LIB_TRANSFORMS_1_DIV_2PI;
+    turns -= (float32_t) (int32_t) turns;
+    if (turns < 0.0f)
+    {
+        turns += 1.0f;
+    }
+    if (turns >= 1.0f)
+    {
+        turns = 0.0f;   // a tiny negative angle rounded up to a whole turn
+    }
+    return turns * LIB_TRANSFORMS_2PI;
+}
+
+// The rotation's sine and cosine come from the caller, so one evaluation
+// (HW_CORDIC_sinCos on the target) serves every transform at that angle.
 // [impl->fw~mc_013~1]
 static inline void lib_transforms_park(
     // inputs
     float32_t alpha,
     float32_t beta,
-    float32_t theta,
+    float32_t sinTheta,
+    float32_t cosTheta,
     // outputs
     float32_t * d,
     float32_t * q
@@ -50,8 +73,6 @@ static inline void lib_transforms_park(
 {
     if ((d != NULL) && (q != NULL))
     {
-        const float32_t cosTheta = cosf(theta);
-        const float32_t sinTheta = sinf(theta);
         *d = (alpha * cosTheta) + (beta * sinTheta);
         *q = (-alpha * sinTheta) + (beta * cosTheta);
     }
@@ -62,7 +83,8 @@ static inline void lib_transforms_inversePark(
     // inputs
     float32_t d,
     float32_t q,
-    float32_t theta,
+    float32_t sinTheta,
+    float32_t cosTheta,
     // outputs
     float32_t * alpha,
     float32_t * beta
@@ -70,8 +92,6 @@ static inline void lib_transforms_inversePark(
 {
     if ((alpha != NULL) && (beta != NULL))
     {
-        const float32_t cosTheta = cosf(theta);
-        const float32_t sinTheta = sinf(theta);
         *alpha = (d * cosTheta) - (q * sinTheta);
         *beta = (d * sinTheta) + (q * cosTheta);
     }

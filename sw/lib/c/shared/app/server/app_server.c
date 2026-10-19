@@ -26,10 +26,19 @@
 // Bound on the disconnect-edge RX flush of a dead session's queued bytes.
 #define APP_SERVER_RX_DRAIN_MAX_BYTES (4096U)
 
-// Envelope bytes a Samples message costs beyond its data: the envelope tag and
-// length plus the period, first-cycle, count, and data-field varints. The
+// Bound on the envelope bytes a Samples message costs beyond its data: the
+// head and tail maxima below (a few bytes over the encoded size). The
 // framing rest of fw~conn_trace_005's W is IO_COBSFRAME_WIRE_MAX's own.
-#define APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD (19U)
+#define APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD (APP_SERVER_SAMPLES_HEAD_MAX + APP_SERVER_SAMPLES_TAIL_MAX)
+
+// A Samples message is hand-encoded around the run of records popped straight
+// into the frame payload (fw~conn_trace_005), in nanopb's field order:
+// first_cycle, data, period_cycles, count. The envelope key and length and
+// the fields before the data need at most HEAD_MAX bytes ahead of the data;
+// the fields after it at most TAIL_MAX behind.
+#define APP_SERVER_SAMPLES_HEAD_MAX  (2U + 2U + 1U + 5U + 1U + 2U)
+#define APP_SERVER_SAMPLES_TAIL_MAX  (1U + 5U + 1U + 5U)
+#define APP_SERVER_SAMPLES_DATA_MAX  (sizeof(((trace_Samples *) 0)->data.bytes))
 
 // Link-throughput-test bounds (fw~conn_server_005). The payload cap is the
 // schema's; the frame cap keeps a runaway request finite.
@@ -79,11 +88,11 @@ typedef struct
 static app_server_data_S app_server_data;
 static app_server_data_S * const data = &app_server_data;
 
-// The Samples payload encodes past the header reserve into txBytes, so a schema
-// growth that outruns the staging buffer is a build break, not a lost stream.
-_Static_assert((sizeof(((app_server_data_S *) 0)->txBytes) - LIB_PROTOBUF_ENVELOPE_HEADER_MAX) >=
-                   trace_Samples_size,
-               "txBytes cannot hold the worst-case Samples payload");
+// A Samples run lands in txBytes behind room for the message head, with the
+// tail after it: the buffer holds the worst case or the build breaks.
+_Static_assert(sizeof(((app_server_data_S *) 0)->txBytes) >=
+                   (APP_SERVER_SAMPLES_HEAD_MAX + APP_SERVER_SAMPLES_DATA_MAX + APP_SERVER_SAMPLES_TAIL_MAX),
+               "txBytes cannot hold the worst-case Samples frame");
 
 // The mid-pass retry places a frame into an emptied stage, so the stage holds
 // the largest frame the frame driver can produce.
@@ -156,19 +165,45 @@ static bool app_server_private_sendEnvelope(const shared_Envelope * const env)
     return sent;
 }
 
-// The stream's hot path: the Samples payload encoded on its own and wrapped
-// directly (lib_protobuf_encodeEnvelope), sparing the walk over the envelope's
-// whole oneof that a full-envelope encode pays per message.
-static bool app_server_private_sendSamples(const trace_Samples * const samples)
+// [impl->fw~conn_trace_005~1] one Samples per message: the group's period, its
+// first record's cycle index, the record count, and the concatenated data.
+// The data already sits at txBytes[HEAD_MAX ..); the fields go around it and
+// the frame starts wherever the header ends up, so nothing is moved.
+static bool app_server_private_sendSamplesRun(uint32_t periodCycles, uint32_t firstCycle,
+                                              uint32_t count, size_t dataLen)
 {
-    bool sent = false;
-    size_t encodedLen = 0U;
-    if (lib_protobuf_encodeEnvelope(0U, shared_Envelope_samples_tag, trace_Samples_fields, samples,
-                                    data->txBytes, sizeof(data->txBytes), &encodedLen))
-    {
-        sent = app_server_private_stageFrame(data->txBytes, encodedLen);
-    }
-    return sent;
+    uint8_t * const dataStart = &data->txBytes[APP_SERVER_SAMPLES_HEAD_MAX];
+
+    // Every field is written, zero or not: a proto3 reader takes an absent
+    // field and a present zero alike, so only the bytes differ from nanopb's.
+    uint8_t * tail = &dataStart[dataLen];
+    *tail = (uint8_t) ((uint32_t) trace_Samples_period_cycles_tag << 3U);
+    tail++;
+    tail += lib_protobuf_varint(periodCycles, tail);
+    *tail = (uint8_t) ((uint32_t) trace_Samples_count_tag << 3U);
+    tail++;
+    tail += lib_protobuf_varint(count, tail);
+    const size_t tailLen = (size_t) (tail - &dataStart[dataLen]);
+
+    uint8_t fields[APP_SERVER_SAMPLES_HEAD_MAX];
+    size_t fieldsLen = 0U;
+    fields[fieldsLen] = (uint8_t) ((uint32_t) trace_Samples_first_cycle_tag << 3U);
+    fieldsLen++;
+    fieldsLen += lib_protobuf_varint(firstCycle, &fields[fieldsLen]);
+    fields[fieldsLen] = (uint8_t) (((uint32_t) trace_Samples_data_tag << 3U) | 2U);
+    fieldsLen++;
+    fieldsLen += lib_protobuf_varint((uint32_t) dataLen, &fields[fieldsLen]);
+    const size_t messageLen = fieldsLen + dataLen + tailLen;
+
+    uint8_t envelope[APP_SERVER_SAMPLES_HEAD_MAX];
+    size_t envelopeLen = 0U;
+    envelopeLen += lib_protobuf_varint(((uint32_t) shared_Envelope_samples_tag << 3U) | 2U, &envelope[envelopeLen]);
+    envelopeLen += lib_protobuf_varint((uint32_t) messageLen, &envelope[envelopeLen]);
+
+    uint8_t * const frame = dataStart - (envelopeLen + fieldsLen);
+    (void) memcpy(frame, envelope, envelopeLen);
+    (void) memcpy(&frame[envelopeLen], fields, fieldsLen);
+    return app_server_private_stageFrame(frame, envelopeLen + fieldsLen + dataLen + tailLen);
 }
 
 // Transmit capacity available to the streams: whatever exceeds the reply reserve.
@@ -398,67 +433,27 @@ static void app_server_private_drainSamples(void)
     bool progressing = true;
     while (progressing)
     {
-        uint32_t group = 0U;
-        uint32_t cycle = 0U;
-        size_t recordLen = 0U;
         progressing = false;
-        shared_Envelope * const env = &data->txEnvelope;
-        trace_Samples * const samples = &env->payload.samples;
         // A message starts only where a full one fits. A short message costs
         // the transport the same round as a full one, so fragments sent under
         // backpressure pin the link at their size and it never recovers;
         // records held back instead leave whole once capacity returns.
         const uint32_t fullWire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
-            sizeof(samples->data.bytes) + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
-        if ((budget >= fullWire) && app_server_trace_peek(&group, &cycle, &recordLen) &&
-            (buffered >= (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)))
+            APP_SERVER_SAMPLES_DATA_MAX + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
+        if (budget >= fullWire)
         {
-            const uint32_t periodCycles = app_server_trace_groupPeriodCycles(group);
-            // Only the Samples fields the payload encoder reads are written:
-            // zeroing the whole envelope costs more than encoding the message.
-            samples->period_cycles = periodCycles;
-            samples->first_cycle = cycle;
-            samples->count = 0U;
-            samples->data.size = 0U;
-
+            uint32_t group = 0U;
+            uint32_t cycle = 0U;
             size_t used = 0U;
-            uint32_t nextCycle = cycle;
-            bool batching = true;
-            while (batching)
-            {
-                if (((used + recordLen) > sizeof(samples->data.bytes)) ||
-                    (buffered < (APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen)) ||
-                    !app_server_trace_pop(&samples->data.bytes[used],
-                                          sizeof(samples->data.bytes) - used))
-                {
-                    batching = false;
-                }
-                else
-                {
-                    buffered -= APP_SERVER_TRACE_RECORD_OVERHEAD_BYTES + recordLen;
-                    used += recordLen;
-                    samples->count++;
-                    nextCycle += periodCycles;
-
-                    // Only a run of one group's records whose cycle indices
-                    // still step by its period can share the message: a gap
-                    // left by an overflow starts a new one.
-                    uint32_t nextGroup = 0U;
-                    uint32_t peekedCycle = 0U;
-                    size_t peekedLen = 0U;
-                    batching = app_server_trace_peek(&nextGroup, &peekedCycle, &peekedLen) &&
-                               (nextGroup == group) &&
-                               (peekedCycle == nextCycle);
-                    recordLen = peekedLen;
-                }
-            }
-
-            if (samples->count > 0U)
+            const uint32_t count = app_server_trace_popRun(&data->txBytes[APP_SERVER_SAMPLES_HEAD_MAX],
+                                                           APP_SERVER_SAMPLES_DATA_MAX,
+                                                           &buffered, &group, &cycle, &used);
+            if (count > 0U)
             {
                 // The records are already popped: a failed send drops them and
                 // ends the pass, the host reading the loss as a cycle-index gap.
-                samples->data.size = (pb_size_t) used;
-                const bool sent = app_server_private_sendSamples(samples);
+                const bool sent = app_server_private_sendSamplesRun(
+                    app_server_trace_groupPeriodCycles(group), cycle, count, used);
                 const uint32_t wire = (uint32_t) IO_COBSFRAME_WIRE_MAX(
                     used + APP_SERVER_SAMPLES_ENVELOPE_OVERHEAD);
                 budget -= (wire < budget) ? wire : budget;

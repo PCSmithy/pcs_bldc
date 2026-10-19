@@ -1,6 +1,11 @@
 /* Includes */
 #include "IO_COBSFrame.h"
-#include "lib_crc32.h"
+#include "HW_CRC.h"
+
+/* Defines */
+
+// IEEE CRC-32 of "123456789": proves the CRC unit before any frame trusts it.
+#define IO_COBSFRAME_CRC_CHECK_VALUE (0xCBF43926U)
 
 /* Private Data Definitions */
 
@@ -18,7 +23,6 @@ typedef struct
 {
     const IO_COBSFrame_config_S * config;
     IO_COBSFrame_channelData_S channelData[IO_COBSFRAME_CHANNEL_COUNT];
-    uint8_t txPlain[IO_COBSFRAME_MAX_PAYLOAD + IO_COBSFRAME_CRC_LEN];
 } IO_COBSFrame_data_S;
 
 static IO_COBSFrame_data_S IO_COBSFrame_data;
@@ -43,7 +47,7 @@ static void IO_COBSFrame_private_completeSegment(IO_COBSFrame_channel_E channel)
                                   (((uint32_t) trailer[1]) << 8U) |
                                   (((uint32_t) trailer[2]) << 16U) |
                                   (((uint32_t) trailer[3]) << 24U);
-        if (lib_crc32_compute(chData->pending, payloadLen) == received)
+        if (HW_CRC_compute32(chData->pending, payloadLen) == received)
         {
             chData->pendingValid = true;
             chData->pendingLen = payloadLen;
@@ -116,6 +120,14 @@ bool IO_COBSFrame_init(const IO_COBSFrame_config_S * const config)
                 success = false;
                 break;
             }
+        }
+
+        // The CRC comes from HW_CRC: before its init the unit answers zero, which
+        // would sign every frame wrong and reject every received one, silently.
+        static const uint8_t check[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+        if (success && (HW_CRC_compute32(check, sizeof(check)) != IO_COBSFRAME_CRC_CHECK_VALUE))
+        {
+            success = false;
         }
 
         if (success)
@@ -198,18 +210,18 @@ bool IO_COBSFrame_encode(IO_COBSFrame_channel_E channel, const uint8_t * const p
         const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];
         if (len <= cfg->maxFrameLen)
         {
-            for (size_t i = 0U; i < len; i++)
-            {
-                data->txPlain[i] = payload[i];
-            }
-            const uint32_t crc = lib_crc32_compute(data->txPlain, len);
-            data->txPlain[len]      = (uint8_t) (crc & 0xFFU);
-            data->txPlain[len + 1U] = (uint8_t) ((crc >> 8U) & 0xFFU);
-            data->txPlain[len + 2U] = (uint8_t) ((crc >> 16U) & 0xFFU);
-            data->txPlain[len + 3U] = (uint8_t) ((crc >> 24U) & 0xFFU);
+            // CRC over the payload in place and COBS straight from it with the
+            // CRC as a trailing segment: no staging copy.
+            const uint32_t crc = HW_CRC_compute32(payload, len);
+            const uint8_t crcBytes[IO_COBSFRAME_CRC_LEN] = {
+                (uint8_t) (crc & 0xFFU),
+                (uint8_t) ((crc >> 8U) & 0xFFU),
+                (uint8_t) ((crc >> 16U) & 0xFFU),
+                (uint8_t) ((crc >> 24U) & 0xFFU),
+            };
 
             size_t bodyLen = 0U;
-            if (lib_cobs_encode(data->txPlain, len + IO_COBSFRAME_CRC_LEN, &out[1], outMax - 2U, &bodyLen))
+            if (lib_cobs_encode2(payload, len, crcBytes, IO_COBSFRAME_CRC_LEN, &out[1], outMax - 2U, &bodyLen))
             {
                 out[0] = 0x00U;
                 out[bodyLen + 1U] = 0x00U;

@@ -38,6 +38,7 @@ typedef struct
 
     // Decoded resolution (bits) for the volts conversion.
     uint8_t numBits;
+    float32_t voltsPerCount;   // vref over full scale, so a volts read is one multiply
 
     // Regular-sequence results, indexed by physical IN# (sparse storage,
     // matches user's inputs[] indexing). Undefined until the channel's first
@@ -509,6 +510,8 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
             data->channelData[channel].rankOrder[r] = rankOrder[r];
         }
         data->channelData[channel].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
+        data->channelData[channel].voltsPerCount =
+            channelConfig->vref / (float32_t)((1UL << data->channelData[channel].numBits) - 1UL);
     }
 
     return ret;
@@ -667,9 +670,27 @@ void HW_ADC_irqHandler(void)
         {
             // Only handles HAL_ADC_Init ran on (a channel with no enabled
             // inputs never gets one; its Instance stays NULL).
-            if (data->channelData[channel].hadc.Instance != NULL)
+            ADC_HandleTypeDef * const hadc = &data->channelData[channel].hadc;
+            if (hadc->Instance != NULL)
             {
-                HAL_ADC_IRQHandler(&data->channelData[channel].hadc);
+                // The per-cycle case, an injected sequence complete and
+                // nothing else pending, skips the HAL's generic dispatch and
+                // does what it would: the callback, then the flags cleared.
+                // Anything else pending goes to the HAL.
+                const uint32_t pending = hadc->Instance->ISR & hadc->Instance->IER;
+                if (pending == ADC_FLAG_JEOS)
+                {
+                    HW_ADC_private_injectedConversionSequenceCompleteCallback(hadc);
+                    __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+                }
+                else if (pending != 0U)
+                {
+                    HAL_ADC_IRQHandler(hadc);
+                }
+                else
+                {
+                    // this ADC did not raise the shared interrupt
+                }
             }
         }
         const uint32_t duration_us = lib_timer_getHWCount_us() - entry_us;
@@ -784,10 +805,7 @@ bool HW_ADC_getVolts(HW_ADC_channels_E channel, uint8_t inputIndex, float32_t * 
         uint32_t counts = 0U;
         if (HW_ADC_getCount(channel, inputIndex, &counts))
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
-            const uint32_t maxCounts = (1UL << data->channelData[channel].numBits) - 1UL;
-
-            *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
+            *out = (float32_t)counts * data->channelData[channel].voltsPerCount;
             ret = true;
         }
     }
@@ -819,10 +837,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
         uint32_t counts = 0U;
         if (HW_ADC_getInjectedCount(channel, injectedIndex, &counts))
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
-            const uint32_t maxCounts = (1UL << data->channelData[channel].numBits) - 1UL;
-
-            *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
+            *out = (float32_t)counts * data->channelData[channel].voltsPerCount;
             ret = true;
         }
     }

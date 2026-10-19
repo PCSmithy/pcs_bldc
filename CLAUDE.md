@@ -68,7 +68,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── lib/ringbuf/      Demo library + Unity tests
 │   │   │       ├── hw/               Channelized HW modules:
 │   │   │       │   ├── systemClock/  systemClock_init (single-instance)
-│   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  I2C/  TIM/  USB/  OPAMP/  (hw-layer drivers)
+│   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  I2C/  TIM/  USB/  OPAMP/  CORDIC/  CRC/  (hw-layer drivers)
 │   │   │       │   └── stm32g4/      Family glue (system_, syscalls, sysmem)
 │   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial,
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
@@ -93,7 +93,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │           │   ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
 │           │   ├── sim/          STATIC fw_hw placeholder for native build
 │           │   ├── systemClock/  HW_systemClock_config.{h,c}
-│           │   └── GPIO/ ADC/ DMA/ SPI/ I2C/ TIM/ OPAMP/  HW_<Module>_channels.{h,c}
+│           │   └── GPIO/ ADC/ DMA/ SPI/ I2C/ TIM/ OPAMP/ CORDIC/ CRC/  HW_<Module>_channels.{h,c}
 │           ├── io/       pcs_bldc IO-layer configs (AS5048, SK6805, serial,
 │           │             bridge, i2c, COBSFrame)
 │           ├── dev/      pcs_bldc device configs (switch, gateDriver, CYPD3177)
@@ -228,7 +228,8 @@ sufficient to make the tooling aware of a new topic.
   implementation on `docs/motor-sprint.md`'s next branch, and the V/f
   method (`fw~mc_010`, `fw~mc_017`) deferred there as the sensorless
   start-up ramp:
-  - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c` (one
+  - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
+    `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).
   - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
@@ -300,7 +301,10 @@ the two targets. Build dirs are under `build/` (gitignored).
   host `gcc`/`g++`, applies dev compile flags.
 - `sw/cmake/toolchains/arm-none-eabi.cmake` — sets `PCS_TARGET=embedded`,
   finds `arm-none-eabi-gcc` on PATH or in standard install locations,
-  applies Cortex-M4F MCU flags.
+  applies Cortex-M4F MCU flags. Default `-O2` (`-g3` kept); opt one
+  module into `-Og` for a debugging session with `pcs_debug_path(<target>)`
+  in its CMakeLists (`sw/cmake/pcs_debug_path.cmake`), or configure with
+  `-DPCS_OPT_LEVEL=-Og` after a `--clean`.
 
 ### Build invocations
 

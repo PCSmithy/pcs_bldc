@@ -6,6 +6,8 @@
 #include "HW_SPI.h"
 #include "HW_I2C.h"
 #include "HW_TIM.h"
+#include "HW_CORDIC.h"
+#include "HW_CRC.h"
 #include "HW_DMA.h"
 
 // Task creation, the periodic tasks, and every io/dev/app module they drive are
@@ -39,6 +41,8 @@
 #endif
 
 extern const HW_systemClock_config_S HW_systemClock_config;
+extern const HW_CORDIC_config_S HW_CORDIC_config;
+extern const HW_CRC_config_S HW_CRC_config;
 extern const HW_GPIO_config_S HW_GPIO_config;
 extern const HW_OPAMP_config_S HW_OPAMP_config;
 extern const HW_ADC_config_S HW_ADC_config;
@@ -386,6 +390,8 @@ static bool main_private_hwInit(void)
     ok &= HW_SPI_init(&HW_SPI_config);
     ok &= HW_I2C_init(&HW_I2C_config);
     ok &= HW_TIM_init(&HW_TIM_config);
+    ok &= HW_CORDIC_init(&HW_CORDIC_config);
+    ok &= HW_CRC_init(&HW_CRC_config);
     return ok;
 }
 

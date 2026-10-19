@@ -2,6 +2,7 @@
 #include "IO_serial.h"
 #include "HW_USB.h"
 #include "HW_USB_sim.h"
+#include "HW_CRC.h"
 #include "unity.h"
 
 /* Test fixtures */
@@ -28,6 +29,8 @@ static void buildGoodConfigs(void)
 
 void setUp(void)
 {
+    static const HW_CRC_config_S crcConfig = { 0 };
+    (void) HW_CRC_init(&crcConfig);
     HW_USB_sim_reset();
     (void)HW_USB_init();
     HW_USB_sim_setConnected(true);

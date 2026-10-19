@@ -37,5 +37,9 @@ bool HW_systemClock_init(const HW_systemClock_config_S * const config)
         success = false;
     }
 
+    if (success && config->FLASH_prefetch)
+    {
+        __HAL_FLASH_PREFETCH_BUFFER_ENABLE();
+    }
     return success;
 }

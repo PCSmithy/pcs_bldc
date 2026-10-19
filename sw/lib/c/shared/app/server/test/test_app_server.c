@@ -8,6 +8,7 @@
 #include "lib_utils.h"
 #include "lib_build_config.h"
 #include "pb_encode.h"
+#include "HW_CRC.h"
 #include "unity.h"
 #include <string.h>
 
@@ -92,6 +93,8 @@ static void stubSetSamplerMasked(bool masked)
 
 void setUp(void)
 {
+    static const HW_CRC_config_S crcConfig = { 0 };
+    (void) HW_CRC_init(&crcConfig);
     HW_USB_sim_reset();
     (void)HW_USB_init();
     HW_USB_sim_setConnected(true);

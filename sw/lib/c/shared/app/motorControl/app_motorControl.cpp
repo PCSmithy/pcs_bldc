@@ -5,6 +5,7 @@
 #include "lib_timer.h"
 #include "lib_transforms.h"
 #include "lib_filterIIR.h"
+#include "HW_CORDIC.h"
 
 #include "app_motorControl.h"
 
@@ -147,8 +148,7 @@ constinit static app_motorControl_data_S * const data = &app_motorControl_data;
 
 void Motor::updateMagneticAngle()
 {
-    const float32_t magneticOffset = fmodf((this->mechanicalAngle_rad * this->config->motorPolePairs), TWO_PI);
-    this->magneticAngle_rad = magneticOffset < ZERO ? (magneticOffset + TWO_PI) : magneticOffset;
+    this->magneticAngle_rad = lib_transforms_wrapAngle(this->mechanicalAngle_rad * this->config->motorPolePairs);
 }
 
 void Motor::fetchPhaseCurrents()
@@ -410,7 +410,14 @@ void Motor::cycleStep()
         bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
         bool isVectorControl = false;
 
-        float32_t frameAngle_rad = 0.0f;
+        // One sine/cosine pair of the rotor angle serves every transform this
+        // cycle. The current frame rotates with the rotor only while a method
+        // drives; otherwise it is the stationary frame.
+        float32_t rotorSin = ZERO;
+        float32_t rotorCos = 1.0f;
+        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
+        float32_t frameSin = ZERO;
+        float32_t frameCos = 1.0f;
         if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
@@ -422,7 +429,8 @@ void Motor::cycleStep()
 
                 case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
                 {
-                    frameAngle_rad = this->magneticAngle_rad;
+                    frameSin = rotorSin;
+                    frameCos = rotorCos;
 
                     // [impl->fw~mc_011~1]
                     // Commutate: apply the sector pattern for the rotor
@@ -430,8 +438,7 @@ void Motor::cycleStep()
                     // proportional to the target magnitude, clamped to max.
 
                     const float32_t lead_rad = (this->velocitySetpointCurrent_radPerSec >= ZERO) ? RAD_90DEG : -RAD_90DEG;
-                    float32_t target = fmodf((this->magneticAngle_rad + lead_rad), TWO_PI);
-                    if (target < ZERO) { target += TWO_PI; }
+                    const float32_t target = lib_transforms_wrapAngle(this->magneticAngle_rad + lead_rad);
                     this->magneticAngleTarget_rad = target;
 
                     // TODO - compute duty cycle from velocity error
@@ -472,7 +479,8 @@ void Motor::cycleStep()
                 case APP_MOTORCONTROL_MODE_SINUSOIDAL:
                 {
                     isVectorControl = true;
-                    frameAngle_rad = this->magneticAngle_rad;
+                    frameSin = rotorSin;
+                    frameCos = rotorCos;
 
                     // compute rotor frame voltage
                     const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
@@ -481,7 +489,8 @@ void Motor::cycleStep()
                     lib_transforms_inversePark(
                         0.0f,
                         V,
-                        this->magneticAngle_rad,
+                        rotorSin,
+                        rotorCos,
                         &this->vAlpha_v,
                         &this->vBeta_v
                     );
@@ -504,7 +513,8 @@ void Motor::cycleStep()
         lib_transforms_park(
             this->iAlpha_a,
             this->iBeta_a,
-            frameAngle_rad,
+            frameSin,
+            frameCos,
             &this->iD_a,
             &this->iQ_a
         );

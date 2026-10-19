@@ -21,6 +21,14 @@ bool lib_cobs_encode(const uint8_t * const input, size_t len,
                      uint8_t * const output, size_t outputMax,
                      size_t * const encodedLen);
 
+// COBS-encode the concatenation of two segments without joining them (a
+// payload and its trailer); false when outputMax is below
+// LIB_COBS_ENCODED_MAX(len1 + len2).
+bool lib_cobs_encode2(const uint8_t * const input1, size_t len1,
+                      const uint8_t * const input2, size_t len2,
+                      uint8_t * const output, size_t outputMax,
+                      size_t * const encodedLen);
+
 // Decode one COBS block (no delimiters); false on malformed input or decoded
 // data exceeding outputMax.
 bool lib_cobs_decode(const uint8_t * const input, size_t len,

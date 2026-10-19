@@ -12,11 +12,11 @@ so the trace stream stops; FOC adds a current loop to the same step.
 (`HW_ADC_data.irqDuration_us`, `main_cycleProbe_{step,callback}_us`) and a
 600-sample DWT PC profile over SWD, 50 us cycle:
 
-| | drive off | sinusoidal |
-|---|---|---|
-| whole ADC interrupt | 36-37 us | 44 us (max 47) |
-| callback | 23 us | 29-30 us (max 32) |
-| commutation step | 19 us | 27 us (max 30) |
+| | drive off | sinusoidal | after items 1-6, off | after items 1-6, sinusoidal |
+|---|---|---|---|---|
+| whole ADC interrupt | 36-37 us | 44 us (max 47) | 25 us | 28 us (max 33) |
+| callback | 23 us | 29-30 us (max 32) | 13-14 us | 17 us (max 21) |
+| commutation step | 19 us | 27 us (max 30) | 10 us | 13 us (max 14) |
 
 Under drive 92% of samples sit on the interrupt path; the server task ran
 no pass and the USB task no wake in 2 s, and the 1 ms task lost a fifth
@@ -38,8 +38,42 @@ Fixes, in payoff order, each measured on the probes before the next:
 5. Memoised ADC-channel-to-phase lookup; trim the HAL value reads.
 6. Flash prefetch on (`FLASH_ACR` PRFTEN is clear at 4 wait states).
 7. Last: bypass `HAL_ADC_IRQHandler` with a direct JEOS path (~12%).
+8. Trace capture: word copies into the sample ring instead of the byte
+   loop (~8% of samples with a fast watch list active).
 
-Target: under 20 us for the whole interrupt under drive.
+Items 1-4 and 6-8 landed on `isr_hot_path` (one commit each, readings in
+the messages): item 1 kept the angle in radians (the wrap truncates whole
+turns in float), item 2 became a direct TIM2 register read, item 5's
+lookup memoisation was not done (the ADC and sense scales are resolved at
+init instead). Then the server-path targets at -O2 (first per target,
+then the whole image) and a bulk record pop in the drain. Readings under
+sinusoidal drive with two 20 kHz watches streaming, 2026-10-17 evening:
+
+| control path | whole interrupt | server passes/s | server pass max |
+|---|---|---|---|
+| -Og (default) | 25 us | ~200 | 5.6 ms |
+| -O2 (whole image) | 24 us | ~970 | 2.0 ms |
+
+At -Og the server gets ~20% of the core and spends all of it, so the ring
+overflows in bursts whenever a higher task spikes; at -O2 the 1 ms and
+10 ms tasks and the kernel shrink enough that the server runs at its
+nominal rate and the stream is clean. The remaining interrupt cost is our
+own code (step, vector, sample recording, sampler), not the HAL.
+Decided: -O2 is the embedded default, with pcs_debug_path(<target>) as
+the per-module -Og opt-in for a debugging session.
+
+Server round (same evening): Samples hand-encoded around the bulk pop,
+CRC in place with COBS straight from the payload (lib_cobs_encode2),
+the CRC unit (HW_CRC), word copies for 4-byte entries. Five 20 kHz
+4-byte watches under sinusoidal drive: server ~946 passes/s (from ~217),
+pass max 1.4 ms, ring 8-30% full, 7% idle, no drops. That clears
+sys~mc_006's four-watch case with margin. Remaining per-byte cost is COBS
+(5.5% of samples), the FIFO/packet copies (~9%), and the sampler itself
+with five entries (~11%); the 1 ms task's blocking SPI encoder read
+(~2.5%) is the next non-trace item.
+
+Target: under 20 us for the whole interrupt under drive (now 24 us with
+five watches sampling; 16-17 us with none).
 
 **Where:** `sw/fw/src/main.c` (probes), `sw/lib/c/shared/io/bridge/`,
 `sw/lib/c/shared/app/motorControl/`, `sw/lib/c/shared/lib/transforms/`,
@@ -61,6 +95,15 @@ every packet needs the completion interrupt to reload it before the
 host's retry. The peripheral supports double-buffered bulk endpoints
 (`dcd_stm32_fsdev.c` enables it for isochronous only) and the PMA has
 room for a second 64-byte IN buffer.
+
+**Link budget vs the physical path (2026-10-18):** the trace admits a
+watch list against a fixed 480 kB/s link budget, but the link measured
+241 kB/s wire through an external VIA VL817 hub (four full-speed packets
+per ms through its transaction translator) and 603 kB/s on a root port.
+Behind the hub a five-watch 20 kHz list was admitted and overflowed the
+ring continuously; nothing on the device can tell the two apart. Either
+measure the link at connect (the link test exists) and admit against the
+measurement, or document "root port only" for 20 kHz work.
 
 **Where:** `sw/lib/c/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c`
 (vendored; carry the patch or upstream it), `tusb_config.h`.
@@ -97,6 +140,13 @@ nor any host-side loss count: deframe/decode failures are silent and
 surface as device drops. (4) An in-flight request keeps the duplicated
 port handle open for up to its 500 ms timeout after disconnect,
 delaying the DTR drop the board clears its list on.
+
+**Backlog growth when the webview lags (2026-10-18):** with five 20 kHz
+watches streaming and the link unable to carry them, the renderer process
+ran at over a core and its working set grew ~57 MB/s to 5 GB before a
+restart; a fresh instance reached 1 GB within a minute. The core's
+shedding path (`host_dropped_points`) did not keep the backlog bounded.
+Find where the points or batch events accumulate and bound it.
 
 **Where:** `sw/gui/src-tauri/src/{trace.rs,emitter.rs,session.rs,protocol.rs}`,
 `sw/lib/c/shared/proto/trace.proto` for (1), `app~conn_003`/`app~obs_003`.

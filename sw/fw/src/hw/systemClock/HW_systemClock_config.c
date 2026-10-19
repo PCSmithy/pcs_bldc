@@ -37,6 +37,7 @@ const HW_systemClock_config_S HW_systemClock_config =
     },
     .PWREx_ControlVoltageScaling = PWR_REGULATOR_VOLTAGE_SCALE1,
     .FLASH_latency = FLASH_LATENCY_4,
+    .FLASH_prefetch = true,
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
     ._void = 0U,
 #else
