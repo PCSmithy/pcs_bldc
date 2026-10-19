@@ -47,7 +47,7 @@
 #define configUSE_CO_ROUTINES                   0
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
 #define configUSE_TICKLESS_IDLE                 0
-#define configUSE_TRACE_FACILITY                0
+#define configUSE_TRACE_FACILITY                1   /* task numbers for CPU-time slots */
 
 #define INCLUDE_vTaskPrioritySet                1
 #define INCLUDE_uxTaskPriorityGet               1
@@ -58,6 +58,13 @@
 #define INCLUDE_xTaskGetSchedulerState          1
 #define INCLUDE_xTaskGetCurrentTaskHandle       1
 #define INCLUDE_xTaskGetTickCount               1
+#define INCLUDE_xTaskGetIdleTaskHandle          1
+
+/* CPU-time accounting (fw~obs_cpu_001), as on the target: every switch-in
+ * charges the outgoing task's run to its slot. Task numbers come from main.c. */
+#include <stdint.h>
+extern void app_cpuLoad_switchedIn(uint32_t slot);
+#define traceTASK_SWITCHED_IN() app_cpuLoad_switchedIn((uint32_t) uxTaskGetTaskNumber(pxCurrentTCB))
 #define INCLUDE_eTaskGetState                   1
 
 #define configASSERT( x )                       assert( x )

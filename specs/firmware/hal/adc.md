@@ -255,15 +255,15 @@ Needs: impl, test
 
 The driver shall hold, as readable statics, the duration in microseconds,
 measured on the free-running microsecond time base, from its interrupt
-handler's entry to its exit: the latest handler run's, and the maximum
-observed, the maximum cleared by writing zero to it
-(`fw~conn_trace_008~1`).
+handler's entry to its exit: the latest handler run's, the maximum
+observed, and the running total modulo 2^32, the maximum cleared by
+writing zero to it (`fw~conn_trace_008~1`).
 
 Acceptance:
 - After each handler run, the latest-duration static equals that run's
   duration, within 1 µs.
 - After N handler runs, the maximum equals the largest of the N durations,
-  within 1 µs.
+  within 1 µs, and the total equals their sum within N µs.
 - Writing zero to the maximum restarts it from the next handler run.
 
 Covers:
