@@ -17,8 +17,8 @@ While a host holds the device's serial port open
 (`fw~conn_serial_005~1`), the firmware shall publish a `Telemetry`
 message (`fw~conn_proto_001~1`) every 100 ms — within ± 2 % over any
 10-second window — reporting, as read at publication: the motor-control
-mode and drive state (`fw~mc_009~1`), the measured rotor velocity
-(`fw~est_velocity_001~1`), the speed target, the bus voltage, the
+mode and drive state (`fw~mc_009~1`), the rotor velocity estimate
+(`fw~est_rotor_002~1`), the speed target, the bus voltage, the
 bus current, and the board's milliseconds since boot.
 
 Acceptance:

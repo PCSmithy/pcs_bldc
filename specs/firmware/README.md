@@ -27,9 +27,9 @@ Sub-folders are created when a topic gets its first spec.
   per-cycle rotor angle), the six-step, sensored sinusoidal, and V/f
   methods; also FOC, motion, trajectory tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
-  (AS5048 magnetic encoder driver), `fw~est_velocity_001~1` (encoder-derived
-  velocity estimate); also the Kalman observer, sensorless observer, and
-  parameter identification
+  (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (encoder
+  phase-locked rotor tracking, [[est/rotor]]); also the Kalman observer,
+  sensorless observer, and parameter identification
 - `obs/` — observability and on-device status indication. Per-area sub-topic
   IDs, e.g. `fw~obs_led_001~1` (SK6805 RGB LED string driver),
   `fw~obs_identity_*` (build identity), `fw~obs_status_001~1` (10 Hz status

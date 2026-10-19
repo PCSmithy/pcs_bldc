@@ -20,11 +20,13 @@ phase currents from the 20 kHz injected ADC with a per-cycle callback
 (`docs/cpp-coding-conventions.md`); new control code is C++. The transforms
 and modulator (`fw~mc_013`/`_014`), the bridge's voltage-vector command
 (`fw~io_bridge_008`), the PWM-synchronous step (`fw~mc_015`) and the
-rotor-frame current observation (`fw~mc_016`) are in. Written ahead of
-their code, for the next branch: the sensored sinusoidal method
-`fw~mc_020` and the per-cycle rotor angle `fw~mc_019`
-(`specs/firmware/mc/sinusoidal.md`, `motor-control-application.md`).
-Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+rotor-frame current observation (`fw~mc_016`), the sensored sinusoidal
+method (`fw~mc_020`) on the per-cycle rotor angle (`fw~mc_019`), and the
+bootstrap precharge (`fw~mc_021`) are in. Written ahead of their code, on
+the `rotor_pll` branch: the encoder phase-locked rotor tracking estimator
+`fw~est_rotor_001`/`_002` (`specs/firmware/est/rotor.md`), which
+`fw~mc_019` and the status velocity consume. The FOC specs
+(`fw~mc_022`..`fw~mc_025`) wait on the `mc_foc` branch. Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 
@@ -95,8 +97,15 @@ Outer loops and the first estimator work.
 
 - **Outer loops:** velocity PI and position control cascaded around the
   current loop.
-- **Velocity estimation** from encoder angle; first `est`-topic specs beyond
-  the encoder driver.
+- **Rotor angle and velocity estimation** from the encoder: the
+  second-order tracking observer `fw~est_rotor_001`/`_002` in state-space
+  form, corrected at 1 kHz and carried forward every PWM cycle
+  (`app_rotorEstimation`), ahead of the current loop so FOC commutates on a
+  lag-free angle at constant speed. Its constant-velocity model lags under
+  acceleration (angle a/K_i, velocity 2ζa/ω_n); once the observer runs,
+  add a known-input term B·u to the prediction with u the acceleration
+  from the commanded torque, B = [T²/2, T]ᵀ (a one-term edit to
+  `fw~est_rotor_002`).
 - **Motor parameter identification** — R / L / Ke, initially offline
   (measurement + datasheet) to seed the SIL model, with auto-commissioning
   scoped as a later phase.

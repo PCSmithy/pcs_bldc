@@ -224,14 +224,15 @@ sufficient to make the tooling aware of a new topic.
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), traced to code, except the
-  sensored sinusoidal set (`fw~mc_019`, `fw~mc_020`) written ahead of its
-  implementation on `docs/motor-sprint.md`'s next branch, and the V/f
-  method (`fw~mc_010`, `fw~mc_017`) deferred there as the sensorless
-  start-up ramp:
+  rotor tracking estimator (`fw~est_rotor_001`, `fw~est_rotor_002`)
+  written ahead of its implementation on the `rotor_pll` branch, and the
+  V/f method (`fw~mc_010`, `fw~mc_017`) deferred on `docs/motor-sprint.md`
+  as the sensorless start-up ramp:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
     `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).
-  - `est/encoder.md` (AS5048), `obs/cpu-load.md` (app_cpuLoad), `obs/rgb_leds.md` (SK6805) +
+  - `est/encoder.md` (AS5048) + `est/rotor.md` (app_rotorEstimation),
+    `obs/cpu-load.md` (app_cpuLoad), `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
     `conn/serial.md` (IO_serial over USB CDC) + the `conn/` trace-engine
     set (`fw~conn_trace_*`), `io/i2c.md` (IO_i2c) +
