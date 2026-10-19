@@ -66,9 +66,10 @@ class Motor
         // mode, the gate, and the alignment latch; cycleStep acts on it.
         enum class DriveState : uint8_t
         {
-            Off,        // bridge dark: gate closed, fault latched, or mode OFF
-            Aligning,   // first enable: the alignment pattern for the dwell
-            Driving,    // the active method commutates
+            Off,          // bridge dark: gate closed, fault latched, or mode OFF
+            Precharging,  // every enable: low sides on, charging the bootstraps
+            Aligning,     // first enable: the alignment pattern for the dwell
+            Driving,      // the active method commutates
         };
 
         // helper functions
@@ -104,6 +105,7 @@ class Motor
         bool isAligned;
         float32_t alignmentOffset_rad;
         lib_timer_channel_S alignmentDwell;
+        lib_timer_channel_S prechargeDwell;
 
         bool isDriveAllowed;
         bool faultLatched;
@@ -218,6 +220,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->maxVoltage_V > ZERO);
     isValid &= (channelConfig->defaultMode > APP_MOTORCONTROL_MODE_OFF);
     isValid &= (channelConfig->defaultMode < APP_MOTORCONTROL_MODE_COUNT);
+    isValid &= (channelConfig->prechargeTime_ms > 0U);
 
     lib_filterIIR_channel_S filter =
     {
@@ -244,6 +247,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->isAligned = false;
         this->alignmentOffset_rad = ZERO;
         lib_timer_init(&this->alignmentDwell, LIB_TIMER_PRECISION_MS, ALIGNMENT_DWELL_TIMER_MS);
+        lib_timer_init(&this->prechargeDwell, LIB_TIMER_PRECISION_MS, channelConfig->prechargeTime_ms);
 
         this->faultLatched = false;
         this->bridgeEnabled = false;
@@ -358,6 +362,17 @@ void Motor::run1ms()
         {
             this->driveState = DriveState::Off;
         }
+        else if ((this->driveState == DriveState::Off) || (this->driveState == DriveState::Precharging))
+        {
+            // [impl->fw~mc_021~1] every enable from dark charges the bootstraps
+            // through the low sides before a high side is asked to switch: a
+            // dark bridge's bootstraps have drained, and a high side commanded
+            // on from an empty one trips the gate driver's VDS protection.
+            const bool charged =
+                (lib_timer_runTimerWithEnable(&this->prechargeDwell, true) == LIB_TIMER_STATE_EXPIRED);
+            this->driveState = charged ? (this->isAligned ? DriveState::Driving : DriveState::Aligning)
+                                       : DriveState::Precharging;
+        }
         else
         {
             this->driveState = this->isAligned ? DriveState::Driving : DriveState::Aligning;
@@ -369,6 +384,11 @@ void Motor::run1ms()
                 this->velocitySetpointCurrent_radPerSec = ZERO;
                 SET_DUTY_AND_ENABLE(ZERO, ZERO, ZERO, false, false, false);
                 lib_timer_stopTimer(&this->alignmentDwell);
+                lib_timer_stopTimer(&this->prechargeDwell);
+                break;
+
+            case DriveState::Precharging:
+                SET_DUTY_AND_ENABLE(ZERO, ZERO, ZERO, true, true, true);
                 break;
 
             case DriveState::Aligning:
