@@ -53,6 +53,7 @@ typedef struct
     float32_t pwmPeriod_s;   // the bridge's PWM period: the step's time base
     float32_t maxVoltage_V;  // V_max: the voltage a full-scale target commands (fw~mc_020)
     app_motorControl_mode_E defaultMode;   // the method selected at power-up; never OFF
+    uint32_t prechargeTime_ms;   // low sides on before any enable drives: the bootstrap charge (fw~mc_021)
 } app_motorControl_channelConfig_S;
 
 typedef struct

@@ -25,6 +25,7 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
         .pwmPeriod_s = 50.0e-6f,   // TIM1 at 20 kHz (HW_TIM_channels)
         .maxVoltage_V = 8.0f,      // first-spin reduced voltage; the linear limit is V_bus / sqrt(3)
         .defaultMode = APP_MOTORCONTROL_MODE_SINUSOIDAL,
+        .prechargeTime_ms = 5U,   // bootstrap caps through the gate driver's own diodes
     },
 };
 

@@ -54,6 +54,9 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 // Alignment dwell (mirrors app_motorControl.cpp's ALIGNMENT_DWELL_TIMER_MS); the
 // advance margin clears any ms-rounding at the dwell boundary.
 #define ALIGN_ADVANCE_MS (600U)
+// Bootstrap precharge on every enable (fw~mc_021); the advance clears it.
+#define PRECHARGE_MS         (5U)
+#define PRECHARGE_ADVANCE_MS (PRECHARGE_MS + 1U)
 
 // Current-sense front ends (mirror IO_bridge_channels.c): phase shunts biased
 // at 1.65 V / 0.1 V/A, bus shunt ground-referenced at 0.6 V/A.
@@ -112,7 +115,8 @@ static void buildConfigs(void)
         .motorPolePairs = 1U,
         .pwmPeriod_s = 50.0e-6f,
         .maxVoltage_V = 10.0f,
-        .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP };
+        .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
+        .prechargeTime_ms = PRECHARGE_MS };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
 }
 
@@ -187,6 +191,8 @@ static void driveToRunning(float32_t velocity)
     app_motorControl_setVelocity(MOTOR_MC, velocity);
 
     tick();          // enters alignment (bridge enabled)
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();          // precharge done, alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
     tick();          // dwell expires, captures offset
     tick();          // commutating
@@ -201,6 +207,8 @@ static void alignAtZero(void)
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
     tick();          // alignment begins
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();          // precharge done, alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
     tick();          // dwell expires, offset := 0
 }
@@ -523,6 +531,8 @@ static void test_velocity_estimate_immune_to_alignment_capture(void)
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
     tick();          // alignment begins
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();          // precharge done, alignment begins
     advanceTime_ms(ALIGN_ADVANCE_MS);
     tick();          // dwell expires, offset := 170 deg captured
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
@@ -803,6 +813,57 @@ static void test_cycle_step_advances_the_angle_between_passes(void)
     TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), angle, motorAngle_rad());
 }
 
+/* ---- fw~mc_021: the bootstrap precharge on every enable ---- */
+
+static bool allPhasesAtZeroDuty(void)
+{
+    return (phaseCompare(IO_BRIDGE_PHASE_U) == 0U) &&
+           (phaseCompare(IO_BRIDGE_PHASE_V) == 0U) &&
+           (phaseCompare(IO_BRIDGE_PHASE_W) == 0U);
+}
+
+// [test->fw~mc_021~1]
+// The first enable holds the three low sides on for the precharge time, the
+// bridge live, before the alignment pattern starts.
+static void test_first_enable_precharges_before_alignment(void)
+{
+    mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+
+    tick();
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_TRUE(allPhasesAtZeroDuty());
+    advanceTime_ms(PRECHARGE_MS - 2U);
+    tick();
+    TEST_ASSERT_TRUE(allPhasesAtZeroDuty());            // still charging
+
+    advanceTime_ms(3U);
+    tick();
+    TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), phaseCompare(IO_BRIDGE_PHASE_U));   // alignment begins
+}
+
+// [test->fw~mc_021~1]
+// A later enable, the rotor already aligned, precharges again and then drives
+// without re-aligning.
+static void test_re_enable_precharges_then_drives(void)
+{
+    driveToRunning(10.0f);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    TEST_ASSERT_FALSE(bridgeEnabled());
+
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
+    tick();
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_TRUE(allPhasesAtZeroDuty());
+
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();
+    TEST_ASSERT_FALSE(allPhasesAtZeroDuty());           // commutating, not aligning
+    TEST_ASSERT_NOT_EQUAL(DUTY_COMPARE(ALIGN_DUTY_01), phaseCompare(IO_BRIDGE_PHASE_U));
+}
+
 /* ---- fw~mc_015: the step owns the outputs ---- */
 
 // [test->fw~mc_015~1]
@@ -834,6 +895,10 @@ static void test_first_enable_aligns_then_captures_offset(void)
     mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(45.0f));
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+
+    // The precharge comes first on every enable (fw~mc_021).
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
 
     // Dwell cycle 1: alignment pattern (U at align duty, V and W returning at
     // zero duty), not yet aligned.
@@ -879,9 +944,11 @@ static void test_subsequent_enable_skips_alignment(void)
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 
-    // Re-enable: one cycle should commutate at the drive duty (0.5), not fall
-    // back to the alignment duty (0.1).
+    // Re-enable: after the precharge (fw~mc_021) the next cycle commutates at
+    // the drive duty (0.5), not back at the alignment duty (0.1).
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
+    tick();          // precharging
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
     commutateAt(90.0f, 10.0f);
 
     app_motorControl_snapshot_S snap = { 0 };
@@ -954,6 +1021,8 @@ int main(void)
     RUN_TEST(test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up);
     RUN_TEST(test_selected_method_survives_off);
     RUN_TEST(test_init_rejects_off_default_mode);
+    RUN_TEST(test_first_enable_precharges_before_alignment);
+    RUN_TEST(test_re_enable_precharges_then_drives);
     RUN_TEST(test_cycle_step_advances_the_angle_between_passes);
     RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);

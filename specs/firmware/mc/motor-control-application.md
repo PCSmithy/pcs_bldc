@@ -31,8 +31,9 @@ transform), [[velocity]] (`fw~est_velocity_001~1`, the velocity estimate),
 
 The application shall hold the bridge enabled exactly while an enable
 request stands with dev_gateDriver_isOperational true, no fault latched,
-and the active method or the alignment pattern (`fw~mc_012~1`) driving at
-least one phase, and otherwise disabled with zero duties.
+and the precharge (`fw~mc_021~1`), the alignment pattern (`fw~mc_012~1`),
+or the active method driving at least one phase, and otherwise disabled
+with zero duties.
 
 Acceptance:
 - An enable request with the gate driver not operational, or with a fault
@@ -133,6 +134,35 @@ velocity, the pole-pair count times the velocity estimate
 Acceptance:
 - At a constant 300 rad/s electrical, every PWM cycle's angle is within 3°
   of the rotor's electrical angle.
+
+Covers:
+- `sys~mc_005~1`
+
+Needs: impl, test
+
+### Bootstrap precharge on enable
+`fw~mc_021~1`
+
+On every transition from the bridge disabled to enabled, the application
+shall hold all three phases enabled at zero duty for the configured
+precharge time before the alignment pattern (`fw~mc_012~1`) or the active
+method drives, so the gate driver's bootstrap supplies charge through the
+low sides before a high side is commanded on.
+
+Rationale:
+- A dark bridge's bootstrap capacitors drain; a high side commanded on
+  from an empty one leaves its MOSFET off, and the gate driver's VDS
+  protection latches after its deglitch time (6 µs on this board), which
+  a 50 % zero vector exceeds on the first cycle.
+
+Acceptance:
+- From the first millisecond of an enable until the precharge time has
+  elapsed, the three duties are zero with every phase enabled and the
+  master output enable asserted; the alignment pattern or the method
+  follows only then.
+- An enable after a disable precharges again, then drives without
+  re-aligning.
+- A configuration with a zero precharge time is rejected at init.
 
 Covers:
 - `sys~mc_005~1`
