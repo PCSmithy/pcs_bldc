@@ -10,6 +10,7 @@ import { store, subscribe } from "../state.js";
 import { histories } from "./history.js";
 import { addWatch } from "./watchflow.js";
 import { currentWindow } from "./timeline.js";
+import { cursor } from "./cursor.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor } from "./titlebar.js";
 import { throttleTrailing } from "../perf.js";
@@ -21,6 +22,7 @@ export const CPU_ROLES = ["task", "idle", "interrupt"];
 const WINDOW_MS = 1000;
 const STRIP_MS = 30_000;
 const STRIP_STEP_MS = 100;
+const STRIP_COLS = STRIP_MS / STRIP_STEP_MS;
 const U32 = 2 ** 32;
 
 // [impl->app~views_021~1]
@@ -70,6 +72,9 @@ function windowDeltas(hs, tEnd) {
   });
 }
 
+const pct = (s) => `${(s * 100).toFixed(1)} %`;
+const relTime = (dt) => `${dt < 0 ? "−" : ""}${(Math.abs(dt) / 1000).toFixed(1)} s`;
+
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const TASK_COLORS = ["--trace-3", "--trace-4", "--trace-5", "--trace-6", "--color-accent-300", "--color-neutral-500"];
 
@@ -85,8 +90,13 @@ export class CpuLoadWidget {
       enumerable: false,
     });
     this.hooks = hooks;
-    this.shares = null;
+    this.shares = null;      // the shares on display: live, scrubbed, or at the cursor
+    this.liveShares = null;
+    this.liveEnd = null;
     this.strip = [];
+    this.stripTicks = [];
+    this.hoverIdx = null;    // hovered wedge or legend row
+    this.scrubCol = null;    // hovered strip column, 0..STRIP_COLS-1
     this.el = document.createElement("div");
     this.el.className = "cpu-widget widget";
     this.el.dataset.widgetId = cfg.id;
@@ -96,6 +106,7 @@ export class CpuLoadWidget {
     this.unsubs = [
       subscribe("gate", (g) => { if (g === "matched") this.ensureWatches(); }),
       subscribe("timeline", () => this.refresh()),
+      subscribe("cursor", () => this.paint()),
     ];
   }
 
@@ -124,7 +135,9 @@ export class CpuLoadWidget {
           <div class="cpu-centre">
             <span class="cpu-idle-pct display"></span>
             <span class="cpu-idle-caption">idle</span>
+            <span class="cpu-when mono" hidden></span>
           </div>
+          <div class="cpu-tooltip" hidden></div>
         </div>
         <div class="cpu-side">
           <div class="cpu-legend"></div>
@@ -139,7 +152,59 @@ export class CpuLoadWidget {
       toggleAxesConfig(this, menu);
     });
     wireTitleEditor(this);
+    this.wireHover();
     this.refresh();
+  }
+
+  // [impl->app~views_022~1] wedge and legend hover, strip scrub.
+  wireHover() {
+    const donut = this.el.querySelector(".cpu-donut-canvas");
+    donut.addEventListener("pointermove", (ev) => this.setHover(this.wedgeAt(ev)));
+    donut.addEventListener("pointerleave", () => this.setHover(null));
+    const legend = this.el.querySelector(".cpu-legend");
+    legend.addEventListener("pointerover", (ev) => {
+      const row = ev.target.closest(".cpu-legend-row");
+      if (row) this.setHover(this.cfg.wedges.findIndex((w) => w.path === row.dataset.path));
+    });
+    legend.addEventListener("pointerleave", () => this.setHover(null));
+    const strip = this.el.querySelector(".cpu-strip");
+    strip.addEventListener("pointermove", (ev) => {
+      const r = strip.getBoundingClientRect();
+      const col = Math.floor(((ev.clientX - r.left) / r.width) * STRIP_COLS);
+      const k = Math.min(STRIP_COLS - 1, Math.max(0, col));
+      if (k !== this.scrubCol) {
+        this.scrubCol = k;
+        this.paint();
+      }
+    });
+    strip.addEventListener("pointerleave", () => {
+      this.scrubCol = null;
+      this.paint();
+    });
+  }
+
+  setHover(i) {
+    const idx = i === null || i < 0 ? null : i;
+    if (idx === this.hoverIdx) return;
+    this.hoverIdx = idx;
+    this.paint();
+  }
+
+  /** The wedge under the pointer on the displayed donut, or null. */
+  wedgeAt(ev) {
+    const g = this._donutGeo;
+    if (!g || !this.shares) return null;
+    const r = ev.currentTarget.getBoundingClientRect();
+    const dx = ev.clientX - r.left - g.cx, dy = ev.clientY - r.top - g.cy;
+    const d = Math.hypot(dx, dy);
+    if (d < g.rIn || d > g.rOut) return null;
+    const a = (Math.atan2(dy, dx) + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI);
+    let acc = 0;
+    for (let i = 0; i < this.shares.length; i++) {
+      acc += this.shares[i] * 2 * Math.PI;
+      if (a < acc) return i;
+    }
+    return null;
   }
 
   /** A dropped signal joins as a task wedge. */
@@ -186,33 +251,64 @@ export class CpuLoadWidget {
     return Number.isFinite(end) ? end : null;
   }
 
-  evaluate() {
+  sharesAt(end) {
     const roles = this.cfg.wedges.map((w) => w.role);
     const hs = this.cfg.wedges.map((w) => histories.get(w.path));
+    return cpuShares(roles, windowDeltas(hs, end));
+  }
+
+  /** The live window and the strip, recomputed per batch. */
+  evaluate() {
     const end = this.endTick();
-    this.shares = end === null ? null : cpuShares(roles, windowDeltas(hs, end));
+    this.liveEnd = end;
+    this.liveShares = end === null ? null : this.sharesAt(end);
     this.strip = [];
+    this.stripTicks = [];
     if (end === null) return;
     const last = Math.floor(end / STRIP_STEP_MS) * STRIP_STEP_MS;
     for (let t = last - STRIP_MS + STRIP_STEP_MS; t <= last; t += STRIP_STEP_MS) {
-      this.strip.push(cpuShares(roles, windowDeltas(hs, t)));
+      this.strip.push(this.sharesAt(t));
+      this.stripTicks.push(t);
     }
+  }
+
+  /** The window on display: a hovered strip column wins, then the shared
+   *  cursor, then live. */
+  displayed() {
+    if (this.liveEnd === null) return { mode: "live", end: null };
+    const k = this.scrubCol === null ? -1 : this.scrubCol - (STRIP_COLS - this.strip.length);
+    if (k >= 0) return { mode: "scrub", end: this.stripTicks[k], col: this.scrubCol };
+    if (cursor.tick !== null) return { mode: "cursor", end: Math.min(cursor.tick, this.liveEnd) };
+    return { mode: "live", end: this.liveEnd };
   }
 
   refresh() {
     this.refreshBatch.touch();
     this.evaluate();
-    const shares = this.shares;
+    this.paint();
+  }
+
+  // [impl->app~views_022~1] the donut follows a scrubbed column or the cursor.
+  paint() {
+    const shown = this.displayed();
+    const shares = shown.mode === "live" ? this.liveShares : this.sharesAt(shown.end);
+    this.shares = shares;
     const colors = this.cfg.wedges.map((_, i) => this.colorOf(i));
-    const pct = (s) => `${(s * 100).toFixed(1)} %`;
     const idle = shares
       ? shares.reduce((a, s, i) => a + (this.cfg.wedges[i].role === "idle" ? s : 0), 0)
       : null;
     this.el.classList.toggle("cpu-widget--empty", !shares);
     this.el.querySelector(".cpu-idle-pct").textContent = idle === null ? "—" : pct(idle);
+    const when = this.el.querySelector(".cpu-when");
+    when.hidden = shown.mode === "live";
+    when.dataset.mode = shown.mode;
+    if (!when.hidden) {
+      const rel = relTime(shown.end - this.liveEnd);
+      when.innerHTML = shown.mode === "cursor" ? `${icon("crosshair")}${rel}` : rel;
+    }
     this.el.querySelector(".cpu-legend").innerHTML = this.cfg.wedges
       .map(
-        (w, i) => `<div class="cpu-legend-row" data-path="${esc(w.path)}" data-role="${w.role}" title="${esc(w.path)}">
+        (w, i) => `<div class="cpu-legend-row ${i === this.hoverIdx ? "cpu-legend-row--hover" : ""}" data-path="${esc(w.path)}" data-role="${w.role}" title="${esc(w.path)}">
           <span class="cpu-swatch" style="background:${colors[i]}"></span>
           <span class="cpu-label">${esc(w.label)}</span>
           <span class="cpu-pct mono">${shares ? pct(shares[i]) : "—"}</span>
@@ -220,7 +316,36 @@ export class CpuLoadWidget {
       )
       .join("");
     this.drawDonut(shares, colors);
-    this.drawStrip(colors);
+    this.drawTooltip(shares, colors);
+    let markCol = null;
+    if (shown.mode === "scrub") markCol = shown.col;
+    else if (shown.mode === "cursor" && this.stripTicks.length) {
+      const k = Math.round((shown.end - this.stripTicks[0]) / STRIP_STEP_MS);
+      if (k >= 0 && k < this.stripTicks.length) markCol = STRIP_COLS - this.stripTicks.length + k;
+    }
+    this.drawStrip(colors, markCol);
+  }
+
+  drawTooltip(shares, colors) {
+    const tip = this.el.querySelector(".cpu-tooltip");
+    const i = this.hoverIdx;
+    const g = this._donutGeo;
+    if (i === null || i >= this.cfg.wedges.length || !shares || !g) {
+      tip.hidden = true;
+      return;
+    }
+    const w = this.cfg.wedges[i];
+    tip.innerHTML = `<span class="cpu-swatch" style="background:${colors[i]}"></span><span class="cpu-tip-label">${esc(w.label)}</span> <span class="cpu-tip-value mono">${pct(shares[i])}</span>`;
+    tip.hidden = false;
+    // Anchored just outside the wedge's mid-angle, on the side it points to.
+    const before = shares.slice(0, i).reduce((a, s) => a + s, 0);
+    const mid = (before + shares[i] / 2) * 2 * Math.PI - Math.PI / 2;
+    const x = g.cx + Math.cos(mid) * g.rOut;
+    const y = g.cy + Math.sin(mid) * g.rOut;
+    const right = Math.cos(mid) >= 0;
+    tip.style.left = right ? `${x + 8}px` : "";
+    tip.style.right = right ? "" : `${g.width - x + 8}px`;
+    tip.style.top = `${Math.max(0, y - 12)}px`;
   }
 
   fitCanvas(canvas, width, height) {
@@ -245,6 +370,7 @@ export class CpuLoadWidget {
     const r = Math.min(width, height) / 2 - 4;
     const ring = Math.max(10, r * 0.28);
     const cx = width / 2, cy = height / 2;
+    this._donutGeo = { cx, cy, rIn: r - ring, rOut: r, width };
     ctx.lineWidth = ring;
     if (!shares) {
       ctx.strokeStyle = `rgba(${cssVar("--hair-rgb")}, 0.08)`;
@@ -253,19 +379,23 @@ export class CpuLoadWidget {
       ctx.stroke();
       return;
     }
+    const hover = this.hoverIdx;
     let a = -Math.PI / 2;
     shares.forEach((s, i) => {
       if (!(s > 0)) return;
       const b = a + s * 2 * Math.PI;
+      ctx.globalAlpha = hover === null || hover === i ? 1 : 0.4;
+      ctx.lineWidth = hover === i ? ring + 6 : ring;
       ctx.strokeStyle = colors[i];
       ctx.beginPath();
       ctx.arc(cx, cy, r - ring / 2, a, b);
       ctx.stroke();
       a = b;
     });
+    ctx.globalAlpha = 1;
   }
 
-  drawStrip(colors) {
+  drawStrip(colors, markCol) {
     const canvas = this.el.querySelector(".cpu-strip");
     const { width, height } = canvas.getBoundingClientRect();
     if (width < 20 || height < 2) return;
@@ -286,6 +416,13 @@ export class CpuLoadWidget {
         ctx.fillRect(x0, y0, x1 - x0, Math.round(acc * height) - y0);
       });
     });
+    if (markCol !== null) {
+      const x = Math.round((markCol + 0.5) * colW);
+      ctx.fillStyle = `rgba(${cssVar("--lit-rgb")}, 0.3)`;
+      ctx.fillRect(x - 3, 0, 6, height);
+      ctx.fillStyle = cssVar("--color-accent-300");
+      ctx.fillRect(x - 1, 0, 2, height);
+    }
   }
 
   destroy() {

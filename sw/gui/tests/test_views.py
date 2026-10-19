@@ -4046,7 +4046,9 @@ def run(page):
     )
 
     # ── [test->app~views_020~1] a counter wrapping past 2^32 keeps its share
-    #    (the devmock's idle counter wraps at 50 s, inside the 30 s strip) ──
+    #    (the devmock's idle counter wraps at 45 s, inside the 30 s strip;
+    #    columns whose window overlaps the 56.2-57.2 s server burst are
+    #    excluded) ──
     wrap = widget_eval(
         page, cpu_id,
         """(w) => {
@@ -4055,7 +4057,7 @@ def run(page):
           for (let i = 1; i < h.size; i++) {
             if (h.valueAtIndex(i) < h.valueAtIndex(i - 1)) { wrapped = h.tickAtIndex(i); break; }
           }
-          const cols = w.strip.filter(Boolean);
+          const cols = w.strip.filter((s, k) => s && (w.stripTicks[k] < 56100 || w.stripTicks[k] > 58300));
           const idle = cols.map(s => s[1]);
           return { wrapped, n: cols.length, min: Math.min(...idle), max: Math.max(...idle) };
         }""",
@@ -4077,6 +4079,135 @@ def run(page):
         and abs(wrap_fn[2] - 0.1) < 1e-12,
         wrap_fn,
     )
+
+    # ── [test->app~views_022~1] hovering a wedge shows its label and share
+    #    and highlights its legend row; hovering a legend row does the same ──
+    page.locator(f"[data-widget-id='{cpu_id}']").scroll_into_view_if_needed()
+    at = widget_eval(
+        page, cpu_id,
+        """(w) => {
+          const r = w.el.querySelector('.cpu-donut-canvas').getBoundingClientRect();
+          const rad = Math.min(r.width, r.height) / 2 - 4;
+          const ring = Math.max(10, rad * 0.28);
+          const i = w.cfg.wedges.findIndex(x => x.label === 'server');
+          const before = w.shares.slice(0, i).reduce((a, s) => a + s, 0);
+          const mid = (before + w.shares[i] / 2) * 2 * Math.PI - Math.PI / 2;
+          return [r.left + r.width / 2 + Math.cos(mid) * (rad - ring / 2),
+                  r.top + r.height / 2 + Math.sin(mid) * (rad - ring / 2)];
+        }""",
+    )
+    page.mouse.move(*at)
+    READ_HOVER = """(w) => ({
+      tip: w.el.querySelector('.cpu-tooltip').hidden ? null
+        : w.el.querySelector('.cpu-tooltip').textContent,
+      rows: [...w.el.querySelectorAll('.cpu-legend-row--hover')].map(r =>
+        [r.querySelector('.cpu-label').textContent, r.querySelector('.cpu-pct').textContent]),
+    })"""
+    hov = widget_eval(page, cpu_id, READ_HOVER)
+    check(
+        "views_022 a hovered wedge shows its label and share and highlights its legend row",
+        hov["tip"] is not None and len(hov["rows"]) == 1 and hov["rows"][0][0] == "server"
+        and hov["tip"] == f"server {hov['rows'][0][1]}"
+        and abs(float(hov["rows"][0][1].replace("%", "")) - 11.0) <= 0.15,
+        hov,
+    )
+    page.hover(f"[data-widget-id='{cpu_id}'] .cpu-legend-row[data-role='idle']")
+    hov2 = widget_eval(page, cpu_id, READ_HOVER)
+    check(
+        "views_022 a hovered legend row highlights it and shows its wedge's tooltip",
+        hov2["tip"] is not None and len(hov2["rows"]) == 1 and hov2["rows"][0][0] == "idle"
+        and hov2["tip"] == f"idle {hov2['rows'][0][1]}",
+        hov2,
+    )
+    page.mouse.move(5, 5)
+
+    # ── [test->app~views_022~1] hovering a strip column scrubs the donut to
+    #    that window, with a relative-time readout; leaving returns to live
+    #    (the devmock's 56.2-57.2 s server burst drops idle to ~5.5 %) ──
+    sx = widget_eval(
+        page, cpu_id,
+        """(w) => {
+          const r = w.el.querySelector('.cpu-strip').getBoundingClientRect();
+          const k = w.stripTicks.indexOf(57200);
+          if (k < 0) return null;
+          const col = 300 - w.strip.length + k;
+          return [r.left + (col + 0.5) * r.width / 300, r.top + r.height / 2];
+        }""",
+    )
+    READ_SHOWN = """(w) => {
+      w.paint();
+      const when = w.el.querySelector('.cpu-when');
+      const idleShare = w.shares ? w.shares.reduce((a, s, i) =>
+        a + (w.cfg.wedges[i].role === 'idle' ? s : 0), 0) : null;
+      const rel = (dt) => `${dt < 0 ? '\\u2212' : ''}${(Math.abs(dt) / 1000).toFixed(1)} s`;
+      const col = w.scrubCol === null ? -1 : w.scrubCol - (300 - w.strip.length);
+      return {
+        headline: w.el.querySelector('.cpu-idle-pct').textContent,
+        expect: idleShare === null ? null : `${(idleShare * 100).toFixed(1)} %`,
+        idleShare,
+        colIdle: col >= 0 && w.strip[col] ? w.strip[col].reduce((a, s, i) =>
+          a + (w.cfg.wedges[i].role === 'idle' ? s : 0), 0) : null,
+        mode: when.hidden ? 'live' : when.dataset.mode,
+        when: when.hidden ? null : when.textContent,
+        rel: col >= 0 ? rel(w.stripTicks[col] - w.liveEnd) : null,
+        hasCrosshair: !!when.querySelector('svg'),
+      };
+    }"""
+    scrub = None
+    if sx is not None:
+        page.mouse.move(*sx)
+        scrub = widget_eval(page, cpu_id, READ_SHOWN)
+    check(
+        "views_022 a hovered strip column scrubs the headline to its idle share, with the readout",
+        scrub is not None and scrub["mode"] == "scrub"
+        and scrub["colIdle"] is not None and abs(scrub["idleShare"] - scrub["colIdle"]) < 1e-12
+        and scrub["headline"] == scrub["expect"] and scrub["idleShare"] < 0.15
+        and scrub["when"] == scrub["rel"] and scrub["when"].startswith("−"),
+        (sx, scrub),
+    )
+    page.mouse.move(5, 5)
+    left = widget_eval(page, cpu_id, READ_SHOWN)
+    check(
+        "views_022 leaving the strip returns the donut to live",
+        left["mode"] == "live" and abs(left["idleShare"] - expected["idle"]) < 1e-3,
+        left,
+    )
+
+    # ── [test->app~views_022~1] the shared cursor drives the donut, the strip
+    #    hover wins over it, and clearing it returns to live ──
+    page.evaluate("() => __cockpit.setCursorTick(57200)")
+    page.evaluate(f"async () => {{ {SETTLE_CURSOR_JS} }}")
+    cur = widget_eval(page, cpu_id, READ_SHOWN)
+    at_cursor = widget_eval(
+        page, cpu_id,
+        "(w) => { const s = w.sharesAt(57200); return s && s[1]; }",
+    )
+    cur_rel = widget_eval(
+        page, cpu_id,
+        "(w) => { const dt = 57200 - w.liveEnd; return `${dt < 0 ? '\\u2212' : ''}${(Math.abs(dt) / 1000).toFixed(1)} s`; }",
+    )
+    check(
+        "views_022 the shared cursor shows the window ending at the cursor, marked cursor-driven",
+        cur["mode"] == "cursor" and cur["hasCrosshair"] and cur["when"] == cur_rel
+        and at_cursor is not None and abs(cur["idleShare"] - at_cursor) < 1e-12
+        and cur["idleShare"] < 0.15,
+        (cur, at_cursor, cur_rel),
+    )
+    if sx is not None:
+        page.mouse.move(*sx)
+    over = widget_eval(page, cpu_id, READ_SHOWN)
+    page.mouse.move(5, 5)
+    back = widget_eval(page, cpu_id, READ_SHOWN)
+    page.evaluate("() => __cockpit.clearCursor()")
+    page.evaluate(f"async () => {{ {SETTLE_CURSOR_JS} }}")
+    cleared = widget_eval(page, cpu_id, READ_SHOWN)
+    check(
+        "views_022 the strip hover wins over the cursor; the cursor resumes after it, live after clear",
+        over["mode"] == "scrub" and back["mode"] == "cursor"
+        and cleared["mode"] == "live" and abs(cleared["idleShare"] - expected["idle"]) < 1e-3,
+        (over, back, cleared),
+    )
+
 
     # ── [test->app~views_021~1] label, role, and removal edits survive a
     #    restart ──
@@ -4103,6 +4234,130 @@ def run(page):
         "views_020 wedge label, role, and removal edits survive a restart",
         edited == want and restored == want,
         (edited, restored),
+    )
+
+    # ═══ widget selection and removal ═══
+    sel_plot = add_plot_with(page, [VEL_M, U32_S], period=200)
+    sel_table = page.evaluate(
+        "(p) => { const w = __cockpit.addWidget({ type: 'table', signals: [] }); w.addSignal(p); return w.cfg.id; }",
+        U32_S,
+    )
+    sel_cpu = page.evaluate(
+        "() => { let id = null; __cockpit.forEachWidget(w => { if (w.toJSON().type === 'cpuload') id = w.cfg.id; }); return id; }"
+    )
+
+    def grip(wid):
+        loc = page.locator(f"[data-widget-id='{wid}'] .widget-head")
+        loc.scroll_into_view_if_needed()
+        loc.click(position={"x": 8, "y": 12})
+
+    def selected_ids():
+        return page.evaluate(
+            "() => [...document.querySelectorAll('.widget--selected')].map(e => e.dataset.widgetId)"
+        )
+
+    # ── [test->app~views_023~1] a click selects; another click moves the
+    #    mark; empty canvas clears it ──
+    grip(sel_plot)
+    s1 = selected_ids()
+    grip(sel_cpu)
+    s2 = selected_ids()
+    border = page.evaluate(
+        "(id) => getComputedStyle(document.querySelector(`[data-widget-id='${id}']`)).borderTopColor",
+        sel_cpu,
+    )
+    empty_at = page.evaluate(
+        """() => {
+          const g = document.querySelector('.widget-grid');
+          g.scrollTo(0, 0);
+          const r = g.getBoundingClientRect();
+          let right = 0;
+          __cockpit.forEachWidget(w => { right = Math.max(right, w.cfg.x + w.cfg.w); });
+          return [r.left + right + 25, r.top + 25];
+        }"""
+    )
+    page.mouse.click(*empty_at)
+    s3 = selected_ids()
+    check(
+        "views_023 click selects a widget (accent border), moves to the next, clears on empty canvas",
+        s1 == [sel_plot] and s2 == [sel_cpu] and s3 == [] and "rgba" in border,
+        (s1, s2, s3, border, empty_at),
+    )
+
+    # ── [test->app~views_023~1] Delete in the title editor or an input edits
+    #    text; the selected widget stays ──
+    grip(sel_plot)
+    page.click(f"[data-widget-id='{sel_plot}'] .widget-title")
+    page.wait_for_selector(".widget-title-edit")
+    page.keyboard.type("ab")
+    page.keyboard.press("ArrowLeft")
+    page.keyboard.press("Delete")
+    typed = page.evaluate("() => document.querySelector('.widget-title-edit')?.value")
+    page.keyboard.press("Escape")
+    page.fill(".picker-search input", "xyz")
+    page.focus(".picker-search input")
+    page.keyboard.press("Home")
+    page.keyboard.press("Delete")
+    search = page.input_value(".picker-search input")
+    page.fill(".picker-search input", "*")
+    still = page.evaluate(
+        "(id) => !!document.querySelector(`[data-widget-id='${id}']`)", sel_plot
+    )
+    check(
+        "views_023 Delete while editing a title or typing in an input edits text; the widget stays",
+        typed == "a" and search == "yz" and still and selected_ids() == [sel_plot],
+        (typed, search, still, selected_ids()),
+    )
+
+    # ── [test->app~views_023~1] Delete removes the selected widget; signals
+    #    no other widget holds leave the watch list ──
+    grip(sel_plot)
+    page.keyboard.press("Delete")
+    after_plot = page.evaluate(
+        """([pid, vel, u32]) => ({
+          gone: !document.querySelector(`[data-widget-id='${pid}']`),
+          vel: __cockpit.store.watched.has(vel),
+          u32: __cockpit.store.watched.has(u32),
+          sel: document.querySelectorAll('.widget--selected').length,
+        })""",
+        [sel_plot, VEL_M, U32_S],
+    )
+    grip(sel_cpu)
+    page.keyboard.press("Delete")
+    after_cpu = page.evaluate(
+        """(cid) => ({
+          gone: !document.querySelector(`[data-widget-id='${cid}']`),
+          cpuWatched: [...__cockpit.store.watched.keys()].filter(p =>
+            p.startsWith('app_cpuLoad_data') || p === 'HW_ADC_data.irqTime_us'),
+        })""",
+        sel_cpu,
+    )
+    keys = page.evaluate(
+        "() => [__cockpit.platform.removeKeysFor('MacIntel'), __cockpit.platform.removeKeysFor('Win32')]"
+    )
+    check(
+        "views_023 Delete removes the selected plot and CPU load widget, releasing unheld watches",
+        after_plot == {"gone": True, "vel": False, "u32": True, "sel": 0}
+        and after_cpu["gone"] and after_cpu["cpuWatched"] == []
+        and keys == [["Delete", "Backspace"], ["Delete"]],
+        (after_plot, after_cpu, keys),
+    )
+
+    # ── [test->app~views_023~1] the menu's Remove widget is the same
+    #    removal: the table's now-unshared signal leaves the watch list ──
+    page.click(f"[data-widget-id='{sel_table}'] [data-axesconfig]")
+    page.click(".axes-popover [data-removewidget]")
+    after_menu = page.evaluate(
+        """([tid, u32]) => ({
+          gone: !document.querySelector(`[data-widget-id='${tid}']`),
+          u32: __cockpit.store.watched.has(u32),
+        })""",
+        [sel_table, U32_S],
+    )
+    check(
+        "views_023 the menu's Remove widget releases the watches no other widget holds",
+        after_menu == {"gone": True, "u32": False},
+        after_menu,
     )
 
 BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"

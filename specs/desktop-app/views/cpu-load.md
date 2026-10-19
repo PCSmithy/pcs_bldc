@@ -81,3 +81,31 @@ Covers:
 - sys~obs_010~1
 
 Needs: impl, test
+
+### CPU load interaction
+`app~views_022~1`
+
+A CPU load widget shall follow the operator's pointing per:
+
+| Pointing | Behavior |
+|----------|----------|
+| A donut wedge or its legend row hovered | A tooltip shows the wedge's label and share; the wedge and its legend row are highlighted |
+| A strip column hovered | The donut, legend, and centre show the window that column represents, the column is marked, and a readout beside the centre shows its time relative to the latest sample |
+| The shared cursor (`app~views_005~1`) held, no strip column hovered | The donut, legend, and centre show the window ending at the cursor time, the readout marked as cursor-driven |
+| None of the above | The donut shows the live window, no readout shown |
+
+Acceptance:
+
+- Hovering a wedge shows a tooltip reading its label and its legend
+  share, and highlights its legend row; hovering a legend row does the
+  same for its wedge.
+- Hovering a strip column sets the centre to that column's idle share
+  and shows its relative time; leaving the strip returns to live.
+- Setting the shared cursor sets the centre to the window ending at
+  the cursor time with the cursor-driven readout; a strip hover wins
+  while it lasts; clearing the cursor returns to live.
+
+Covers:
+- sys~obs_010~1
+
+Needs: impl, test

@@ -60,3 +60,29 @@ Covers:
 - sys~arch_002~1
 
 Needs: impl, test
+
+### Widget selection and removal
+`app~views_023~1`
+
+The app shall select a widget on a click in it — one widget selected
+at a time, marked by an accent border, a click on another widget moving
+the selection and a click on empty canvas clearing it — and remove the
+selected widget on the Delete key (Delete or Backspace on macOS) pressed
+outside a text field; a widget removed by that key or by its menu's
+Remove widget releases each of its signals held by no other widget from
+the watch list (`app~obs_003~1`).
+
+Acceptance:
+
+- A click on a widget marks it selected; a click on another widget
+  moves the mark, and a click on empty canvas clears it.
+- Delete removes the selected widget, and the menu's Remove widget
+  removes its widget; either way the widget's signals held by no other
+  widget leave the watch list.
+- Delete pressed while editing a widget title or typing in an input
+  edits the text, and the widget stays.
+
+Covers:
+- sys~arch_002~1
+
+Needs: impl, test

@@ -18,7 +18,7 @@ import {
   displayWindow, noteLiveEdge, advanceDisplayClock, resetDisplayClock,
 } from "./timeline.js";
 import { markBatch, perfSnapshot } from "../perf.js";
-import { ANCHOR_KEY, anchorModifierKeyFor } from "../platform.js";
+import { ANCHOR_KEY, anchorModifierKeyFor, removeKeysFor } from "../platform.js";
 
 export function initWorkspace() {
   initWatchflow();
@@ -123,6 +123,6 @@ export function initWorkspace() {
     interp: { evalMonotoneRun, monotoneTangents },
     cpuLoad: { shares: cpuShares, preset: cpuLoadPreset },
     perf: { snapshot: perfSnapshot },
-    platform: { ANCHOR_KEY, anchorModifierKeyFor },
+    platform: { ANCHOR_KEY, anchorModifierKeyFor, removeKeysFor },
   };
 }

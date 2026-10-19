@@ -17,6 +17,14 @@ export const PLATFORM = navigator.userAgentData?.platform ?? navigator.platform 
 /** The KeyboardEvent.key of the anchor modifier on this host. */
 export const ANCHOR_KEY = anchorModifierKeyFor(PLATFORM);
 
+/** The keys that remove the selected widget — Backspace too on macOS,
+ *  whose laptop keyboards carry no Delete key. */
+export function removeKeysFor(platform) {
+  return /mac/i.test(platform || "") ? ["Delete", "Backspace"] : ["Delete"];
+}
+
+export const REMOVE_KEYS = removeKeysFor(PLATFORM);
+
 /** True while an event carries the anchor modifier. */
 export function isAnchorModifier(ev) {
   return ANCHOR_KEY === "Meta" ? ev.metaKey : ev.ctrlKey;
