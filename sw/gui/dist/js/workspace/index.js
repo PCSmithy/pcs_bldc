@@ -12,12 +12,13 @@ import { initWatchPanel } from "./watchpanel.js";
 import { setCursorTick, clearCursor, cursor } from "./cursor.js";
 import { appearanceOf, setAppearance, resolvedColor } from "./appearance.js";
 import { evalMonotoneRun, monotoneTangents } from "./interp.js";
+import { cpuShares, cpuLoadPreset } from "./cpuloadwidget.js";
 import {
   initTimeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow,
   displayWindow, noteLiveEdge, advanceDisplayClock, resetDisplayClock,
 } from "./timeline.js";
 import { markBatch, perfSnapshot } from "../perf.js";
-import { ANCHOR_KEY, anchorModifierKeyFor } from "../platform.js";
+import { ANCHOR_KEY, anchorModifierKeyFor, removeKeysFor } from "../platform.js";
 
 export function initWorkspace() {
   initWatchflow();
@@ -120,7 +121,8 @@ export function initWorkspace() {
     timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow, displayWindow },
     appearance: { of: appearanceOf, set: setAppearance, resolvedColor },
     interp: { evalMonotoneRun, monotoneTangents },
+    cpuLoad: { shares: cpuShares, preset: cpuLoadPreset },
     perf: { snapshot: perfSnapshot },
-    platform: { ANCHOR_KEY, anchorModifierKeyFor },
+    platform: { ANCHOR_KEY, anchorModifierKeyFor, removeKeysFor },
   };
 }

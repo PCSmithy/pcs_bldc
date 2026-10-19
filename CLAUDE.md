@@ -74,7 +74,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
 │   │   │       ├── dev/              Device drivers (switch, gateDriver, CYPD3177)
 │   │   │       └── app/              App-layer modules (rgbLedRing, motorControl,
-│   │   │                             server)
+│   │   │                             server, cpuLoad)
 │   │   └── rust/         Rust libraries, workspace-less path deps:
 │   │       ├── prng/         Deterministic PRNG (SIL models)
 │   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
@@ -231,7 +231,7 @@ sufficient to make the tooling aware of a new topic.
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
     `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).
-  - `est/encoder.md` (AS5048), `obs/rgb_leds.md` (SK6805) +
+  - `est/encoder.md` (AS5048), `obs/cpu-load.md` (app_cpuLoad), `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
     `conn/serial.md` (IO_serial over USB CDC) + the `conn/` trace-engine
     set (`fw~conn_trace_*`), `io/i2c.md` (IO_i2c) +

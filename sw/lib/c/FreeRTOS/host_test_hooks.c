@@ -28,3 +28,12 @@ void vApplicationGetIdleTaskMemory(StaticTask_t ** ppxTcb, StackType_t ** ppxSta
     *pulSize  = configMINIMAL_STACK_SIZE;
 }
 #endif
+
+// The kernel config's switch-in hook (fw~obs_cpu_001) names app_cpuLoad's
+// accounting; a harness that links the kernel without the module gets this
+// no-op (strong, for the same PE reason as above; never in the firmware image).
+#include <stdint.h>
+void app_cpuLoad_switchedIn(uint32_t slot)
+{
+    (void) slot;
+}

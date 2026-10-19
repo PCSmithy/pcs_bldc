@@ -60,11 +60,14 @@ if(APPLE)
   target_link_libraries(pcs_bldc_fw PRIVATE
     "-Wl,-force_load,$<TARGET_FILE:fw_hw>"
     fw_hw
+    "-Wl,-force_load,$<TARGET_FILE:app_cpuLoad>"
+    app_cpuLoad   # the kernel's switch-in hook (fw~obs_cpu_001)
   )
 else()
   target_link_libraries(pcs_bldc_fw PRIVATE
     -Wl,--whole-archive
     fw_hw
+    app_cpuLoad   # the kernel's switch-in hook (fw~obs_cpu_001)
     -Wl,--no-whole-archive
   )
 endif()

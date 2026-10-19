@@ -45,6 +45,7 @@
 
 /* USER CODE BEGIN Includes */
 /* Section where include file can be added */
+#include <stdint.h>
 /* USER CODE END Includes */
 
 /* Ensure definitions are only used by the compiler, and not by the assembler. */
@@ -171,6 +172,14 @@ standard names. */
  * SysTick_Handler -> xPortSysTickHandler; without it we map the port's
  * handler directly onto the CMSIS vector-table name. */
 #define xPortSysTickHandler SysTick_Handler
+
+/* CPU-time accounting (fw~obs_cpu_001): every switch-in charges the outgoing
+ * task's run to its slot. Task numbers are assigned in main.c. */
+#define INCLUDE_xTaskGetIdleTaskHandle 1
+#if defined(__ICCARM__) || defined(__CC_ARM) || defined(__GNUC__)
+extern void app_cpuLoad_switchedIn(uint32_t slot);
+#endif
+#define traceTASK_SWITCHED_IN() app_cpuLoad_switchedIn((uint32_t) uxTaskGetTaskNumber(pxCurrentTCB))
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

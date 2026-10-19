@@ -20,7 +20,7 @@ Sub-folders are created when a topic gets its first spec.
 - `views/` — presentation surfaces: [[live-plot]] (plot, axes, trace
   appearance, decimation), [[telemetry]], [[log]], [[workspace]],
   [[cursor]] (cursor, pointed trace, comparison anchor + deltas),
-  [[table]], [[timeline]], [[watch-panel]], [[render-budget]]
+  [[table]], [[timeline]], [[watch-panel]], [[cpu-load]], [[render-budget]]
   (rendering performance floor), and [[value-rendering]] (the
   surfaces' shared value formatting)
 

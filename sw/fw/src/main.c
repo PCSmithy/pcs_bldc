@@ -8,6 +8,7 @@
 #include "HW_TIM.h"
 #include "HW_CORDIC.h"
 #include "HW_CRC.h"
+#include "app_cpuLoad.h"
 #include "HW_DMA.h"
 
 // Task creation, the periodic tasks, and every io/dev/app module they drive are
@@ -181,6 +182,20 @@ static bool main_private_createTasks(void);
 static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context);
 
 // Fold one body execution's duration into the task's window max.
+// CPU-time slots (fw~obs_cpu_001): the kernel's switched-in hook charges each
+// run to the task's number; the host's load widget labels the slots in this
+// order. Slot 0 collects tasks that never get a number (the timer daemon).
+typedef enum
+{
+    CPU_SLOT_OTHER = APP_CPULOAD_SLOT_OTHER,
+    CPU_SLOT_IDLE,
+    CPU_SLOT_1MS,
+    CPU_SLOT_10MS,
+    CPU_SLOT_200MS,
+    CPU_SLOT_USB,
+    CPU_SLOT_SERVER,
+} cpuSlot_E;
+
 static void profileUpdate(profileTask_E task, uint32_t durationUs)
 {
     if (durationUs > profileMaxUs[task])
@@ -192,6 +207,9 @@ static void profileUpdate(profileTask_E task, uint32_t durationUs)
 static void task_1ms(void * params)
 {
     (void)params;
+    // The idle task exists once the scheduler runs; the first task in gives it
+    // its slot.
+    vTaskSetTaskNumber(xTaskGetIdleTaskHandle(), CPU_SLOT_IDLE);
     TickType_t lastWake = xTaskGetTickCount();
     for (;;)
     {
@@ -424,16 +442,22 @@ static bool main_private_appInit(void)
 // surfaced to the caller to halt loudly rather than silently drop a task.
 static bool main_private_createTasks(void)
 {
+    TaskHandle_t handle = NULL;
     bool ok = (xTaskCreate(task_1ms, "task_1ms", configMINIMAL_STACK_SIZE * 2U,
-                           NULL, TASK_PRIORITY_1MS, NULL) == pdPASS);
+                           NULL, TASK_PRIORITY_1MS, &handle) == pdPASS);
+    vTaskSetTaskNumber(handle, CPU_SLOT_1MS);
     ok &= (xTaskCreate(task_10ms, "task_10ms", configMINIMAL_STACK_SIZE * 2U,
-                       NULL, TASK_PRIORITY_10MS, NULL) == pdPASS);
+                       NULL, TASK_PRIORITY_10MS, &handle) == pdPASS);
+    vTaskSetTaskNumber(handle, CPU_SLOT_10MS);
     ok &= (xTaskCreate(task_usb, "usbd", configMINIMAL_STACK_SIZE * 2U,
-                       NULL, TASK_PRIORITY_USB, NULL) == pdPASS);
+                       NULL, TASK_PRIORITY_USB, &handle) == pdPASS);
+    vTaskSetTaskNumber(handle, CPU_SLOT_USB);
     ok &= (xTaskCreate(task_server, "server", 512U,
-                       NULL, TASK_PRIORITY_SERVER, NULL) == pdPASS);
+                       NULL, TASK_PRIORITY_SERVER, &handle) == pdPASS);
+    vTaskSetTaskNumber(handle, CPU_SLOT_SERVER);
     ok &= (xTaskCreate(task_200ms, "task_200ms", configMINIMAL_STACK_SIZE * 2U,
-                       NULL, TASK_PRIORITY_200MS, NULL) == pdPASS);
+                       NULL, TASK_PRIORITY_200MS, &handle) == pdPASS);
+    vTaskSetTaskNumber(handle, CPU_SLOT_200MS);
     return ok;
 }
 

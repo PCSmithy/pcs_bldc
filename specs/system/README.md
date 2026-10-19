@@ -47,7 +47,7 @@ specs in them yet.
   firmware build identity + gate (`sys~obs_003`/`_004`), signal trace
   (`sys~obs_005`), signal write (`sys~obs_006`), text log stream
   (`sys~obs_007`), memory read (`sys~obs_008`), trace capability report
-  (`sys~obs_009`)
+  (`sys~obs_009`), CPU load visibility (`sys~obs_010`)
 - `ops/` — system mode state machine (idle / calibrate / run / fault),
   command authority (`sys~ops_002`, [[command-authority]]), mode
   transitions (anchor `sys~ops_001` lives in [[overview]])

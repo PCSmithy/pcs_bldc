@@ -3,13 +3,17 @@
 // (vertical stacking included), the corner handle resizes with both extents
 // snapped, pointerdown raises to the front (overlap is allowed; the widgets
 // array's order IS the stacking order). Persistence via prefs (the config
-// file under Tauri; localStorage under the devmock).
+// file under Tauri; localStorage under the devmock). A pointerdown also
+// selects the widget under it (or clears on empty canvas); Delete removes
+// the selection. A removal releases the watches no other widget holds.
 // [impl->app~views_004~1]
 
 import { store, notify, subscribe, prefs } from "../state.js";
 import { PlotWidget } from "./plotwidget.js";
 import { TableWidget } from "./tablewidget.js";
-import { addWatch, meta } from "./watchflow.js";
+import { CpuLoadWidget } from "./cpuloadwidget.js";
+import { addWatch, removeWatch, meta } from "./watchflow.js";
+import { REMOVE_KEYS } from "../platform.js";
 import { restoreColors, colorSlots } from "./colors.js";
 import { appearanceEntries, restoreAppearance } from "./appearance.js";
 
@@ -24,6 +28,7 @@ const MAX_PX = 20000;
 let canvas = null;
 let spacer = null;
 let widgets = []; // stacking order: last = frontmost
+let selected = null;
 let nextId = 1;
 
 const snap = (v) => Math.round(v / SNAP) * SNAP;
@@ -41,6 +46,7 @@ export function initLayout() {
   workspace.appendChild(canvas);
 
   wireRaise();
+  wireSelection(workspace);
   wireDrops(workspace);
   wireMove();
   wireResize();
@@ -49,6 +55,7 @@ export function initLayout() {
   subscribe("workspace-create", (kind) => {
     if (kind === "new-plot") addWidget({ type: "plot", signals: [] });
     if (kind === "new-table") addWidget({ type: "table", signals: [] });
+    if (kind === "new-cpuload") addWidget({ type: "cpuload" });
   });
 
   restore();
@@ -75,6 +82,7 @@ function wireLauncher(workspace) {
     <div class="launcher-menu" role="menu" hidden>
       <button role="menuitem" data-workspace="new-plot">Add plot</button>
       <button role="menuitem" data-workspace="new-table">Add table</button>
+      <button role="menuitem" data-workspace="new-cpuload">Add CPU load</button>
     </div>
     <button class="launcher-fab" aria-label="Add a widget" aria-haspopup="menu"
       aria-expanded="false">+</button>`;
@@ -101,14 +109,19 @@ function wireLauncher(workspace) {
 
 const hooks = {
   onChange: persist,
+  /** Every widget removal (menu, Delete): teardown, then a signal no
+   *  remaining widget holds loses its watch, as on a last-holder deselect. */
   onRemove(id) {
     const i = widgets.findIndex((w) => w.cfg.id === id);
     if (i < 0) return;
+    if (selected === widgets[i]) selected = null;
+    const paths = [...widgets[i].cfg.signals];
     widgets[i].destroy();
     widgets.splice(i, 1);
     applyStacking();
     syncExtent(); // the scroll range releases with the furthest widget
     syncEmptyState();
+    for (const path of paths) if (holdersOf(path) === 0) removeWatch(path);
     persist();
   },
 };
@@ -168,7 +181,8 @@ export function addWidget(cfg, at = null) {
   cfg.id = cfg.id ?? `w${nextId++}`;
   if (at) { cfg.x = at.x; cfg.y = at.y; }
   normalizeGeometry(cfg);
-  const widget = cfg.type === "table" ? new TableWidget(cfg, hooks) : new PlotWidget(cfg, hooks);
+  const Widget = { table: TableWidget, cpuload: CpuLoadWidget }[cfg.type] ?? PlotWidget;
+  const widget = new Widget(cfg, hooks);
   widgets.push(widget);
   canvas.appendChild(widget.el);
   applyGeometry(widget);
@@ -203,6 +217,35 @@ function wireRaise() {
     },
     { capture: true },
   );
+}
+
+// ── selection: one widget at a time; Delete removes it and releases the
+//    watches no other widget holds ──────────────────────────────────────────
+// [impl->app~views_023~1]
+
+function select(widget) {
+  if (selected === widget) return;
+  selected?.el.classList.remove("widget--selected");
+  selected = widget;
+  selected?.el.classList.add("widget--selected");
+}
+
+function wireSelection(workspace) {
+  workspace.addEventListener(
+    "pointerdown",
+    (ev) => {
+      const el = ev.target.closest(".widget");
+      select(el ? widgets.find((w) => w.el === el) ?? null : null);
+    },
+    { capture: true },
+  );
+  document.addEventListener("keydown", (ev) => {
+    if (!selected || !REMOVE_KEYS.includes(ev.key) || ev.defaultPrevented) return;
+    const t = ev.target;
+    if (t.closest?.("input, textarea, select, [contenteditable]")) return;
+    ev.preventDefault();
+    hooks.onRemove(selected.cfg.id);
+  });
 }
 
 // ── drops: create at the snapped drop point, or join the widget under it ──

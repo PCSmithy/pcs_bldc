@@ -79,10 +79,12 @@ typedef struct
     HW_ADC_channelData_S channelData[HW_ADC_CHANNEL_COUNT];
 
     // Interrupt duration probe (fw~hal_adc_011): microseconds from handler
-    // entry to exit on the free-running time base, the latest and the
-    // maximum; the host clears the maximum by writing zero.
+    // entry to exit on the free-running time base, the latest, the maximum,
+    // and the running total (wraps at 2^32); the host clears the maximum by
+    // writing zero.
     volatile uint32_t irqDuration_us;
     volatile uint32_t irqDurationMax_us;
+    volatile uint32_t irqTime_us;
 
     bool initialized;
 } HW_ADC_data_S;
@@ -695,6 +697,7 @@ void HW_ADC_irqHandler(void)
         }
         const uint32_t duration_us = lib_timer_getHWCount_us() - entry_us;
         data->irqDuration_us = duration_us;
+        data->irqTime_us += duration_us;
         if (duration_us > data->irqDurationMax_us)
         {
             data->irqDurationMax_us = duration_us;
