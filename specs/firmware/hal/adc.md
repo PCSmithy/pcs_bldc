@@ -254,10 +254,11 @@ Needs: impl, test
 `fw~hal_adc_011~1`
 
 The driver shall hold, as readable statics, the duration in microseconds,
-measured on the free-running microsecond time base, from its interrupt
-handler's entry to its exit: the latest handler run's, the maximum
-observed, and the running total modulo 2^32, the maximum cleared by
-writing zero to it (`fw~conn_trace_008~1`).
+measured on the bridge's free-running microsecond time base, of each run
+of its interrupt handler — the PWM-cycle interrupt, serving the injected
+sequence completion of `fw~hal_adc_008~1` — as the latest run's, the
+maximum observed, and the running total modulo 2^32, the maximum cleared
+by the host writing zero to it (`fw~conn_trace_008~1`).
 
 Acceptance:
 - After each handler run, the latest-duration static equals that run's
@@ -268,5 +269,6 @@ Acceptance:
 
 Covers:
 - sys~mc_006~1
+- sys~obs_010~1
 
 Needs: impl, test

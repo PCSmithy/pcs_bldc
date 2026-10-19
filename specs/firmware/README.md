@@ -33,7 +33,8 @@ Sub-folders are created when a topic gets its first spec.
 - `obs/` — observability and on-device status indication. Per-area sub-topic
   IDs, e.g. `fw~obs_led_001~1` (SK6805 RGB LED string driver),
   `fw~obs_identity_*` (build identity), `fw~obs_status_001~1` (10 Hz status
-  publication), `fw~obs_log_*` (printf log stream)
+  publication), `fw~obs_log_*` (printf log stream), `fw~obs_cpu_001~1`
+  (per-task CPU time, [[obs/cpu-load]])
 - `ui/` — on-device user-interface input drivers. Per-area sub-topic IDs, e.g.
   `fw~ui_switch_001~1` (dev_switch debounced button/switch driver)
 - `conn/` — device↔app connectivity (the firmware side). Per-area sub-topic
