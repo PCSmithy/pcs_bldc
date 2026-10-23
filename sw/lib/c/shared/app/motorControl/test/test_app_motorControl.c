@@ -176,9 +176,9 @@ static void setNominalCurrents(void)
 // latches on, the cycles after it apply what it decided. One of each stands for them.
 static void tick(void)
 {
-    app_motorControl_cycleStep();
+    app_motorControl_run50us();
     app_motorControl_run1ms();
-    app_motorControl_cycleStep();
+    app_motorControl_run50us();
 }
 
 // Bring the channel to steady commutation: operational, angle fixed, SIX_STEP
@@ -803,7 +803,7 @@ static void test_cycle_step_advances_the_angle_between_passes(void)
     const float32_t published = motorAngle_rad();    // one cycle past the last pass
     for (uint32_t cycle = 0U; cycle < 20U; cycle++)
     {
-        app_motorControl_cycleStep();
+        app_motorControl_run50us();
     }
     TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), published + stepPerMs_rad, motorAngle_rad());
 
@@ -880,7 +880,7 @@ static void test_cycle_step_not_the_ms_pass_writes_the_outputs(void)
     app_motorControl_run1ms();                           // publishes angle + target, decides Driving
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());   // outputs untouched
 
-    app_motorControl_cycleStep();                        // the step commutates on them
+    app_motorControl_run50us();                        // the step commutates on them
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(0.5f), drivenCompare());
     TEST_ASSERT_TRUE(bridgeEnabled());
 }

@@ -54,7 +54,7 @@ class Motor
     public:
         bool init(const app_motorControl_channelConfig_S * config);
         void run1ms();
-        void cycleStep();
+        void run50us();
 
         bool getSnapshot(app_motorControl_snapshot_S * const snapshot);
         void setVelocity(float32_t velocity_radPerSec);
@@ -63,7 +63,7 @@ class Motor
 
     private:
         // What the bridge is doing this millisecond, decided by run1ms from the
-        // mode, the gate, and the alignment latch; cycleStep acts on it.
+        // mode, the gate, and the alignment latch; run50us acts on it.
         enum class DriveState : uint8_t
         {
             Off,          // bridge dark: gate closed, fault latched, or mode OFF
@@ -264,7 +264,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     return isValid;
 }
 
-// Written by run1ms (task) while Off or Aligning, by cycleStep (ISR) while
+// Written by run1ms (task) while Off or Aligning, by run50us (ISR) while
 // Driving; never both in one state. A cycle that reads a half-written
 // alignment pattern outputs it for one PWM period, and the pattern is static.
 #define SET_ENABLE(enU, enV, enW) \
@@ -405,7 +405,7 @@ void Motor::run1ms()
                 break;
 
             case DriveState::Driving:
-                // The active method's step owns the outputs (cycleStep).
+                // The active method's step owns the outputs (run50us).
                 break;
         }
     }
@@ -414,7 +414,7 @@ void Motor::run1ms()
 // [impl->fw~mc_015~1] the PWM-synchronous step, in the bridge callback's ISR
 // context: the active method commutates from the inputs run1ms published and
 // the cycle's phase currents, then the bridge takes the outputs.
-void Motor::cycleStep()
+void Motor::run50us()
 {
     if (this->config != NULL)
     {
@@ -649,11 +649,11 @@ void app_motorControl_run1ms(void)
 }
 
 // [impl->fw~mc_015~1]
-void app_motorControl_cycleStep(void)
+void app_motorControl_run50us(void)
 {
     for (size_t channel = 0U; channel < APP_MOTORCONTROL_CHANNEL_COUNT; channel++)
     {
-        data->channels[channel].cycleStep();
+        data->channels[channel].run50us();
     }
 }
 

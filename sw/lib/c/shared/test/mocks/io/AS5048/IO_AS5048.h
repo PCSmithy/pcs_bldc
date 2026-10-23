@@ -1,7 +1,7 @@
 #pragma once
 
-// Boundary double of IO_AS5048 — only the surface app_motorControl uses
-// (readAngle's radian output). Implementation + controls in mock_IO_AS5048.
+// Boundary double of IO_AS5048 — the consumer surface (readAngle's radian
+// output and getStatus). Implementation + controls in mock_IO_AS5048.
 // Rationale: injecting a rotor angle through the real SPI decode chain would
 // mean hand-crafting AS5048 frames; the double lets a test just set an angle.
 
