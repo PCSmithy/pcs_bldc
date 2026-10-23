@@ -12,7 +12,8 @@ const ELF_BUILD = FORCED === "mismatch" ? "1d77b2e4a09c" : DEVICE_BUILD;
 
 // A plausible firmware namespace, ~704 leaves.
 const MODULES = [
-  ["app_motorControl_data.channels[0]", ["velocityMeasured_radPerSec:f32", "velocitySetpointCurrent_radPerSec:f32", "mechanicalAngle_rad:f32", "magneticAngle_rad:f32", "busCurrent:f32", "currentQ_a:f32", "faultLatched:bool", "encoderFaultCount:u16", "duty[0]:f32", "duty[1]:f32", "duty[2]:f32", "phaseCurrent_a[0]:f32", "phaseCurrent_a[1]:f32", "phaseCurrent_a[2]:f32"]],
+  ["app_motorControl_data.channels[0]", ["velocityMeasured_radPerSec:f32", "velocitySetpointCurrent_radPerSec:f32", "rotorAngle_rad:f32", "mechanicalAngle_rad:f32", "magneticAngle_rad:f32", "busCurrent:f32", "iD_a:f32", "iQ_a:f32", "faultLatched:bool", "encoderFaultCount:u16", "duty[0]:f32", "duty[1]:f32", "duty[2]:f32", "phaseCurrent_a[0]:f32", "phaseCurrent_a[1]:f32", "phaseCurrent_a[2]:f32"]],
+  ["app_rotorEstimation_data.channels[0]", ["x_hat.e[0][0]:f32", "x_hat.e[1][0]:f32", "angleMeasured_rad:f32", "angleError_rad:f32", "isSeeded:bool"]],
   // Read-only fixtures (const config in rodata) for the hide-const filter.
   ["IO_bridge_channelConfig", ["phaseCurrent_gain[0]:f32:ro", "phaseCurrent_gain[1]:f32:ro", "phaseCurrent_gain[2]:f32:ro", "deadtime_ns:u16:ro", "pwmFreq_hz:u32:ro"]],
   ["IO_AS5048_data.channels[0]", ["raw:u16", "angle_deg:f32", "angle_rad:f32", "status:enum"]],

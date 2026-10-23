@@ -8,8 +8,8 @@ target_link_libraries(app_motorControl
     lib_types
     lib_timer
     lib_transforms
-    lib_filterIIR
     hw_CORDIC
+    app_rotorEstimation
     io_bridge
     io_AS5048
     dev_gateDriver

@@ -74,7 +74,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
 │   │   │       ├── dev/              Device drivers (switch, gateDriver, CYPD3177)
 │   │   │       └── app/              App-layer modules (rgbLedRing, motorControl,
-│   │   │                             server, cpuLoad)
+│   │   │                             rotorEstimation, server, cpuLoad)
 │   │   └── rust/         Rust libraries, workspace-less path deps:
 │   │       ├── prng/         Deterministic PRNG (SIL models)
 │   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
@@ -98,7 +98,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │           │             bridge, i2c, COBSFrame)
 │           ├── dev/      pcs_bldc device configs (switch, gateDriver, CYPD3177)
 │           └── app/      pcs_bldc app-layer configs (rgbLedRing, motorControl,
-│                         server, userControls)
+│                         rotorEstimation, server, userControls)
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC
@@ -224,10 +224,9 @@ sufficient to make the tooling aware of a new topic.
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), traced to code, except the
-  rotor tracking estimator (`fw~est_rotor_001`, `fw~est_rotor_002`)
-  written ahead of its implementation on the `rotor_pll` branch, and the
-  V/f method (`fw~mc_010`, `fw~mc_017`) deferred on `docs/motor-sprint.md`
-  as the sensorless start-up ramp:
+  FOC set (`fw~mc_022`..`fw~mc_025`) written ahead of its implementation
+  on the `mc_foc` branch, and the V/f method (`fw~mc_010`, `fw~mc_017`)
+  deferred on `docs/motor-sprint.md` as the sensorless start-up ramp:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
     `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).

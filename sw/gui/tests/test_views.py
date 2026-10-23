@@ -1106,7 +1106,7 @@ def run(page):
     # ══ the one-cycle period end to end: the 20 kHz label, a 10 ms signal on
     #    the same timeline, the full-retention 60 s span, and the board's
     #    budget-based refusal of an over-wide one-cycle list ══
-    FAST_S = "app_motorControl_data.channels[0].currentQ_a"
+    FAST_S = "app_motorControl_data.channels[0].iQ_a"
     SLOW_S = "app_motorControl_data.channels[0].busCurrent"
     page.evaluate(
         f"() => {{ __cockpit.addWatch({FAST_S!r}, 1); __cockpit.addWatch({SLOW_S!r}, 200); }}"

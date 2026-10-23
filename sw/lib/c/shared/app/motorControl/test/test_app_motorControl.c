@@ -8,11 +8,13 @@
 //     sensed phase/bus voltage runs the real current-sense scaling and the
 //     bridge enable path end-to-end. The bridge's live enable is observed via
 //     the HW_TIM peripheral's master output enable (MOE).
-//   - Boundary doubles for IO_AS5048 (inject rotor angle) and dev_gateDriver
-//     (force operational) — the two inputs whose real decode chains (SPI frames,
+//   - Boundary doubles for app_rotorEstimation (set the rotor angle and
+//     velocity), IO_AS5048 (the fault status) and dev_gateDriver (force
+//     operational) — inputs whose real chains (the tracking loop, SPI frames,
 //     I2C status bytes) are irrelevant to what these tests assert.
 
 #include "app_motorControl.h"
+#include "mock_app_rotorEstimation.h"
 #include "mock_IO_AS5048.h"
 #include "mock_dev_gateDriver.h"
 #include "mock_HW_TIM.h"
@@ -108,7 +110,7 @@ static void buildConfigs(void)
         .gateDriver = GD_MAIN,
         .bridge = MOTOR_BRIDGE,
         .maxVelocity_radPerSec = MAX_VELOCITY,
-        .velocityEstimateFilterTau_s = 0.01f,   // 10 ms, matching fw~est_velocity_001's bounds
+        .rotorEstimator = APP_ROTORESTIMATION_CHANNEL_MAIN,
         .encoder = ENC_MOTOR,
         // One pole pair keeps electrical angle == rotor angle, so a commutation
         // test can place the field in a chosen sector by setting the rotor angle.
@@ -186,7 +188,7 @@ static void tick(void)
 static void driveToRunning(float32_t velocity)
 {
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    mock_IO_AS5048_setAngle(ENC_MOTOR, 0.0f);
+    mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, velocity);
 
@@ -203,7 +205,7 @@ static void driveToRunning(float32_t velocity)
 static void alignAtZero(void)
 {
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    mock_IO_AS5048_setAngle(ENC_MOTOR, 0.0f);
+    mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
     tick();          // alignment begins
@@ -216,7 +218,7 @@ static void alignAtZero(void)
 // Set rotor angle (degrees) and signed velocity, then run one commutation cycle.
 static void commutateAt(float32_t rotorDeg, float32_t velocity)
 {
-    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(rotorDeg));
+    mock_app_rotorEstimation_setAngle(DEG2RAD(rotorDeg));
     app_motorControl_setVelocity(MOTOR_MC, velocity);
     tick();
 }
@@ -290,6 +292,7 @@ void setUp(void)
     mock_HW_TIM_reset(PERIOD);
     mock_HW_ADC_reset();
     mock_IO_AS5048_reset();
+    mock_app_rotorEstimation_reset();
     mock_dev_gateDriver_reset();
     buildConfigs();
     (void)IO_bridge_init(&bridgeConfig);
@@ -368,7 +371,7 @@ static void test_negative_phase_overcurrent_trips(void)
 static void test_gate_blocks_bridge_when_not_operational(void)
 {
     // Gate driver never made operational; request a full drive.
-    mock_IO_AS5048_setAngle(ENC_MOTOR, 0.0f);
+    mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
@@ -462,7 +465,7 @@ static void test_velocity_setpoint_exposed(void)
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -5.0f, motorSetpoint());
 }
 
-/* ---- fw~est_velocity_001: encoder-derived velocity estimate ---- */
+/* ---- the velocity view: the rotor estimator's ---- */
 
 static float32_t motorVelocity(void)
 {
@@ -471,74 +474,17 @@ static float32_t motorVelocity(void)
     return s.velocityMeasured_radPerSec;
 }
 
-// [test->fw~est_velocity_001~1]
-// A constant angle rate converges to the matching velocity: 0.05 rad/tick =
-// 50 rad/s, run for 10 filter time constants.
-static void test_velocity_estimate_converges_to_angle_rate(void)
+// The snapshot's measured velocity is the estimator's (fw~est_rotor_002), as
+// read on the 1 ms pass, sign included.
+static void test_velocity_view_is_the_estimators(void)
 {
-    float32_t angle = 0.0f;
-    for (uint32_t i = 0U; i < 100U; i++)
-    {
-        angle += 0.05f;
-        if (angle >= 6.2831853f)
-        {
-            angle -= 6.2831853f;
-        }
-        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        tick();
-    }
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, motorVelocity());
-}
+    mock_app_rotorEstimation_setVelocity(12.5f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 12.5f, motorVelocity());
 
-// [test->fw~est_velocity_001~1]
-// Crossing the 0/2pi wrap produces no velocity discontinuity: once converged,
-// every tick through repeated wraps stays near the true rate.
-static void test_velocity_estimate_smooth_across_wrap(void)
-{
-    float32_t angle = 0.0f;
-    for (uint32_t i = 0U; i < 100U; i++)
-    {
-        angle += 0.05f;
-        if (angle >= 6.2831853f)
-        {
-            angle -= 6.2831853f;
-        }
-        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        tick();
-    }
-    for (uint32_t i = 0U; i < 200U; i++)
-    {
-        angle += 0.05f;
-        if (angle >= 6.2831853f)
-        {
-            angle -= 6.2831853f;
-        }
-        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        tick();
-        TEST_ASSERT_FLOAT_WITHIN(5.0f, 50.0f, motorVelocity());
-    }
-}
-
-// [test->fw~est_velocity_001~1]
-// The alignment-offset capture steps mechanicalAngle by up to pi in one tick;
-// that step must not alias into the velocity estimate (the bench showed a
-// -120 rad/s single-sample spike at first enable).
-static void test_velocity_estimate_immune_to_alignment_capture(void)
-{
-    mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(170.0f));
-    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
-
-    tick();          // alignment begins
-    advanceTime_ms(PRECHARGE_ADVANCE_MS);
-    tick();          // precharge done, alignment begins
-    advanceTime_ms(ALIGN_ADVANCE_MS);
-    tick();          // dwell expires, offset := 170 deg captured
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
-
-    tick();          // and the tick after stays clean
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, motorVelocity());
+    mock_app_rotorEstimation_setVelocity(-3.25f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, -3.25f, motorVelocity());
 }
 
 // [test->fw~safety_001~1]
@@ -705,14 +651,7 @@ static void test_sinusoidal_vector_sits_on_the_q_axis(void)
     };
     for (size_t i = 0U; i < COUNTOF(cases); i++)
     {
-        // A jump in the encoder reads as a velocity for a few filter time
-        // constants, which the per-cycle angle (fw~mc_019) would extrapolate;
-        // hold the angle until the estimate decays so the frame is the encoder's.
         commutateAt(cases[i].rotorDeg, cases[i].velocity);
-        for (uint32_t settle = 0U; settle < 40U; settle++)
-        {
-            tick();
-        }
         float32_t angleDeg = 0.0f;
         float32_t volts = 0.0f;
         vectorFromCompares(&angleDeg, &volts);
@@ -784,33 +723,41 @@ static float32_t motorAngle_rad(void)
 }
 
 // [test->fw~mc_019~1]
-// Between 1 ms passes the angle advances by the electrical velocity once per
-// cycle: with the estimate settled at 2 deg/ms (pole pairs 1), twenty cycles of
-// 50 us carry it 2 deg past the last publish, and the next pass re-anchors it
-// on the encoder.
-static void test_cycle_step_advances_the_angle_between_passes(void)
+// Every cycle's electrical angle is the estimator's mechanical angle for that
+// cycle, less the alignment offset, times the pole pairs, wrapped: the step
+// follows the estimate cycle by cycle with no 1 ms pass in between, and the
+// offset carries a reading below it round through 2 pi.
+static void test_cycle_step_follows_the_estimate_every_cycle(void)
 {
-    const float32_t stepPerMs_rad = DEG2RAD(2.0f);
-    float32_t angle = 0.0f;
-    for (uint32_t i = 0U; i < 80U; i++)              // 8 filter time constants
-    {
-        angle += stepPerMs_rad;
-        mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-        tick();
-    }
-    TEST_ASSERT_FLOAT_WITHIN(0.05f * 2000.0f * 0.001f, stepPerMs_rad / 0.001f, motorVelocity());
+    alignAtZero();                                    // offset 0, pole pairs 1
 
-    const float32_t published = motorAngle_rad();    // one cycle past the last pass
-    for (uint32_t cycle = 0U; cycle < 20U; cycle++)
-    {
-        app_motorControl_run50us();
-    }
-    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), published + stepPerMs_rad, motorAngle_rad());
+    mock_app_rotorEstimation_setAngle(1.0f);
+    app_motorControl_run50us();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, motorAngle_rad());
 
-    angle += stepPerMs_rad;                           // the encoder moved on as well
-    mock_IO_AS5048_setAngle(ENC_MOTOR, angle);
-    app_motorControl_run1ms();                        // re-anchors on the encoder
-    TEST_ASSERT_FLOAT_WITHIN(DEG2RAD(0.1f), angle, motorAngle_rad());
+    mock_app_rotorEstimation_setAngle(1.001f);        // the estimate advanced one cycle
+    app_motorControl_run50us();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.001f, motorAngle_rad());
+}
+
+// [test->fw~mc_019~1]
+// With the offset captured at 2 rad, an estimate of 0.5 rad reads 2 pi - 1.5:
+// the subtraction wraps into [0, 2 pi).
+static void test_cycle_step_wraps_the_offset_angle(void)
+{
+    mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    mock_app_rotorEstimation_setAngle(2.0f);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();
+    advanceTime_ms(ALIGN_ADVANCE_MS);
+    tick();                                           // dwell expires, offset := 2.0
+
+    mock_app_rotorEstimation_setAngle(0.5f);
+    app_motorControl_run50us();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 6.2831853f - 1.5f, motorAngle_rad());
 }
 
 /* ---- fw~mc_021: the bootstrap precharge on every enable ---- */
@@ -875,7 +822,7 @@ static void test_cycle_step_not_the_ms_pass_writes_the_outputs(void)
     alignAtZero();                                       // aligned; last step applied the alignment pattern
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());
 
-    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(90.0f));
+    mock_app_rotorEstimation_setAngle(DEG2RAD(90.0f));
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
     app_motorControl_run1ms();                           // publishes angle + target, decides Driving
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());   // outputs untouched
@@ -892,7 +839,7 @@ static void test_first_enable_aligns_then_captures_offset(void)
 {
     // Enable at a non-zero rotor angle so the captured offset is observable.
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
-    mock_IO_AS5048_setAngle(ENC_MOTOR, DEG2RAD(45.0f));
+    mock_app_rotorEstimation_setAngle(DEG2RAD(45.0f));
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
     app_motorControl_setVelocity(MOTOR_MC, 10.0f);
 
@@ -1005,9 +952,7 @@ int main(void)
 
     RUN_TEST(test_state_view_tracks_disabled_enabled_faulted);
     RUN_TEST(test_velocity_setpoint_exposed);
-    RUN_TEST(test_velocity_estimate_converges_to_angle_rate);
-    RUN_TEST(test_velocity_estimate_smooth_across_wrap);
-    RUN_TEST(test_velocity_estimate_immune_to_alignment_capture);
+    RUN_TEST(test_velocity_view_is_the_estimators);
     RUN_TEST(test_clear_fault_releases_latch_and_resumes);
 
     RUN_TEST(test_encoder_fault_latches_past_limit);
@@ -1023,7 +968,8 @@ int main(void)
     RUN_TEST(test_init_rejects_off_default_mode);
     RUN_TEST(test_first_enable_precharges_before_alignment);
     RUN_TEST(test_re_enable_precharges_then_drives);
-    RUN_TEST(test_cycle_step_advances_the_angle_between_passes);
+    RUN_TEST(test_cycle_step_follows_the_estimate_every_cycle);
+    RUN_TEST(test_cycle_step_wraps_the_offset_angle);
     RUN_TEST(test_cycle_step_not_the_ms_pass_writes_the_outputs);
     RUN_TEST(test_first_enable_aligns_then_captures_offset);
     RUN_TEST(test_subsequent_enable_skips_alignment);
