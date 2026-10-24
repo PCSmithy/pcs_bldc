@@ -71,7 +71,7 @@ class Motor
         void updateMagneticAngle();
 
 
-        // called per PWM cycle (and on the 1 ms pass)
+        // called per PWM cycle
         void fetchPhaseCurrents();
         void updateRotorPosition();   // the rotor estimate into the electrical angle
 
@@ -259,8 +259,11 @@ void Motor::run1ms()
 {
     if (this->config != NULL)
     {
-        // fetch inputs: the rotor estimate as it stands this pass
-        this->updateRotorPosition();
+        // The rotor estimate as it stands this pass, for the alignment capture
+        // below; the ISR owns the angle and velocity members.
+        float32_t rotorAngle_rad = ZERO;
+        float32_t velocity_radPerSec = ZERO;
+        app_rotorEstimation_getState(this->config->rotorEstimator, &rotorAngle_rad, &velocity_radPerSec);
 
         // [impl->fw~safety_002~1] Latch a fault on a persistently invalid
         // encoder — a stale position would commutate the live bridge wrong.
@@ -338,7 +341,7 @@ void Motor::run1ms()
                 SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, true);
                 if (lib_timer_runTimerWithEnable(&this->alignmentDwell, true) == LIB_TIMER_STATE_EXPIRED)
                 {
-                    this->alignmentOffset_rad = this->rotorAngle_rad;
+                    this->alignmentOffset_rad = rotorAngle_rad;
                     this->isAligned = true;
                 }
                 break;

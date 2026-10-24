@@ -7,5 +7,6 @@ target_include_directories(app_rotorEstimation_channels PUBLIC .)
 target_link_libraries(app_rotorEstimation_channels
     PUBLIC
         lib_utils
+        pcs_TIM_channels   # HW_TIM_PWM_PERIOD_S
         app_rotorEstimation
 )

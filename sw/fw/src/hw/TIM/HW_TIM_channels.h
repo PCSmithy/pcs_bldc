@@ -1,5 +1,9 @@
 #pragma once
 
+// TIM1's PWM period: 144 MHz / 7200 counts (3600 centre-aligned, repetition
+// 1), 20 kHz. The cycle time base every per-cycle consumer configures from.
+#define HW_TIM_PWM_PERIOD_S (50.0e-6f)
+
 typedef enum
 {
     HW_TIM_PERIPHERAL_1,       // TIM1: 3-phase complementary motor PWM

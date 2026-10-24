@@ -1,6 +1,7 @@
 /* Includes */
 #include "lib_utils.h"
 
+#include "HW_TIM_channels.h"
 #include "app_rotorEstimation.h"
 
 /* Defines */
@@ -12,10 +13,10 @@ static const app_rotorEstimation_channelConfig_S app_rotorEstimation_channelConf
     [APP_ROTORESTIMATION_CHANNEL_MAIN] =
     {
         .encoder = IO_AS5048_CHANNEL_MOTOR,
-        .omega_n = 2.0f * PI * 50.0f,   // 50 Hz tracking bandwidth (fw~est_rotor_001)
-        .zeta = 1.0f,
+        .naturalFrequency_radPerSec = 2.0f * PI * 50.0f,   // 50 Hz tracking bandwidth (fw~est_rotor_001)
+        .dampingRatio = 1.0f,
         .correctionPeriod_s = 0.001f,   // IO_AS5048_run1ms
-        .estimatePeriod_s = 50.0e-6f,   // TIM1 at 20 kHz (HW_TIM_channels)
+        .estimatePeriod_s = HW_TIM_PWM_PERIOD_S,
     },
 };
 

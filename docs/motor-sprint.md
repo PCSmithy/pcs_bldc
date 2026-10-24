@@ -25,8 +25,7 @@ method (`fw~mc_020`) on the per-cycle rotor angle (`fw~mc_019`), and the
 bootstrap precharge (`fw~mc_021`) are in, as is the encoder phase-locked
 rotor tracking estimator `fw~est_rotor_001`/`_002` (`app_rotorEstimation`,
 `specs/firmware/est/rotor.md`) that `fw~mc_019` and the status velocity
-consume. Written ahead of their code, on the `mc_foc` branch: the FOC
-specs (`fw~mc_022`..`fw~mc_025`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+consume. Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 

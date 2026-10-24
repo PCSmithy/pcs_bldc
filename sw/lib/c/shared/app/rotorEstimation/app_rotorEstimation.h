@@ -18,12 +18,12 @@ extern "C" {
 
 typedef struct
 {
-    IO_AS5048_channel_E encoder; // TODO - refactor IO_AS5048 into dev_encoder some time...
+    IO_AS5048_channel_E encoder;
 
-    float32_t omega_n;            // observer natural frequency, rad/s
-    float32_t zeta;               // observer damping ratio, >= 0.5
-    float32_t correctionPeriod_s; // the encoder sample period (run1ms)
-    float32_t estimatePeriod_s;   // the PWM period (run50us)
+    float32_t naturalFrequency_radPerSec;   // observer natural frequency omega_n
+    float32_t dampingRatio;                 // observer damping ratio zeta, >= 0.5
+    float32_t correctionPeriod_s;           // the encoder sample period (run1ms)
+    float32_t estimatePeriod_s;             // the PWM period (run50us)
 } app_rotorEstimation_channelConfig_S;
 
 typedef struct

@@ -103,7 +103,8 @@ Needs: impl, test
 The firmware shall hold, as readable statics, the durations in
 microseconds, measured on the bridge's free-running microsecond time
 base, from bridge cycle callback entry to the end of the commutation
-step and from entry to callback exit: the latest callback's, and the
+step — the rotor estimate advance (`fw~est_rotor_002~1`) included — and
+from entry to callback exit: the latest callback's, and the
 maximum observed, each maximum cleared by writing zero to it
 (`fw~conn_trace_008~1`).
 

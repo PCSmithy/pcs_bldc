@@ -49,10 +49,10 @@ in scalar form e = wrap(θ_m − θ̂); ω̂ ← ω̂ + K_i · e · T_s;
 configured natural frequency in rad/s, and ζ the configured damping ratio.
 
 Acceptance:
-- At ω_n = 2π · 50 rad/s and ζ = 1, from the first valid read of an
-  encoder angle advancing at a constant 21 rad/s, ω̂ is within 1 % of the
-  rate inside 50 ms and stays there over the following 1 s, through the
-  encoder's 0/2π wraps.
+- At ω_n = 2π · 50 rad/s and ζ = 1, from the first valid read of a
+  noise-free encoder angle advancing at a constant 21 rad/s, ω̂ is within
+  1 % of the rate inside 50 ms and stays there over the following 1 s,
+  through the encoder's 0/2π wraps.
 - A valid read at angle error e changes ω̂ by K_i · e · T_s and, net of
   the cycle advance (fw~est_rotor_002~1), θ̂ by K_p · e · T_s, each within
   1 %.

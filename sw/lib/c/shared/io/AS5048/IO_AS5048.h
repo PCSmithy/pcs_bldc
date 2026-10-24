@@ -47,8 +47,8 @@ bool IO_AS5048_init(const IO_AS5048_config_S * const config);
 void IO_AS5048_run1ms(void);
 
 // Read a channel's latest sampled angle (cached by _run1ms; non-blocking).
-// Writes the raw count (0..16383) to *angleRaw and degrees to *angle_deg
-// when each is non-NULL. Returns false if uninitialized or channel is out
+// Writes the raw count (0..16383) to *angleRaw, degrees to *angle_deg, and
+// radians to *angle_rad when each is non-NULL. Returns false if uninitialized or channel is out
 // of range. The reading's integrity is reported separately by
 // IO_AS5048_getStatus.
 bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad);

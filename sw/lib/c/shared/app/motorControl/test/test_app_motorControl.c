@@ -730,6 +730,7 @@ static float32_t motorAngle_rad(void)
 static void test_cycle_step_follows_the_estimate_every_cycle(void)
 {
     alignAtZero();                                    // offset 0, pole pairs 1
+    mock_app_rotorEstimation_setVelocity(21.0f);      // a velocity the old law would extrapolate on
 
     mock_app_rotorEstimation_setAngle(1.0f);
     app_motorControl_run50us();
@@ -755,6 +756,7 @@ static void test_cycle_step_wraps_the_offset_angle(void)
     advanceTime_ms(ALIGN_ADVANCE_MS);
     tick();                                           // dwell expires, offset := 2.0
 
+    mock_app_rotorEstimation_setVelocity(21.0f);
     mock_app_rotorEstimation_setAngle(0.5f);
     app_motorControl_run50us();
     TEST_ASSERT_FLOAT_WITHIN(1e-5f, 6.2831853f - 1.5f, motorAngle_rad());

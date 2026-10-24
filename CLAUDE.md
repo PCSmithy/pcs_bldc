@@ -14,9 +14,10 @@ in **KiCad 10**, currently frozen pending firmware work.
 
 Both software components exist and run on the bench (README's Status
 section carries the feature inventory). The **firmware**: the spec'd +
-traced driver stack, first motor drive (six-step trapezoidal; V/f
-specced but not yet implemented), USB-PD sink monitoring, overcurrent +
-encoder-fault protection, and a protobuf-over-USB-CDC protocol
+traced driver stack, motor drive (six-step and sensored sinusoidal on an
+encoder tracking estimator; V/f specced but not yet implemented), USB-PD
+sink monitoring, overcurrent + encoder-fault protection, and a
+protobuf-over-USB-CDC protocol
 (telemetry, signal trace engine, log stream, firmware identity). The
 **desktop app** (`sw/gui`, Tauri 2): the observability slice,
 spec-driven, verified by the playwright suite
@@ -223,10 +224,9 @@ sufficient to make the tooling aware of a new topic.
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
-- **Firmware specs** (`specs/firmware/`), traced to code, except the
-  FOC set (`fw~mc_022`..`fw~mc_025`) written ahead of its implementation
-  on the `mc_foc` branch, and the V/f method (`fw~mc_010`, `fw~mc_017`)
-  deferred on `docs/motor-sprint.md` as the sensorless start-up ramp:
+- **Firmware specs** (`specs/firmware/`), traced to code, except the V/f
+  method (`fw~mc_010`, `fw~mc_017`) deferred on `docs/motor-sprint.md` as
+  the sensorless start-up ramp:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
     `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).

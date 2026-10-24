@@ -24,8 +24,8 @@ static app_rotorEstimation_config_S config;
 static void nominalConfig(void)
 {
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].encoder = IO_AS5048_CHANNEL_MOTOR;
-    channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].omega_n = OMEGA_N;
-    channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].zeta = ZETA;
+    channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].naturalFrequency_radPerSec = OMEGA_N;
+    channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].dampingRatio = ZETA;
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].correctionPeriod_s = TS;
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].estimatePeriod_s = TPWM;
     config.channels = channelConfig;
@@ -87,15 +87,15 @@ static void test_init_rejects_bad_config(void)
     TEST_ASSERT_FALSE(app_rotorEstimation_init(&config));
 
     nominalConfig();
-    channelConfig[0].omega_n = 0.0f;
+    channelConfig[0].naturalFrequency_radPerSec = 0.0f;
     TEST_ASSERT_FALSE(app_rotorEstimation_init(&config));
 
     nominalConfig();
-    channelConfig[0].zeta = 0.4f;
+    channelConfig[0].dampingRatio = 0.4f;
     TEST_ASSERT_FALSE(app_rotorEstimation_init(&config));
 
     nominalConfig();
-    channelConfig[0].omega_n = 600.0f;   // 2*zeta*omega_n*Ts = 1.2
+    channelConfig[0].naturalFrequency_radPerSec = 600.0f;   // 2*zeta*omega_n*Ts = 1.2
     TEST_ASSERT_FALSE(app_rotorEstimation_init(&config));
 
     nominalConfig();
@@ -139,18 +139,21 @@ static void test_valid_read_applies_gain_times_error_by_the_next_cycle(void)
     cycles(1U);
     const float32_t expOmega = KI_TS * e;
     const float32_t expTheta = 1.0f + (KP_TS * e) + (expOmega * TPWM);   // net of the cycle advance
-    TEST_ASSERT_FLOAT_WITHIN(0.01f * expOmega, expOmega, omega());
-    TEST_ASSERT_FLOAT_WITHIN(0.01f * KP_TS * e, expTheta, theta());
+    // Absolute tolerances well under the 4.9e-5 rad advance term, so an
+    // advance applied before the correction, or skipped, fails here.
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, expOmega, omega());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, expTheta, theta());
 }
 
 static void test_error_is_wrapped_across_two_pi(void)
 {
-    tick(0.1f);                                        // seeded just past zero
-    const float32_t e = -0.02f;                        // the encoder reads just below 2*pi
-    mock_IO_AS5048_setAngle(IO_AS5048_CHANNEL_MOTOR, (2.0f * PI_F) + 0.1f + e);
+    tick(0.01f);                                       // seeded just past zero
+    const float32_t e = -0.02f;                        // the encoder reads 0.01 below 2*pi
+    mock_IO_AS5048_setAngle(IO_AS5048_CHANNEL_MOTOR, (2.0f * PI_F) - 0.01f);
     app_rotorEstimation_run1ms();
     cycles(1U);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f * fabsf(KI_TS * e), KI_TS * e, omega());
+    // 0.1 %: the error is the difference of two angles near 2*pi in float
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f * fabsf(KI_TS * e), KI_TS * e, omega());
 }
 
 static void test_invalid_read_skips_the_correction(void)
