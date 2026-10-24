@@ -15,7 +15,8 @@ Each channel is one AS5048 device, addressed by logical channel
 share a single SPI bus through distinct chip-selects.
 
 See also: [[motor-control]] (sys~mc_001~1), [[spi]] (HW_SPI provides the
-transport).
+transport), [[rotor]] (the tracking estimator that consumes the motor
+channel's angle).
 
 ## Driver configuration and lifecycle
 
@@ -75,20 +76,20 @@ Covers:
 
 Needs: impl, test
 
-### Angle readout in counts and degrees
+### Angle readout in counts, degrees, and radians
 `fw~est_encoder_004~1`
 
 The driver shall return an addressed channel's latest stored angle as a raw
-14-bit count and as degrees
+14-bit count, as degrees, and as radians
 
-$$\theta = \frac{c}{16384}\, 360^\circ$$
+$$\theta = \frac{c}{16384}\, 360^\circ = \frac{c}{16384}\, 2\pi$$
 
 where $c$ is the raw count; a read of an uninitialized driver or an
 out-of-range channel returns false.
 
 Acceptance:
-- For a known count, the degrees reading equals the formula and the count
-  reading equals the raw count.
+- For a known count, the degrees and radians readings equal the formula
+  and the count reading equals the raw count.
 - A read before initialization or of an out-of-range channel returns false.
 
 Covers:

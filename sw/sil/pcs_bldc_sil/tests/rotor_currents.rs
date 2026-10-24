@@ -175,7 +175,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
 fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
     // Full dial under six-step on the 50 us grid, past 300 rad/s electrical: every
     // cycle's angle, read after the step that produced it, is within the spec's 3 deg
-    // of the plant's rotor angle, a millisecond after the last encoder sample included.
+    // of the plant's rotor angle, the estimator carrying it between encoder reads.
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
     spin_up(&mut sim);
     let mut deg = 90.0;

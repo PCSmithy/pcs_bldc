@@ -183,7 +183,7 @@ file is the real description; the ID is just a stable index.
   busy topic per-area number spaces instead of one flat pool. `hal`
   carries one sub-topic per peripheral (`hal_spi`, `hal_adc`, ...); other
   in-use examples are `conn_serial`/`conn_proto`/`conn_server`,
-  `io_i2c`/`io_bridge`, `est_encoder`/`est_velocity`, and
+  `io_i2c`/`io_bridge`, `est_encoder`/`est_rotor`, and
   `obs_led`/`obs_status`/`obs_log`/`obs_identity`. Most topics omit the
   sub-topic entirely. Sub-topics are lowercase abbreviations; they are
   not separately enumerated in the topic table.

@@ -2,5 +2,6 @@
 # drivers. Add a module's subdir once it has real code.
 add_subdirectory(rgbLedRing)
 add_subdirectory(motorControl)
+add_subdirectory(rotorEstimation)
 add_subdirectory(server)
 add_subdirectory(cpuLoad)

@@ -15,12 +15,13 @@ like end-to-end.
 - **Firmware:** foundation platform plus first motor drive — a spec'd and
   traced driver stack (clocks, GPIO, ADC, DMA, SPI, I2C, timers, USB CDC,
   op-amps, encoder, LED ring, button, serial) with all board sensing
-  bench-verified in engineering units; six-step trapezoidal drive spinning
-  the motor through the STSPIN32G4 gate driver, with USB-PD sink
-  monitoring and overcurrent / encoder-fault protection; and a
+  bench-verified in engineering units; six-step and sensored sinusoidal
+  drive spinning the motor through the STSPIN32G4 gate driver on an
+  encoder tracking estimator, with USB-PD sink monitoring and
+  overcurrent / encoder-fault protection; and a
   protobuf-over-USB protocol carrying telemetry, a signal trace engine
   sampling at the 20 kHz PWM rate, a link throughput test, and the log
-  stream. FOC and estimation are ahead (see
+  stream. FOC is next (see
   [`docs/motor-sprint.md`](docs/motor-sprint.md)).
 - **Desktop app:** observability slice working on the bench — connect with
   a firmware-identity gate, DWARF-driven signal picker, live WebGL plots

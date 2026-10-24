@@ -31,8 +31,8 @@ void mock_IO_AS5048_setStatus(IO_AS5048_channel_E channel, IO_AS5048_status_E st
 
 /* ---- mocked IO_AS5048 surface ---- */
 
-// app_motorControl reads only the radian output; raw/deg are accepted for
-// signature parity and written when non-NULL.
+// Consumers read the radian output; raw/deg are accepted for signature
+// parity and written when non-NULL.
 bool IO_AS5048_readAngle(IO_AS5048_channel_E channel, uint16_t * angleRaw, float32_t * angle_deg, float32_t * angle_rad)
 {
     bool ret = false;

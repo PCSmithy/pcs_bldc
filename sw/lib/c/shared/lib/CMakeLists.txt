@@ -11,6 +11,7 @@ add_subdirectory(protobuf)
 add_subdirectory(timer)
 add_subdirectory(CYPD3177)
 add_subdirectory(transforms)
+add_subdirectory(matrix)
 # Future modules:
 # add_subdirectory(nvm)
 # add_subdirectory(rtos)

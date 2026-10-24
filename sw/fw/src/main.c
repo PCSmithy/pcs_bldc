@@ -34,6 +34,7 @@
 #include "dev_gateDriver.h"
 #include "app_rgbLedRing.h"
 #include "app_motorControl.h"
+#include "app_rotorEstimation.h"
 #include "app_userControls.h"
 #include "app_server.h"
 
@@ -63,6 +64,7 @@ extern const IO_serial_config_S IO_serial_config;
 extern const IO_COBSFrame_config_S IO_COBSFrame_config;
 extern const app_rgbLedRing_config_S app_rgbLedRing_config;
 extern const app_motorControl_config_S app_motorControl_config;
+extern const app_rotorEstimation_config_S app_rotorEstimation_config;
 extern const app_userControls_config_S app_userControls_config;
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -229,6 +231,7 @@ static void task_1ms(void * params)
 
         // app
         app_userControls_run1ms();   // button + dial -> motor mode/velocity commands
+        app_rotorEstimation_run1ms();   // encoder correction of the rotor estimate (fw~est_rotor_001)
         app_motorControl_run1ms();   // in-module overcurrent trip + enable gating (fw~safety_001 / fw~mc_006)
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
         // Sim trace window word [0]: the SIL trace scenarios' 1 kHz signal.
@@ -370,8 +373,9 @@ static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context
     (void)context;
     const uint32_t entry_us = lib_timer_getHWCount_us();
 
-    // --- commutation step (fw~mc_015) ---
-    app_motorControl_cycleStep();
+    // --- rotor estimate advance (fw~est_rotor_002), then the commutation step (fw~mc_015) ---
+    app_rotorEstimation_run50us();
+    app_motorControl_run50us();
     const uint32_t stepDuration_us = lib_timer_getHWCount_us() - entry_us;
     main_cycleProbe_step_us = stepDuration_us;
     if (stepDuration_us > main_cycleProbe_stepMax_us)
@@ -426,6 +430,7 @@ static bool main_private_appInit(void)
     ok &= dev_CYPD3177_init(&dev_CYPD3177_config);
     ok &= dev_gateDriver_init(&dev_gateDriver_config);
     ok &= app_rgbLedRing_init(&app_rgbLedRing_config);
+    ok &= app_rotorEstimation_init(&app_rotorEstimation_config);
     ok &= app_motorControl_init(&app_motorControl_config);
     ok &= app_userControls_init(&app_userControls_config);
     ok &= HW_USB_init();   // USB device stack (serviced in task_usb)

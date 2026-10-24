@@ -17,3 +17,4 @@
 
 add_subdirectory(hw/TIM)
 add_subdirectory(hw/ADC)
+add_subdirectory(io/AS5048)

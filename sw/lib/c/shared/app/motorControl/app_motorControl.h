@@ -8,6 +8,7 @@
 
 #include "dev_gateDriver.h"
 
+#include "app_rotorEstimation.h"
 #include "app_motorControl_channels.h"
 
 #ifdef __cplusplus
@@ -45,9 +46,9 @@ typedef struct
     IO_bridge_channel_E bridge;
 
     float32_t maxVelocity_radPerSec;
-    float32_t velocityEstimateFilterTau_s;
 
-    IO_AS5048_channel_E encoder; // TODO - abstract IO_AS5048 into a multi-encoder dev_encoder
+    app_rotorEstimation_channel_E rotorEstimator;   // the rotor angle + velocity estimate (fw~est_rotor_002)
+    IO_AS5048_channel_E encoder;   // its encoder, read here only for the fault status (fw~safety_002)
 
     uint8_t motorPolePairs;
     float32_t pwmPeriod_s;   // the bridge's PWM period: the step's time base
@@ -71,7 +72,7 @@ typedef struct
     bool                     isAligned;
     float32_t                magneticAngle_rad;            // rotor electrical angle
     float32_t                velocitySetpoint_radPerSec;   // signed commanded speed target
-    float32_t                velocityMeasured_radPerSec;   // encoder-derived estimate (fw~est_velocity_001)
+    float32_t                velocityMeasured_radPerSec;   // the rotor estimator's velocity (fw~est_rotor_002)
     app_motorControl_mode_E  selectedMode;                 // the method an enable runs; OFF leaves it selected
 } app_motorControl_snapshot_S;
 
@@ -85,7 +86,7 @@ bool app_motorControl_init(const app_motorControl_config_S * const config);
 bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorControl_snapshot_S * const snapshot);
 
 void app_motorControl_run1ms(void);
-void app_motorControl_cycleStep(void);
+void app_motorControl_run50us(void);
 
 void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec);
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);

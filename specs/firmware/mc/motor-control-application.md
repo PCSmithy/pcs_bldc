@@ -6,20 +6,21 @@ tags: [firmware, mc, app, driver]
 # Motor-control application
 
 The `app_motorControl` module owns the drive loop across two cadences. The
-1 ms cycle owns the inputs and the gate: it reads the encoder and publishes
-the rotor angle and velocity estimate, the speed target, mode selection,
+1 ms cycle owns the inputs and the gate: the speed target, mode selection,
 bus voltage, fault latching, alignment, and bridge enable. The
 PWM-synchronous cycle, entered from the bridge's per-cycle callback that
 `main.c` composes around the duration probe (`fw~mc_018~1`), runs the active
-commutation method's step on the per-cycle rotor angle, those inputs, and
-the cycle's phase currents, and writes the bridge commands. The operator
+commutation method's step on the per-cycle rotor electrical angle
+(`fw~mc_019~1`) from the rotor estimate ([[rotor]]), those inputs, and the
+cycle's phase currents, and writes the bridge commands. The operator
 interface is the user button (gestures), the dial encoder (speed target),
 and the LED ring (state indication).
 
 See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
 (`fw~io_bridge_002/003/004/008` the duty and enable path, `fw~io_bridge_007~1`
 the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
-transform), [[velocity]] (`fw~est_velocity_001~1`, the velocity estimate),
+transform), [[rotor]] (`fw~est_rotor_002~1`, the angle and velocity
+estimates),
 [[six-step]], [[sinusoidal]], [[vf-sinusoidal]] (the commutation methods),
 [[gate-driver]] (dev_gateDriver supplies the operational gate),
 [[overcurrent]] (`fw~safety_001~1`, the trip that force-disables).
@@ -102,7 +103,8 @@ Needs: impl, test
 The firmware shall hold, as readable statics, the durations in
 microseconds, measured on the bridge's free-running microsecond time
 base, from bridge cycle callback entry to the end of the commutation
-step and from entry to callback exit: the latest callback's, and the
+step — the rotor estimate advance (`fw~est_rotor_002~1`) included — and
+from entry to callback exit: the latest callback's, and the
 maximum observed, each maximum cleared by writing zero to it
 (`fw~conn_trace_008~1`).
 
@@ -124,16 +126,15 @@ Needs: impl, test
 ### Per-cycle rotor electrical angle
 `fw~mc_019~1`
 
-Each PWM cycle, the application shall hold the rotor electrical angle —
-the shaft angle less the alignment offset (fw~mc_012~1), times the
-pole-pair count, as sampled by the 1 ms cycle — advanced by the electrical
-velocity, the pole-pair count times the velocity estimate
-(fw~est_velocity_001~1), over the time since that sample, wrapped to
+Each PWM cycle, the application shall hold the rotor electrical angle: the
+estimator's mechanical angle for the cycle (`fw~est_rotor_002~1`) less the
+alignment offset (`fw~mc_012~1`), times the pole-pair count, wrapped to
 [0, 2π).
 
 Acceptance:
-- At a constant 300 rad/s electrical, every PWM cycle's angle is within 3°
-  of the rotor's electrical angle.
+- At ω_n = 2π · 50 rad/s, ζ = 1 (`fw~est_rotor_001~1`), and 14 pole pairs,
+  after 100 ms at a constant 300 rad/s electrical, every PWM cycle's angle
+  is within 3° of the rotor's electrical angle.
 
 Covers:
 - `sys~mc_005~1`
@@ -175,8 +176,9 @@ Needs: impl, test
 On the first bridge enable after power-up, the application shall drive the
 phase-U axis pattern — U at the configured alignment duty, V and W
 returning at zero duty — for the configured dwell time, then capture the
-motor shaft angle as the alignment offset: the electrical zero on which
-every subsequent enable commutates.
+estimator's mechanical angle (`fw~est_rotor_002~1`) at that tick as the
+alignment offset: the electrical zero on which every subsequent enable
+commutates.
 
 Acceptance:
 - The first enable applies the alignment pattern for the dwell time, then

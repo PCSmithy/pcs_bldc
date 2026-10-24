@@ -138,6 +138,23 @@ static void test_reverse_inverts_angle(void)
     TEST_ASSERT_EQUAL_UINT16((uint16_t)((16384U - physical) % 16384U), rev);
 }
 
+// [test->fw~est_encoder_004~1]
+// A quarter-turn count reads as 90 degrees and pi/2 radians.
+static void test_readout_scales_count_to_degrees_and_radians(void)
+{
+    mock_HW_SPI_setResponse(HW_SPI_CHANNEL_ENC_A, makeFrame(4096U, false, true));
+    TEST_ASSERT_TRUE(IO_AS5048_init(&config));
+    IO_AS5048_run1ms();
+
+    uint16_t raw = 0U;
+    float32_t deg = 0.0f;
+    float32_t rad = 0.0f;
+    TEST_ASSERT_TRUE(IO_AS5048_readAngle(IO_AS5048_CHANNEL_ENC_A, &raw, &deg, &rad));
+    TEST_ASSERT_EQUAL_UINT16(4096U, raw);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 90.0f, deg);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.5707963f, rad);
+}
+
 /* ---- fw~est_encoder_006: frame integrity + fault status ---- */
 
 // [test->fw~est_encoder_006~1]
@@ -239,6 +256,7 @@ int main(void)
     RUN_TEST(test_readout_out_of_range_fails);
 
     RUN_TEST(test_reverse_inverts_angle);
+    RUN_TEST(test_readout_scales_count_to_degrees_and_radians);
 
     RUN_TEST(test_valid_frame_sets_status_ok);
     RUN_TEST(test_parity_error_faults_and_holds_angle);

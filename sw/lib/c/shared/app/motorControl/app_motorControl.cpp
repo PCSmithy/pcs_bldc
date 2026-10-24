@@ -4,9 +4,9 @@
 #include "lib_utils.h"
 #include "lib_timer.h"
 #include "lib_transforms.h"
-#include "lib_filterIIR.h"
 #include "HW_CORDIC.h"
 
+#include "app_rotorEstimation.h"
 #include "app_motorControl.h"
 
 #include <array>
@@ -42,11 +42,6 @@
 // valid read resets the count.
 #define ENCODER_FAULT_LIMIT (5U)
 
-// Velocity estimate (fw~est_velocity_001): first-order IIR on the per-tick
-// angle derivative; alpha = dt/tau = 1 ms / 10 ms.
-#define VELOCITY_TICK_S      (0.001f)
-#define VELOCITY_FILTER_ALPHA (0.1f)
-
 /* Typedefs */
 
 class Motor
@@ -54,7 +49,7 @@ class Motor
     public:
         bool init(const app_motorControl_channelConfig_S * config);
         void run1ms();
-        void cycleStep();
+        void run50us();
 
         bool getSnapshot(app_motorControl_snapshot_S * const snapshot);
         void setVelocity(float32_t velocity_radPerSec);
@@ -63,7 +58,7 @@ class Motor
 
     private:
         // What the bridge is doing this millisecond, decided by run1ms from the
-        // mode, the gate, and the alignment latch; cycleStep acts on it.
+        // mode, the gate, and the alignment latch; run50us acts on it.
         enum class DriveState : uint8_t
         {
             Off,          // bridge dark: gate closed, fault latched, or mode OFF
@@ -78,7 +73,7 @@ class Motor
 
         // called per PWM cycle
         void fetchPhaseCurrents();
-        void updateRotorPosition();
+        void updateRotorPosition();   // the rotor estimate into the electrical angle
 
         // called in run1ms()
         void updateOvercurrentLatch();
@@ -93,14 +88,12 @@ class Motor
         float32_t velocitySetpointCurrent_radPerSec;
         float32_t velocitySetpointRequested_radPerSec;
 
-        float32_t mechanicalAngle_rad;
+        float32_t rotorAngle_rad;        // the estimator's mechanical angle, before the alignment offset
+        float32_t mechanicalAngle_rad;   // rotorAngle_rad less the alignment offset
         float32_t magneticAngle_rad;
         float32_t magneticAngleTarget_rad;
 
-        float32_t velocityMeasured_radPerSec;
-        float32_t prevRotorPosition_rad;   // RAW encoder angle: immune to the alignment-offset capture step
-        bool velocitySeeded;   // first tick has no previous angle to difference
-        lib_filterIIR_channel_S velocityFilter;
+        float32_t velocityMeasured_radPerSec;   // the estimator's velocity
 
         bool isAligned;
         float32_t alignmentOffset_rad;
@@ -166,17 +159,13 @@ void Motor::fetchPhaseCurrents()
     }
 }
 
-// [impl->fw~mc_019~1]
-// [impl->fw~mc_019~1] the 1 ms sample advanced one PWM period per cycle at
-// the electrical velocity; run1ms re-anchors it on the next encoder read.
+// [impl->fw~mc_019~1] the estimator's per-cycle mechanical angle, less the
+// alignment offset, times the pole pairs; its velocity is the drive's.
 void Motor::updateRotorPosition()
 {
-    if (this->velocitySeeded)
-    {
-        this->mechanicalAngle_rad += this->velocityMeasured_radPerSec * this->config->pwmPeriod_s;
-
-        this->updateMagneticAngle();
-    }
+    app_rotorEstimation_getState(this->config->rotorEstimator, &this->rotorAngle_rad, &this->velocityMeasured_radPerSec);
+    this->mechanicalAngle_rad = this->rotorAngle_rad - this->alignmentOffset_rad;
+    this->updateMagneticAngle();
 }
 
 // [impl->fw~safety_001~1]
@@ -211,6 +200,8 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 
     isValid &= (channelConfig->gateDriver < DEV_GATEDRIVER_CHANNEL_COUNT);
     isValid &= (channelConfig->bridge < IO_BRIDGE_CHANNEL_COUNT);
+    isValid &= (channelConfig->rotorEstimator < APP_ROTORESTIMATION_CHANNEL_COUNT);
+    isValid &= (channelConfig->encoder < IO_AS5048_CHANNEL_COUNT);
     // Both are used as divisors / a commutation multiplier below; a zero
     // would give a degenerate drive (or a division by zero), so reject it
     // at config time rather than defend at every use.
@@ -221,19 +212,6 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->defaultMode > APP_MOTORCONTROL_MODE_OFF);
     isValid &= (channelConfig->defaultMode < APP_MOTORCONTROL_MODE_COUNT);
     isValid &= (channelConfig->prechargeTime_ms > 0U);
-
-    lib_filterIIR_channel_S filter =
-    {
-        .type = LIB_FILTERIIR_TYPE_EMA,
-        .ema = {
-            .alpha = (VELOCITY_TICK_S / channelConfig->velocityEstimateFilterTau_s),
-            .y_k = 0.0f,
-            .y_k_1 = 0.0f,
-            .x_k = 0.0f,
-        },
-        .init = false,
-    };
-    isValid &= lib_filterIIR_init(&filter);
 
     if (isValid)
     {
@@ -253,18 +231,15 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->bridgeEnabled = false;
         this->encoderFaultCount = 0U;
 
-        this->velocitySeeded = false;
+        this->rotorAngle_rad = ZERO;
+        this->mechanicalAngle_rad = ZERO;
+        this->magneticAngle_rad = ZERO;
         this->velocityMeasured_radPerSec = ZERO;
-        this->prevRotorPosition_rad = ZERO;
-
-        this->velocityFilter.type = LIB_FILTERIIR_TYPE_EMA;
-        this->velocityFilter.ema.alpha = (VELOCITY_TICK_S / channelConfig->velocityEstimateFilterTau_s);
-        this->velocityFilter.init = false;
     }
     return isValid;
 }
 
-// Written by run1ms (task) while Off or Aligning, by cycleStep (ISR) while
+// Written by run1ms (task) while Off or Aligning, by run50us (ISR) while
 // Driving; never both in one state. A cycle that reads a half-written
 // alignment pattern outputs it for one PWM period, and the pattern is static.
 #define SET_ENABLE(enU, enV, enW) \
@@ -284,44 +259,11 @@ void Motor::run1ms()
 {
     if (this->config != NULL)
     {
-        // fetch inputs. On a dropped encoder read, hold the last rotor
-        // position: readAngle leaves the output untouched on failure, so a
-        // pre-seed avoids both an uninitialized read and a commutation jump.
-        float32_t rotorPosition_rad = this->mechanicalAngle_rad + this->alignmentOffset_rad;
-        (void)IO_AS5048_readAngle(this->config->encoder, NULL, NULL, &rotorPosition_rad);
-        this->mechanicalAngle_rad = rotorPosition_rad - this->alignmentOffset_rad;
-
-        this->updateMagneticAngle();
-
-        // [impl->fw~est_velocity_001~1] Wrapped per-tick angle derivative,
-        // EMA-filtered; the first tick only seeds the previous angle.
-        if (this->velocitySeeded)
-        {
-            // Difference the RAW encoder angle: the alignment-offset
-            // capture steps mechanicalAngle by up to pi in one tick, which
-            // would alias into a huge one-tick velocity spike.
-            float32_t delta_rad = rotorPosition_rad - this->prevRotorPosition_rad;
-            delta_rad = WRAP_RAD_TO_PI(delta_rad);
-            const float32_t velocityRaw_radPerSec = delta_rad / VELOCITY_TICK_S;
-
-            this->velocityFilter.ema.x_k = velocityRaw_radPerSec;
-            if (this->velocityFilter.init)
-            {
-                lib_filterIIR_update(&this->velocityFilter);
-            }
-            else
-            {
-                // First real sample: init seeds the filter output to it.
-                (void)lib_filterIIR_init(&this->velocityFilter);
-            }
-            this->velocityMeasured_radPerSec = this->velocityFilter.ema.y_k;
-        }
-        else
-        {
-            this->velocitySeeded = true;
-        }
-
-        this->prevRotorPosition_rad = rotorPosition_rad;
+        // The rotor estimate as it stands this pass, for the alignment capture
+        // below; the ISR owns the angle and velocity members.
+        float32_t rotorAngle_rad = ZERO;
+        float32_t velocity_radPerSec = ZERO;
+        app_rotorEstimation_getState(this->config->rotorEstimator, &rotorAngle_rad, &velocity_radPerSec);
 
         // [impl->fw~safety_002~1] Latch a fault on a persistently invalid
         // encoder — a stale position would commutate the live bridge wrong.
@@ -395,17 +337,17 @@ void Motor::run1ms()
                 // [impl->fw~mc_012~1]
                 // First enable: a stator field along the phase-U axis (U
                 // sourcing, V and W returning) parks the rotor flux on U for
-                // the dwell; the shaft angle there is electrical zero.
+                // the dwell; the estimator's angle there is electrical zero.
                 SET_DUTY_AND_ENABLE(ALIGNMENT_DUTY_CYCLE, ZERO, ZERO, true, true, true);
                 if (lib_timer_runTimerWithEnable(&this->alignmentDwell, true) == LIB_TIMER_STATE_EXPIRED)
                 {
-                    this->alignmentOffset_rad = rotorPosition_rad;
+                    this->alignmentOffset_rad = rotorAngle_rad;
                     this->isAligned = true;
                 }
                 break;
 
             case DriveState::Driving:
-                // The active method's step owns the outputs (cycleStep).
+                // The active method's step owns the outputs (run50us).
                 break;
         }
     }
@@ -414,7 +356,7 @@ void Motor::run1ms()
 // [impl->fw~mc_015~1] the PWM-synchronous step, in the bridge callback's ISR
 // context: the active method commutates from the inputs run1ms published and
 // the cycle's phase currents, then the bridge takes the outputs.
-void Motor::cycleStep()
+void Motor::run50us()
 {
     if (this->config != NULL)
     {
@@ -649,11 +591,11 @@ void app_motorControl_run1ms(void)
 }
 
 // [impl->fw~mc_015~1]
-void app_motorControl_cycleStep(void)
+void app_motorControl_run50us(void)
 {
     for (size_t channel = 0U; channel < APP_MOTORCONTROL_CHANNEL_COUNT; channel++)
     {
-        data->channels[channel].cycleStep();
+        data->channels[channel].run50us();
     }
 }
 
