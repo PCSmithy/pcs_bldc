@@ -103,6 +103,7 @@ static void buildConfigs(void)
         },
         .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A },
         .injectedPairWindow_us = PAIR_WINDOW_US,
+        .zeroOffset = { .filterAlpha = 0.005f, .minSamples = 1000U },
         .busVoltage = { BUS_V_CH, BUS_V_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_V } };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
