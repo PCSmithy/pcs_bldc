@@ -225,7 +225,7 @@ sufficient to make the tooling aware of a new topic.
   `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
   (system-level tests land with the SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), traced to code, except the
-  field-oriented set (`fw~mc_022`..`fw~mc_025`) written ahead of its
+  field-oriented set (`fw~mc_022`..`fw~mc_024`) written ahead of its
   implementation on the `mc_foc` branch, and the V/f method (`fw~mc_010`,
   `fw~mc_017`) deferred on `docs/motor-sprint.md` as the sensorless
   start-up ramp:

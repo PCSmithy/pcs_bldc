@@ -18,7 +18,8 @@ and the LED ring (state indication).
 
 See also: [[commutation-method-architecture]] (`sys~mc_005~1`), [[bridge]]
 (`fw~io_bridge_002/003/004/008` the duty and enable path, `fw~io_bridge_007~1`
-the per-cycle callback), [[modulation]] (`fw~mc_013~1`, the rotor-frame
+the per-cycle callback, `fw~io_bridge_009~1` the offset-corrected phase
+currents), [[modulation]] (`fw~mc_013~1`, the rotor-frame
 transform), [[rotor]] (`fw~est_rotor_002~1`, the angle and velocity
 estimates), [[six-step]], [[sinusoidal]], [[foc]], [[vf-sinusoidal]] (the
 commutation methods),
@@ -103,8 +104,8 @@ Needs: impl, test
 ### Rotor-frame current observation
 `fw~mc_016~1`
 
-Each commutation step, the application shall transform the drive's phase
-currents (`fw~mc_025~1`) into the rotor frame (`fw~mc_013~1`) at the active
+Each commutation step, the application shall transform the bridge-reported
+phase currents (`fw~io_bridge_009~1`) into the rotor frame (`fw~mc_013~1`) at the active
 method's frame angle and hold the result as the drive's I_d and I_q:
 
 | Method                                        | Frame angle                                      |
@@ -117,35 +118,6 @@ Acceptance:
   I_q = 0; with the frame angle at 90°, I_d = 0 and I_q = −I.
 - At constant speed with the phase currents rotating at the electrical
   frequency, I_d and I_q hold within 5% of their magnitude.
-
-Covers:
-- `sys~mc_001~1`
-
-Needs: impl, test
-
-### Zero-current offset calibration
-`fw~mc_025~1`
-
-The application shall hold as the drive's phase currents, for each bridge
-cycle callback (`fw~io_bridge_007~1`), the bridge-reported currents
-(`fw~io_bridge_005~1`, `fw~io_bridge_006~1`) less per-phase offsets, the
-callbacks with the bridge disabled counted in blocks of the configured
-length from reset and from each disable, and the offsets set
-
-| At                                                       | Offsets |
-|----------------------------------------------------------|---------|
-| Reset                                                    | zero |
-| A bridge enable with a block completed since the disable | each phase's mean reported current over the latest such block |
-| A bridge enable with no block completed                  | unchanged |
-
-Acceptance:
-- With the bridge disabled and the reported phase currents held at
-  (I_u, I_v, −I_u − I_v) through a full block, the drive's phase currents
-  after the next enable are the reported currents less that triple, within
-  10 mA.
-- An enable after fewer disabled callbacks than a block leaves the drive's
-  phase currents corrected by the previous enable's offsets.
-- A configuration with a block of zero callbacks is rejected at init.
 
 Covers:
 - `sys~mc_001~1`

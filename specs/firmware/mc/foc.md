@@ -11,10 +11,10 @@ the per-cycle rotor angle and the modulator.
 
 See also: [[motor-control-application]] (fw~mc_015~1 runs this method's
 step each PWM cycle, fw~mc_016~1 supplies I_d and I_q, fw~mc_019~1 the
-per-cycle rotor angle, fw~mc_025~1 the offset-corrected phase currents),
-[[modulation]] (fw~mc_013~1 is the inverse Park transform, fw~mc_014~1
-the modulator), [[bridge]] (the voltage vector is applied by the
-bridge, fw~io_bridge_008~1), [[commutation-method-architecture]]
+per-cycle rotor angle), [[modulation]] (fw~mc_013~1 is the inverse Park
+transform, fw~mc_014~1 the modulator), [[bridge]] (the voltage vector is
+applied by the bridge, fw~io_bridge_008~1; fw~io_bridge_009~1 the
+offset-corrected phase currents), [[commutation-method-architecture]]
 (sys~mc_005~1), [[motor-control]] (sys~mc_001~1).
 
 ### Field-oriented commutation

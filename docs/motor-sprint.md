@@ -25,11 +25,10 @@ method (`fw~mc_020`) on the per-cycle rotor angle (`fw~mc_019`), and the
 bootstrap precharge (`fw~mc_021`) are in, as is the encoder phase-locked
 rotor tracking estimator `fw~est_rotor_001`/`_002` (`app_rotorEstimation`,
 `specs/firmware/est/rotor.md`) that `fw~mc_019` and the status velocity
-consume. Written ahead of their code, on the `mc_foc` branch: the
-field-oriented method, its current regulator and voltage limit
-(`fw~mc_022`..`fw~mc_024`, `specs/firmware/mc/foc.md`) and the
-zero-current offset calibration (`fw~mc_025`,
-`motor-control-application.md`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+consume, and the bridge's zero-current offset tracking (`fw~io_bridge_009`).
+Written ahead of their code, on the `mc_foc` branch: the field-oriented
+method, its current regulator and voltage limit (`fw~mc_022`..`fw~mc_024`,
+`specs/firmware/mc/foc.md`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 
@@ -80,8 +79,8 @@ already in place.
 - **Timer-triggered injected sampling** — done: TIM1-triggered injected
   conversions on ADC1 (U) and ADC2 (V) with the per-cycle callback
   (`fw~hal_adc_010`, `fw~io_bridge_006`/`_007`).
-- **Zero-current offset calibration** — `fw~mc_025`: block means of the
-  phase currents while the bridge is disabled, latched at each enable.
+- **Zero-current offset tracking** — done (`fw~io_bridge_009`): the bridge's
+  EMA of each idle phase's reading, latched when the phase next drives.
 - **Clarke / Park transforms, SVM** — done (`fw~mc_013`/`_014`,
   `fw~io_bridge_008`).
 - **PI current loops (Id/Iq)** — `fw~mc_022`..`fw~mc_024`: the
