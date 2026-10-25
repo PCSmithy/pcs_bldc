@@ -400,6 +400,20 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
     return ret;
 }
 
+bool HW_TIM_getOutputEnabled(HW_TIM_channels_E channel, bool * const isEnabled)
+{
+    bool ret = false;
+    if ((isEnabled != NULL) &&
+        (data->initialized) &&
+        (channel < HW_TIM_CHANNEL_COUNT) &&
+        ((size_t)channel < data->config->numChannels))
+    {
+        *isEnabled = data->outputEnabled[channel];
+        ret = true;
+    }
+    return ret;
+}
+
 // [impl->fw~hal_tim_008~1]
 bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
 {

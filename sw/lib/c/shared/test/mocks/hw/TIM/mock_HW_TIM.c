@@ -165,6 +165,17 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
     return ret;
 }
 
+bool HW_TIM_getOutputEnabled(HW_TIM_channels_E channel, bool * const isEnabled)
+{
+    bool ret = false;
+    if ((isEnabled != NULL) && (channel < HW_TIM_CHANNEL_COUNT))
+    {
+        *isEnabled = mockOutputEnabled[channel];
+        ret = true;
+    }
+    return ret;
+}
+
 bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
 {
     bool ret = false;
