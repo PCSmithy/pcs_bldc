@@ -364,6 +364,29 @@ void Motor::run50us()
 
         this->updateRotorPosition();
 
+        // One sine/cosine pair of the rotor angle serves every transform this cycle.
+        float32_t rotorSin = ZERO;
+        float32_t rotorCos = 1.0f;
+        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
+
+        // [impl->fw~mc_016~1]
+        lib_transforms_clarke(
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_U],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_V],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_W],
+            &this->iAlpha_a,
+            &this->iBeta_a
+        );
+
+        lib_transforms_park(
+            this->iAlpha_a,
+            this->iBeta_a,
+            rotorSin,
+            rotorCos,
+            &this->iD_a,
+            &this->iQ_a
+        );
+
         if (this->driveState == DriveState::Driving)
         {
             this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
@@ -372,14 +395,6 @@ void Motor::run50us()
         bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
         bool isVectorControl = false;
 
-        // One sine/cosine pair of the rotor angle serves every transform this
-        // cycle. The current frame rotates with the rotor only while a method
-        // drives; otherwise it is the stationary frame.
-        float32_t rotorSin = ZERO;
-        float32_t rotorCos = 1.0f;
-        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
-        float32_t frameSin = ZERO;
-        float32_t frameCos = 1.0f;
         if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
@@ -391,9 +406,6 @@ void Motor::run50us()
 
                 case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
                 {
-                    frameSin = rotorSin;
-                    frameCos = rotorCos;
-
                     // [impl->fw~mc_011~1]
                     // Commutate: apply the sector pattern for the rotor
                     // electrical angle advanced by the lead, at a duty
@@ -441,8 +453,6 @@ void Motor::run50us()
                 case APP_MOTORCONTROL_MODE_SINUSOIDAL:
                 {
                     isVectorControl = true;
-                    frameSin = rotorSin;
-                    frameCos = rotorCos;
 
                     // compute rotor frame voltage
                     const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
@@ -463,24 +473,6 @@ void Motor::run50us()
             }
         }
 
-        // [impl->fw~mc_016~1]
-        lib_transforms_clarke(
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_U],
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_V],
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_W],
-            &this->iAlpha_a,
-            &this->iBeta_a
-        );
-
-        lib_transforms_park(
-            this->iAlpha_a,
-            this->iBeta_a,
-            frameSin,
-            frameCos,
-            &this->iD_a,
-            &this->iQ_a
-        );
-
         // update outputs
         if (isVectorControl)
         {
@@ -492,7 +484,6 @@ void Motor::run50us()
             IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_V, this->duty[IO_BRIDGE_PHASE_V]);
             IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_W, this->duty[IO_BRIDGE_PHASE_W]);
         }
-
 
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_U, this->enable[IO_BRIDGE_PHASE_U]);
         IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_V, this->enable[IO_BRIDGE_PHASE_V]);
