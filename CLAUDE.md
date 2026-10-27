@@ -594,36 +594,44 @@ The project file `bldc.kicad_pro` is JSON.
 
 ## kicad-happy Skills
 
-The [kicad-happy](https://github.com/aklofas/kicad-happy) skills are cloned
-at `C:/code/kicad-happy/` and symlinked into this project at
-`.claude/skills/`. All 8 skills are installed: kicad, bom, digikey, mouser,
-lcsc, element14, jlcpcb, pcbway.
+The [kicad-happy](https://github.com/aklofas/kicad-happy) skills are
+installed as a Claude Code plugin (user scope, so available in every
+project; currently v2.3.2). They appear as `kicad-happy:<name>` in the
+skill list: `kicad`, `bom`, `digikey`, `mouser`, `lcsc`, `element14`,
+`jlcpcb`, `pcbway`, `datasheets`, `emc`, `spice`. Nothing is vendored
+into this repo — `.claude/skills/` holds only our own `pcs_spec`.
 
-**At the start of each session**, read the SKILL.md files for any skills
-relevant to the task at hand. The most commonly needed are:
+Install or reinstall (type in a Claude Code session):
 
-- `C:/code/kicad-happy/skills/kicad/SKILL.md` — Schematic/PCB/Gerber
-  analysis. Has Python scripts (`analyze_schematic.py`, `analyze_pcb.py`,
-  `analyze_gerbers.py`) that parse S-expressions into structured JSON for
-  design review. Read this for any design review, DRC/ERC, net tracing, or
-  circuit analysis task.
-- `C:/code/kicad-happy/skills/bom/SKILL.md` — BOM lifecycle (analyze,
-  source, export). Scripts can edit schematic properties directly. Read
-  this for BOM, sourcing, or ordering tasks.
-- `C:/code/kicad-happy/skills/jlcpcb/SKILL.md` — JLCPCB design rules,
-  BOM/CPL format, ordering. Read this before generating fabrication outputs.
+```
+/plugin marketplace add aklofas/kicad-happy
+/plugin install kicad-happy@kicad-happy
+```
 
-The distributor skills (`digikey/`, `mouser/`, `lcsc/`, `element14/`) each
-have a SKILL.md with API usage and datasheet fetching instructions — read
-the relevant one when sourcing components.
-
-If the symlinks are broken (e.g. kicad-happy was moved), recreate them:
+`/plugin update` may not notice new releases (known Claude Code issue).
+To force the latest, clear the cache and reinstall:
 
 ```bash
-for skill in kicad bom digikey mouser lcsc element14 jlcpcb pcbway; do
-  ln -sf "/c/code/kicad-happy/skills/$skill" ".claude/skills/$skill"
-done
+rm -rf ~/.claude/plugins/cache/kicad-happy ~/.claude/plugins/marketplaces/kicad-happy
 ```
+
+then rerun the two `/plugin` commands. Upstream's `install-guidance.md`
+covers platform quirks.
+
+Invoke the relevant skill at the start of a task rather than reading
+SKILL.md files by path. The most commonly needed:
+
+- `kicad-happy:kicad` — schematic/PCB/Gerber analysis scripts
+  (`analyze_schematic.py`, `analyze_pcb.py`, `analyze_gerbers.py`) that
+  parse S-expressions into structured JSON. Any design review, DRC/ERC,
+  net tracing, or circuit analysis task.
+- `kicad-happy:bom` — BOM lifecycle (analyze, source, export); its
+  scripts edit schematic properties directly. Any BOM, sourcing, or
+  ordering task — it decides which distributor/fab skill to call.
+- `kicad-happy:jlcpcb` — JLCPCB design rules, BOM/CPL format, ordering.
+  Read before generating fabrication outputs.
+- `kicad-happy:datasheets` — structured spec extraction from datasheet
+  PDFs, consumed by the analyzers.
 
 A Python venv is set up at `.venv/` (created by `./setup.sh`) with
 dependencies for the analysis scripts. Always use this venv when running
