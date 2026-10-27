@@ -1,0 +1,244 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "5fd46c36-5bf8-4b01-84ef-7a32553f026d")
+	(paper "A3")
+	(lib_symbols)
+	(sheet
+		(at 63.5 200.66)
+		(size 58.42 31.75)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "2667a4f0-e40e-4a6c-bdeb-6f94afb25317")
+		(property "Sheetname" "eth"
+			(at 63.5 199.9484 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "eth.kicad_sch"
+			(at 63.5 232.9946 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 269.24 129.54)
+		(size 50.8 55.88)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "66b2156f-7813-4750-9565-90a73fe0fee3")
+		(property "Sheetname" "driver2"
+			(at 269.24 128.8284 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "driver.kicad_sch"
+			(at 269.24 186.0046 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(page "7")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 128.27 111.76)
+		(size 24.13 34.29)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "a052c559-6e5b-4cad-8529-9797d6293719")
+		(property "Sheetname" "power"
+			(at 128.27 111.0484 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 128.27 146.6346 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 179.07 86.36)
+		(size 53.34 72.39)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b7ba28d5-4882-44af-b4b7-ca000ce6725d")
+		(property "Sheetname" "micro"
+			(at 179.07 85.6484 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "micro.kicad_sch"
+			(at 179.07 159.3346 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 269.24 64.77)
+		(size 50.8 55.88)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "bba871c0-6360-475e-98e3-e2ed8dc80750")
+		(property "Sheetname" "driver1"
+			(at 269.24 64.0584 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "driver.kicad_sch"
+			(at 269.24 121.2346 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)
