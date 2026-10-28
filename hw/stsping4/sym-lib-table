@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "pcs_bldc_sym_lib") (type "KiCad") (uri "${KIPRJMOD}/../lib/pcs_bldc_sym_lib.kicad_sym") (options "") (descr "pcs_bldc project symbols"))
+)

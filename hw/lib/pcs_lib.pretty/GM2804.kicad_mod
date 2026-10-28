@@ -1,0 +1,159 @@
+(footprint "GM2804"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at 0 -0.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "87833bd6-593f-41aa-9138-9b3fb93bd1ac")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "GM2804"
+		(at 0 1 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "f4ad18cb-94b0-4a0e-bc7f-0f02d097554d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "3f9c60a3-a2d1-4992-96c9-357392cf8470")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "204cfe58-5910-4df2-96cf-86e31027fad7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_circle
+		(center 0 0)
+		(end 10 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "a2048e33-e93a-4817-a971-5d732de7b584")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 18 0)
+		(stroke
+			(width 0.5)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "d492090f-cdf5-4aa4-b63e-7a3ff8a8b63f")
+	)
+	(fp_poly
+		(pts
+			(xy 12.5 -13) (xy 10 0) (xy 0 -10)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.SilkS")
+		(uuid "30518e0e-6925-4249-b5a7-f92dda2a57cc")
+	)
+	(fp_circle
+		(center -10 0)
+		(end -8.8 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "dfed3409-e703-44e1-8425-dc8c3be33c1c")
+	)
+	(fp_circle
+		(center 0 -10)
+		(end 1.2 -10)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "dc4c2e2b-9ea6-43df-a0f1-bba2ba90bf2b")
+	)
+	(fp_circle
+		(center 0 10)
+		(end 1.2 10)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "865bd11d-bf26-41f9-b6b3-8fc30663039b")
+	)
+	(fp_circle
+		(center 10 0)
+		(end 11.2 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "7ee2e5ef-c860-4cdb-a5bb-bea592b71e16")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 2.5 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "8add95c9-9bc9-4967-9884-13a4f3c80853")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/../lib/3dmodels/GM2804_Enc.stp"
+		(offset
+			(xyz 0 0 25)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -0 -90 90)
+		)
+	)
+)
