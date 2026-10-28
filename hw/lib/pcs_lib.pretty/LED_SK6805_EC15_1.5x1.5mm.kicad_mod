@@ -1,0 +1,255 @@
+(footprint "LED_SK6805_EC15_1.5x1.5mm"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "OPSCO SK6805-EC15 addressable RGB LED, 1.5x1.5x0.65mm, 4 pads 0.55x0.55mm on 0.95mm pitch (datasheet p.5), orientation mark at GND (pin 4)")
+	(tags "LED RGB SK6805 EC15 addressable")
+	(property "Reference" "REF**"
+		(at 0 -1.75 0)
+		(layer "F.SilkS")
+		(uuid "95b44d60-c575-4cd0-9ef2-d165a8ffdcd7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "LED_SK6805_EC15_1.5x1.5mm"
+		(at 0 1.75 0)
+		(layer "F.Fab")
+		(uuid "0c598222-60f7-4279-88ac-7652e93f976b")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d2b65112-19e7-4c53-a088-219e509c6455")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c1c87249-9897-448a-9af5-622cf3cbf349")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -0.96 -0.96)
+		(end -0.96 -0.31)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "14e03e0c-2942-4b46-9d96-5275bfb07757")
+	)
+	(fp_line
+		(start -0.31 -0.96)
+		(end -0.96 -0.96)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "d23ce729-d31f-4072-9044-64193fc16573")
+	)
+	(fp_line
+		(start -1 -1)
+		(end 1 -1)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "2540319b-7238-4b63-9e6a-4170cfeb358a")
+	)
+	(fp_line
+		(start -1 1)
+		(end -1 -1)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "bd34e6ef-38c0-4f6c-9505-f89af220fce2")
+	)
+	(fp_line
+		(start 1 -1)
+		(end 1 1)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "d69b9129-9d61-4e7b-8c1a-00a73e61a2d5")
+	)
+	(fp_line
+		(start 1 1)
+		(end -1 1)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "a30601c4-7f01-4f7f-87b2-79cdf1ef766f")
+	)
+	(fp_line
+		(start -0.75 -0.375)
+		(end -0.375 -0.75)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2600c9b2-2f62-429f-a54b-5fc521c4a6fa")
+	)
+	(fp_line
+		(start -0.75 0.75)
+		(end -0.75 -0.375)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "5e864a5d-c0ae-4d32-a0ae-5db83a0a6df7")
+	)
+	(fp_line
+		(start -0.375 -0.75)
+		(end 0.75 -0.75)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "acde589d-1190-4c26-8f9c-edd8b1e58b07")
+	)
+	(fp_line
+		(start 0.75 -0.75)
+		(end 0.75 0.75)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "b11550d4-6e6c-48a1-8fe6-9ae292566b1f")
+	)
+	(fp_line
+		(start 0.75 0.75)
+		(end -0.75 0.75)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "06755d8a-233f-40bb-8186-09245eb25b1c")
+	)
+	(fp_poly
+		(pts
+			(xy 0.25 -0.15) (xy 0.45 0.15) (xy 0.65 -0.15)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "b0ff97eb-8e71-48b1-9c3d-e4cf871a4431")
+	)
+	(fp_text user "1"
+		(at -0.95 0.68 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "163d4452-fe4a-4673-a276-589d57be14b2")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.075)
+			)
+		)
+	)
+	(fp_text user "${REFERENCE}"
+		(at -0.1 0 90)
+		(layer "F.Fab")
+		(uuid "5fdc63df-0b1d-4b9c-834b-e2595b5d6e15")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.075)
+			)
+		)
+	)
+	(pad "1" smd roundrect
+		(at -0.475 0.475 90)
+		(size 0.55 0.55)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "c152a56d-5600-48aa-8ce0-2b8349c0cdb9")
+	)
+	(pad "2" smd roundrect
+		(at 0.475 0.475 90)
+		(size 0.55 0.55)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "10a30bf5-349a-4711-b5b8-4e84be0859ab")
+	)
+	(pad "3" smd roundrect
+		(at 0.475 -0.475 90)
+		(size 0.55 0.55)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "55758b98-dc30-42bd-b832-aa82620219ae")
+	)
+	(pad "4" smd roundrect
+		(at -0.475 -0.475 90)
+		(size 0.55 0.55)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "12a81fff-8273-4b70-9e1b-9a9b68452df3")
+	)
+	(embedded_fonts no)
+	(model "${KICAD10_3DMODEL_DIR}/LED_SMD.3dshapes/LED_SK6812_EC15_1.5x1.5mm.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+	(model "${KIPRJMOD}/../lib/3dmodels/SK6805-EC15.step"
+		(opacity 0.9300)
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 90 -0 -0)
+		)
+	)
+)

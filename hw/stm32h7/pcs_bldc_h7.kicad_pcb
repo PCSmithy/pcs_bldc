@@ -2425,7 +2425,7 @@
 			(uuid "fd6236fb-8205-4895-ad9c-bdd44572fb56")
 		)
 		(embedded_fonts no)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/436500312.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/436500312.stp"
 			(offset
 				(xyz 3 -1.25 0)
 			)
@@ -3359,7 +3359,7 @@
 				(xyz 0 0 0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/c-1759546-1-d-3d.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/c-1759546-1-d-3d.stp"
 			(hide yes)
 			(opacity 0.9500)
 			(offset
@@ -3372,7 +3372,7 @@
 				(xyz 90 -180 -0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/c-1759547-1-j-3d.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/c-1759547-1-j-3d.stp"
 			(opacity 0.8400)
 			(offset
 				(xyz 0 4.5 3.5)
@@ -3384,7 +3384,7 @@
 				(xyz -90 -0 180)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/SMTSO2545CTJ.step"
+		(model "${KIPRJMOD}/../lib/3dmodels/SMTSO2545CTJ.step"
 			(offset
 				(xyz -12.1 48.05 0)
 			)
@@ -3395,7 +3395,7 @@
 				(xyz -0 -0 -0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/SMTSO2545CTJ.step"
+		(model "${KIPRJMOD}/../lib/3dmodels/SMTSO2545CTJ.step"
 			(offset
 				(xyz 12.1 48.05 0)
 			)
@@ -6357,7 +6357,7 @@
 			(uuid "b3358b0b-c1b8-44e8-8f0f-f4e02ba0fb9e")
 		)
 		(embedded_fonts no)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/RGF0040E.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/RGF0040E.stp"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -13262,7 +13262,7 @@
 			(uuid "9e25cb8d-c1b1-4a89-8414-e17115ce0fca")
 		)
 		(embedded_fonts no)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/RGF0040E.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/RGF0040E.stp"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -16556,7 +16556,7 @@
 				(xyz 0 0 0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/hanrun_HR911105A_socket.step"
+		(model "${KIPRJMOD}/../lib/3dmodels/hanrun_HR911105A_socket.step"
 			(offset
 				(xyz 4.5 -3.25 0)
 			)
@@ -24596,7 +24596,7 @@
 			(uuid "72182ceb-4d87-4cff-bffa-b3cba0a887b5")
 		)
 		(embedded_fonts no)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/436500312.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/436500312.stp"
 			(offset
 				(xyz 3 -1.25 0)
 			)
@@ -26195,7 +26195,7 @@
 				(xyz 0 0 0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/WS2812-2020.STEP"
+		(model "${KIPRJMOD}/../lib/3dmodels/WS2812-2020.STEP"
 			(offset
 				(xyz 0 0 0.3)
 			)
@@ -27416,7 +27416,7 @@
 				(xyz 0 0 0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/WS2812-2020.STEP"
+		(model "${KIPRJMOD}/../lib/3dmodels/WS2812-2020.STEP"
 			(offset
 				(xyz 0 0 0.3)
 			)
@@ -27889,7 +27889,7 @@
 			)
 		)
 		(embedded_fonts no)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/436500212.stp"
+		(model "${KIPRJMOD}/../lib/3dmodels/436500212.stp"
 			(offset
 				(xyz 1.5 4 0)
 			)
@@ -30578,7 +30578,7 @@
 				(xyz 0 0 0)
 			)
 		)
-		(model "C:/Users/pcsmi/OneDrive/Documents/KiCad/10.0/3dmodels/hanrun_HR911105A_socket.step"
+		(model "${KIPRJMOD}/../lib/3dmodels/hanrun_HR911105A_socket.step"
 			(offset
 				(xyz 4.5 -3.25 0)
 			)
