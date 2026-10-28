@@ -532,6 +532,9 @@
       "Net-(U4-SW)": [
         "Power"
       ],
+      "Net-(U5-SW)": [
+        "Power"
+      ],
       "VBUS": [
         "Power"
       ]
@@ -666,7 +669,7 @@
         "uuid": "5fd46c36-5bf8-4b01-84ef-7a32553f026d"
       }
     ],
-    "used_designators": "#FLG1,R1-27,J1-13,L1,D1-3,#PWR1-75,C1-54,SW1-2,TP1-9,U1-9,FID1-2",
+    "used_designators": "U12-13,#PWR41,#PWR90,#PWR93-98,#PWR165-170,C57-60,C86-97,R43-46,R53-64",
     "variants": []
   },
   "sheets": [
