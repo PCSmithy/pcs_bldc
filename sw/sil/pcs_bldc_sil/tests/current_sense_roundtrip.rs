@@ -118,7 +118,10 @@ fn firmware_sees_full_scale_on_saturation() {
         &sim,
         "IO_bridge_channelConfig[0].phase[0].currentSense.voltsPerUnit",
     );
-    let rail_a = (vref - bias_v) / volts_per_amp;
+    // A positive current drives the pin toward the rail the gain sign points at:
+    // vref for a positive gain, ground for the negative gain of a low-side shunt.
+    let rail_v = if volts_per_amp > 0.0 { vref } else { 0.0 };
+    let rail_a = (rail_v - bias_v) / volts_per_amp;
     let decoded = decoded_phase_a(&sim, 0);
     println!(
         "firmware_sees_full_scale_on_saturation: injected {INJECTED_A} A -> decoded \
@@ -128,7 +131,7 @@ fn firmware_sees_full_scale_on_saturation() {
 
     assert!(
         (decoded - rail_a).abs() < PHASE_TOL_A,
-        "phase U decodes the (vref - bias) / gain = {rail_a} A rail within {PHASE_TOL_A} A, \
+        "phase U decodes the (rail - bias) / gain = {rail_a} A rail within {PHASE_TOL_A} A, \
          not the {INJECTED_A} A injected: {decoded} A"
     );
     assert!(

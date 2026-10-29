@@ -6,10 +6,11 @@
 
 /* Defines */
 
-// Phase-current sense front end: INA240A3 (100 V/V) across a 1 mOhm shunt ->
-// 0.1 V/A, biased to a VREF/2 = 1.65 V zero-current midpoint (bipolar).
+// Phase-current sense front end: INA240A3 (100 V/V) across a 1 mOhm low-side
+// shunt, IN+ on the FET side, so current out of the motor reads positive:
+// -0.1 V/A for current into the motor, biased to a VREF/2 = 1.65 V midpoint.
 #define BRIDGE_PHASE_I_BIAS_V   (1.65f)
-#define BRIDGE_PHASE_I_V_PER_A  (0.1f)
+#define BRIDGE_PHASE_I_V_PER_A  (-0.1f)
 // DC-bus current sense front end: INA180A2 (50 V/V) across a 12 mOhm shunt ->
 // 0.6 V/A, ground referenced (no bias).
 #define BRIDGE_BUS_I_BIAS_V     (0.0f)
