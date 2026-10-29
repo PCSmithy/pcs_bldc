@@ -67,7 +67,9 @@ class PiRegulator
         }
 
     private:
-        PiConfig  config = {};
-        bool      initialized = false;
-        float32_t integral = 0.0f;   // S
+        // Trivial on purpose: a zero object is an uninitialized regulator, so a
+        // constinit holder needs no constructor. Value-initialize locals: `PiRegulator r = {};`
+        PiConfig  config;
+        bool      initialized;
+        float32_t integral;   // S
 };

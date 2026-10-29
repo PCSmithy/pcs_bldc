@@ -29,7 +29,7 @@ void tearDown(void) {}
 
 static void test_init_rejects_bad_config(void)
 {
-    PiRegulator r;
+    PiRegulator r = {};
     TEST_ASSERT_FALSE(r.init({ KP, 0.0f, PERIOD_S }));
     TEST_ASSERT_FALSE(r.init({ KP, KI, 0.0f }));
     TEST_ASSERT_FALSE(r.init({ KP, KI, -PERIOD_S }));
@@ -38,7 +38,7 @@ static void test_init_rejects_bad_config(void)
 
 static void test_step_before_init_is_zero(void)
 {
-    PiRegulator r;
+    PiRegulator r = {};
     TEST_ASSERT_EQUAL_FLOAT(0.0f, r.step(ERR));
     TEST_ASSERT_EQUAL_FLOAT(0.0f, r.step(ERR));
 }
@@ -116,7 +116,7 @@ static void test_release_from_the_limit_leaves_the_integral_term(void)
 
 static void test_back_calculation_before_init_does_nothing(void)
 {
-    PiRegulator r;
+    PiRegulator r = {};
     r.backCalculate(ERR, V_LIM);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, r.step(ERR));
 }
