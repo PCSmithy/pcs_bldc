@@ -628,24 +628,7 @@
       "sort_asc": true,
       "sort_field": "Reference"
     },
-    "bus_aliases": {
-      "ENC1": [
-        "ENC1_SCK",
-        "ENC1_B_MOSI",
-        "ENC1_A_MISO",
-        "ENC1_Z_CS",
-        "ENC1_EN",
-        "ENC1_SW_nFLT"
-      ],
-      "ENC2": [
-        "ENC2_A_MISO",
-        "ENC2_B_MOSI",
-        "ENC2_SCK",
-        "ENC2_Z_CS",
-        "ENC2_EN",
-        "ENC2_SW_nFLT"
-      ]
-    },
+    "bus_aliases": {},
     "connection_grid_size": 50.0,
     "drawing": {
       "dashed_lines_dash_length_ratio": 12.0,
@@ -686,7 +669,7 @@
         "uuid": "5fd46c36-5bf8-4b01-84ef-7a32553f026d"
       }
     ],
-    "used_designators": "U10-11,U13,R29-40,R44,R46,R54,R56,R59-60,R63-64,C41,C44-55,C58,C60,C88-89,C92-93,C96-97,J12-13,#PWR71,#PWR74-91,#PWR94,#PWR96,#PWR98,#PWR166,#PWR168,#PWR170",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
