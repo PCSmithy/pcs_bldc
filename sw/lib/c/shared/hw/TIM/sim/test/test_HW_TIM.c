@@ -643,6 +643,47 @@ static void test_trgo_update_honours_repetition_counter(void)
     TEST_ASSERT_EQUAL_UINT32(3U, trgoCount);
 }
 
+// A center-aligned counter with rcr 1: the crest spends the countdown and the
+// valley raises the update, once per cycle.
+// [test->fw~hal_tim_002~1]
+static void test_center_aligned_update_lands_on_the_zero_reload_by_default(void)
+{
+    buildTrgoTimebase(HW_TIM_TRGO_UPDATE);
+    timPeripherals[BASE_PERIPH].countDir = HW_TIM_COUNT_CENTER;   // 99 up, 99 down
+    timPeripherals[BASE_PERIPH].rcr      = 1U;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(BASE_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(99U);    // the crest
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoCount);
+    HW_TIM_advanceTime(99U);    // the valley
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+    HW_TIM_advanceTime(198U);   // the next valley
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+}
+
+// Configured for the period reload, the first crest after the start raises the
+// update and every later crest follows; the valleys spend the countdown.
+// [test->fw~hal_tim_002~1]
+static void test_center_aligned_update_lands_on_the_period_reload_when_configured(void)
+{
+    buildTrgoTimebase(HW_TIM_TRGO_UPDATE);
+    timPeripherals[BASE_PERIPH].countDir       = HW_TIM_COUNT_CENTER;
+    timPeripherals[BASE_PERIPH].rcr            = 1U;
+    timPeripherals[BASE_PERIPH].updateAtPeriod = true;
+    TEST_ASSERT_TRUE(HW_TIM_init(&timConfig));
+    TEST_ASSERT_TRUE(HW_TIM_registerTrgoCallback(BASE_PERIPH, recordTrgo, NULL));
+
+    HW_TIM_advanceTime(98U);    // one short of the crest
+    TEST_ASSERT_EQUAL_UINT32(0U, trgoCount);
+    HW_TIM_advanceTime(1U);     // the crest
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+    HW_TIM_advanceTime(99U);    // the valley
+    TEST_ASSERT_EQUAL_UINT32(1U, trgoCount);
+    HW_TIM_advanceTime(99U);    // the next crest
+    TEST_ASSERT_EQUAL_UINT32(2U, trgoCount);
+}
+
 // An OC-match source triggers when the counter reaches the compare value.
 // [test->fw~hal_tim_006~1]
 static void test_trgo_oc_match_fires_at_compare(void)
@@ -929,6 +970,8 @@ int main(void)
     RUN_TEST(test_trgo_update_center_fires_at_both_extremes);
     RUN_TEST(test_trgo_update_center_with_rcr_fires_at_the_valley);
     RUN_TEST(test_trgo_update_honours_repetition_counter);
+    RUN_TEST(test_center_aligned_update_lands_on_the_zero_reload_by_default);
+    RUN_TEST(test_center_aligned_update_lands_on_the_period_reload_when_configured);
     RUN_TEST(test_trgo_oc_match_fires_at_compare);
     RUN_TEST(test_trgo_oc_match_uses_configured_unit);
     RUN_TEST(test_trgo_oc_match_center_fires_on_both_crossings);

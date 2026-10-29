@@ -359,9 +359,12 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 const HW_TIM_peripheralConfig_S * const peripheralConfig = &config->peripherals[p];
                 // Every direction starts its cycle at position zero — the
                 // counter reads zero, or the period on a down-counter — with a
-                // full repetition countdown ahead of the first update event.
+                // full repetition countdown ahead of the first update event, or
+                // a spent one so the first reload (a center-aligned counter's
+                // crest) raises it (fw~hal_tim_002).
                 data->peripheralData[p].position = 0U;
-                data->peripheralData[p].repetitionRemaining = peripheralConfig->rcr;
+                data->peripheralData[p].repetitionRemaining =
+                    peripheralConfig->updateAtPeriod ? 0U : peripheralConfig->rcr;
 
                 // The advanced-control peripheral (the one with a break input,
                 // hence an MOE latch) publishes a master-output-enable port,

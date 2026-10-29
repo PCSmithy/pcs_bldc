@@ -190,6 +190,19 @@ static bool HW_TIM_private_initPeripheral(const HW_TIM_config_S * const config,
         }
     }
 
+    // [impl->fw~hal_tim_002~1] HAL init's UG loads the repetition counter
+    // full, so a center-aligned counter's update events expire on the zero
+    // reload. A second UG with a zero reload value leaves the countdown spent:
+    // the first period reload raises the update, and the configured value,
+    // restored before the start, rules every later one.
+    if (ret && peripheralConfig->updateAtPeriod)
+    {
+        htim->Instance->RCR = 0U;
+        htim->Instance->EGR = TIM_EGR_UG;
+        __HAL_TIM_CLEAR_FLAG(htim, TIM_FLAG_UPDATE);
+        htim->Instance->RCR = htim->Init.RepetitionCounter;
+    }
+
     // Wire the output pins' alternate functions (board MSP), then start the
     // counter. Outputs stay disabled until a consumer enables them via
     // HW_TIM_setOutputEnabled.
