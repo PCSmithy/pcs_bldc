@@ -127,6 +127,7 @@ class Motor
         float32_t busCurrent;
         float32_t busVoltage;
         bool enable[IO_BRIDGE_PHASE_COUNT];
+        bool enableApplied[IO_BRIDGE_PHASE_COUNT];   // what the bridge was last told; unchanged enables are not re-sent
 };
 
 
@@ -244,11 +245,26 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->faultLatched = false;
         this->bridgeEnabled = false;
         this->encoderFaultCount = 0U;
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            this->enableApplied[phase] = true;   // the bridge's init leaves every phase enabled; the first cycle disables them
+        }
 
         this->rotorAngle_rad = ZERO;
         this->mechanicalAngle_rad = ZERO;
         this->magneticAngle_rad = ZERO;
         this->velocityMeasured_radPerSec = ZERO;
+
+        const PiConfig piConfig =
+        {
+            .kp = channelConfig->foc.motorL_H * channelConfig->foc.currentLoopBandwidth_radPerSec,
+            .ki = channelConfig->foc.motorR_ohm * channelConfig->foc.currentLoopBandwidth_radPerSec,
+            .period_s = channelConfig->pwmPeriod_s,
+        };
+        for (size_t axis = 0U; axis < APP_MOTORCONTROL_AXIS_COUNT; axis++)
+        {
+            this->currentPi[axis].init(piConfig);
+        }
     }
     return isValid;
 }
@@ -549,9 +565,14 @@ void Motor::run50us()
             IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_W, this->duty[IO_BRIDGE_PHASE_W]);
         }
 
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_U, this->enable[IO_BRIDGE_PHASE_U]);
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_V, this->enable[IO_BRIDGE_PHASE_V]);
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_W, this->enable[IO_BRIDGE_PHASE_W]);
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            if (this->enable[phase] != this->enableApplied[phase])
+            {
+                IO_bridge_setPhaseOutputEnabled(this->config->bridge, (IO_bridge_phase_E) phase, this->enable[phase]);
+                this->enableApplied[phase] = this->enable[phase];
+            }
+        }
 
         IO_bridge_setOutputEnabled(this->config->bridge, isAnyPhaseEnabled);
         this->bridgeEnabled = isAnyPhaseEnabled;

@@ -93,6 +93,9 @@ typedef struct
 /* Private Function Declarations */
 
 static uint8_t HW_ADC_private_resolutionToNumBits(uint32_t resolution);
+static uint32_t HW_ADC_private_oversamplingRatio(uint32_t ratioConstant);
+static uint8_t HW_ADC_private_oversamplingShift(uint32_t shiftConstant);
+static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel);
 static bool    HW_ADC_private_rankToOrdinal(uint32_t rankConstant, uint8_t * const ordinal);
 static bool    HW_ADC_private_initOneChannel(HW_ADC_channels_E channel);
 static bool    HW_ADC_private_armTriggeredChannels(void);
@@ -654,6 +657,26 @@ static void HW_ADC_private_dmaXferComplete(HW_DMA_channel_E dmaChannel, void * c
 
 // Called by HAL
 // [impl->fw~hal_adc_008~1]
+// The per-cycle path: the interrupt handler already knows the channel.
+static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel)
+{
+    HW_ADC_channelData_S * const channelData = &data->channelData[channel];
+
+    for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
+    {
+        channelData->injectedCounts[i] = HAL_ADCEx_InjectedGetValue(&channelData->hadc, HW_ADC_injectedRankConstants[i]);
+    }
+    channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_OK;
+
+    if (channelData->injectedConversionCompleteCallback != NULL)
+    {
+        channelData->injectedConversionCompleteCallback(channel,
+                                                        channelData->injectedConversionStatus,
+                                                        channelData->injectedConversionCompleteCallbackContext);
+    }
+}
+
+// The HAL's generic dispatch lands here, with the handle to resolve.
 void HW_ADC_private_injectedConversionSequenceCompleteCallback(ADC_HandleTypeDef * hadc)
 {
     if (data->initialized)
@@ -661,20 +684,7 @@ void HW_ADC_private_injectedConversionSequenceCompleteCallback(ADC_HandleTypeDef
         const HW_ADC_channels_E channel = HW_ADC_private_channelFromHandle(hadc);
         if (channel < HW_ADC_CHANNEL_COUNT)
         {
-            HW_ADC_channelData_S * const channelData = &data->channelData[channel];
-
-            for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
-            {
-                channelData->injectedCounts[i] = HAL_ADCEx_InjectedGetValue(hadc, HW_ADC_injectedRankConstants[i]);
-            }
-            channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_OK;
-
-            if (channelData->injectedConversionCompleteCallback != NULL)
-            {
-                channelData->injectedConversionCompleteCallback(channel,
-                                                                channelData->injectedConversionStatus,
-                                                                channelData->injectedConversionCompleteCallbackContext);
-            }
+            HW_ADC_private_injectedSequenceComplete(channel);
         }
     }
 }
@@ -737,7 +747,7 @@ void HW_ADC_irqHandler(void)
                 const uint32_t pending = hadc->Instance->ISR & hadc->Instance->IER;
                 if (pending == ADC_FLAG_JEOS)
                 {
-                    HW_ADC_private_injectedConversionSequenceCompleteCallback(hadc);
+                    HW_ADC_private_injectedSequenceComplete((HW_ADC_channels_E) channel);
                     __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
                 }
                 else if (pending != 0U)
