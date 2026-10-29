@@ -39,6 +39,7 @@ typedef struct
     // Decoded resolution (bits) for the volts conversion.
     uint8_t numBits;
     float32_t voltsPerCount;   // vref over full scale, so a volts read is one multiply
+    float32_t injectedVoltsPerCount;   // the same over the injected oversampling sum
 
     // Regular-sequence results, indexed by physical IN# (sparse storage,
     // matches user's inputs[] indexing). Undefined until the channel's first
@@ -231,6 +232,40 @@ static uint8_t HW_ADC_private_resolutionToNumBits(uint32_t resolution)
         case ADC_RESOLUTION_8B:  return 8U;
         case ADC_RESOLUTION_6B:  return 6U;
         default:                 return 12U;
+    }
+}
+
+// The HAL oversampling constants are CFGR2 field encodings; map them back to
+// the ratio and the shift they stand for.
+static uint32_t HW_ADC_private_oversamplingRatio(uint32_t ratioConstant)
+{
+    switch (ratioConstant)
+    {
+        case ADC_OVERSAMPLING_RATIO_2:   return 2U;
+        case ADC_OVERSAMPLING_RATIO_4:   return 4U;
+        case ADC_OVERSAMPLING_RATIO_8:   return 8U;
+        case ADC_OVERSAMPLING_RATIO_16:  return 16U;
+        case ADC_OVERSAMPLING_RATIO_32:  return 32U;
+        case ADC_OVERSAMPLING_RATIO_64:  return 64U;
+        case ADC_OVERSAMPLING_RATIO_128: return 128U;
+        case ADC_OVERSAMPLING_RATIO_256: return 256U;
+        default:                         return 1U;
+    }
+}
+
+static uint8_t HW_ADC_private_oversamplingShift(uint32_t shiftConstant)
+{
+    switch (shiftConstant)
+    {
+        case ADC_RIGHTBITSHIFT_1: return 1U;
+        case ADC_RIGHTBITSHIFT_2: return 2U;
+        case ADC_RIGHTBITSHIFT_3: return 3U;
+        case ADC_RIGHTBITSHIFT_4: return 4U;
+        case ADC_RIGHTBITSHIFT_5: return 5U;
+        case ADC_RIGHTBITSHIFT_6: return 6U;
+        case ADC_RIGHTBITSHIFT_7: return 7U;
+        case ADC_RIGHTBITSHIFT_8: return 8U;
+        default:                  return 0U;
     }
 }
 
@@ -484,6 +519,15 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
         for (uint8_t r = 0U; r < numEnabledInjected; r++)
         {
             ADC_InjectionConfTypeDef iConfig = channelConfig->injectedInputs[r].sConfig;
+            // One CFGR2 ratio and shift serve the whole injected group
+            const ADC_InjectionConfTypeDef * const first = &channelConfig->injectedInputs[0].sConfig;
+            if ((iConfig.InjecOversamplingMode != first->InjecOversamplingMode) ||
+                (iConfig.InjecOversampling.Ratio != first->InjecOversampling.Ratio) ||
+                (iConfig.InjecOversampling.RightBitShift != first->InjecOversampling.RightBitShift))
+            {
+                ret = false;
+                break;
+            }
             iConfig.InjectedRank            = HW_ADC_injectedRankConstants[r];
             iConfig.InjectedNbrOfConversion = numEnabledInjected;
 
@@ -514,6 +558,17 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
         data->channelData[channel].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
         data->channelData[channel].voltsPerCount =
             channelConfig->vref / (float32_t)((1UL << data->channelData[channel].numBits) - 1UL);
+
+        // [impl->fw~hal_adc_006~1] an oversampled injected count is the sum of
+        // ratio conversions shifted right, so its volts scale by shift over ratio
+        float32_t injectedSumScale = 1.0f;
+        const ADC_InjectionConfTypeDef * const first = &channelConfig->injectedInputs[0].sConfig;
+        if ((numEnabledInjected > 0U) && (first->InjecOversamplingMode == ENABLE))
+        {
+            injectedSumScale = (float32_t) HW_ADC_private_oversamplingRatio(first->InjecOversampling.Ratio)
+                             / (float32_t) (1UL << HW_ADC_private_oversamplingShift(first->InjecOversampling.RightBitShift));
+        }
+        data->channelData[channel].injectedVoltsPerCount = data->channelData[channel].voltsPerCount / injectedSumScale;
     }
 
     return ret;
@@ -840,7 +895,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
         uint32_t counts = 0U;
         if (HW_ADC_getInjectedCount(channel, injectedIndex, &counts))
         {
-            *out = (float32_t)counts * data->channelData[channel].voltsPerCount;
+            *out = (float32_t)counts * data->channelData[channel].injectedVoltsPerCount;
             ret = true;
         }
     }
