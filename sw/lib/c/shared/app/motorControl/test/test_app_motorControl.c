@@ -41,13 +41,19 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 #define ENC_MOTOR       (IO_AS5048_CHANNEL_MOTOR)
 
 // Trip thresholds under test (mirror app_motorControl.cpp).
-#define PHASE_TRIP_A    (2.0f)
+#define PHASE_TRIP_A    (1.2f)
 #define BUS_TRIP_A      (1.5f)
 
 // Drive parameters (mirror the module + the config above).
 #define MAX_VELOCITY    (20.0f)         // configured max speed (rad/s)
-#define ALIGN_DUTY_01   (0.1f)          // mirrors ALIGNMENT_DUTY_CYCLE
+#define ALIGN_DUTY_01   (0.3f)          // mirrors ALIGNMENT_DUTY_CYCLE
 #define MAX_DUTY_01     (0.9f)          // mirrors APP_MOTORCONTROL_MAX_DUTY_01
+#define FOC_I_MAX       (1.0f)          // the test config's FOC block: I_max, L, R, w_bw
+#define FOC_L           (4.0e-3f)
+#define FOC_R           (4.0f)
+#define FOC_BW          (2000.0f)
+#define FOC_KP          (FOC_L * FOC_BW)                // 8 V/A
+#define FOC_KI_T        (FOC_R * FOC_BW * 50.0e-6f)    // 0.4 V/A: the integral's growth per step
 #define DEG2RAD(d)      ((float32_t)(d) * 3.14159265f / 180.0f)
 // Compare-register value for a duty against PERIOD (matches IO_bridge's
 // (uint32_t)(duty*period + 0.5f)).
@@ -324,7 +330,7 @@ static void test_phase_overcurrent_trips_and_latches(void)
     driveToRunning(10.0f);
     TEST_ASSERT_TRUE(bridgeEnabled());
 
-    setPhaseCurrentsUV(3.0f, 0.0f);            // U > 2 A
+    setPhaseCurrentsUV(3.0f, 0.0f);            // U > 1.2 A
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // disabled within one cycle
 
@@ -349,7 +355,7 @@ static void test_current_below_threshold_does_not_trip(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrentsUV(1.9f, 0.0f);            // U and the derived W just under 2 A
+    setPhaseCurrentsUV(1.1f, 0.0f);            // U and the derived W just under 1.2 A
     setBusCurrent(1.4f);                       // just under 1.5 A
     tick();
     TEST_ASSERT_TRUE(bridgeEnabled());         // no trip
@@ -357,13 +363,13 @@ static void test_current_below_threshold_does_not_trip(void)
 
 // [test->fw~safety_001~1]
 // A negative phase-current magnitude trips too (bipolar shunt). W is derived, so
-// the scenario is expressed through the sampled legs: U + V = 2.5 A puts W at
-// -2.5 A while neither sampled leg is over the trip.
+// the scenario is expressed through the sampled legs: U + V = 1.5 A puts W at
+// -1.5 A while neither sampled leg is over the trip.
 static void test_negative_phase_overcurrent_trips(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrentsUV(1.25f, 1.25f);          // W = -(1.25 + 1.25), |-2.5| > 2 A
+    setPhaseCurrentsUV(0.75f, 0.75f);          // W = -(0.75 + 0.75), |-1.5| > 1.2 A
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }

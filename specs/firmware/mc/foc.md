@@ -41,7 +41,7 @@ Acceptance:
 - The stator voltage vector recovered from the three duties equals the
   limited (v_d, v_q) rotated by the rotor electrical angle, within 2 % of
   V_max, with every phase enabled.
-- A configured maximum current at or above the 2 A phase trip
+- A configured maximum current at or above the 1.2 A phase trip
   (fw~safety_001~1) is rejected at init.
 
 Covers:

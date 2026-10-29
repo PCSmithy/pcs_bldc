@@ -27,15 +27,18 @@
 
 
 #define ALIGNMENT_DWELL_TIMER_MS (500U)
-#define ALIGNMENT_DUTY_CYCLE (0.1f)
+#define ALIGNMENT_DUTY_CYCLE (0.3f)
 
 #define APP_MOTORCONTROL_MAX_DUTY_01 (0.9f)
+
+// Field-oriented current loop (fw~mc_023): the discrete integral holds up to this w_bw T.
+#define FOC_MAX_BANDWIDTH_PERIOD_PRODUCT (0.2f)
 
 // In-module overcurrent trip (fw~safety_001). Each control cycle any phase
 // current magnitude above OVERCURRENT_PHASE_TRIP_A, or a DC-bus current above
 // OVERCURRENT_BUS_TRIP_A, latches the fault; the latch holds the bridge
 // disabled until the fault-clear action (fw~mc_007).
-#define OVERCURRENT_PHASE_TRIP_A (2.0f)
+#define OVERCURRENT_PHASE_TRIP_A (1.2f)
 #define OVERCURRENT_BUS_TRIP_A   (1.5f)
 
 // Encoder-fault trip (fw~safety_002). Commutation depends on rotor position, so
