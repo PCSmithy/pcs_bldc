@@ -134,6 +134,26 @@ static void test_set_mode_sinusoidal_accepted_and_reported(void)
 }
 
 // [test->fw~conn_server_002~1]
+static void test_set_mode_foc_accepted_and_reported(void)
+{
+    board_Request request = board_Request_init_zero;
+    request.which_command = board_Request_set_mode_tag;
+    request.command.set_mode.mode = board_Mode_MODE_FOC;
+
+    const shared_Response response = sendCommand(&request);
+    TEST_ASSERT_TRUE(response.accepted);
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_FOC, mock_app_motorControl_lastMode);
+
+    app_motorControl_snapshot_S snap = { 0 };
+    snap.mode = APP_MOTORCONTROL_MODE_FOC;
+    snap.state = APP_MOTORCONTROL_STATE_ENABLED;
+    mock_app_motorControl_setSnapshot(&snap);
+    board_Telemetry telemetry = board_Telemetry_init_zero;
+    TEST_ASSERT_TRUE(app_server_config.buildTelemetry(&telemetry));
+    TEST_ASSERT_EQUAL(board_Mode_MODE_FOC, telemetry.mode);
+}
+
+// [test->fw~conn_server_002~1]
 static void test_set_mode_unknown_value_rejected(void)
 {
     board_Request request = board_Request_init_zero;
@@ -229,6 +249,7 @@ int main(void)
     RUN_TEST(test_set_velocity_nan_rejected);
     RUN_TEST(test_set_mode_accepted_and_applied);
     RUN_TEST(test_set_mode_sinusoidal_accepted_and_reported);
+    RUN_TEST(test_set_mode_foc_accepted_and_reported);
     RUN_TEST(test_set_mode_unknown_value_rejected);
     RUN_TEST(test_set_mode_gated_while_drive_enabled);
     RUN_TEST(test_set_mode_method_rejected_while_faulted);

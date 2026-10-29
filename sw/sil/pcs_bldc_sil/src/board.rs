@@ -37,11 +37,11 @@ pub const GATE_BRINGUP_MS: u64 = 300;
 pub const USB_RX_REG: usize = 128;
 
 /// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.cpp`.
-pub const ALIGN_DUTY: f64 = 0.1;
+pub const ALIGN_DUTY: f64 = 0.3;
 pub const ALIGN_DWELL_MS: u64 = 500;
 
 /// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.cpp`.
-pub const PHASE_TRIP_A: f64 = 2.0;
+pub const PHASE_TRIP_A: f64 = 1.2;
 pub const BUS_TRIP_A: f64 = 1.5;
 
 /// Button PB10, active LOW (idle HIGH via pull-up). Port B is enum index 1, bit 10.

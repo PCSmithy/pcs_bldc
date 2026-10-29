@@ -24,7 +24,15 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
         .motorPolePairs = 14U,
         .pwmPeriod_s = HW_TIM_PWM_PERIOD_S,
         .maxVoltage_V = 8.0f,      // first-spin reduced voltage; the linear limit is V_bus / sqrt(3)
-        .defaultMode = APP_MOTORCONTROL_MODE_SINUSOIDAL,
+        .foc =
+        {
+            .maxCurrent_A = 1.0f,     // under the 1.2 A phase trip
+            .motorL_H = 5.0e-3f,      // GM6208-150T, as the SIL motor model has it
+            .motorR_ohm = 14.7f,
+            .currentLoopBandwidth_radPerSec = 1000.0f,   // ~320 Hz: w_bw T = 0.1, under the L/R pole at 2940 rad/s
+        },
+        .defaultMode = APP_MOTORCONTROL_MODE_FOC,
+        // .defaultMode = APP_MOTORCONTROL_MODE_SINUSOIDAL,
         .prechargeTime_ms = 5U,   // bootstrap caps through the gate driver's own diodes
     },
 };

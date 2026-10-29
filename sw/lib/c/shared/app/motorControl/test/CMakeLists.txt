@@ -25,6 +25,7 @@ target_include_directories(test_app_motorControl PRIVATE
 target_link_libraries(test_app_motorControl PRIVATE
   lib_types
   lib_utils
+  lib_pi
   lib_transforms     # SVM — IO_bridge.cpp includes it
   lib_filterIIR      # the bridge's zero-current offset EMA
   hw_CORDIC         # real sim driver (libm) — the step's sine/cosine pair

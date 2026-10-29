@@ -11,6 +11,7 @@ enum Mode {
   MODE_OFF           = 0;
   MODE_SIX_STEP_TRAP = 1;
   MODE_SINUSOIDAL    = 2;
+  MODE_FOC           = 3;
 }
 
 // Coarse drive state (mirrors app_motorControl_state_E).

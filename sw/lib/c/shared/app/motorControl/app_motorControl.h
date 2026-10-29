@@ -25,9 +25,16 @@ typedef enum
     APP_MOTORCONTROL_MODE_OFF,
     APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
     APP_MOTORCONTROL_MODE_SINUSOIDAL,
-    // APP_MOTORCONTROL_MODE_FOC, // TODO
+    APP_MOTORCONTROL_MODE_FOC,
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
+
+typedef enum
+{
+    APP_MOTORCONTROL_AXIS_D,
+    APP_MOTORCONTROL_AXIS_Q,
+    APP_MOTORCONTROL_AXIS_COUNT,
+} app_motorControl_axis_E;
 
 // Coarse bridge state for the operator display (fw~mc_009): DISABLED (bridge
 // dark), ENABLED (bridge driving), or FAULTED (a latched fault holds it off).
@@ -39,6 +46,13 @@ typedef enum
     APP_MOTORCONTROL_STATE_COUNT,
 } app_motorControl_state_E;
 
+typedef struct
+{
+    float32_t maxCurrent_A;  // I_max: the FOC Q-axis current a full-scale target commands (fw~mc_022)
+    float32_t motorL_H;
+    float32_t motorR_ohm;
+    float32_t currentLoopBandwidth_radPerSec;
+} app_motorControl_focConfig_S;
 
 typedef struct
 {
@@ -53,6 +67,9 @@ typedef struct
     uint8_t motorPolePairs;
     float32_t pwmPeriod_s;   // the bridge's PWM period: the step's time base
     float32_t maxVoltage_V;  // V_max: the voltage a full-scale target commands (fw~mc_020)
+
+    app_motorControl_focConfig_S foc;
+
     app_motorControl_mode_E defaultMode;   // the method selected at power-up; never OFF
     uint32_t prechargeTime_ms;   // low sides on before any enable drives: the bootstrap charge (fw~mc_021)
 } app_motorControl_channelConfig_S;

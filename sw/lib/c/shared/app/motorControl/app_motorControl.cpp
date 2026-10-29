@@ -3,6 +3,7 @@
 
 #include "lib_utils.h"
 #include "lib_timer.h"
+#include "lib_pi.hpp"
 #include "lib_transforms.h"
 #include "HW_CORDIC.h"
 
@@ -104,6 +105,8 @@ class Motor
         bool faultLatched;
         bool bridgeEnabled;   // last cycle's bridge output-enable, for the state view
         uint16_t encoderFaultCount;   // consecutive invalid encoder reads
+
+        PiRegulator currentPi[APP_MOTORCONTROL_AXIS_COUNT];
 
         // setpoint
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
@@ -212,6 +215,14 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->defaultMode > APP_MOTORCONTROL_MODE_OFF);
     isValid &= (channelConfig->defaultMode < APP_MOTORCONTROL_MODE_COUNT);
     isValid &= (channelConfig->prechargeTime_ms > 0U);
+    // [impl->fw~mc_022~1] I_max under the phase trip
+    isValid &= (channelConfig->foc.maxCurrent_A > ZERO);
+    isValid &= (channelConfig->foc.maxCurrent_A < OVERCURRENT_PHASE_TRIP_A);
+    // [impl->fw~mc_023~1] R, L, w_bw nonzero, w_bw T bounded: K_p, K_i follow
+    isValid &= (channelConfig->foc.motorR_ohm > ZERO);
+    isValid &= (channelConfig->foc.motorL_H > ZERO);
+    isValid &= (channelConfig->foc.currentLoopBandwidth_radPerSec > ZERO);
+    isValid &= ((channelConfig->foc.currentLoopBandwidth_radPerSec * channelConfig->pwmPeriod_s) <= FOC_MAX_BANDWIDTH_PERIOD_PRODUCT);
 
     if (isValid)
     {
@@ -395,6 +406,13 @@ void Motor::run50us()
         bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
         bool isVectorControl = false;
 
+        if ((this->driveState != DriveState::Driving) ||
+            (this->modeCurrent != APP_MOTORCONTROL_MODE_FOC))
+        {
+            this->currentPi[APP_MOTORCONTROL_AXIS_D].reset();
+            this->currentPi[APP_MOTORCONTROL_AXIS_Q].reset();
+        }
+
         if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
@@ -468,6 +486,49 @@ void Motor::run50us()
                     );
 
                     SET_ENABLE(true, true, true);
+                    break;
+                }
+
+                case APP_MOTORCONTROL_MODE_FOC:
+                {
+                    isVectorControl = true;
+                    const app_motorControl_focConfig_S * const foc = &this->config->foc;
+                    // [impl->fw~mc_022~1]
+                    const float32_t targetDCurrent_a = 0.0f;
+                    const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
+                    const float32_t targetQCurrent_a = SIGN(this->velocitySetpointCurrent_radPerSec) * velocityPercent * foc->maxCurrent_A;
+
+                    // [impl->fw~mc_023~1]
+                    const float32_t errorDCurrent_a = targetDCurrent_a - this->iD_a;
+                    float32_t vD = this->currentPi[APP_MOTORCONTROL_AXIS_D].step(errorDCurrent_a);
+
+                    const float32_t errorQCurrent_a = targetQCurrent_a - this->iQ_a;
+                    float32_t vQ = this->currentPi[APP_MOTORCONTROL_AXIS_Q].step(errorQCurrent_a);
+
+                    // [impl->fw~mc_024~1]
+                    const float32_t vLim = MIN_OF(this->config->maxVoltage_V, (this->busVoltage * LIB_TRANSFORMS_1_DIV_SQRT3));
+                    const float32_t vVectorMag = sqrtf((vD*vD) + (vQ*vQ));
+                    if (vVectorMag > vLim)
+                    {
+                        const float32_t k = vLim / vVectorMag; // limit / mag
+                        vD *= k;
+                        vQ *= k;
+
+                        this->currentPi[APP_MOTORCONTROL_AXIS_D].backCalculate(errorDCurrent_a, vD);
+                        this->currentPi[APP_MOTORCONTROL_AXIS_Q].backCalculate(errorQCurrent_a, vQ);
+                    }
+
+                    lib_transforms_inversePark(
+                        vD,
+                        vQ,
+                        rotorSin,
+                        rotorCos,
+                        &this->vAlpha_v,
+                        &this->vBeta_v
+                    );
+
+                    SET_ENABLE(true, true, true);
+
                     break;
                 }
             }
