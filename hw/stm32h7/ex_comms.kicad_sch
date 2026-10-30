@@ -1169,7 +1169,7 @@
 	)
 	(text "place on standoff location"
 		(exclude_from_sim no)
-		(at 283.718 63.5 0)
+		(at 50.038 39.37 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1177,9 +1177,240 @@
 		)
 		(uuid "58978599-ea7c-49f7-b3ec-f2e8ca5b20a2")
 	)
+	(hierarchical_label "EXP_5V0"
+		(shape input)
+		(at 228.6 115.57 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "058702f4-7397-41a8-8cb1-fa04e9729c1f")
+	)
+	(hierarchical_label "EXP_I2C_SCL"
+		(shape input)
+		(at 228.6 154.94 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "23c1f1ca-caa5-4a6f-a893-c7f892dc3326")
+	)
+	(hierarchical_label "QSPI_IO1"
+		(shape input)
+		(at 228.6 143.51 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "3c9c9868-6390-4764-a5a5-02da31261996")
+	)
+	(hierarchical_label "QSPI_IO2"
+		(shape input)
+		(at 228.6 146.05 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "4dcc3a3a-86e0-4436-a71a-0c6c03326985")
+	)
+	(hierarchical_label "RGB_DIN"
+		(shape input)
+		(at 228.6 186.69 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "53d424d4-c576-4782-92a9-b61df8eb92a5")
+	)
+	(hierarchical_label "QSPI_CLK"
+		(shape input)
+		(at 228.6 138.43 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "6037366a-7cef-4928-b1f7-14e19a6d3deb")
+	)
+	(hierarchical_label "EXP_UART_TX"
+		(shape input)
+		(at 228.6 168.91 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "6d67fe5a-4e60-4d99-b623-5094549fd96e")
+	)
+	(hierarchical_label "ECAT_IRQ"
+		(shape input)
+		(at 228.6 121.92 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "9bd8161e-9f3a-450e-b458-735fb014a7ef")
+	)
+	(hierarchical_label "EXP_I2C_SDA"
+		(shape input)
+		(at 228.6 157.48 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "adba865c-09df-42ec-a25a-2487c287f252")
+	)
+	(hierarchical_label "EXP_UART_RX"
+		(shape input)
+		(at 228.6 171.45 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "b266b155-2a0d-4727-8847-f2535d06118c")
+	)
+	(hierarchical_label "ECAT_SYNC0"
+		(shape input)
+		(at 228.6 125.73 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "c5eda254-cc41-4c7d-949f-4cfac6597850")
+	)
+	(hierarchical_label "QSPI_IO3"
+		(shape input)
+		(at 228.6 148.59 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "cf8eb0c4-49af-48ff-a6c5-ad4584366344")
+	)
+	(hierarchical_label "ECAT_SYNC1"
+		(shape input)
+		(at 228.6 128.27 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "d5d950a4-278d-40a4-80bd-2718257eb0d6")
+	)
+	(hierarchical_label "QSPI_nCS"
+		(shape input)
+		(at 228.6 135.89 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "d8f975a3-09e1-48bf-825f-e79d59355bff")
+	)
+	(hierarchical_label "FDCAN2_TX"
+		(shape input)
+		(at 228.6 181.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "dad9c4c5-7436-490e-91f7-522feaa2e8fb")
+	)
+	(hierarchical_label "ECAT_nRST"
+		(shape input)
+		(at 228.6 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "de75cebf-7a67-457b-8b98-1b30c626010e")
+	)
+	(hierarchical_label "FDCAN1_RX"
+		(shape input)
+		(at 228.6 162.56 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "e5c7d14f-c258-4314-bbfa-3b7c86f4f138")
+	)
+	(hierarchical_label "FDCAN1_TX"
+		(shape input)
+		(at 228.6 165.1 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "eb6a2489-b8c5-435e-b71c-2d5c23b25850")
+	)
+	(hierarchical_label "FDCAN2_RX"
+		(shape input)
+		(at 228.6 179.07 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "ed67819f-3dec-41c1-a4ea-9125e5852c9b")
+	)
+	(hierarchical_label "QSPI_IO0"
+		(shape input)
+		(at 228.6 140.97 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "f769cb3c-aae6-41e6-b9df-5f3531172b3c")
+	)
+	(hierarchical_label "EXP_UART_DE"
+		(shape input)
+		(at 228.6 173.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "fdb875fa-8405-46bf-8aa4-9f0ef1aa3037")
+	)
 	(symbol
 		(lib_id "pcs_bldc_sym_lib:Bus_PCI_Express_Mini")
-		(at 219.71 151.13 0)
+		(at 124.46 153.67 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1189,8 +1420,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "07fd61fd-5fb2-45af-8047-58ce4eed887c")
-		(property "Reference" "J11"
-			(at 224.3933 181.61 0)
+		(property "Reference" "J13"
+			(at 129.1433 184.15 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1201,7 +1432,7 @@
 			)
 		)
 		(property "Value" "Bus_PCI_Express_Mini"
-			(at 224.3933 184.15 0)
+			(at 129.1433 186.69 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1212,7 +1443,7 @@
 			)
 		)
 		(property "Footprint" "pcs_lib:BUS_PCI_Express_Mini_Full"
-			(at 219.71 151.13 0)
+			(at 124.46 153.67 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1223,7 +1454,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 215.9 180.34 0)
+			(at 120.65 182.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1234,7 +1465,7 @@
 			)
 		)
 		(property "Description" "Mini-PCI Express bus connector"
-			(at 219.71 151.13 0)
+			(at 124.46 153.67 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1245,7 +1476,7 @@
 			)
 		)
 		(property "MFN" "1759546-1"
-			(at 219.71 151.13 0)
+			(at 124.46 153.67 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1417,7 +1648,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "J11")
+					(reference "J13")
 					(unit 1)
 				)
 			)
@@ -1425,7 +1656,7 @@
 	)
 	(symbol
 		(lib_id "Mechanical:Fiducial")
-		(at 288.29 58.42 0)
+		(at 54.61 34.29 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1436,7 +1667,7 @@
 		(fields_autoplaced yes)
 		(uuid "1a9ae6ff-2e65-4ed5-b89a-5f1e95062950")
 		(property "Reference" "FID2"
-			(at 290.83 57.1499 0)
+			(at 57.15 33.0199 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1447,7 +1678,7 @@
 			)
 		)
 		(property "Value" "SMTSO2545CTJ"
-			(at 290.83 59.6899 0)
+			(at 57.15 35.5599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1458,7 +1689,7 @@
 			)
 		)
 		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
-			(at 288.29 58.42 0)
+			(at 54.61 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1469,7 +1700,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 288.29 58.42 0)
+			(at 54.61 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1480,7 +1711,7 @@
 			)
 		)
 		(property "Description" "Fiducial Marker"
-			(at 288.29 58.42 0)
+			(at 54.61 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1501,7 +1732,7 @@
 	)
 	(symbol
 		(lib_id "Mechanical:Fiducial")
-		(at 267.97 58.42 0)
+		(at 34.29 34.29 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1512,7 +1743,7 @@
 		(fields_autoplaced yes)
 		(uuid "d57a2af7-8057-44d4-bbe5-9dcf8f6a8c74")
 		(property "Reference" "FID1"
-			(at 270.51 57.1499 0)
+			(at 36.83 33.0199 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1523,7 +1754,7 @@
 			)
 		)
 		(property "Value" "SMTSO2545CTJ"
-			(at 270.51 59.6899 0)
+			(at 36.83 35.5599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1534,7 +1765,7 @@
 			)
 		)
 		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
-			(at 267.97 58.42 0)
+			(at 34.29 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1545,7 +1776,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 267.97 58.42 0)
+			(at 34.29 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1556,7 +1787,7 @@
 			)
 		)
 		(property "Description" "Fiducial Marker"
-			(at 267.97 58.42 0)
+			(at 34.29 34.29 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
