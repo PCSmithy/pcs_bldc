@@ -529,10 +529,19 @@
       "Net-(J1-D--PadA7)": [
         "USB_diff"
       ],
+      "Net-(J6-D+-PadA6)": [
+        "USB_diff"
+      ],
+      "Net-(J6-D--PadA7)": [
+        "USB_diff"
+      ],
       "Net-(U4-SW)": [
         "Power"
       ],
       "Net-(U5-SW)": [
+        "Power"
+      ],
+      "Net-(U6-SW)": [
         "Power"
       ],
       "VBUS": [
@@ -628,7 +637,32 @@
       "sort_asc": true,
       "sort_field": "Reference"
     },
-    "bus_aliases": {},
+    "bus_aliases": {
+      "DRV1_AI": [
+        "DRV1_VSENSE_A_AI",
+        "DRV1_VSENSE_B_AI",
+        "DRV1_VSENSE_C_AI",
+        "DRV1_ISENSE_A_AI",
+        "DRV1_ISENSE_B_AI",
+        "DRV1_ISENSE_C_AI"
+      ],
+      "ENC1": [
+        "ENC1_SCK",
+        "ENC1_B_MOSI",
+        "ENC1_A_MISO",
+        "ENC1_Z_CS",
+        "ENC1_EN",
+        "ENC1_SW_nFLT"
+      ],
+      "ENC2": [
+        "ENC2_A_MISO",
+        "ENC2_B_MOSI",
+        "ENC2_SCK",
+        "ENC2_Z_CS",
+        "ENC2_EN",
+        "ENC2_SW_nFLT"
+      ]
+    },
     "connection_grid_size": 50.0,
     "drawing": {
       "dashed_lines_dash_length_ratio": 12.0,
@@ -669,7 +703,7 @@
         "uuid": "5fd46c36-5bf8-4b01-84ef-7a32553f026d"
       }
     ],
-    "used_designators": "",
+    "used_designators": "C1-79,SW1-2,U1-14,TP1-9,J1-13,L1,FID1-2,Y1,#PWR1-125,D1-7,#FLG1,R1-61",
     "variants": []
   },
   "sheets": [
@@ -698,7 +732,7 @@
       "ex_comms"
     ],
     [
-      "d841b7e8-110c-4a01-af76-a1eb726c6ae8",
+      "eaa70517-7f16-4c82-8612-43ae8f992ab7",
       "driver2"
     ]
   ],
