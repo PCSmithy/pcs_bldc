@@ -29,10 +29,9 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
             .maxCurrent_A = 1.0f,     // under the 1.2 A phase trip
             .motorL_H = 5.0e-3f,      // GM6208-150T, as the SIL motor model has it
             .motorR_ohm = 14.7f,
-            .currentLoopBandwidth_radPerSec = 1000.0f,   // ~320 Hz: w_bw T = 0.1, under the L/R pole at 2940 rad/s
+            .currentLoopBandwidth_radPerSec = 1000.0f,   // ~160 Hz: w_bw T = 0.05, well under the L/R pole at 2940 rad/s
         },
         .defaultMode = APP_MOTORCONTROL_MODE_FOC,
-        // .defaultMode = APP_MOTORCONTROL_MODE_SINUSOIDAL,
         .prechargeTime_ms = 5U,   // bootstrap caps through the gate driver's own diodes
     },
 };

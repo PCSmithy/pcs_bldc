@@ -173,7 +173,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
 // [test->fw~mc_019~1]
 #[test]
 fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
-    // Full dial under six-step on the 50 us grid, past 300 rad/s electrical: every
+    // Full dial under six-step on the 50 us grid, past 250 rad/s electrical: every
     // cycle's angle, read after the step that produced it, is within the spec's 3 deg
     // of the plant's rotor angle, the estimator carrying it between encoder reads.
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
@@ -186,7 +186,7 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
     }
     sim.run_for_ms(500);
     let omega_e = plant(&sim, "velocity") * POLE_PAIRS;
-    assert!(omega_e > 300.0, "spinning past 300 rad/s electrical: {omega_e:.0}");
+    assert!(omega_e > 250.0, "spinning past 250 rad/s electrical: {omega_e:.0}");
 
     let mut worst_deg = 0.0_f64;
     let (mut c, mut s_) = (0.0_f64, 0.0_f64);

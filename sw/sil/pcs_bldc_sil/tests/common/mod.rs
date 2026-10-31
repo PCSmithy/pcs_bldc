@@ -63,6 +63,7 @@ pub fn tap_button(sim: &mut Sil) {
 pub const MODE_OFF: u64 = 0;
 pub const MODE_SIX_STEP_TRAP: u64 = 1;
 pub const MODE_SINUSOIDAL: u64 = 2;
+pub const MODE_FOC: u64 = 3;
 
 /// Select a commutation method over the protocol: `SetMode(method)` selects (and
 /// enables), `SetMode(OFF)` disables with the selection kept, so the next button

@@ -26,10 +26,10 @@ bootstrap precharge (`fw~mc_021`) are in, as is the encoder phase-locked
 rotor tracking estimator `fw~est_rotor_001`/`_002` (`app_rotorEstimation`,
 `specs/firmware/est/rotor.md`) that `fw~mc_019` and the status velocity
 consume, and the bridge's zero-current offset tracking (`fw~io_bridge_009`).
-On the `mc_foc` branch, host-tested and awaiting its SIL step responses and
-the bench: the field-oriented method, its current regulator and voltage
-limit (`fw~mc_022`..`fw~mc_024`, `specs/firmware/mc/foc.md`, `lib_pi` +
-`MODE_FOC` in `app_motorControl`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+On the `mc_foc` branch, bench-spun, with its plant-level step responses on
+the SIL's held rotor (`tests/foc.rs`): the field-oriented method, its
+current regulator and voltage limit (`fw~mc_022`..`fw~mc_024`,
+`specs/firmware/mc/foc.md`, `lib_pi` + `MODE_FOC` in `app_motorControl`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 
@@ -89,14 +89,15 @@ already in place.
   min(V_max, V_bus/√3) with back-calculation anti-windup, i_q* from the
   speed-target fraction times I_max; MODE_FOC plumbed like MODE_SINUSOIDAL.
   Board config seeds R = 14.7 Ω, L = 5 mH from the SIL motor model,
-  ω_bw = 2000 rad/s, I_max = 1 A. Open: the SIL step responses and the bench.
+  ω_bw = 1000 rad/s, I_max = 1 A. Bench-spun; the step response and the limit
+  hold on the SIL's held rotor (`tests/foc.rs`).
 - **Encoder electrical-angle alignment** — done (`fw~mc_012`).
 - **Control task** driven by the conversion-complete ISR — done
   (`fw~mc_015`).
-- **SIL:** motor electrical model exists; FOC tests run on the 50 µs grid,
-  need a rotor-lock knob on the model for the at-rest step responses and a
-  sense-bias parameter for the offset test. The closed-loop tracking run is
-  the first `[test->sys~mc_001~1]`.
+- **SIL:** motor electrical model with a rotor lock (`MotorParams::rotor_locked`);
+  the FOC step responses run on the 50 µs grid against it. A sense-bias
+  parameter for a plant-level offset test is still open. The closed-loop
+  tracking run is the first `[test->sys~mc_001~1]`.
 
 ### 3. Velocity / position control + estimation
 
