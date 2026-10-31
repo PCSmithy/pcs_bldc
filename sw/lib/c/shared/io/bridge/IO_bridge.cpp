@@ -2,6 +2,7 @@
 #include "lib_types.h"
 #include "lib_transforms.h"
 #include "lib_timer.h"
+#include "lib_filterIIR.h"
 #include "IO_bridge.h"
 #include "HW_TIM.h"
 
@@ -45,16 +46,26 @@ class Bridge
         float32_t busAmpsPerVolt;
         float32_t busVoltsPerVolt;
 
-        float32_t current_amps[IO_BRIDGE_PHASE_COUNT];
+        float32_t duty[IO_BRIDGE_PHASE_COUNT];
+        float32_t measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_COUNT];
+        float32_t phaseCurrentZeroOffset_amps[IO_BRIDGE_PHASE_COUNT];
         uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
         uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
+        bool      phaseEnabled[IO_BRIDGE_PHASE_COUNT];   // as commanded, for the offset tracker
+        uint8_t   phaseByAdc[HW_ADC_CHANNEL_COUNT];      // injected ADC channel -> phase, else IO_BRIDGE_PHASE_COUNT
+
+        // The idle-phase current filter and the idle run it spans, saturating
+        // at the configured minimum.
+        lib_filterIIR_channel_S zeroOffsetFilter[IO_BRIDGE_PHASE_COUNT];
+        uint32_t                idleSamples[IO_BRIDGE_PHASE_COUNT];
 
         // Published by a task, read by the injected-completion ISR.
         IO_bridge_cycleCallback_F volatile cycleCallback;
         void * volatile                    cycleContext;
 
         void recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status);
-        void completeInjectedPair(uint32_t now);
+        void trackZeroOffset(IO_bridge_phase_E phase, bool bridgeOn);
+        void completeInjectedPair(uint32_t now, bool bridgeOn);
 };
 
 
@@ -184,14 +195,52 @@ static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const 
 
 /* Private Class Function Definitions */
 
+// EMA the idle phase's reading (output disabled or bridge dark); latch it as the offset when it next drives.
+// [impl->fw~io_bridge_009~1]
+// bridgeOn is the live MOE the caller read once for the sample event (a break
+// clears it in hardware); the phase enable is the one commanded through here.
+void Bridge::trackZeroOffset(IO_bridge_phase_E phase, bool bridgeOn)
+{
+    if (this->config != NULL)
+    {
+        lib_filterIIR_channel_S * const filter = &this->zeroOffsetFilter[phase];
+        const uint32_t minSamples = this->config->zeroOffset.minSamples;
+        if (bridgeOn && this->phaseEnabled[phase])
+        {
+            if (this->idleSamples[phase] >= minSamples)
+            {
+                this->phaseCurrentZeroOffset_amps[phase] = filter->ema.y_k;
+            }
+            this->idleSamples[phase] = 0U;
+        }
+        else
+        {
+            filter->ema.x_k = this->measuredPhaseCurrent_amps[phase];
+            if (this->idleSamples[phase] == 0U)
+            {
+                (void)lib_filterIIR_init(filter);   // seeds on x_k; alpha was validated at init
+            }
+            else
+            {
+                lib_filterIIR_update(filter);
+            }
+            if (this->idleSamples[phase] < minSamples)
+            {
+                this->idleSamples[phase] += 1U;
+            }
+        }
+    }
+}
+
 // U and V are sampled simultaneously - derive W from them by KCL
 // [impl->fw~io_bridge_006~1]
-void Bridge::completeInjectedPair(uint32_t now_us)
+void Bridge::completeInjectedPair(uint32_t now_us, bool bridgeOn)
 {
-    this->current_amps[IO_BRIDGE_PHASE_W] = -(this->current_amps[IO_BRIDGE_PHASE_U] +
-                                                this->current_amps[IO_BRIDGE_PHASE_V]);
+    this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_W] = -(this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_U] +
+                                                this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_V]);
     this->updateCount[IO_BRIDGE_PHASE_W] += 1U;
     this->sampleTime_us[IO_BRIDGE_PHASE_W] = now_us;
+    this->trackZeroOffset(IO_BRIDGE_PHASE_W, bridgeOn);
 
     // Last, so the whole triple is readable to the callback. One load each, so
     // a concurrent deregistration cannot null the pointer between test and call.
@@ -206,38 +255,35 @@ void Bridge::completeInjectedPair(uint32_t now_us)
 
 void Bridge::recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status)
 {
-    if ((this->config != NULL) && (status == HW_ADC_CONVERSION_STATUS_OK))
+    const uint8_t phase = (adcChannel < HW_ADC_CHANNEL_COUNT) ? this->phaseByAdc[adcChannel] : (uint8_t) IO_BRIDGE_PHASE_COUNT;
+    if ((this->config != NULL) && (status == HW_ADC_CONVERSION_STATUS_OK) && (phase < IO_BRIDGE_PHASE_COUNT))
     {
         // The free-running microsecond count, a plain counter read: ISR-safe.
         const uint32_t now_us = lib_timer_getHWCount_us();
-        // lookup which phase measurement this ADC channel maps to
-        for (uint8_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++) // TODO - memoize this / derive it statically at as a LUT at init
+        const IO_bridge_senseConfig_S * const sense = &this->config->phase[phase].currentSense;
+        float32_t amps = 0.0f;
+        if (IO_bridge_private_readInjectedCurrent(sense, this->phaseAmpsPerVolt[phase], &amps))
         {
-            const IO_bridge_senseConfig_S * const sense = &this->config->phase[phase].currentSense;
-            if ((sense->adcChannel == adcChannel) &&
-                (sense->injectedIndex != IO_BRIDGE_INJECTED_NONE))
-            {
-                float32_t amps = 0.0f;
-                if (IO_bridge_private_readInjectedCurrent(sense, this->phaseAmpsPerVolt[phase], &amps))
-                {
-                    this->current_amps[phase] = amps;
-                    this->updateCount[phase] += 1U;
-                    this->sampleTime_us[phase] = now_us;
+            bool bridgeOn = false;
+            (void) HW_TIM_getMainOutputEnabled(this->moePeripheral, &bridgeOn);   // live: a break clears it
+            this->measuredPhaseCurrent_amps[phase] = amps;
+            this->updateCount[phase] += 1U;
+            this->sampleTime_us[phase] = now_us;
+            // Before the pair completes, so the callback reads the latched offset.
+            this->trackZeroOffset(static_cast<IO_bridge_phase_E>(phase), bridgeOn);
 
-                    // [impl->fw~io_bridge_006~1]
-                    // check if the complement phase has already been updated - if so
-                    // we can derive the 3rd phase current via KCL
-                    const IO_bridge_phase_E partner = this->config->phase[phase].complementPhase;
-                    if (partner < IO_BRIDGE_PHASE_COUNT) // the derived phase has no partner
-                    {
-                        // Unsigned subtract is wrap-safe; the partner's stamp is always in the past.
-                        const uint32_t timeSincePartner_us = now_us - this->sampleTime_us[partner];
-                        if ((this->updateCount[partner] != 0U) &&
-                            (timeSincePartner_us <= this->config->injectedPairWindow_us))
-                        {
-                            this->completeInjectedPair(now_us);
-                        }
-                    }
+            // [impl->fw~io_bridge_006~1]
+            // check if the complement phase has already been updated - if so
+            // we can derive the 3rd phase current via KCL
+            const IO_bridge_phase_E partner = this->config->phase[phase].complementPhase;
+            if (partner < IO_BRIDGE_PHASE_COUNT) // the derived phase has no partner
+            {
+                // Unsigned subtract is wrap-safe; the partner's stamp is always in the past.
+                const uint32_t timeSincePartner_us = now_us - this->sampleTime_us[partner];
+                if ((this->updateCount[partner] != 0U) &&
+                    (timeSincePartner_us <= this->config->injectedPairWindow_us))
+                {
+                    this->completeInjectedPair(now_us, bridgeOn);
                 }
             }
         }
@@ -277,19 +323,46 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
             (periph[IO_BRIDGE_PHASE_U] == periph[IO_BRIDGE_PHASE_V]) &&
             (periph[IO_BRIDGE_PHASE_V] == periph[IO_BRIDGE_PHASE_W]))
         {
-            this->channelIndex  = channel;
-            this->config        = channelConfig;
-            this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
+            // Offsets start at zero; the filters reject an alpha outside (0, 1].
+            bool offsetOk = (channelConfig->zeroOffset.minSamples != 0U);
             for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
             {
-                this->phaseAmpsPerVolt[p] = IO_bridge_private_unitsPerVolt(&channelConfig->phase[p].currentSense);
+                this->phaseCurrentZeroOffset_amps[p] = 0.0f;
+                this->idleSamples[p] = 0U;
+                this->zeroOffsetFilter[p] = {};
+                this->zeroOffsetFilter[p].type = LIB_FILTERIIR_TYPE_EMA;
+                this->zeroOffsetFilter[p].ema.alpha = channelConfig->zeroOffset.filterAlpha;
+                if (offsetOk)
+                {
+                    offsetOk = lib_filterIIR_init(&this->zeroOffsetFilter[p]);
+                }
             }
-            this->busAmpsPerVolt  = IO_bridge_private_unitsPerVolt(&channelConfig->busCurrent);
-            this->busVoltsPerVolt = IO_bridge_private_unitsPerVolt(&channelConfig->busVoltage);
-            ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
-                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
-                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
-                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
+            if (offsetOk)
+            {
+                this->channelIndex  = channel;
+                this->config        = channelConfig;
+                this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
+                for (uint8_t a = 0U; a < HW_ADC_CHANNEL_COUNT; a++)
+                {
+                    this->phaseByAdc[a] = IO_BRIDGE_PHASE_COUNT;
+                }
+                for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
+                {
+                    const IO_bridge_senseConfig_S * const sense = &channelConfig->phase[p].currentSense;
+                    this->phaseAmpsPerVolt[p] = IO_bridge_private_unitsPerVolt(sense);
+                    if ((sense->injectedIndex != IO_BRIDGE_INJECTED_NONE) && (sense->adcChannel < HW_ADC_CHANNEL_COUNT))
+                    {
+                        this->phaseByAdc[sense->adcChannel] = p;
+                    }
+                    this->phaseEnabled[p] = true;   // every phase output is enabled below
+                }
+                this->busAmpsPerVolt  = IO_bridge_private_unitsPerVolt(&channelConfig->busCurrent);
+                this->busVoltsPerVolt = IO_bridge_private_unitsPerVolt(&channelConfig->busVoltage);
+                ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
+                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
+                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
+                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
+            }
         }
     }
     return ret;
@@ -306,18 +379,24 @@ bool Bridge::setPhaseDuty(IO_bridge_phase_E phase, float32_t duty01)
         (duty01 >= 0.0f) &&
         (duty01 <= 1.0f))
     {
+        this->duty[phase] = duty01;
         const uint32_t compare = IO_bridge_private_dutyToCompare(duty01, this->period_counts);
         ret = HW_TIM_setCompare(this->config->phase[phase].tim, compare);
     }
     return ret;
 }
 
-// The step re-asserts every cycle; HW_TIM makes an unchanged enable a no-op.
+// The commanded enable is kept here for the offset tracker's idle test.
 bool Bridge::setPhaseOutputEnabled(IO_bridge_phase_E phase, bool enabled)
 {
-    return (this->config != NULL) &&
-           (phase < IO_BRIDGE_PHASE_COUNT) &&
-           HW_TIM_setOutputEnabled(this->config->phase[phase].tim, enabled);
+    const bool ret = (this->config != NULL) &&
+                     (phase < IO_BRIDGE_PHASE_COUNT) &&
+                     HW_TIM_setOutputEnabled(this->config->phase[phase].tim, enabled);
+    if (ret)
+    {
+        this->phaseEnabled[phase] = enabled;
+    }
+    return ret;
 }
 
 bool Bridge::setOutputEnabled(bool enabled)
@@ -341,11 +420,10 @@ bool Bridge::setVoltageVector(float32_t vAlpha, float32_t vBeta)
         (this->getBusVoltage(&busVoltage)))
     {
         // duty [0, 1]
-        float32_t duty[IO_BRIDGE_PHASE_COUNT] = { 0.0f };
         lib_transforms_svm(vAlpha, vBeta, busVoltage,
-                            &duty[IO_BRIDGE_PHASE_U],
-                            &duty[IO_BRIDGE_PHASE_V],
-                            &duty[IO_BRIDGE_PHASE_W]);
+                            &this->duty[IO_BRIDGE_PHASE_U],
+                            &this->duty[IO_BRIDGE_PHASE_V],
+                            &this->duty[IO_BRIDGE_PHASE_W]);
 
         ret = true;
         for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
@@ -370,7 +448,7 @@ bool Bridge::clearBreakFlags()
 }
 
 // [impl->fw~io_bridge_005~1] the most recent injected (PWM-crest) sample, never
-// the regular-sequence one; zero before the first.
+// the regular-sequence one, zero before the first; less the phase's offset.
 bool Bridge::getPhaseCurrent(IO_bridge_phase_E phase, float32_t * amps_out)
 {
     bool ret = false;
@@ -378,7 +456,7 @@ bool Bridge::getPhaseCurrent(IO_bridge_phase_E phase, float32_t * amps_out)
         (phase < IO_BRIDGE_PHASE_COUNT) &&
         (amps_out != NULL))
     {
-        *amps_out = this->current_amps[phase];
+        *amps_out = (this->measuredPhaseCurrent_amps[phase] - this->phaseCurrentZeroOffset_amps[phase]);
         ret = true;
     }
     return ret;

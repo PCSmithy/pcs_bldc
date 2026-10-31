@@ -238,8 +238,9 @@ sufficient to make the tooling aware of a new topic.
     `io/bridge.md` (IO_bridge three-phase actuation + current sense),
     `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
-    + `mc/six-step.md` + `mc/sinusoidal.md` + `mc/vf-sinusoidal.md` +
-    `mc/modulation.md` (app_motorControl and the transform/SVM math),
+    + `mc/six-step.md` + `mc/sinusoidal.md` + `mc/foc.md` +
+    `mc/vf-sinusoidal.md` + `mc/modulation.md` (app_motorControl and the
+    transform/SVM math),
     `safety/overcurrent.md` + `safety/encoder-fault.md`.
 - **Desktop-app specs** (`specs/desktop-app/`) — `app~` specs across
   `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,

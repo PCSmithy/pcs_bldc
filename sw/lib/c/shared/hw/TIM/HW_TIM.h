@@ -63,6 +63,9 @@ bool HW_TIM_getCompare(HW_TIM_channels_E channel, uint32_t * const out);
 // inactive level; a complementary channel's CHxN follows CHx.
 bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled);
 
+// Report a logical channel's commanded output enable.
+bool HW_TIM_getOutputEnabled(HW_TIM_channels_E channel, bool * const isEnabled);
+
 // Set or clear a peripheral's master output enable (MOE), the single gate over
 // its enabled outputs. Commanded OFF at init; per-channel compares and enables
 // are untouched, so clearing then setting restores the prior waveform.

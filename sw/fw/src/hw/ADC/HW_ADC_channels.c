@@ -73,7 +73,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 {
                     .InjectedChannel = ADC_CHANNEL_6, // Phase U ISENSE
                     // injected rank inferred from 'injectedInputs' array index
-                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5,   // the INA240 drives the pin hard
+                    // 4 conversions summed in hardware, no shift: a 14-bit count, one more bit
+                    // of current, done 2.1 us after the crest trigger: inside the low-side
+                    // shunt window at V_max (fw~hal_adc_006)
+                    .InjecOversamplingMode = ENABLE,
+                    .InjecOversampling = { .Ratio = ADC_OVERSAMPLING_RATIO_4, .RightBitShift = ADC_RIGHTBITSHIFT_NONE },
                     .InjectedSingleDiff = ADC_SINGLE_ENDED,
                     .InjectedOffsetNumber = ADC_OFFSET_NONE,
                     .InjectedOffset = 0,
@@ -147,7 +152,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 {
                     .InjectedChannel = ADC_CHANNEL_7, // Phase V ISENSE
                     // injected rank inferred from 'injectedInputs' array index
-                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5,   // the INA240 drives the pin hard
+                    // 4 conversions summed in hardware, no shift: a 14-bit count, one more bit
+                    // of current, done 2.1 us after the crest trigger: inside the low-side
+                    // shunt window at V_max (fw~hal_adc_006)
+                    .InjecOversamplingMode = ENABLE,
+                    .InjecOversampling = { .Ratio = ADC_OVERSAMPLING_RATIO_4, .RightBitShift = ADC_RIGHTBITSHIFT_NONE },
                     .InjectedSingleDiff = ADC_SINGLE_ENDED,
                     .InjectedOffsetNumber = ADC_OFFSET_NONE,
                     .InjectedOffset = 0,

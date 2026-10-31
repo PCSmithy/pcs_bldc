@@ -114,6 +114,7 @@ fn locked_params(r_ohm: f64, l_h: f64) -> MotorParams {
         b_nm_per_rad_s: 1.0e2,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
     }
 }
 
@@ -130,6 +131,7 @@ fn spin_params() -> MotorParams {
         b_nm_per_rad_s: 1.0e-4,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
     }
 }
 
@@ -249,6 +251,7 @@ fn alignment_torque_pulls_to_equilibrium() {
         b_nm_per_rad_s: 0.03,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
     };
     // The model keeps the shaft in [0, 2pi): -pi/6 reads as 11pi/6, approached from 3pi/2.
     let equilibrium = (11.0 * PI / 6.0) / f64::from(POLE_PAIRS);
@@ -520,6 +523,7 @@ fn svpwm_common_mode_rejected() {
         b_nm_per_rad_s: 1.0e-3,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
     };
     let mut plain = world(params, 0.3, VBUS_V);
     let mut shifted = world(params, 0.3, VBUS_V);

@@ -41,13 +41,19 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 #define ENC_MOTOR       (IO_AS5048_CHANNEL_MOTOR)
 
 // Trip thresholds under test (mirror app_motorControl.cpp).
-#define PHASE_TRIP_A    (2.0f)
+#define PHASE_TRIP_A    (1.2f)
 #define BUS_TRIP_A      (1.5f)
 
 // Drive parameters (mirror the module + the config above).
 #define MAX_VELOCITY    (20.0f)         // configured max speed (rad/s)
-#define ALIGN_DUTY_01   (0.1f)          // mirrors ALIGNMENT_DUTY_CYCLE
+#define ALIGN_DUTY_01   (0.3f)          // mirrors ALIGNMENT_DUTY_CYCLE
 #define MAX_DUTY_01     (0.9f)          // mirrors APP_MOTORCONTROL_MAX_DUTY_01
+#define FOC_I_MAX       (1.0f)          // the test config's FOC block: I_max, L, R, w_bw
+#define FOC_L           (4.0e-3f)
+#define FOC_R           (4.0f)
+#define FOC_BW          (2000.0f)
+#define FOC_KP          (FOC_L * FOC_BW)                // 8 V/A
+#define FOC_KI_T        (FOC_R * FOC_BW * 50.0e-6f)    // 0.4 V/A: the integral's growth per step
 #define DEG2RAD(d)      ((float32_t)(d) * 3.14159265f / 180.0f)
 // Compare-register value for a duty against PERIOD (matches IO_bridge's
 // (uint32_t)(duty*period + 0.5f)).
@@ -103,6 +109,7 @@ static void buildConfigs(void)
         },
         .busCurrent = { BUS_CH, BUS_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_A },
         .injectedPairWindow_us = PAIR_WINDOW_US,
+        .zeroOffset = { .filterAlpha = 0.005f, .minSamples = 1000U },
         .busVoltage = { BUS_V_CH, BUS_V_IN, IO_BRIDGE_INJECTED_NONE, 0.0f, BUS_V_PER_V } };
     bridgeConfig = (IO_bridge_config_S){ .channels = bridgeCfg, .numChannels = IO_BRIDGE_CHANNEL_COUNT };
 
@@ -117,6 +124,8 @@ static void buildConfigs(void)
         .motorPolePairs = 1U,
         .pwmPeriod_s = 50.0e-6f,
         .maxVoltage_V = 10.0f,
+        // K_p = 8 V/A, K_i T = 0.4 V/A per step: round numbers for the regulator tests
+        .foc = { .maxCurrent_A = FOC_I_MAX, .motorL_H = FOC_L, .motorR_ohm = FOC_R, .currentLoopBandwidth_radPerSec = FOC_BW },
         .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
         .prechargeTime_ms = PRECHARGE_MS };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
@@ -321,7 +330,7 @@ static void test_phase_overcurrent_trips_and_latches(void)
     driveToRunning(10.0f);
     TEST_ASSERT_TRUE(bridgeEnabled());
 
-    setPhaseCurrentsUV(3.0f, 0.0f);            // U > 2 A
+    setPhaseCurrentsUV(3.0f, 0.0f);            // U > 1.2 A
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());        // disabled within one cycle
 
@@ -346,7 +355,7 @@ static void test_current_below_threshold_does_not_trip(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrentsUV(1.9f, 0.0f);            // U and the derived W just under 2 A
+    setPhaseCurrentsUV(1.1f, 0.0f);            // U and the derived W just under 1.2 A
     setBusCurrent(1.4f);                       // just under 1.5 A
     tick();
     TEST_ASSERT_TRUE(bridgeEnabled());         // no trip
@@ -354,13 +363,13 @@ static void test_current_below_threshold_does_not_trip(void)
 
 // [test->fw~safety_001~1]
 // A negative phase-current magnitude trips too (bipolar shunt). W is derived, so
-// the scenario is expressed through the sampled legs: U + V = 2.5 A puts W at
-// -2.5 A while neither sampled leg is over the trip.
+// the scenario is expressed through the sampled legs: U + V = 1.5 A puts W at
+// -1.5 A while neither sampled leg is over the trip.
 static void test_negative_phase_overcurrent_trips(void)
 {
     driveToRunning(10.0f);
 
-    setPhaseCurrentsUV(1.25f, 1.25f);          // W = -(1.25 + 1.25), |-2.5| > 2 A
+    setPhaseCurrentsUV(0.75f, 0.75f);          // W = -(0.75 + 0.75), |-1.5| > 1.2 A
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
 }
@@ -677,6 +686,135 @@ static void test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up(vo
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
 }
 
+/* ---- fw~mc_022..024: the field-oriented method ---- */
+
+// The bridge's vector in the rotor frame: the recovered stator vector rotated
+// back by the rotor angle.
+static void rotorFrameFromCompares(float32_t rotorDeg, float32_t * const vD, float32_t * const vQ)
+{
+    float32_t angleDeg = 0.0f;
+    float32_t volts = 0.0f;
+    vectorFromCompares(&angleDeg, &volts);
+    const float32_t rel = DEG2RAD(angleDeg - rotorDeg);
+    *vD = volts * cosf(rel);
+    *vQ = volts * sinf(rel);
+}
+
+// Re-select FOC (through a SINUSOIDAL detour, so the selection is new) and run
+// one cycle at the rotor angle and velocity: the observed step is the method's
+// first, integrals at zero.
+static void startFocAt(float32_t rotorDeg, float32_t velocity)
+{
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    tick();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC);
+    commutateAt(rotorDeg, velocity);
+}
+
+// [test->fw~mc_022~1]
+// Currents at zero: the first step is (0, K_p i_q*) in the rotor frame, i_q* the
+// signed speed fraction of I_max, every phase enabled.
+static void test_foc_first_step_is_kp_times_the_current_target(void)
+{
+    alignAtZero();
+    static const struct { float32_t rotorDeg; float32_t velocity; float32_t iQ; } cases[] = {
+        {  30.0f,  10.0f,  0.5f },   // half scale
+        {  30.0f, -10.0f, -0.5f },   // reversed
+        { 200.0f,  20.0f,  1.0f },   // full scale
+        { 200.0f,  30.0f,  1.0f },   // past full scale: setVelocity saturates
+        { 120.0f, -20.0f, -1.0f },   // full scale reversed
+        { 300.0f,  -4.0f, -0.2f },
+        {  45.0f,   0.0f,  0.0f },
+    };
+    for (size_t i = 0U; i < COUNTOF(cases); i++)
+    {
+        startFocAt(cases[i].rotorDeg, cases[i].velocity);
+        float32_t vD = 0.0f;
+        float32_t vQ = 0.0f;
+        rotorFrameFromCompares(cases[i].rotorDeg, &vD, &vQ);
+        TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, FOC_KP * cases[i].iQ, vQ);
+        TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, 0.0f, vD);
+        TEST_ASSERT_TRUE(bridgeEnabled());
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_U));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_V));
+        TEST_ASSERT_FALSE(phaseFloating(IO_BRIDGE_PHASE_W));
+    }
+}
+
+// [test->fw~mc_023~1]
+// Currents at zero and i_q* = I: the first step is K_p I, each of the next 20
+// adds K_i T I, v_d stays zero. A gate drop and re-enable, with no new
+// selection, starts over.
+static void test_foc_integral_ramps_and_restarts_at_an_enable(void)
+{
+    const float32_t I = 0.5f;   // K_p I + 20 K_i T I = 8 V, under V_lim = 10 V
+    const float32_t tolerance = 0.01f * FOC_KP * I;
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+
+    alignAtZero();
+    startFocAt(0.0f, I * MAX_VELOCITY / FOC_I_MAX);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, FOC_KP * I, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vD);
+    for (uint32_t n = 1U; n <= 20U; n++)
+    {
+        app_motorControl_run50us();
+        rotorFrameFromCompares(0.0f, &vD, &vQ);
+        TEST_ASSERT_FLOAT_WITHIN(tolerance, (FOC_KP * I) + ((float32_t)n * FOC_KI_T * I), vQ);
+        TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vD);
+    }
+
+    mock_dev_gateDriver_setOperational(GD_MAIN, false);
+    tick();
+    TEST_ASSERT_FALSE(bridgeEnabled());
+    mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();                                   // precharged: the first step again
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, FOC_KP * I, vQ);
+}
+
+// [test->fw~mc_024~1]
+// K_p I above V_lim: every step holds magnitude V_lim on the q axis, and the step
+// after i_q* returns to zero commands V_lim - K_p I, the back-calculated integral
+// alone. A d-axis current turns the command off the q axis; the limit keeps that angle.
+static void test_foc_limit_holds_the_vector_and_sets_the_integral(void)
+{
+    const float32_t vLim = 4.0f;   // V_max under V_bus / sqrt(3)
+    const float32_t I = 0.75f;     // K_p I = 6 V: between V_lim and 2 V_lim
+    const float32_t tolerance = 0.01f * vLim;
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].maxVoltage_V = vLim;
+    TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
+    alignAtZero();
+    startFocAt(0.0f, I * MAX_VELOCITY / FOC_I_MAX);
+    for (uint32_t n = 0U; n < 20U; n++)
+    {
+        rotorFrameFromCompares(0.0f, &vD, &vQ);
+        TEST_ASSERT_FLOAT_WITHIN(tolerance, vLim, vQ);
+        TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vD);
+        app_motorControl_run50us();
+    }
+
+    startFocAt(0.0f, I * MAX_VELOCITY / FOC_I_MAX);   // one limited step
+    app_motorControl_setVelocity(MOTOR_MC, 0.0f);
+    app_motorControl_run50us();
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, vLim - (FOC_KP * I), vQ);
+
+    // I_d = 0.3 A at rotor angle 0 (U = 0.3, V = W = -0.15): e_d = -0.3, e_q = I, so
+    // the unlimited command (-2.4, 6) V scales onto V_lim with v_d / v_q = -0.4.
+    setPhaseCurrentsUV(0.3f, -0.15f);
+    startFocAt(0.0f, I * MAX_VELOCITY / FOC_I_MAX);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, vLim, sqrtf((vD * vD) + (vQ * vQ)));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, -0.4f, vD / vQ);
+}
+
 /* ---- method selection ---- */
 
 static app_motorControl_mode_E motorModeNow(void)
@@ -936,6 +1074,38 @@ static void test_init_rejects_zero_max_voltage(void)
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
+// [test->fw~mc_022~1]
+static void test_init_rejects_a_current_limit_at_the_phase_trip(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.maxCurrent_A = PHASE_TRIP_A;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.maxCurrent_A = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
+// [test->fw~mc_023~1]
+// R, L, or w_bw at zero is rejected; w_bw T is accepted at 0.19 and rejected at 0.21.
+static void test_init_rejects_a_degenerate_current_loop(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.motorR_ohm = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.motorL_H = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.currentLoopBandwidth_radPerSec = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+
+    const float32_t period_s = appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].pwmPeriod_s;
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.currentLoopBandwidth_radPerSec = 0.19f / period_s;
+    TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.currentLoopBandwidth_radPerSec = 0.21f / period_s;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -966,6 +1136,9 @@ int main(void)
 
     RUN_TEST(test_sinusoidal_vector_sits_on_the_q_axis);
     RUN_TEST(test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up);
+    RUN_TEST(test_foc_first_step_is_kp_times_the_current_target);
+    RUN_TEST(test_foc_integral_ramps_and_restarts_at_an_enable);
+    RUN_TEST(test_foc_limit_holds_the_vector_and_sets_the_integral);
     RUN_TEST(test_selected_method_survives_off);
     RUN_TEST(test_init_rejects_off_default_mode);
     RUN_TEST(test_first_enable_precharges_before_alignment);
@@ -980,6 +1153,8 @@ int main(void)
     RUN_TEST(test_init_rejects_zero_max_velocity);
     RUN_TEST(test_init_rejects_zero_pwm_period);
     RUN_TEST(test_init_rejects_zero_max_voltage);
+    RUN_TEST(test_init_rejects_a_current_limit_at_the_phase_trip);
+    RUN_TEST(test_init_rejects_a_degenerate_current_loop);
 
     return UNITY_END();
 }

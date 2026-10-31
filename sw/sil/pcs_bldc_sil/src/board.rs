@@ -7,7 +7,7 @@
 
 use crate::{
     cid, vid, wire_bridge, wire_current_sense, wiring::BridgeRoutes, wiring::CurrentSenseRoutes,
-    As5048Model, CurrentSenseModel, MotorModel, Sil, SilOptions, SOURCE,
+    As5048Model, CurrentSenseModel, MotorModel, MotorParams, Sil, SilOptions, SOURCE,
 };
 use voyant::vsig_id;
 
@@ -27,7 +27,7 @@ pub const DIAL_NOISE_LSB: f32 = 1.22;
 pub const DIAL_SEED: u64 = 1;
 
 /// The USB-PD bus voltage the board runs on.
-pub const VBUS_V: f64 = 24.0;
+pub const VBUS_V: f64 = 20.0;
 
 /// The gate driver's 200 ms configure + status pass, plus slack.
 pub const GATE_BRINGUP_MS: u64 = 300;
@@ -37,11 +37,11 @@ pub const GATE_BRINGUP_MS: u64 = 300;
 pub const USB_RX_REG: usize = 128;
 
 /// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.cpp`.
-pub const ALIGN_DUTY: f64 = 0.1;
+pub const ALIGN_DUTY: f64 = 0.3;
 pub const ALIGN_DWELL_MS: u64 = 500;
 
 /// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.cpp`.
-pub const PHASE_TRIP_A: f64 = 2.0;
+pub const PHASE_TRIP_A: f64 = 1.2;
 pub const BUS_TRIP_A: f64 = 1.5;
 
 /// Button PB10, active LOW (idle HIGH via pull-up). Port B is enum index 1, bit 10.
@@ -74,10 +74,15 @@ pub fn board(initial_angle_rad: f64) -> Board {
 /// wiring bundles live. The encoders carry their measured noise (the quantized
 /// `raw_encoder_ticks` output is noise-free; only the wire frames are perturbed).
 pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
+    board_with_motor(options, initial_angle_rad, MotorParams::default())
+}
+
+/// [`board_with`] on a motor built from `motor` — a held shaft, other windings.
+pub fn board_with_motor(options: SilOptions, initial_angle_rad: f64, motor: MotorParams) -> Board {
     let mut sim = options.build();
 
     // Producer → sensor → firmware, so the zero-latency routes land the same tick.
-    sim.add_member(MotorModel::new(MOTOR, initial_angle_rad));
+    sim.add_member(MotorModel::new(MOTOR, initial_angle_rad).with_params(motor));
     let encoder =
         sim.add_member(As5048Model::new(ENCODER, 0.0).with_noise(ENCODER_NOISE_LSB, ENCODER_SEED));
     let dial = sim.add_member(As5048Model::new(DIAL, 0.0).with_noise(DIAL_NOISE_LSB, DIAL_SEED));

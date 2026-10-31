@@ -49,6 +49,9 @@ pub struct MotorParams {
     pub t_c_nm: f64,
     /// Forward voltage drop over the body diodes of the bridge FETs
     pub v_d: f64,
+    /// The shaft held at rest: the drive torque goes into the clamp and the rotor
+    /// never moves, so a current step sees the windings alone (fw~mc_023, fw~mc_024).
+    pub rotor_locked: bool,
 }
 
 impl Default for MotorParams {
@@ -62,6 +65,7 @@ impl Default for MotorParams {
             b_nm_per_rad_s: 7.2e-4,
             t_c_nm: 4.4e-3,
             v_d: 0.8,
+            rotor_locked: false,
         }
     }
 }
@@ -276,7 +280,9 @@ impl Member for MotorModel {
 
             // sum shaft torques - add to sum with T_cog, T_load, etc.
             let t_drive = self.torque_nm; // TODO: + t_cog - t_load
-            if (self.velocity_rad_s == 0.0) && (t_drive.abs() <= self.params.t_c_nm) {
+            if self.params.rotor_locked {
+                self.velocity_rad_s = 0.0;
+            } else if (self.velocity_rad_s == 0.0) && (t_drive.abs() <= self.params.t_c_nm) {
                 // stuck - need more drive to overcome static friction
             } else {
                 // Kinetic friction opposes motion — or, at breakaway from rest, the

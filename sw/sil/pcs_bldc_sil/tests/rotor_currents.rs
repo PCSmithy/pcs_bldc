@@ -18,7 +18,7 @@ use std::f64::consts::TAU;
 const POLE_PAIRS: f64 = 14.0;
 
 /// Injected magnitude: well under the 2 A phase trip, with the derived W at half.
-const I_A: f64 = 1.2;
+const I_A: f64 = 1.0;   // under the 1.2 A phase trip
 
 /// Decode slack: 12-bit quantization (~8 mA/phase) plus the encoder-noise frame
 /// jitter (~1.5 LSB mechanical x 14 pole pairs, ~0.01 A at this magnitude).
@@ -82,7 +82,7 @@ fn current_along_the_frame_axis_reads_as_id() {
     assert_near(beta, 0.0, "beta");
     assert_near(d, I_A, "I_d");
     assert_near(q, 0.0, "I_q");
-    assert!(!fault_latched(&sim), "1.2 A is under the trip");
+    assert!(!fault_latched(&sim), "1 A is under the trip");
 }
 
 // [test->fw~mc_016~1]
@@ -173,7 +173,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
 // [test->fw~mc_019~1]
 #[test]
 fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
-    // Full dial under six-step on the 50 us grid, past 300 rad/s electrical: every
+    // Full dial under six-step on the 50 us grid, past 250 rad/s electrical: every
     // cycle's angle, read after the step that produced it, is within the spec's 3 deg
     // of the plant's rotor angle, the estimator carrying it between encoder reads.
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
@@ -186,7 +186,7 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
     }
     sim.run_for_ms(500);
     let omega_e = plant(&sim, "velocity") * POLE_PAIRS;
-    assert!(omega_e > 300.0, "spinning past 300 rad/s electrical: {omega_e:.0}");
+    assert!(omega_e > 250.0, "spinning past 250 rad/s electrical: {omega_e:.0}");
 
     let mut worst_deg = 0.0_f64;
     let (mut c, mut s_) = (0.0_f64, 0.0_f64);

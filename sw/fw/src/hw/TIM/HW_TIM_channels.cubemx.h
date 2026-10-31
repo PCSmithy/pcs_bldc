@@ -74,7 +74,8 @@
     .breakDeadTime = { HW_TIM_CUBEMX_BDT_TIM1 }, \
     .breakInputs = { HW_TIM_CUBEMX_BRKIN_TIM1 }, \
     .configureTrgo = true, \
-    .master = { HW_TIM_CUBEMX_MASTER_TIM1 },
+    .master = { HW_TIM_CUBEMX_MASTER_TIM1 }, \
+    .updateAtPeriod = true,   /* compares latch at the crest, after the current sample (fw~hal_tim_002) */
 
 #define HW_TIM_CUBEMX_SIM_PERIPH_TIM1 \
     .nameStr          = "TIM1", \
@@ -89,7 +90,8 @@
     .hasBreakInput          = true, \
     .configureTrgo          = true, \
     .trgoSource             = HW_TIM_TRGO_OC_MATCH, \
-    .trgoOcUnit             = 3U,
+    .trgoOcUnit             = 3U, \
+    .updateAtPeriod         = true,
 
 #define HW_TIM_CUBEMX_G4_OC_TIM1_CH1 \
     .complementary = true, \

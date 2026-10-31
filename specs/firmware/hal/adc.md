@@ -191,7 +191,9 @@ Needs: impl, test
 Each channel shall provide an injected conversion sequence whose enabled inputs
 are addressed by dense sequence position, sampled at the channel's injected
 trigger event (`fw~hal_adc_003~1`) and read back per position as a raw count and
-a voltage by the formula of `fw~hal_adc_005~1`.
+a voltage by the formula of `fw~hal_adc_005~1`, the voltage scaled for the
+group's configured hardware oversampling: a count that is the sum of N
+conversions shifted right S bits reads as volts times 2^S / N.
 
 Rationale:
 - The injected group is hardware-prioritized — an injected trigger preempts the
@@ -206,6 +208,9 @@ Acceptance:
   sampling.
 - An injected read of a disabled position, an out-of-range position, or before
   initialization returns false.
+- With injected oversampling of ratio N and shift S configured, a full-scale
+  input still reads the reference voltage; injected inputs of one channel that
+  disagree on the oversampling are rejected at init.
 
 Covers:
 - sys~arch_005~1

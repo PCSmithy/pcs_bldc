@@ -25,7 +25,11 @@ method (`fw~mc_020`) on the per-cycle rotor angle (`fw~mc_019`), and the
 bootstrap precharge (`fw~mc_021`) are in, as is the encoder phase-locked
 rotor tracking estimator `fw~est_rotor_001`/`_002` (`app_rotorEstimation`,
 `specs/firmware/est/rotor.md`) that `fw~mc_019` and the status velocity
-consume. Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+consume, and the bridge's zero-current offset tracking (`fw~io_bridge_009`).
+On the `mc_foc` branch, bench-spun, with its plant-level step responses on
+the SIL's held rotor (`tests/foc.rs`): the field-oriented method, its
+current regulator and voltage limit (`fw~mc_022`..`fw~mc_024`,
+`specs/firmware/mc/foc.md`, `lib_pi` + `MODE_FOC` in `app_motorControl`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 
@@ -73,38 +77,43 @@ control path and the protective plumbing before any closed loop.
 Sensored inner torque loop, SIL-first, using the U/V ADC-instance split
 already in place.
 
-- **Timer-triggered injected sampling** — retire the reserved
-  `fw~hal_adc_003` / `fw~hal_adc_008`: TIM1-update-triggered injected
-  conversions on ADC1 (U) and ADC2 (V) for simultaneous phase sampling,
-  interrupt- or DMA-readout, NVIC priorities that keep USB from jittering the
-  loop. **The regular path must move to DMA first** — AUTDLY is ADC-wide and
-  is forced on for the polled read, which drops injected triggers that arrive
-  while it holds the sequencer (`docs/sil/backlog.md`).
-- **Zero-current offset calibration** at startup (bridge disabled).
-- **Clarke / Park transforms, PI current loops (Id/Iq), SVM** output back to
-  the TIM1 duty registers.
-- **Encoder electrical-angle alignment** — align AS5048 mechanical angle to
-  the electrical frame (pole-pair count, offset find).
-- **Control task** driven by the hardware timer / conversion-complete ISR,
-  not the 1 ms poll.
-- **SIL:** motor electrical model (R/L/Ke, bridge, sensor models) in the
-  `sim` target so the current loop is closed in simulation first.
+- **Timer-triggered injected sampling** — done: TIM1-triggered injected
+  conversions on ADC1 (U) and ADC2 (V) with the per-cycle callback
+  (`fw~hal_adc_010`, `fw~io_bridge_006`/`_007`).
+- **Zero-current offset tracking** — done (`fw~io_bridge_009`): the bridge's
+  EMA of each idle phase's reading, latched when the phase next drives.
+- **Clarke / Park transforms, SVM** — done (`fw~mc_013`/`_014`,
+  `fw~io_bridge_008`).
+- **PI current loops (Id/Iq)** — done on `mc_foc` (`fw~mc_022`..`fw~mc_024`):
+  `lib_pi` regulators with K_p = L·ω_bw / K_i = R·ω_bw, vector limit at
+  min(V_max, V_bus/√3) with back-calculation anti-windup, i_q* from the
+  speed-target fraction times I_max; MODE_FOC plumbed like MODE_SINUSOIDAL.
+  Board config seeds R = 14.7 Ω, L = 5 mH from the SIL motor model,
+  ω_bw = 1000 rad/s, I_max = 1 A. Bench-spun; the step response and the limit
+  hold on the SIL's held rotor (`tests/foc.rs`).
+- **Encoder electrical-angle alignment** — done (`fw~mc_012`).
+- **Control task** driven by the conversion-complete ISR — done
+  (`fw~mc_015`).
+- **SIL:** motor electrical model with a rotor lock (`MotorParams::rotor_locked`);
+  the FOC step responses run on the 50 µs grid against it. A sense-bias
+  parameter for a plant-level offset test is still open. The closed-loop
+  tracking run is the first `[test->sys~mc_001~1]`.
 
 ### 3. Velocity / position control + estimation
 
 Outer loops and the first estimator work.
 
-- **Outer loops:** velocity PI and position control cascaded around the
-  current loop.
-- **Rotor angle and velocity estimation** from the encoder: the
+- **Outer loops:** velocity PI (spec when built, next `fw~mc` ID; a 1 ms
+  loop publishing i_q* to the step) and position control cascaded around
+  the current loop.
+- **Rotor angle and velocity estimation** from the encoder — done: the
   second-order tracking observer `fw~est_rotor_001`/`_002` in state-space
   form, corrected at 1 kHz and carried forward every PWM cycle
-  (`app_rotorEstimation`), ahead of the current loop so FOC commutates on a
-  lag-free angle at constant speed. Its constant-velocity model lags under
-  acceleration (angle a/K_i, velocity 2ζa/ω_n); once the observer runs,
-  add a known-input term B·u to the prediction with u the acceleration
-  from the commanded torque, B = [T²/2, T]ᵀ (a one-term edit to
-  `fw~est_rotor_002`).
+  (`app_rotorEstimation`), so FOC commutates on a lag-free angle at
+  constant speed. Its constant-velocity model lags under acceleration
+  (angle a/K_i, velocity 2ζa/ω_n); once FOC supplies i_q, add a
+  known-input term B·u to the prediction with u the acceleration from the
+  commanded torque, B = [T²/2, T]ᵀ (a one-term edit to `fw~est_rotor_002`).
 - **Motor parameter identification** — R / L / Ke, initially offline
   (measurement + datasheet) to seed the SIL model, with auto-commissioning
   scoped as a later phase.

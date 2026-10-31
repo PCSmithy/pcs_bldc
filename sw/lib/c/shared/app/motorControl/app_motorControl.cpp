@@ -3,6 +3,7 @@
 
 #include "lib_utils.h"
 #include "lib_timer.h"
+#include "lib_pi.hpp"
 #include "lib_transforms.h"
 #include "HW_CORDIC.h"
 
@@ -26,15 +27,18 @@
 
 
 #define ALIGNMENT_DWELL_TIMER_MS (500U)
-#define ALIGNMENT_DUTY_CYCLE (0.1f)
+#define ALIGNMENT_DUTY_CYCLE (0.3f)
 
 #define APP_MOTORCONTROL_MAX_DUTY_01 (0.9f)
+
+// Field-oriented current loop (fw~mc_023): the discrete integral holds up to this w_bw T.
+#define FOC_MAX_BANDWIDTH_PERIOD_PRODUCT (0.2f)
 
 // In-module overcurrent trip (fw~safety_001). Each control cycle any phase
 // current magnitude above OVERCURRENT_PHASE_TRIP_A, or a DC-bus current above
 // OVERCURRENT_BUS_TRIP_A, latches the fault; the latch holds the bridge
 // disabled until the fault-clear action (fw~mc_007).
-#define OVERCURRENT_PHASE_TRIP_A (2.0f)
+#define OVERCURRENT_PHASE_TRIP_A (1.2f)
 #define OVERCURRENT_BUS_TRIP_A   (1.5f)
 
 // Encoder-fault trip (fw~safety_002). Commutation depends on rotor position, so
@@ -105,6 +109,8 @@ class Motor
         bool bridgeEnabled;   // last cycle's bridge output-enable, for the state view
         uint16_t encoderFaultCount;   // consecutive invalid encoder reads
 
+        PiRegulator currentPi[APP_MOTORCONTROL_AXIS_COUNT];
+
         // setpoint
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
         float32_t vAlpha_v;
@@ -121,6 +127,7 @@ class Motor
         float32_t busCurrent;
         float32_t busVoltage;
         bool enable[IO_BRIDGE_PHASE_COUNT];
+        bool enableApplied[IO_BRIDGE_PHASE_COUNT];   // what the bridge was last told; unchanged enables are not re-sent
 };
 
 
@@ -212,6 +219,14 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->defaultMode > APP_MOTORCONTROL_MODE_OFF);
     isValid &= (channelConfig->defaultMode < APP_MOTORCONTROL_MODE_COUNT);
     isValid &= (channelConfig->prechargeTime_ms > 0U);
+    // [impl->fw~mc_022~1] I_max under the phase trip
+    isValid &= (channelConfig->foc.maxCurrent_A > ZERO);
+    isValid &= (channelConfig->foc.maxCurrent_A < OVERCURRENT_PHASE_TRIP_A);
+    // [impl->fw~mc_023~1] R, L, w_bw nonzero, w_bw T bounded: K_p, K_i follow
+    isValid &= (channelConfig->foc.motorR_ohm > ZERO);
+    isValid &= (channelConfig->foc.motorL_H > ZERO);
+    isValid &= (channelConfig->foc.currentLoopBandwidth_radPerSec > ZERO);
+    isValid &= ((channelConfig->foc.currentLoopBandwidth_radPerSec * channelConfig->pwmPeriod_s) <= FOC_MAX_BANDWIDTH_PERIOD_PRODUCT);
 
     if (isValid)
     {
@@ -230,11 +245,26 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->faultLatched = false;
         this->bridgeEnabled = false;
         this->encoderFaultCount = 0U;
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            this->enableApplied[phase] = true;   // the bridge's init leaves every phase enabled; the first cycle disables them
+        }
 
         this->rotorAngle_rad = ZERO;
         this->mechanicalAngle_rad = ZERO;
         this->magneticAngle_rad = ZERO;
         this->velocityMeasured_radPerSec = ZERO;
+
+        const PiConfig piConfig =
+        {
+            .kp = channelConfig->foc.motorL_H * channelConfig->foc.currentLoopBandwidth_radPerSec,
+            .ki = channelConfig->foc.motorR_ohm * channelConfig->foc.currentLoopBandwidth_radPerSec,
+            .period_s = channelConfig->pwmPeriod_s,
+        };
+        for (size_t axis = 0U; axis < APP_MOTORCONTROL_AXIS_COUNT; axis++)
+        {
+            this->currentPi[axis].init(piConfig);
+        }
     }
     return isValid;
 }
@@ -364,6 +394,29 @@ void Motor::run50us()
 
         this->updateRotorPosition();
 
+        // One sine/cosine pair of the rotor angle serves every transform this cycle.
+        float32_t rotorSin = ZERO;
+        float32_t rotorCos = 1.0f;
+        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
+
+        // [impl->fw~mc_016~1]
+        lib_transforms_clarke(
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_U],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_V],
+            this->phaseCurrent_a[IO_BRIDGE_PHASE_W],
+            &this->iAlpha_a,
+            &this->iBeta_a
+        );
+
+        lib_transforms_park(
+            this->iAlpha_a,
+            this->iBeta_a,
+            rotorSin,
+            rotorCos,
+            &this->iD_a,
+            &this->iQ_a
+        );
+
         if (this->driveState == DriveState::Driving)
         {
             this->velocitySetpointCurrent_radPerSec = this->velocitySetpointRequested_radPerSec;
@@ -372,14 +425,13 @@ void Motor::run50us()
         bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
         bool isVectorControl = false;
 
-        // One sine/cosine pair of the rotor angle serves every transform this
-        // cycle. The current frame rotates with the rotor only while a method
-        // drives; otherwise it is the stationary frame.
-        float32_t rotorSin = ZERO;
-        float32_t rotorCos = 1.0f;
-        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
-        float32_t frameSin = ZERO;
-        float32_t frameCos = 1.0f;
+        if ((this->driveState != DriveState::Driving) ||
+            (this->modeCurrent != APP_MOTORCONTROL_MODE_FOC))
+        {
+            this->currentPi[APP_MOTORCONTROL_AXIS_D].reset();
+            this->currentPi[APP_MOTORCONTROL_AXIS_Q].reset();
+        }
+
         if (this->driveState == DriveState::Driving)
         {
             switch (this->modeCurrent)
@@ -391,9 +443,6 @@ void Motor::run50us()
 
                 case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
                 {
-                    frameSin = rotorSin;
-                    frameCos = rotorCos;
-
                     // [impl->fw~mc_011~1]
                     // Commutate: apply the sector pattern for the rotor
                     // electrical angle advanced by the lead, at a duty
@@ -441,8 +490,6 @@ void Motor::run50us()
                 case APP_MOTORCONTROL_MODE_SINUSOIDAL:
                 {
                     isVectorControl = true;
-                    frameSin = rotorSin;
-                    frameCos = rotorCos;
 
                     // compute rotor frame voltage
                     const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
@@ -460,26 +507,51 @@ void Motor::run50us()
                     SET_ENABLE(true, true, true);
                     break;
                 }
+
+                case APP_MOTORCONTROL_MODE_FOC:
+                {
+                    isVectorControl = true;
+                    const app_motorControl_focConfig_S * const foc = &this->config->foc;
+                    // [impl->fw~mc_022~1]
+                    const float32_t targetDCurrent_a = 0.0f;
+                    const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
+                    const float32_t targetQCurrent_a = SIGN(this->velocitySetpointCurrent_radPerSec) * velocityPercent * foc->maxCurrent_A;
+
+                    // [impl->fw~mc_023~1]
+                    const float32_t errorDCurrent_a = targetDCurrent_a - this->iD_a;
+                    float32_t vD = this->currentPi[APP_MOTORCONTROL_AXIS_D].step(errorDCurrent_a);
+
+                    const float32_t errorQCurrent_a = targetQCurrent_a - this->iQ_a;
+                    float32_t vQ = this->currentPi[APP_MOTORCONTROL_AXIS_Q].step(errorQCurrent_a);
+
+                    // [impl->fw~mc_024~1]
+                    const float32_t vLim = MIN_OF(this->config->maxVoltage_V, (this->busVoltage * LIB_TRANSFORMS_1_DIV_SQRT3));
+                    const float32_t vVectorMag = sqrtf((vD*vD) + (vQ*vQ));
+                    if (vVectorMag > vLim)
+                    {
+                        const float32_t k = vLim / vVectorMag; // limit / mag
+                        vD *= k;
+                        vQ *= k;
+
+                        this->currentPi[APP_MOTORCONTROL_AXIS_D].backCalculate(errorDCurrent_a, vD);
+                        this->currentPi[APP_MOTORCONTROL_AXIS_Q].backCalculate(errorQCurrent_a, vQ);
+                    }
+
+                    lib_transforms_inversePark(
+                        vD,
+                        vQ,
+                        rotorSin,
+                        rotorCos,
+                        &this->vAlpha_v,
+                        &this->vBeta_v
+                    );
+
+                    SET_ENABLE(true, true, true);
+
+                    break;
+                }
             }
         }
-
-        // [impl->fw~mc_016~1]
-        lib_transforms_clarke(
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_U],
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_V],
-            this->phaseCurrent_a[IO_BRIDGE_PHASE_W],
-            &this->iAlpha_a,
-            &this->iBeta_a
-        );
-
-        lib_transforms_park(
-            this->iAlpha_a,
-            this->iBeta_a,
-            frameSin,
-            frameCos,
-            &this->iD_a,
-            &this->iQ_a
-        );
 
         // update outputs
         if (isVectorControl)
@@ -493,10 +565,14 @@ void Motor::run50us()
             IO_bridge_setPhaseDuty(this->config->bridge, IO_BRIDGE_PHASE_W, this->duty[IO_BRIDGE_PHASE_W]);
         }
 
-
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_U, this->enable[IO_BRIDGE_PHASE_U]);
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_V, this->enable[IO_BRIDGE_PHASE_V]);
-        IO_bridge_setPhaseOutputEnabled(this->config->bridge, IO_BRIDGE_PHASE_W, this->enable[IO_BRIDGE_PHASE_W]);
+        for (size_t phase = 0U; phase < IO_BRIDGE_PHASE_COUNT; phase++)
+        {
+            if (this->enable[phase] != this->enableApplied[phase])
+            {
+                IO_bridge_setPhaseOutputEnabled(this->config->bridge, (IO_bridge_phase_E) phase, this->enable[phase]);
+                this->enableApplied[phase] = this->enable[phase];
+            }
+        }
 
         IO_bridge_setOutputEnabled(this->config->bridge, isAnyPhaseEnabled);
         this->bridgeEnabled = isAnyPhaseEnabled;

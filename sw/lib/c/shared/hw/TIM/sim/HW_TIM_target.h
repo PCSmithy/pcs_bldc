@@ -58,6 +58,9 @@ typedef struct
                                           // (0 = counter does not track sim time)
     uint32_t          rcr;                // repetition counter: reload events per
                                           // update event, minus one (0 = every reload)
+    bool              updateAtPeriod;     // center-aligned: the first countdown starts
+                                          // spent, so update events land on the period
+                                          // reload (crest), not the zero reload
 
     bool     configureBreakDeadTime;
     uint32_t deadTime;        // dead-time generator ticks (0..255)

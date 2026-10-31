@@ -39,6 +39,12 @@
 #define SENSE_U_INJ          (0U)
 #define SENSE_V_INJ          (0U)
 
+// Zero-current offset tracking: a short filter and run so the suite stays
+// small. 0.95^19 is what 20 idle samples leave of a seed of one.
+#define TEST_OFFSET_ALPHA        (0.05f)
+#define TEST_OFFSET_MIN_SAMPLES  (20U)
+#define TEST_OFFSET_SEED_LEFT    (0.37735f)
+
 // lib_timer bottoms out on the mock's free-running counter, which nextTrigger()
 // moves: the driver stamps every injected sample through it.
 static uint32_t testNow_us(void)
@@ -73,6 +79,7 @@ static void buildGoodConfig(void)
         .busCurrent = { HW_ADC_CHANNEL_2, SENSE_BUS_IN, IO_BRIDGE_INJECTED_NONE,
                         0.0f, SENSE_BUS_V_PER_A },
         .injectedPairWindow_us = TEST_PAIR_WINDOW_US,
+        .zeroOffset = { .filterAlpha = TEST_OFFSET_ALPHA, .minSamples = TEST_OFFSET_MIN_SAMPLES },
         .busVoltage = { HW_ADC_CHANNEL_1, SENSE_BUS_V_IN, IO_BRIDGE_INJECTED_NONE,
                         0.0f, SENSE_BUS_V_PER_V } };
 
@@ -988,6 +995,136 @@ static void test_injected_unreadable_slot_publishes_nothing(void)
     TEST_ASSERT_EQUAL_UINT32(0U, cycleCalls);
 }
 
+/* ---- fw~io_bridge_009: zero-current offset tracking ---- */
+
+// `n` complete crest pairs at a held (U, V).
+static void firePairs(uint32_t n, float32_t ampsU, float32_t ampsV)
+{
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        fireInjectedPair(ampsU, ampsV);
+    }
+}
+
+// Assert the triple a driving bridge reports for one pair at (U, V).
+static void assertDrivenTriple(float32_t ampsU, float32_t ampsV,
+                               float32_t expU, float32_t expV, float32_t expW)
+{
+    fireInjectedPair(ampsU, ampsV);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, expU, phaseAmps(IO_BRIDGE_PHASE_U));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, expV, phaseAmps(IO_BRIDGE_PHASE_V));
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, expW, phaseAmps(IO_BRIDGE_PHASE_W));
+}
+
+// [test->fw~io_bridge_001~1]
+static void test_init_rejects_zero_offset_config(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].zeroOffset.filterAlpha = 0.0f;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+
+    buildGoodConfig();
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].zeroOffset.filterAlpha = 1.5f;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+
+    buildGoodConfig();
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].zeroOffset.minSamples = 0U;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+
+    buildGoodConfig();
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].zeroOffset.filterAlpha = 1.0f;
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+}
+
+// The bridge is dark from init: a held (0.3, -0.2) through a full idle run is
+// subtracted from every phase once the bridge drives, W through its KCL sum.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_latches_the_idle_reading_at_enable(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.3f, phaseAmps(IO_BRIDGE_PHASE_U));   // nothing latched while idle
+
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(1.3f, 0.8f, 1.0f, 1.0f, -2.0f);
+}
+
+// Fewer idle samples than the minimum leave the offsets as they were: zero from
+// init, then the previous latch.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_needs_the_minimum_idle_run(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    firePairs(TEST_OFFSET_MIN_SAMPLES - 1U, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(1.3f, 0.8f, 1.3f, 0.8f, -2.1f);
+
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, false));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(1.3f, 0.8f, 1.0f, 1.0f, -2.0f);
+
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, false));
+    firePairs(5U, 0.9f, 0.9f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(1.3f, 0.8f, 1.0f, 1.0f, -2.0f);
+}
+
+// Each idle run starts the filter on its own first sample: a second run at a
+// different level latches that level, not a blend with the first.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_seeds_on_the_first_idle_sample(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.0f, 0.0f, -0.3f, 0.2f, 0.1f);
+
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, false));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.9f, 0.9f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(1.0f, 1.0f, 0.1f, 0.1f, -0.2f);
+}
+
+// The filter is the configured exponential average: a seed of 1 A followed by
+// zeros decays by (1 - alpha) per sample.
+static void test_zero_offset_is_the_exponential_average_of_the_idle_run(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    fireInjectedPair(1.0f, 0.0f);
+    firePairs(TEST_OFFSET_MIN_SAMPLES - 1U, 0.0f, 0.0f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.0f, 0.0f, -TEST_OFFSET_SEED_LEFT, 0.0f, TEST_OFFSET_SEED_LEFT);
+}
+
+// A phase whose own output is disabled is idle while the bridge drives: it
+// alone tracks and latches; the driving phases keep their offsets.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_tracks_a_phase_with_its_output_disabled(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.3f, -0.2f, 0.3f, -0.2f, -0.1f);
+
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseOutputEnabled(MOTOR, IO_BRIDGE_PHASE_U, false));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setPhaseOutputEnabled(MOTOR, IO_BRIDGE_PHASE_U, true));
+    assertDrivenTriple(1.3f, 0.8f, 1.0f, 0.8f, -2.1f);
+}
+
+// A re-init puts the offsets back to zero.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_resets_at_init(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.3f, -0.2f, 0.0f, 0.0f, 0.0f);
+
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.3f, -0.2f, 0.3f, -0.2f, -0.1f);
+}
+
 /* ---- fw~io_bridge_007: per-cycle callback ---- */
 
 // [test->fw~io_bridge_007~1]
@@ -1155,6 +1292,14 @@ int main(void)
     RUN_TEST(test_injected_every_trigger_forms_one_triple);
     RUN_TEST(test_injected_dropped_partner_holds_w_then_next_trigger_pairs);
     RUN_TEST(test_injected_different_triggers_never_pair);
+
+    RUN_TEST(test_init_rejects_zero_offset_config);
+    RUN_TEST(test_zero_offset_latches_the_idle_reading_at_enable);
+    RUN_TEST(test_zero_offset_needs_the_minimum_idle_run);
+    RUN_TEST(test_zero_offset_seeds_on_the_first_idle_sample);
+    RUN_TEST(test_zero_offset_is_the_exponential_average_of_the_idle_run);
+    RUN_TEST(test_zero_offset_tracks_a_phase_with_its_output_disabled);
+    RUN_TEST(test_zero_offset_resets_at_init);
 
     RUN_TEST(test_registerCycleCallback_rejects_bad_arguments);
     RUN_TEST(test_cycle_callback_fires_once_per_pair);

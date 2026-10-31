@@ -1527,10 +1527,10 @@ def run(page):
     # ── [test->app~obs_006~1] the exclusion narrows to writable ∩ matches ──
     fresh_boot(page)
     page.wait_for_function("() => document.querySelectorAll('.signal-row').length > 0")
-    page.fill(".picker-search input", "phaseCurrent")
+    page.fill(".picker-search input", "IO_bridge")
     page.wait_for_function(
         "() => __cockpit.store.signals.length > 0"
-        " && __cockpit.store.signals.every(s => s.path.includes('phaseCurrent'))"
+        " && __cockpit.store.signals.every(s => s.path.includes('IO_bridge'))"
     )
     both = page.evaluate("() => __cockpit.store.signals.length")
     page.click("[data-hideconst]")
@@ -1538,7 +1538,7 @@ def run(page):
     writable_only = page.evaluate("() => __cockpit.store.signals.length")
     check(
         "obs_006 exclusion presents exactly the writable matches",
-        both == 6 and writable_only == 3,
+        both == 14 and writable_only == 9,
         (both, writable_only),
     )
     # Disabling restores the read-only matches (the wait is the assert).
@@ -1609,7 +1609,8 @@ def run(page):
         ),
     )
     page.fill(".picker-search input", "*")  # match-all glob clears the narrowing
-    page.wait_for_function("() => document.querySelectorAll('.picker-group').length > 2")
+    # The narrowed render already shows three groups: wait for the full one.
+    page.wait_for_function("() => document.querySelectorAll('.picker-group').length > 5")
     page.click("[data-collapseall]")  # not everything collapsed yet → collapse all
     page.wait_for_function(
         "() => document.querySelector('[data-collapseall]').textContent === 'expand all'"

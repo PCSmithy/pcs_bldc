@@ -18,7 +18,7 @@ const PLANT_SIGNALS: [&str; 3] = ["phase_current_u", "phase_current_v", "phase_c
 
 /// One phase's crest current as the firmware decoded it — not as the test would.
 fn bridge_amps(sim: &Sil, phase: usize) -> f64 {
-    f64_at(sim, &format!("IO_bridge_data.channels[0].current_amps[{phase}]"))
+    f64_at(sim, &format!("IO_bridge_data.channels[0].measuredPhaseCurrent_amps[{phase}]"))
 }
 
 fn bridge_count(sim: &Sil, phase: usize) -> u64 {

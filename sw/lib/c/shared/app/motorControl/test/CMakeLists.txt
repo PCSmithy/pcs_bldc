@@ -25,8 +25,10 @@ target_include_directories(test_app_motorControl PRIVATE
 target_link_libraries(test_app_motorControl PRIVATE
   lib_types
   lib_utils
+  lib_pi
   lib_transforms     # SVM — IO_bridge.cpp includes it
-  hw_CORDIC          # real sim driver (libm) — the step's sine/cosine pair
+  lib_filterIIR      # the bridge's zero-current offset EMA
+  hw_CORDIC         # real sim driver (libm) — the step's sine/cosine pair
   unity
   mock_hw_TIM        # shared: shadow HW_TIM.h + recording double
   mock_hw_ADC        # shared: shadow HW_ADC.h + injectable volts

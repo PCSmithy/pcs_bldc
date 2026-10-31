@@ -33,6 +33,7 @@ configured bridge, returning false on any of:
 | Bridge  | The three phases do not resolve to one shared HW_TIM peripheral. |
 | Bridges | An ADC channel carries injected phase senses of more than one bridge. |
 | Phase   | A phase's complement is itself, or names a phase whose own complement is not it (the derived phase carries none). |
+| Bridge  | The zero-current offset weight is outside (0, 1], or its minimum run length is zero samples (`fw~io_bridge_009~1`). |
 
 Acceptance:
 - A valid configuration initializes every bridge, enables each phase's
@@ -129,12 +130,13 @@ Needs: impl, test
 `fw~io_bridge_005~1`
 
 The driver shall report each configured sense — the three phase currents,
-the bus current, and the bus voltage — as
+the bus current, and the bus voltage — as its decoded value
 
 value = (V_pin − V_bias) / scale
 
-with V_bias and scale the sense's configured bias and volts per unit, the
-sample each reads per:
+with V_bias and scale the sense's configured bias and volts per unit,
+less, for a phase current, its zero-current offset (`fw~io_bridge_009~1`),
+the sample each reads per:
 
 | Sense | Sample reported |
 |-------|-----------------|
@@ -145,8 +147,9 @@ returning false for a sense whose scale is zero, an out-of-range bridge or
 phase, or an uninitialized driver.
 
 Acceptance:
-- A pin voltage of V_bias reads zero; a pin voltage of V_bias + scale reads
-  one unit.
+- With the phase zero-current offsets (`fw~io_bridge_009~1`) at zero, a pin
+  voltage of V_bias reads zero and a pin voltage of V_bias + scale reads one
+  unit.
 - A sense with zero scale returns false.
 - A new injected sample changes the reported phase current at the next read;
   a new regular sample of the same input does not.
@@ -187,6 +190,50 @@ conversion.
 Acceptance:
 - Over N completed triples the callback runs N times with the registered
   context, each after that triple is readable.
+
+Covers:
+- `sys~mc_001~1`
+
+Needs: impl, test
+
+### Zero-current offset tracking
+`fw~io_bridge_009~1`
+
+The driver shall hold a zero-current offset per phase, the term that the
+sense readout (`fw~io_bridge_005~1`) subtracts, set per:
+
+| At | Offset |
+|----|--------|
+| Init | Zero |
+| A driving phase's first injected sample after an idle run of at least the configured minimum run length | y |
+| Any other sample | Unchanged |
+
+A phase is idle while its output is disabled or the bridge's master output
+enable is off. An idle run is the phase's consecutive injected samples
+while idle. y is the exponential average of the phase's decoded current i
+over the run: seeded to i on the run's first sample and advanced
+y ← y + α (i − y) on each later one. The weight α and the minimum run
+length, in samples, are configured per bridge.
+
+Acceptance:
+- With the bridge disabled and the decoded phase currents held at
+  (I_u, I_v, −I_u − I_v) through the minimum run length and through the
+  next enable, the phase currents reported after that enable are zero,
+  within 10 mA.
+- After an idle run shorter than the minimum, the phase currents reported
+  after the next enable are the decoded currents less the offsets held
+  before the run, within 10 mA.
+- Two idle runs of the minimum length at different held levels, then an
+  enable with the decoded currents still at the second level, report zero
+  within 10 mA.
+- With the bridge driving, one phase's output disabled through the minimum
+  run length at a held decoded current, and that current still held
+  once its output is re-enabled, the phase reports zero within 10 mA while
+  the other two report their decoded currents less the offsets they held
+  before.
+- After an idle run of N samples with a decoded current of I on the first
+  and zero on the rest, the phase's reported current once driving with its
+  decoded current at zero is −I (1 − α)^(N−1), within 1 %.
 
 Covers:
 - `sys~mc_001~1`
