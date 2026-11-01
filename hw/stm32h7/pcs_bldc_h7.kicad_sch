@@ -356,6 +356,102 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Mechanical:Fiducial"
+			(exclude_from_sim no)
+			(in_bom no)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "FID"
+				(at 0 5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Fiducial"
+				(at 0 3.175 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Fiducial Marker"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "fiducial marker"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "Fiducial*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "Fiducial_0_1"
+				(circle
+					(center 0 0)
+					(radius 1.27)
+					(stroke
+						(width 0.508)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "pcs_bldc_sym_lib:2-1445100-3"
 			(pin_names
 				(offset 1.016)
@@ -1022,6 +1118,17 @@
 			)
 			(embedded_fonts no)
 		)
+	)
+	(text "FID1-FID3 top side, FID4-FID5 bottom side: three corners of each assembled side (JLC asks for 3 per side)."
+		(exclude_from_sim no)
+		(at 24.13 276.86 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "14a42da2-754d-4c82-9575-4c27147f79de")
 	)
 	(junction
 		(at 135.89 52.07)
@@ -2079,18 +2186,6 @@
 				(justify bottom)
 			)
 		)
-		(property "MF" "Molex"
-			(at 129.286 59.944 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
 		(property "Package" "None"
 			(at 129.286 59.944 0)
 			(hide yes)
@@ -2103,8 +2198,8 @@
 				(justify bottom)
 			)
 		)
-		(property "Price" "None"
-			(at 129.286 59.944 0)
+		(property "MPN" "436500212"
+			(at 133.35 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2112,79 +2207,6 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify bottom)
-			)
-		)
-		(property "Check_prices" "https://www.snapeda.com/parts/436500212/Molex/view-part/?ref=eda"
-			(at 133.858 57.658 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "Availability" "In Stock"
-			(at 129.286 59.944 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "SnapEDA_Link" "https://www.snapeda.com/parts/436500212/Molex/view-part/?ref=snap"
-			(at 133.858 57.658 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MP" "436500212"
-			(at 129.286 59.944 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MFR_NAME" "Molex"
-			(at 129.286 59.944 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MANUFACTURER_PART_NUMBER" "436500212"
-			(at 129.286 59.944 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
 			)
 		)
 		(pin "3"
@@ -2283,6 +2305,158 @@
 		)
 	)
 	(symbol
+		(lib_id "Mechanical:Fiducial")
+		(at 52.07 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "266e33b6-30bd-4166-8335-8e8e842621fb")
+		(property "Reference" "FID3"
+			(at 54.61 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FIDUCIAL"
+			(at 54.61 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
+			(at 52.07 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 52.07 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Fiducial Marker"
+			(at 52.07 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(reference "FID3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:Fiducial")
+		(at 24.13 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "6482e2bc-bb8a-49f7-bc3a-6bd203755c4c")
+		(property "Reference" "FID1"
+			(at 26.67 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FIDUCIAL"
+			(at 26.67 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
+			(at 24.13 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 24.13 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Fiducial Marker"
+			(at 24.13 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(reference "FID1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 320.04 81.28 0)
 		(unit 1)
@@ -2357,6 +2531,158 @@
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
 					(reference "#PWR04")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:Fiducial")
+		(at 80.01 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "7904da42-8190-44cf-9241-4c10df7e1e30")
+		(property "Reference" "FID5"
+			(at 82.55 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FIDUCIAL"
+			(at 82.55 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
+			(at 80.01 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 80.01 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Fiducial Marker"
+			(at 80.01 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(reference "FID5")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:Fiducial")
+		(at 38.1 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "827e1733-f252-4427-b911-d4dafa1c0682")
+		(property "Reference" "FID2"
+			(at 40.64 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FIDUCIAL"
+			(at 40.64 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
+			(at 38.1 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 38.1 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Fiducial Marker"
+			(at 38.1 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(reference "FID2")
 					(unit 1)
 				)
 			)
@@ -2603,18 +2929,6 @@
 				(justify bottom)
 			)
 		)
-		(property "MF" "TE Connectivity"
-			(at 325.12 78.232 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
 		(property "Package" "None"
 			(at 326.136 80.518 0)
 			(hide yes)
@@ -2627,8 +2941,8 @@
 				(justify bottom)
 			)
 		)
-		(property "Price" "None"
-			(at 326.39 82.042 0)
+		(property "MPN" "2-1445100-3"
+			(at 326.39 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2636,91 +2950,6 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify bottom)
-			)
-		)
-		(property "Check_prices" "https://www.snapeda.com/parts/2-1445100-3/TE+Connectivity+AMP+Connectors/view-part/?ref=eda"
-			(at 327.66 61.214 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "STANDARD" "MANUFACTURER RECOMMENDATIONS"
-			(at 325.628 66.294 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "PARTREV" "A"
-			(at 326.39 84.582 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "SnapEDA_Link" "https://www.snapeda.com/parts/2-1445100-3/TE+Connectivity+AMP+Connectors/view-part/?ref=snap"
-			(at 326.644 64.008 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MP" "2-1445100-3"
-			(at 325.628 74.676 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "Availability" "In Stock"
-			(at 326.39 86.36 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MANUFACTURER" "TE CONNECTIVITY"
-			(at 326.136 76.454 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
 			)
 		)
 		(pin "1"
@@ -2853,6 +3082,82 @@
 		)
 	)
 	(symbol
+		(lib_id "Mechanical:Fiducial")
+		(at 66.04 269.24 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "e6e70ff3-3d90-46f8-ac74-9618c0a3cabe")
+		(property "Reference" "FID4"
+			(at 68.58 267.9699 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FIDUCIAL"
+			(at 68.58 270.5099 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Fiducial:Fiducial_1mm_Mask2mm"
+			(at 66.04 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 66.04 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Fiducial Marker"
+			(at 66.04 269.24 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pcs_bldc_h7"
+				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
+					(reference "FID4")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "pcs_bldc_sym_lib:2-1445100-3")
 		(at 326.39 133.35 0)
 		(unit 1)
@@ -2933,18 +3238,6 @@
 				(justify bottom)
 			)
 		)
-		(property "MF" "TE Connectivity"
-			(at 325.12 165.862 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
 		(property "Package" "None"
 			(at 326.136 168.148 0)
 			(hide yes)
@@ -2957,8 +3250,8 @@
 				(justify bottom)
 			)
 		)
-		(property "Price" "None"
-			(at 326.39 169.672 0)
+		(property "MPN" "2-1445100-3"
+			(at 326.39 133.35 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2966,91 +3259,6 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify bottom)
-			)
-		)
-		(property "Check_prices" "https://www.snapeda.com/parts/2-1445100-3/TE+Connectivity+AMP+Connectors/view-part/?ref=eda"
-			(at 327.66 148.844 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "STANDARD" "MANUFACTURER RECOMMENDATIONS"
-			(at 325.628 153.924 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "PARTREV" "A"
-			(at 326.39 172.212 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "SnapEDA_Link" "https://www.snapeda.com/parts/2-1445100-3/TE+Connectivity+AMP+Connectors/view-part/?ref=snap"
-			(at 326.644 151.638 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MP" "2-1445100-3"
-			(at 325.628 162.306 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "Availability" "In Stock"
-			(at 326.39 173.99 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-			)
-		)
-		(property "MANUFACTURER" "TE CONNECTIVITY"
-			(at 326.136 164.084 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
 			)
 		)
 		(pin "1"
@@ -3178,52 +3386,6 @@
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
 					(reference "J5")
 					(unit 1)
-				)
-			)
-		)
-	)
-	(sheet
-		(at 63.5 200.66)
-		(size 58.42 31.75)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(stroke
-			(width 0.1524)
-			(type solid)
-		)
-		(fill
-			(color 0 0 0 0)
-		)
-		(uuid "2667a4f0-e40e-4a6c-bdeb-6f94afb25317")
-		(property "Sheetname" "eth"
-			(at 63.5 199.9484 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left bottom)
-			)
-		)
-		(property "Sheetfile" "eth.kicad_sch"
-			(at 63.5 232.9946 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left top)
-			)
-		)
-		(instances
-			(project "pcs_bldc_h7"
-				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d"
-					(page "5")
 				)
 			)
 		)
@@ -3472,7 +3634,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC1_A_MISO" input
+		(pin "ENC1_A_MISO" bidirectional
 			(at 248.92 100.33 0)
 			(uuid "81066ebb-b21d-4a6c-8101-2559ff0a92ca")
 			(effects
@@ -3482,7 +3644,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_DRVOFF" input
+		(pin "DRV1_DRVOFF" output
 			(at 248.92 55.88 0)
 			(uuid "1c1987a5-d5f1-499a-bbd5-c0c45988877f")
 			(effects
@@ -3492,7 +3654,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_INLA" input
+		(pin "DRV1_INLA" output
 			(at 248.92 71.12 0)
 			(uuid "6be29de6-091e-4826-bec4-1cc619fe53fc")
 			(effects
@@ -3502,7 +3664,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_INLB" input
+		(pin "DRV1_INLB" output
 			(at 248.92 73.66 0)
 			(uuid "9dfef128-d650-4cf2-8fdd-ef2d76cb3481")
 			(effects
@@ -3512,7 +3674,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_INLC" input
+		(pin "DRV1_INLC" output
 			(at 248.92 76.2 0)
 			(uuid "85f5ee0c-01cf-4692-bf05-f500986fd00d")
 			(effects
@@ -3532,7 +3694,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_nCS" input
+		(pin "DRV1_nCS" output
 			(at 248.92 48.26 0)
 			(uuid "99558b36-cdbc-43a4-b477-fe2eba906c16")
 			(effects
@@ -3552,7 +3714,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_nSLEEP" input
+		(pin "DRV1_nSLEEP" output
 			(at 248.92 53.34 0)
 			(uuid "5f917bfe-a159-4a1b-8a78-95c8e0911a37")
 			(effects
@@ -3562,7 +3724,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_PWM_1" input
+		(pin "DRV1_PWM_1" output
 			(at 248.92 63.5 0)
 			(uuid "61aaf27f-3305-49e1-8bca-15a3fe903041")
 			(effects
@@ -3572,7 +3734,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_PWM_2" input
+		(pin "DRV1_PWM_2" output
 			(at 248.92 66.04 0)
 			(uuid "d9faeb0b-219e-47ea-ab0a-1237a3dfa340")
 			(effects
@@ -3582,7 +3744,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV1_PWM_3" input
+		(pin "DRV1_PWM_3" output
 			(at 248.92 68.58 0)
 			(uuid "3f77a7da-4ea9-44eb-8246-88817898ef05")
 			(effects
@@ -3592,7 +3754,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_DRVOFF" input
+		(pin "DRV2_DRVOFF" output
 			(at 248.92 143.51 0)
 			(uuid "f6008a7f-ec5b-4451-829d-a9551e016263")
 			(effects
@@ -3602,7 +3764,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_INLA" input
+		(pin "DRV2_INLA" output
 			(at 248.92 158.75 0)
 			(uuid "5cee7048-3dc8-4006-b7fb-585e74b36694")
 			(effects
@@ -3612,7 +3774,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_INLB" input
+		(pin "DRV2_INLB" output
 			(at 248.92 161.29 0)
 			(uuid "a9e99de9-3e03-4e61-a1e9-1b5f84620ef9")
 			(effects
@@ -3622,7 +3784,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_INLC" input
+		(pin "DRV2_INLC" output
 			(at 248.92 163.83 0)
 			(uuid "e859be33-a2f2-4d9d-b197-6accf2429048")
 			(effects
@@ -3652,7 +3814,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_nCS" input
+		(pin "DRV2_nCS" output
 			(at 248.92 135.89 0)
 			(uuid "d89ee740-49b8-4126-9854-63d4958dbea5")
 			(effects
@@ -3672,7 +3834,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_nSLEEP" input
+		(pin "DRV2_nSLEEP" output
 			(at 248.92 140.97 0)
 			(uuid "fab74743-5e91-4be7-82d9-215e330693cd")
 			(effects
@@ -3682,7 +3844,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_PWM_1" input
+		(pin "DRV2_PWM_1" output
 			(at 248.92 151.13 0)
 			(uuid "d34b8c93-7ccb-4e84-9afa-92325ad947d3")
 			(effects
@@ -3692,7 +3854,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_PWM_2" input
+		(pin "DRV2_PWM_2" output
 			(at 248.92 153.67 0)
 			(uuid "18e976a5-ca57-41d0-a2be-eada8f2e1114")
 			(effects
@@ -3702,7 +3864,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV2_PWM_3" input
+		(pin "DRV2_PWM_3" output
 			(at 248.92 156.21 0)
 			(uuid "2ed7f09d-ca84-4aeb-b45c-815e4fcd99a9")
 			(effects
@@ -3732,7 +3894,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV_SCLK" input
+		(pin "DRV_SCLK" output
 			(at 248.92 45.72 0)
 			(uuid "5818a444-fc53-4b5a-a33c-2c1c81eb5b16")
 			(effects
@@ -3742,7 +3904,7 @@
 				(justify right)
 			)
 		)
-		(pin "DRV_SDI" input
+		(pin "DRV_SDI" output
 			(at 248.92 40.64 0)
 			(uuid "2ddab578-e8ac-4d81-9ffa-9c120e9c7514")
 			(effects
@@ -3762,7 +3924,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC1_B_MOSI" input
+		(pin "ENC1_B_MOSI" bidirectional
 			(at 248.92 102.87 0)
 			(uuid "4c4dd60c-ee55-4eaf-9222-a210df231dd8")
 			(effects
@@ -3772,7 +3934,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC1_EN" input
+		(pin "ENC1_EN" output
 			(at 248.92 110.49 0)
 			(uuid "114ec23e-256a-4ced-9bd7-6fcef9ded745")
 			(effects
@@ -3782,7 +3944,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC1_SCK" input
+		(pin "ENC1_SCK" output
 			(at 248.92 105.41 0)
 			(uuid "116e0bae-9929-4a82-afa0-67ddc6c73410")
 			(effects
@@ -3792,7 +3954,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC1_Z_CS" input
+		(pin "ENC1_Z_CS" bidirectional
 			(at 248.92 107.95 0)
 			(uuid "c910dccb-f5dc-4329-a067-2d949be02aed")
 			(effects
@@ -3802,7 +3964,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC2_A_MISO" input
+		(pin "ENC2_A_MISO" bidirectional
 			(at 248.92 187.96 0)
 			(uuid "1b4b159e-bd75-44bd-896e-5f6b15742321")
 			(effects
@@ -3812,7 +3974,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC2_B_MOSI" input
+		(pin "ENC2_B_MOSI" bidirectional
 			(at 248.92 190.5 0)
 			(uuid "a6fc4c1a-4f3c-4f10-a28e-9cb523c9a0b9")
 			(effects
@@ -3822,7 +3984,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC2_EN" input
+		(pin "ENC2_EN" output
 			(at 248.92 198.12 0)
 			(uuid "d331df46-71ae-4910-9ac2-73ed22b25b92")
 			(effects
@@ -3832,7 +3994,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC2_SCK" input
+		(pin "ENC2_SCK" output
 			(at 248.92 193.04 0)
 			(uuid "1654e92c-411a-43b0-b0e2-51dd8c68d40c")
 			(effects
@@ -3842,7 +4004,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENC2_Z_CS" input
+		(pin "ENC2_Z_CS" bidirectional
 			(at 248.92 195.58 0)
 			(uuid "d55d507b-c4a6-41db-9704-74cc515718ac")
 			(effects
@@ -3852,7 +4014,7 @@
 				(justify right)
 			)
 		)
-		(pin "EXP_PWR_EN" input
+		(pin "EXP_PWR_EN" output
 			(at 195.58 58.42 180)
 			(uuid "5282f944-2155-4ede-8852-545c04b3b683")
 			(effects

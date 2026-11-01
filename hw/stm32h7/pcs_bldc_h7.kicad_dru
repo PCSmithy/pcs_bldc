@@ -1,0 +1,17 @@
+(version 1)
+
+# 4 mil track and clearance only inside the BGA fanout area (rule area "bga_u2" on all copper layers).
+(rule "bga_fanout"
+	(condition "A.insideArea('bga_u2')")
+	(constraint clearance (min 0.1016mm))
+	(constraint track_width (min 0.1016mm)))
+
+# Sense lines stay away from the phase and bus copper.
+(rule "analog_to_motor"
+	(condition "A.NetClass == 'Analog' && B.NetClass == 'Motor'")
+	(constraint clearance (min 0.5mm)))
+
+# 32 V bus and phase outputs: 0.3 mm to everything.
+(rule "motor_clearance"
+	(condition "A.NetClass == 'Motor'")
+	(constraint clearance (min 0.3mm)))
