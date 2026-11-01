@@ -54,6 +54,9 @@ static void advanceTime_ms(uint32_t ms) { g_now_us += (uint64_t)ms * 1000U; }
 #define FOC_BW          (2000.0f)
 #define FOC_KP          (FOC_L * FOC_BW)                // 8 V/A
 #define FOC_KI_T        (FOC_R * FOC_BW * 50.0e-6f)    // 0.4 V/A: the integral's growth per step
+#define FOC_KT          (0.5f)          // K_t, K_vp, K_vi: round numbers for the velocity tests
+#define FOC_KVP         (0.01f)
+#define FOC_KVI         (0.05f)
 #define DEG2RAD(d)      ((float32_t)(d) * 3.14159265f / 180.0f)
 // Compare-register value for a duty against PERIOD (matches IO_bridge's
 // (uint32_t)(duty*period + 0.5f)).
@@ -125,7 +128,8 @@ static void buildConfigs(void)
         .pwmPeriod_s = 50.0e-6f,
         .maxVoltage_V = 10.0f,
         // K_p = 8 V/A, K_i T = 0.4 V/A per step: round numbers for the regulator tests
-        .foc = { .maxCurrent_A = FOC_I_MAX, .motorL_H = FOC_L, .motorR_ohm = FOC_R, .currentLoopBandwidth_radPerSec = FOC_BW },
+        .foc = { .maxCurrent_A = FOC_I_MAX, .motorL_H = FOC_L, .motorR_ohm = FOC_R, .currentLoopBandwidth_radPerSec = FOC_BW,
+                 .torqueConstant_NmPerA = FOC_KT, .velocityKp_NmPerRadPerSec = FOC_KVP, .velocityKi_NmPerRad = FOC_KVI },
         .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
         .prechargeTime_ms = PRECHARGE_MS };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
@@ -707,7 +711,7 @@ static void startFocAt(float32_t rotorDeg, float32_t velocity)
 {
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
     tick();
-    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_TORQUE);
     commutateAt(rotorDeg, velocity);
 }
 
@@ -1106,6 +1110,20 @@ static void test_init_rejects_a_degenerate_current_loop(void)
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
+// [test->fw~mc_025~1]
+static void test_init_rejects_a_degenerate_velocity_loop(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.torqueConstant_NmPerA = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKp_NmPerRadPerSec = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKi_NmPerRad = -1.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1155,6 +1173,7 @@ int main(void)
     RUN_TEST(test_init_rejects_zero_max_voltage);
     RUN_TEST(test_init_rejects_a_current_limit_at_the_phase_trip);
     RUN_TEST(test_init_rejects_a_degenerate_current_loop);
+    RUN_TEST(test_init_rejects_a_degenerate_velocity_loop);
 
     return UNITY_END();
 }

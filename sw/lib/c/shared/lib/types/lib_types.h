@@ -9,4 +9,9 @@
 
 typedef float float32_t;
 
+typedef struct
+{
+    float32_t sin_rad;
+    float32_t cos_rad;
+} theta_S;
 

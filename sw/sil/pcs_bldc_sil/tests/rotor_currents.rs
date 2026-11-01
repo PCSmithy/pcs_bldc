@@ -230,7 +230,7 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     // 90 deg ahead of the plant's rotor at |V| = 0.5 V_max, the line-to-line duty
     // differences are sinusoids at the electrical frequency (within 2% of their
     // amplitude), and the current rides on q.
-    const V_MAX: f64 = 8.0;   // maxVoltage_V in app_motorControl_channels.c
+    const V_MAX: f64 = 11.5;   // maxVoltage_V in app_motorControl_channels.c
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
     sim.run_for_ms(GATE_BRINGUP_MS);
     select_method(&mut sim, MODE_SINUSOIDAL);

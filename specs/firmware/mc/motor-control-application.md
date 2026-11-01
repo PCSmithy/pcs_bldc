@@ -58,8 +58,9 @@ On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
 enabled with the alignment offset captured (`fw~mc_012~1`), the application
 shall run the active method's commutation step with the speed target and
 bus voltage as last published by the 1 ms cycle, the per-cycle rotor
-electrical angle (`fw~mc_019~1`), and the cycle's phase currents, and apply
-the step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
+electrical angle (`fw~mc_019~1`) and velocity estimate
+(`fw~est_rotor_002~1`), and the cycle's phase currents, and apply the
+step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
 voltage vector (`fw~io_bridge_008~1`), and per-phase output enables
 (`fw~io_bridge_004~1`) — through IO_bridge within the same PWM period.
 
@@ -108,10 +109,10 @@ Each commutation step, the application shall transform the bridge-reported
 phase currents (`fw~io_bridge_009~1`) into the rotor frame (`fw~mc_013~1`) at the active
 method's frame angle and hold the result as the drive's I_d and I_q:
 
-| Method                                        | Frame angle                                      |
-|-----------------------------------------------|--------------------------------------------------|
-| Six-step, sensored sinusoidal, field-oriented | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
-| V/f                                           | Commanded electrical angle (`fw~mc_010~1`)       |
+| Method                                                            | Frame angle                                      |
+|-------------------------------------------------------------------|--------------------------------------------------|
+| Six-step, sensored sinusoidal, field-oriented torque and velocity | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
+| V/f                                                               | Commanded electrical angle (`fw~mc_010~1`)       |
 
 Acceptance:
 - With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and

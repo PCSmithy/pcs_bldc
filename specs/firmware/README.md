@@ -26,8 +26,8 @@ Sub-folders are created when a topic gets its first spec.
   (frame transforms, space-vector modulation), `fw~mc_019~1` (the
   per-cycle rotor angle), the six-step, sensored sinusoidal, and V/f
   methods, `fw~mc_022~1` / `fw~mc_023~1` / `fw~mc_024~1` (the
-  field-oriented method, its current regulator and voltage limit,
-  [[mc/foc]]); also
+  field-oriented torque method, its current regulator and voltage limit,
+  [[mc/foc]]), `fw~mc_025~1` (the field-oriented velocity method); also
   motion, trajectory tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (encoder

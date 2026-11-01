@@ -17,11 +17,10 @@ void tearDown(void) {}
 // [test->fw~hal_cordic_002~1] runs first: the driver starts uninitialised.
 static void test_before_init_returns_false_and_leaves_outputs(void)
 {
-    float32_t s = 7.0f;
-    float32_t c = 7.0f;
-    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, &s, &c));
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, s);
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, c);
+    theta_S out = { .sin_rad = 7.0f, .cos_rad = 7.0f };
+    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, &out));
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.sin_rad);
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.cos_rad);
 }
 
 // [test->fw~hal_cordic_001~1]
@@ -39,13 +38,10 @@ static void test_init_valid_config_accepted(void)
 /* ---- fw~hal_cordic_002: sine and cosine ---- */
 
 // [test->fw~hal_cordic_002~1]
-static void test_null_output_rejected_and_untouched(void)
+static void test_null_output_rejected(void)
 {
     TEST_ASSERT_TRUE(HW_CORDIC_init(&config));
-    float32_t s = 7.0f;
-    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, &s, NULL));
-    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, NULL, &s));
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, s);
+    TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, NULL));
 }
 
 // [test->fw~hal_cordic_002~1]
@@ -58,11 +54,10 @@ static void test_reference_angles(void)
     const float32_t cosines[] = { 1.0f, 0.86602540f, 0.0f, -1.0f, 0.86602540f, 0.86602540f, 0.0f };
     for (size_t i = 0U; i < (sizeof(angles) / sizeof(angles[0])); i++)
     {
-        float32_t s = 0.0f;
-        float32_t c = 0.0f;
-        TEST_ASSERT_TRUE(HW_CORDIC_sinCos(angles[i], &s, &c));
-        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, sines[i], s);
-        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, cosines[i], c);
+        theta_S out = { .sin_rad = 0.0f, .cos_rad = 0.0f };
+        TEST_ASSERT_TRUE(HW_CORDIC_sinCos(angles[i], &out));
+        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, sines[i], out.sin_rad);
+        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, cosines[i], out.cos_rad);
     }
 }
 
@@ -72,7 +67,7 @@ int main(void)
     RUN_TEST(test_before_init_returns_false_and_leaves_outputs);
     RUN_TEST(test_init_null_config_rejected);
     RUN_TEST(test_init_valid_config_accepted);
-    RUN_TEST(test_null_output_rejected_and_untouched);
+    RUN_TEST(test_null_output_rejected);
     RUN_TEST(test_reference_angles);
     return UNITY_END();
 }

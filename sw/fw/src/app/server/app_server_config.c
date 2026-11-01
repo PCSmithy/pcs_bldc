@@ -131,8 +131,11 @@ static void app_server_config_private_handleRequest(const board_Request * const 
                 case board_Mode_MODE_SINUSOIDAL:
                     requestedMode = APP_MOTORCONTROL_MODE_SINUSOIDAL;
                     break;
-                case board_Mode_MODE_FOC:
-                    requestedMode = APP_MOTORCONTROL_MODE_FOC;
+                case board_Mode_MODE_FOC_TORQUE:
+                    requestedMode = APP_MOTORCONTROL_MODE_FOC_TORQUE;
+                    break;
+                case board_Mode_MODE_FOC_VELOCITY:
+                    requestedMode = APP_MOTORCONTROL_MODE_FOC_VELOCITY;
                     break;
                 default:
                     modeKnown = false;
@@ -239,8 +242,11 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
         case APP_MOTORCONTROL_MODE_SINUSOIDAL:
             telemetry->mode = board_Mode_MODE_SINUSOIDAL;
             break;
-        case APP_MOTORCONTROL_MODE_FOC:
-            telemetry->mode = board_Mode_MODE_FOC;
+        case APP_MOTORCONTROL_MODE_FOC_TORQUE:
+            telemetry->mode = board_Mode_MODE_FOC_TORQUE;
+            break;
+        case APP_MOTORCONTROL_MODE_FOC_VELOCITY:
+            telemetry->mode = board_Mode_MODE_FOC_VELOCITY;
             break;
         default:
             telemetry->mode = board_Mode_MODE_OFF;

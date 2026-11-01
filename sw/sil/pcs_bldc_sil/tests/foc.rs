@@ -8,11 +8,11 @@ use pcs_bldc_sil::board::{
 use pcs_bldc_sil::{vid, MotorParams, Sil, SilOptions};
 
 mod common;
-use common::{bool_at, f64_at, select_method, tap_button, GRID_US, MODE_FOC};
+use common::{bool_at, f64_at, select_method, tap_button, GRID_US, MODE_FOC_TORQUE};
 
 /// `app_motorControl_channels.c`: the FOC block the firmware runs with.
 const I_MAX_A: f64 = 1.0;
-const V_MAX_V: f64 = 8.0;
+const V_MAX_V: f64 = 11.5;
 const BANDWIDTH_RAD_S: f64 = 1000.0;
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
 const DIAL_FULL_SCALE_DEG: f64 = 180.0;
@@ -30,7 +30,7 @@ fn held_rotor_in_foc() -> Sil {
     let motor = MotorParams { rotor_locked: true, ..MotorParams::default() };
     let mut sim = board_with_motor(SilOptions::default().grid_us(GRID_US), 0.0, motor).sim;
     sim.run_for_ms(GATE_BRINGUP_MS);
-    select_method(&mut sim, MODE_FOC);
+    select_method(&mut sim, MODE_FOC_TORQUE);
     tap_button(&mut sim);
     sim.run_for_ms(ALIGN_DWELL_MS + 100);
     assert!(bool_at(&sim, &format!("{MC}.isAligned")), "aligned with the shaft held");

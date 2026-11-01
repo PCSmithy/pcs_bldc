@@ -25,7 +25,8 @@ typedef enum
     APP_MOTORCONTROL_MODE_OFF,
     APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
     APP_MOTORCONTROL_MODE_SINUSOIDAL,
-    APP_MOTORCONTROL_MODE_FOC,
+    APP_MOTORCONTROL_MODE_FOC_TORQUE,
+    APP_MOTORCONTROL_MODE_FOC_VELOCITY,
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
 
@@ -51,6 +52,9 @@ typedef struct
     float32_t maxCurrent_A;  // I_max: the FOC Q-axis current a full-scale target commands (fw~mc_022)
     float32_t motorL_H;
     float32_t motorR_ohm;
+    float32_t torqueConstant_NmPerA;     // K_t = 1.5 * K_e for a sinusoidal motor, K_e the per-phase back-EMF constant in V/(rad/s)
+    float32_t velocityKp_NmPerRadPerSec; // K_vp = J * w_v for a velocity bandwidth w_v, ~1/5 of the estimator's (fw~mc_025)
+    float32_t velocityKi_NmPerRad;       // K_vi = K_vp * w_v / 10: the integral corner a decade under w_v
     float32_t currentLoopBandwidth_radPerSec;
 } app_motorControl_focConfig_S;
 
@@ -113,6 +117,8 @@ void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorContr
 // module. This is the fault-clear action referenced by the trip latch — driven
 // on-device by the user button's fault-clear gesture (fw~mc_007).
 void app_motorControl_clearFault(app_motorControl_channel_E channel);
+
+
 #ifdef __cplusplus
 }
 #endif

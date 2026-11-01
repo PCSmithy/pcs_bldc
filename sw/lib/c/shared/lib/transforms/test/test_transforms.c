@@ -31,6 +31,13 @@ static void ref_inverse_park(double d, double q, double theta, double * alpha, d
     *beta  = (sin(theta) * d) + (cos(theta) * q);
 }
 
+// The frame angle as the sine/cosine pair the rotations take.
+static theta_S frameAt(double theta)
+{
+    const theta_S frame = { .sin_rad = sinf((float32_t)theta), .cos_rad = cosf((float32_t)theta) };
+    return frame;
+}
+
 // fw~mc_013 tolerance: 1e-5 of the input magnitude.
 static float tol(double magnitude)
 {
@@ -114,7 +121,7 @@ static void test_park_matches_reference_over_sweep(void)
             ref_park(alpha, beta, theta, &expD, &expQ);
 
             float32_t d = 0.0f, q = 0.0f;
-            lib_transforms_park((float32_t)alpha, (float32_t)beta, sinf((float32_t)theta), cosf((float32_t)theta), &d, &q);
+            lib_transforms_park((float32_t)alpha, (float32_t)beta, frameAt(theta), &d, &q);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expD, d);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expQ, q);
@@ -138,7 +145,7 @@ static void test_inverse_park_matches_reference_over_sweep(void)
             ref_inverse_park(d, q, theta, &expAlpha, &expBeta);
 
             float32_t alpha = 0.0f, beta = 0.0f;
-            lib_transforms_inversePark((float32_t)d, (float32_t)q, sinf((float32_t)theta), cosf((float32_t)theta), &alpha, &beta);
+            lib_transforms_inversePark((float32_t)d, (float32_t)q, frameAt(theta), &alpha, &beta);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expAlpha, alpha);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), (float)expBeta, beta);
@@ -156,14 +163,14 @@ static void test_park_then_inverse_park_returns_input(void)
         const double A = AMPLITUDES[i];
         for (uint32_t k = 0U; k < N_ANGLES; k++)
         {
-            const float32_t theta = (float32_t)((2.0 * PI_D * k) / N_ANGLES);
+            const theta_S frame = frameAt((2.0 * PI_D * k) / N_ANGLES);
             const float32_t alphaIn = (float32_t)(A * 0.3);
             const float32_t betaIn  = (float32_t)(A * -0.95);
 
             float32_t d = 0.0f, q = 0.0f;
-            lib_transforms_park(alphaIn, betaIn, sinf(theta), cosf(theta), &d, &q);
+            lib_transforms_park(alphaIn, betaIn, frame, &d, &q);
             float32_t alphaOut = 0.0f, betaOut = 0.0f;
-            lib_transforms_inversePark(d, q, sinf(theta), cosf(theta), &alphaOut, &betaOut);
+            lib_transforms_inversePark(d, q, frame, &alphaOut, &betaOut);
 
             TEST_ASSERT_FLOAT_WITHIN(tol(A), alphaIn, alphaOut);
             TEST_ASSERT_FLOAT_WITHIN(tol(A), betaIn, betaOut);
@@ -215,12 +222,12 @@ static void test_park_spot_values(void)
     float32_t d = 0.0f, q = 0.0f;
 
     // Frame at 0: identity.
-    lib_transforms_park(0.25f, -0.75f, 0.0f, 1.0f, &d, &q);
+    lib_transforms_park(0.25f, -0.75f, (theta_S){ .sin_rad = 0.0f, .cos_rad = 1.0f }, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.25f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, q);
 
     // Frame at 90 degrees: (d, q) = (beta, -alpha).
-    lib_transforms_park(0.25f, -0.75f, 1.0f, 0.0f, &d, &q);
+    lib_transforms_park(0.25f, -0.75f, (theta_S){ .sin_rad = 1.0f, .cos_rad = 0.0f }, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.25f, q);
 }
@@ -250,13 +257,14 @@ static void test_wrap_angle_lands_in_one_turn(void)
 static void test_null_output_leaves_both_outputs_untouched(void)
 {
     float32_t x = 42.0f;
+    const theta_S frame = frameAt(0.5);
 
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, &x, NULL);
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, NULL, &x);
-    lib_transforms_park(1.0f, 2.0f, 0.5f, 0.5f, &x, NULL);
-    lib_transforms_park(1.0f, 2.0f, 0.5f, 0.5f, NULL, &x);
-    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, 0.5f, &x, NULL);
-    lib_transforms_inversePark(1.0f, 2.0f, 0.5f, 0.5f, NULL, &x);
+    lib_transforms_park(1.0f, 2.0f, frame, &x, NULL);
+    lib_transforms_park(1.0f, 2.0f, frame, NULL, &x);
+    lib_transforms_inversePark(1.0f, 2.0f, frame, &x, NULL);
+    lib_transforms_inversePark(1.0f, 2.0f, frame, NULL, &x);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, &x, &x, NULL);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, &x, NULL, &x);
     lib_transforms_svm(1.0f, 2.0f, 12.0f, NULL, &x, &x);

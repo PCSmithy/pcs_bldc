@@ -79,6 +79,9 @@ class Motor
         void fetchPhaseCurrents();
         void updateRotorPosition();   // the rotor estimate into the electrical angle
 
+        void focTorqueLoop(const float32_t targetTorque_Nm, const theta_S * const rotorAngle);   // current regulator, voltage limit, inverse Park
+        void focVelocityLoop(const float32_t targetVelocity_radPerSec, const theta_S * const rotorAngle);   // velocity PI to a torque demand, then the torque loop
+
         // called in run1ms()
         void updateOvercurrentLatch();
 
@@ -87,6 +90,7 @@ class Motor
         app_motorControl_mode_E modeCurrent;
         app_motorControl_mode_E modeRequested;
         app_motorControl_mode_E modeSelected;   // the method an enable runs; OFF keeps it
+        app_motorControl_mode_E modeLastStep;   // ISR-owned: the method the last step ran
         DriveState driveState;
 
         float32_t velocitySetpointCurrent_radPerSec;
@@ -110,6 +114,7 @@ class Motor
         uint16_t encoderFaultCount;   // consecutive invalid encoder reads
 
         PiRegulator currentPi[APP_MOTORCONTROL_AXIS_COUNT];
+        PiRegulator velocityPi;
 
         // setpoint
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
@@ -200,6 +205,75 @@ void Motor::updateOvercurrentLatch()
     }
 }
 
+// Written by run1ms (task) while Off or Aligning, by run50us (ISR) while
+// Driving; never both in one state. A cycle that reads a half-written
+// alignment pattern outputs it for one PWM period, and the pattern is static.
+#define SET_ENABLE(enU, enV, enW) \
+    this->enable[IO_BRIDGE_PHASE_U] = enU; \
+    this->enable[IO_BRIDGE_PHASE_V] = enV; \
+    this->enable[IO_BRIDGE_PHASE_W] = enW;
+
+
+#define SET_DUTY_AND_ENABLE(dU, dV, dW, enU, enV, enW) \
+    this->duty[IO_BRIDGE_PHASE_U] = dU; \
+    this->duty[IO_BRIDGE_PHASE_V] = dV; \
+    this->duty[IO_BRIDGE_PHASE_W] = dW; \
+    SET_ENABLE(enU, enV, enW)
+
+
+void Motor::focTorqueLoop(const float32_t targetTorque_Nm, const theta_S * const rotorAngle)
+{
+    const float32_t targetDCurrent_a = 0.0f;
+    const float32_t targetQCurrent_a = targetTorque_Nm / this->config->foc.torqueConstant_NmPerA;
+
+    // [impl->fw~mc_023~1]
+    const float32_t errorDCurrent_a = targetDCurrent_a - this->iD_a;
+    float32_t vD = this->currentPi[APP_MOTORCONTROL_AXIS_D].step(errorDCurrent_a);
+
+    const float32_t errorQCurrent_a = targetQCurrent_a - this->iQ_a;
+    float32_t vQ = this->currentPi[APP_MOTORCONTROL_AXIS_Q].step(errorQCurrent_a);
+
+    // [impl->fw~mc_024~1]
+    const float32_t vLim = MIN_OF(this->config->maxVoltage_V, (this->busVoltage * LIB_TRANSFORMS_1_DIV_SQRT3));
+    const float32_t vVectorMag = sqrtf((vD*vD) + (vQ*vQ));
+    if (vVectorMag > vLim)
+    {
+        const float32_t k = vLim / vVectorMag; // limit / mag
+        vD *= k;
+        vQ *= k;
+
+        this->currentPi[APP_MOTORCONTROL_AXIS_D].backCalculate(errorDCurrent_a, vD);
+        this->currentPi[APP_MOTORCONTROL_AXIS_Q].backCalculate(errorQCurrent_a, vQ);
+    }
+
+    lib_transforms_inversePark(
+        vD,
+        vQ,
+        *rotorAngle,
+        &this->vAlpha_v,
+        &this->vBeta_v
+    );
+
+    SET_ENABLE(true, true, true);
+}
+
+// [impl->fw~mc_025~1]
+void Motor::focVelocityLoop(const float32_t targetVelocity_radPerSec, const theta_S * const rotorAngle)
+{
+    const float32_t velocityError_radPerSec = targetVelocity_radPerSec - this->velocityMeasured_radPerSec;
+    float32_t targetTorque_Nm = this->velocityPi.step(velocityError_radPerSec);
+
+    const float32_t torqueLimit_Nm = this->config->foc.torqueConstant_NmPerA * this->config->foc.maxCurrent_A;
+    if (fabsf(targetTorque_Nm) > torqueLimit_Nm)
+    {
+        targetTorque_Nm = SIGN(targetTorque_Nm) * torqueLimit_Nm;
+
+        this->velocityPi.backCalculate(velocityError_radPerSec, targetTorque_Nm);
+    }
+
+    this->focTorqueLoop(targetTorque_Nm, rotorAngle);
+}
+
 /* Public Class Function Definitions */
 bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 {
@@ -227,6 +301,10 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     isValid &= (channelConfig->foc.motorL_H > ZERO);
     isValid &= (channelConfig->foc.currentLoopBandwidth_radPerSec > ZERO);
     isValid &= ((channelConfig->foc.currentLoopBandwidth_radPerSec * channelConfig->pwmPeriod_s) <= FOC_MAX_BANDWIDTH_PERIOD_PRODUCT);
+    // [impl->fw~mc_025~1] K_t is a divisor; the velocity gains positive
+    isValid &= (channelConfig->foc.torqueConstant_NmPerA > ZERO);
+    isValid &= (channelConfig->foc.velocityKp_NmPerRadPerSec > ZERO);
+    isValid &= (channelConfig->foc.velocityKi_NmPerRad > ZERO);
 
     if (isValid)
     {
@@ -235,6 +313,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->modeCurrent = APP_MOTORCONTROL_MODE_OFF;
         this->modeRequested = APP_MOTORCONTROL_MODE_OFF;
         this->modeSelected = channelConfig->defaultMode;
+        this->modeLastStep = APP_MOTORCONTROL_MODE_OFF;
         this->driveState = DriveState::Off;
 
         this->isAligned = false;
@@ -255,7 +334,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->magneticAngle_rad = ZERO;
         this->velocityMeasured_radPerSec = ZERO;
 
-        const PiConfig piConfig =
+        PiConfig piConfig =
         {
             .kp = channelConfig->foc.motorL_H * channelConfig->foc.currentLoopBandwidth_radPerSec,
             .ki = channelConfig->foc.motorR_ohm * channelConfig->foc.currentLoopBandwidth_radPerSec,
@@ -265,25 +344,13 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         {
             this->currentPi[axis].init(piConfig);
         }
+
+        piConfig.kp = channelConfig->foc.velocityKp_NmPerRadPerSec;
+        piConfig.ki = channelConfig->foc.velocityKi_NmPerRad;
+        this->velocityPi.init(piConfig);
     }
     return isValid;
 }
-
-// Written by run1ms (task) while Off or Aligning, by run50us (ISR) while
-// Driving; never both in one state. A cycle that reads a half-written
-// alignment pattern outputs it for one PWM period, and the pattern is static.
-#define SET_ENABLE(enU, enV, enW) \
-    this->enable[IO_BRIDGE_PHASE_U] = enU; \
-    this->enable[IO_BRIDGE_PHASE_V] = enV; \
-    this->enable[IO_BRIDGE_PHASE_W] = enW;
-
-
-#define SET_DUTY_AND_ENABLE(dU, dV, dW, enU, enV, enW) \
-    this->duty[IO_BRIDGE_PHASE_U] = dU; \
-    this->duty[IO_BRIDGE_PHASE_V] = dV; \
-    this->duty[IO_BRIDGE_PHASE_W] = dW; \
-    SET_ENABLE(enU, enV, enW)
-
 
 void Motor::run1ms()
 {
@@ -395,9 +462,8 @@ void Motor::run50us()
         this->updateRotorPosition();
 
         // One sine/cosine pair of the rotor angle serves every transform this cycle.
-        float32_t rotorSin = ZERO;
-        float32_t rotorCos = 1.0f;
-        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorSin, &rotorCos);
+        theta_S rotorAngle = { .sin_rad = ZERO, .cos_rad = 1.0f };
+        (void) HW_CORDIC_sinCos(this->magneticAngle_rad, &rotorAngle);
 
         // [impl->fw~mc_016~1]
         lib_transforms_clarke(
@@ -411,8 +477,7 @@ void Motor::run50us()
         lib_transforms_park(
             this->iAlpha_a,
             this->iBeta_a,
-            rotorSin,
-            rotorCos,
+            rotorAngle,
             &this->iD_a,
             &this->iQ_a
         );
@@ -425,11 +490,22 @@ void Motor::run50us()
         bool isAnyPhaseEnabled = (this->driveState != DriveState::Off);
         bool isVectorControl = false;
 
-        if ((this->driveState != DriveState::Driving) ||
-            (this->modeCurrent != APP_MOTORCONTROL_MODE_FOC))
+        // Integrals are zero at a method's first step: a method change while
+        // driving (torque <-> velocity) does not pass through Off.
+        const bool isFOC = ((this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_TORQUE) ||
+                            (this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_VELOCITY));
+        const bool isMethodChange = (this->modeCurrent != this->modeLastStep);
+        this->modeLastStep = this->modeCurrent;
+
+        if ((this->driveState != DriveState::Driving) || (!isFOC) || isMethodChange)
         {
             this->currentPi[APP_MOTORCONTROL_AXIS_D].reset();
             this->currentPi[APP_MOTORCONTROL_AXIS_Q].reset();
+        }
+        if ((this->driveState != DriveState::Driving) ||
+            (this->modeCurrent != APP_MOTORCONTROL_MODE_FOC_VELOCITY) || isMethodChange)
+        {
+            this->velocityPi.reset();
         }
 
         if (this->driveState == DriveState::Driving)
@@ -490,7 +566,6 @@ void Motor::run50us()
                 case APP_MOTORCONTROL_MODE_SINUSOIDAL:
                 {
                     isVectorControl = true;
-
                     // compute rotor frame voltage
                     const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
                     const float32_t V = SIGN(this->velocitySetpointCurrent_radPerSec) * velocityPercent * this->config->maxVoltage_V;
@@ -498,8 +573,7 @@ void Motor::run50us()
                     lib_transforms_inversePark(
                         0.0f,
                         V,
-                        rotorSin,
-                        rotorCos,
+                        rotorAngle,
                         &this->vAlpha_v,
                         &this->vBeta_v
                     );
@@ -508,46 +582,21 @@ void Motor::run50us()
                     break;
                 }
 
-                case APP_MOTORCONTROL_MODE_FOC:
+                case APP_MOTORCONTROL_MODE_FOC_TORQUE:
                 {
                     isVectorControl = true;
                     const app_motorControl_focConfig_S * const foc = &this->config->foc;
                     // [impl->fw~mc_022~1]
-                    const float32_t targetDCurrent_a = 0.0f;
-                    const float32_t velocityPercent = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
-                    const float32_t targetQCurrent_a = SIGN(this->velocitySetpointCurrent_radPerSec) * velocityPercent * foc->maxCurrent_A;
+                    const float32_t speedFraction = MIN_OF(fabsf(this->velocitySetpointCurrent_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
+                    const float32_t targetTorque_Nm = SIGN(this->velocitySetpointCurrent_radPerSec) * speedFraction * foc->torqueConstant_NmPerA * foc->maxCurrent_A;
+                    this->focTorqueLoop(targetTorque_Nm, &rotorAngle);
+                    break;
+                }
 
-                    // [impl->fw~mc_023~1]
-                    const float32_t errorDCurrent_a = targetDCurrent_a - this->iD_a;
-                    float32_t vD = this->currentPi[APP_MOTORCONTROL_AXIS_D].step(errorDCurrent_a);
-
-                    const float32_t errorQCurrent_a = targetQCurrent_a - this->iQ_a;
-                    float32_t vQ = this->currentPi[APP_MOTORCONTROL_AXIS_Q].step(errorQCurrent_a);
-
-                    // [impl->fw~mc_024~1]
-                    const float32_t vLim = MIN_OF(this->config->maxVoltage_V, (this->busVoltage * LIB_TRANSFORMS_1_DIV_SQRT3));
-                    const float32_t vVectorMag = sqrtf((vD*vD) + (vQ*vQ));
-                    if (vVectorMag > vLim)
-                    {
-                        const float32_t k = vLim / vVectorMag; // limit / mag
-                        vD *= k;
-                        vQ *= k;
-
-                        this->currentPi[APP_MOTORCONTROL_AXIS_D].backCalculate(errorDCurrent_a, vD);
-                        this->currentPi[APP_MOTORCONTROL_AXIS_Q].backCalculate(errorQCurrent_a, vQ);
-                    }
-
-                    lib_transforms_inversePark(
-                        vD,
-                        vQ,
-                        rotorSin,
-                        rotorCos,
-                        &this->vAlpha_v,
-                        &this->vBeta_v
-                    );
-
-                    SET_ENABLE(true, true, true);
-
+                case APP_MOTORCONTROL_MODE_FOC_VELOCITY:
+                {
+                    isVectorControl = true;
+                    this->focVelocityLoop(this->velocitySetpointCurrent_radPerSec, &rotorAngle);
                     break;
                 }
             }

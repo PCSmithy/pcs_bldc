@@ -27,9 +27,12 @@ rotor tracking estimator `fw~est_rotor_001`/`_002` (`app_rotorEstimation`,
 `specs/firmware/est/rotor.md`) that `fw~mc_019` and the status velocity
 consume, and the bridge's zero-current offset tracking (`fw~io_bridge_009`).
 On the `mc_foc` branch, bench-spun, with its plant-level step responses on
-the SIL's held rotor (`tests/foc.rs`): the field-oriented method, its
-current regulator and voltage limit (`fw~mc_022`..`fw~mc_024`,
-`specs/firmware/mc/foc.md`, `lib_pi` + `MODE_FOC` in `app_motorControl`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
+the SIL's held rotor (`tests/foc.rs`): the field-oriented torque method,
+its current regulator and voltage limit (`fw~mc_022`..`fw~mc_024`,
+`specs/firmware/mc/foc.md`, `lib_pi` + `MODE_FOC_TORQUE` in `app_motorControl`).
+Built, its step-response tests next: the field-oriented velocity method
+`fw~mc_025` (same file), a per-cycle velocity PI wrapping the torque method
+as its own selectable mode (`MODE_FOC_VELOCITY`). Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 (`specs/firmware/mc/vf-sinusoidal.md`) is the sensorless start-up ramp,
 scheduled with sensorless FOC under Milestone 3.
 
@@ -87,7 +90,7 @@ already in place.
 - **PI current loops (Id/Iq)** — done on `mc_foc` (`fw~mc_022`..`fw~mc_024`):
   `lib_pi` regulators with K_p = L·ω_bw / K_i = R·ω_bw, vector limit at
   min(V_max, V_bus/√3) with back-calculation anti-windup, i_q* from the
-  speed-target fraction times I_max; MODE_FOC plumbed like MODE_SINUSOIDAL.
+  speed-target fraction times I_max; MODE_FOC_TORQUE plumbed like MODE_SINUSOIDAL.
   Board config seeds R = 14.7 Ω, L = 5 mH from the SIL motor model,
   ω_bw = 1000 rad/s, I_max = 1 A. Bench-spun; the step response and the limit
   hold on the SIL's held rotor (`tests/foc.rs`).
@@ -103,9 +106,16 @@ already in place.
 
 Outer loops and the first estimator work.
 
-- **Outer loops:** velocity PI (spec when built, next `fw~mc` ID; a 1 ms
-  loop publishing i_q* to the step) and position control cascaded around
-  the current loop.
+- **Outer loops:** the field-oriented velocity method `fw~mc_025` — built,
+  its Unity and SIL step-response tests pending:
+  a PI on ω* − ω̂ in the commutation step sets a torque demand in Nm,
+  i_q* = T*/K_t clamped at ±I_max with back-calculation, wrapping the
+  torque method (`MODE_FOC_TORQUE`; `MODE_FOC_VELOCITY` is new); K_t joins
+  the FOC config, K_vp / K_vi are configured with the K_vp = J·ω_v
+  derivation noted in the header. Full dial sits at the voltage limit
+  under FOC (back-EMF at 200 rpm is ~11.5 V, the 20 V bus's linear ceiling),
+  so the acceptance steps to 10 rad/s. Then position control cascaded around
+  it, with any velocity-command shaping.
 - **Rotor angle and velocity estimation** from the encoder — done: the
   second-order tracking observer `fw~est_rotor_001`/`_002` in state-space
   form, corrected at 1 kHz and carried forward every PWM cycle
