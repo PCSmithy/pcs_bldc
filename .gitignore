@@ -98,3 +98,7 @@ docs/handoff.md
 
 # Cygwin/MSYS crash dumps (e.g. left by the CubeMX conversion script)
 *.stackdump
+
+# VSCode local-history extension, KiCad plugin logs
+.history/
+replicate_layout.log
