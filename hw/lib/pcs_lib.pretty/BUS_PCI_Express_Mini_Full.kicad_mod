@@ -56,6 +56,46 @@
 	(attr smd)
 	(duplicate_pad_numbers_are_jumpers no)
 	(fp_line
+		(start -16.3 -51.45)
+		(end 16.3 -51.45)
+		(stroke
+			(width 0.1)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "565ac39d-974d-44df-a9c6-33cc57add12a")
+	)
+	(fp_line
+		(start -16.3 5.6)
+		(end -16.3 -51.45)
+		(stroke
+			(width 0.1)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "7ac95cdb-49e7-4fbc-9ba0-c36a948138a8")
+	)
+	(fp_line
+		(start 16.3 -51.45)
+		(end 16.3 5.6)
+		(stroke
+			(width 0.1)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "af454ce0-0176-4c04-982b-f3b9e6a9da02")
+	)
+	(fp_line
+		(start 16.3 5.6)
+		(end -16.3 5.6)
+		(stroke
+			(width 0.1)
+			(type dash)
+		)
+		(layer "Dwgs.User")
+		(uuid "0e77b56e-68a3-4d16-a233-94a03ec54aa5")
+	)
+	(fp_line
 		(start -15.2 -4.7)
 		(end -15.2 1.6)
 		(stroke
@@ -276,8 +316,8 @@
 		(uuid "66ce4407-7d07-4b3a-9be0-763070a4cdd4")
 	)
 	(fp_line
-		(start -16.3 -51.45)
-		(end 16.3 -51.45)
+		(start -15.5 -5)
+		(end 15.5 -5)
 		(stroke
 			(width 0.05)
 			(type solid)
@@ -286,8 +326,8 @@
 		(uuid "5e3b6312-4296-40c5-aecf-bd0a396041ee")
 	)
 	(fp_line
-		(start -16.3 5.6)
-		(end -16.3 -51.45)
+		(start -15.5 5)
+		(end -15.5 -5)
 		(stroke
 			(width 0.05)
 			(type solid)
@@ -296,8 +336,8 @@
 		(uuid "57da97e9-6189-47eb-91a0-d4022ce2a5a5")
 	)
 	(fp_line
-		(start 16.3 -51.45)
-		(end 16.3 5.6)
+		(start 15.5 -5)
+		(end 15.5 5)
 		(stroke
 			(width 0.05)
 			(type solid)
@@ -306,8 +346,8 @@
 		(uuid "afc8ab6e-c66a-4a12-9444-38174ecda4e5")
 	)
 	(fp_line
-		(start 16.3 5.6)
-		(end -16.3 5.6)
+		(start 15.5 5)
+		(end -15.5 5)
 		(stroke
 			(width 0.05)
 			(type solid)

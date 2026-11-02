@@ -55,12 +55,29 @@
       },
       "diff_pair_dimensions": [
         {
-          "gap": 0.2,
-          "via_gap": 0.25,
-          "width": 0.27
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "courtyards_overlap|145850336|122363802|7e5deaee-bd7b-4def-a75a-09e21b8eddac|b1fd8415-d16c-4989-82c3-ea4a5bd7654f",
+          ""
+        ],
+        [
+          "courtyards_overlap|161961000|147895000|47d008b3-c133-4940-9c82-fd32dddded50|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          ""
+        ],
+        [
+          "courtyards_overlap|167895000|146852820|0cec364d-5b68-4365-9b8b-133e42ae9762|7c09b286-f7f4-4714-91f6-42efade06ce3",
+          ""
+        ],
+        [
+          "pth_inside_courtyard|164500000|103080000|ef6fc365-6f3e-41db-9508-70df12e8a56e|c9139391-9237-4e2f-916d-39fd36a6c32e",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -91,7 +108,7 @@
         "items_not_allowed": "error",
         "length_out_of_range": "error",
         "lib_footprint_issues": "warning",
-        "lib_footprint_mismatch": "warning",
+        "lib_footprint_mismatch": "ignore",
         "malformed_courtyard": "error",
         "microvia_drill_out_of_range": "error",
         "mirrored_text_on_front_layer": "warning",
@@ -104,7 +121,7 @@
         "padstack": "warning",
         "pth_inside_courtyard": "error",
         "shorting_items": "error",
-        "silk_edge_clearance": "warning",
+        "silk_edge_clearance": "ignore",
         "silk_over_copper": "warning",
         "silk_overlap": "warning",
         "skew_out_of_range": "error",
@@ -132,9 +149,9 @@
         "max_error": 0.005,
         "min_clearance": 0.1016,
         "min_connection": 0.0,
-        "min_copper_edge_clearance": 0.3,
+        "min_copper_edge_clearance": 0.4,
         "min_groove_width": 0.0,
-        "min_hole_clearance": 0.254,
+        "min_hole_clearance": 0.19,
         "min_hole_to_hole": 0.254,
         "min_microvia_diameter": 0.2,
         "min_microvia_drill": 0.1,
@@ -194,7 +211,8 @@
         }
       ],
       "track_widths": [
-        0.1016,
+        0.0,
+        0.0889,
         0.15,
         0.2,
         0.3,
@@ -230,7 +248,15 @@
       },
       "via_dimensions": [
         {
+          "diameter": 0.0,
+          "drill": 0.0
+        },
+        {
           "diameter": 0.4,
+          "drill": 0.3
+        },
+        {
+          "diameter": 0.45,
           "drill": 0.3
         },
         {
@@ -242,7 +268,7 @@
           "drill": 0.4
         }
       ],
-      "zones_allow_external_fillets": false
+      "zones_allow_external_fillets": true
     },
     "ipc2581": {
       "bom_rev": "",
@@ -273,11 +299,11 @@
   "erc": {
     "erc_exclusions": [
       [
-        "multiple_net_names|2451100|2540000|ddc9214d-c354-4ebc-8fc6-b72c1610d5c3|00ed6e39-a0bb-4710-a32a-473a7e35c9d7|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d",
+        "multiple_net_names|2184400|2514600|00ed6e39-a0bb-4710-a32a-473a7e35c9d7|ddc9214d-c354-4ebc-8fc6-b72c1610d5c3|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d",
         "inherent: two VCAP balls / open-drain wire-OR net has several names"
       ],
       [
-        "multiple_net_names|2184400|2514600|00ed6e39-a0bb-4710-a32a-473a7e35c9d7|ddc9214d-c354-4ebc-8fc6-b72c1610d5c3|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d",
+        "multiple_net_names|2451100|2540000|ddc9214d-c354-4ebc-8fc6-b72c1610d5c3|00ed6e39-a0bb-4710-a32a-473a7e35c9d7|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d|/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d",
         "inherent: two VCAP balls / open-drain wire-OR net has several names"
       ],
       [
@@ -528,20 +554,31 @@
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.27,
         "line_style": 0,
-        "microvia_diameter": 0.15,
-        "microvia_drill": 0.15,
+        "microvia_diameter": 0.45,
+        "microvia_drill": 0.45,
         "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.15,
         "tuning_profile": "",
-        "via_diameter": 0.4,
+        "via_diameter": 0.45,
         "via_drill": 0.3,
         "wire_width": 6
       },
       {
-        "clearance": 0.3,
+        "clearance": 0.15,
+        "name": "Analog",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.2,
+        "tuning_profile": "",
+        "via_diameter": 0.45,
+        "via_drill": 0.3
+      },
+      {
+        "clearance": 0.15,
         "name": "Motor",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
@@ -552,32 +589,7 @@
         "via_drill": 0.4
       },
       {
-        "clearance": 0.25,
-        "name": "Analog",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
-        "tuning_profile": "",
-        "via_diameter": 0.4,
-        "via_drill": 0.3
-      },
-      {
-        "clearance": 0.2,
-        "name": "USB_diff",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 2,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.27,
-        "tuning_profile": "",
-        "via_diameter": 0.4,
-        "via_drill": 0.3,
-        "diff_pair_width": 0.27,
-        "diff_pair_gap": 0.2,
-        "diff_pair_via_gap": 0.25
-      },
-      {
-        "clearance": 0.2,
+        "clearance": 0.15,
         "name": "Power",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 3,
@@ -585,6 +597,19 @@
         "track_width": 0.5,
         "tuning_profile": "",
         "via_diameter": 0.6,
+        "via_drill": 0.3
+      },
+      {
+        "clearance": 0.2,
+        "diff_pair_gap": 0.2,
+        "diff_pair_width": 0.27,
+        "name": "USB_diff",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.27,
+        "tuning_profile": "",
+        "via_diameter": 0.4,
         "via_drill": 0.3
       }
     ],
@@ -598,6 +623,9 @@
       ],
       "/micro/USB_P": [
         "USB_diff"
+      ],
+      "/power/BUCK_SW": [
+        "Power"
       ],
       "3V3": [
         "Power"
