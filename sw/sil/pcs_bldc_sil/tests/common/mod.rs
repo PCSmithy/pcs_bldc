@@ -66,21 +66,14 @@ pub const MODE_SINUSOIDAL: u64 = 2;
 pub const MODE_FOC_TORQUE: u64 = 3;
 pub const MODE_FOC_VELOCITY: u64 = 4;
 
-/// Select a commutation method over the protocol: `SetMode(method)` selects (and
-/// enables), `SetMode(OFF)` disables with the selection kept, so the next button
-/// enable runs it. The board world's USB comes up connected for the exchange.
+/// Select a commutation method over the protocol: a `Command` naming the method
+/// selects (and enables), one naming `MODE_OFF` disables with the selection kept,
+/// so the next button enable runs it. The board world's USB comes up connected.
 pub fn select_method(sim: &mut Sil, method: u64) {
     sim.write(&cid("HW_USB_sim_data.connected"), true)
         .expect("connect the host");
     for (id, mode) in [(1u64, method), (2u64, MODE_OFF)] {
-        // board.Request { set_mode (1) { mode (1) } } in the envelope's board_request (60).
-        let mut set_mode = Vec::new();
-        if mode != 0 {
-            set_mode.push(0x08);
-            proto::put_varint(mode, &mut set_mode);
-        }
-        let mut request = vec![0x0A, set_mode.len() as u8];
-        request.extend_from_slice(&set_mode);
+        let request = proto::command(mode, &[]);
         inject(sim, &proto::envelope(id, proto::F_BOARD_REQUEST, &request));
         sim.run_for_ms(5);
         let _ = drain_tx(sim);
@@ -263,6 +256,7 @@ pub mod proto {
     pub const F_READ_REPLY: u32 = 35;
     pub const F_WRITE_REQUEST: u32 = 36;
     pub const F_BOARD_REQUEST: u32 = 60;
+    pub const F_BOARD_REPLY: u32 = 61;
 
     pub fn put_varint(mut v: u64, out: &mut Vec<u8>) {
         loop {
@@ -294,6 +288,71 @@ pub mod proto {
     /// Field key for a length-delimited (wire type 2) field.
     fn put_len_key(field: u32, out: &mut Vec<u8>) {
         put_varint(u64::from((field << 3) | 2), out);
+    }
+
+    /// A length-delimited field: key, length, bytes.
+    pub fn put_len(field: u32, bytes: &[u8], out: &mut Vec<u8>) {
+        put_len_key(field, out);
+        put_varint(bytes.len() as u64, out);
+        out.extend_from_slice(bytes);
+    }
+
+    /// `board.Setpoint { t_us (1), velocity_radps (2, fixed32), rate_limit (4, fixed32) }`.
+    pub fn speed_setpoint(t_us: u32, velocity: f32, limit: f32) -> Vec<u8> {
+        let mut sp = Vec::new();
+        if t_us != 0 {
+            sp.push(0x08);
+            put_varint(u64::from(t_us), &mut sp);
+        }
+        sp.push(0x15);
+        sp.extend_from_slice(&velocity.to_le_bytes());
+        if limit != 0.0 {
+            sp.push(0x25);
+            sp.extend_from_slice(&limit.to_le_bytes());
+        }
+        sp
+    }
+
+    /// `board.Setpoint { t_us (1), torque_nm (3, fixed32), rate_limit (4, fixed32) }`.
+    pub fn torque_setpoint(t_us: u32, torque: f32, limit: f32) -> Vec<u8> {
+        let mut sp = Vec::new();
+        if t_us != 0 {
+            sp.push(0x08);
+            put_varint(u64::from(t_us), &mut sp);
+        }
+        sp.push(0x1D);
+        sp.extend_from_slice(&torque.to_le_bytes());
+        if limit != 0.0 {
+            sp.push(0x25);
+            sp.extend_from_slice(&limit.to_le_bytes());
+        }
+        sp
+    }
+
+    /// `board.Setpoint { t_us (1), stop (5, an empty submessage) }`.
+    pub fn stop_setpoint(t_us: u32) -> Vec<u8> {
+        let mut sp = Vec::new();
+        if t_us != 0 {
+            sp.push(0x08);
+            put_varint(u64::from(t_us), &mut sp);
+        }
+        put_len(5, &[], &mut sp);
+        sp
+    }
+
+    /// `board.Request { run (2) { mode (1), setpoints (2, repeated) } }`: a Command.
+    pub fn command(mode: u64, setpoints: &[Vec<u8>]) -> Vec<u8> {
+        let mut cmd = Vec::new();
+        if mode != 0 {
+            cmd.push(0x08);
+            put_varint(mode, &mut cmd);
+        }
+        for sp in setpoints {
+            put_len(2, sp, &mut cmd);
+        }
+        let mut req = Vec::new();
+        put_len(2, &cmd, &mut req);
+        req
     }
 
     pub fn envelope(request_id: u64, payload_field: u32, payload: &[u8]) -> Vec<u8> {
@@ -343,6 +402,20 @@ pub mod proto {
                     let Some(bytes) = msg.get(i..i + len as usize) else { break };
                     i += len as usize;
                     out.push((field, 0, bytes.to_vec()));
+                }
+                1 => {
+                    // fixed64: the raw bits ride in the varint slot (`f64::from_bits`).
+                    let Some(bytes) = msg.get(i..i + 8) else { break };
+                    i += 8;
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(bytes);
+                    out.push((field, u64::from_le_bytes(raw), Vec::new()));
+                }
+                5 => {
+                    // fixed32: the raw bits ride in the varint slot (`f32::from_bits`).
+                    let Some(bytes) = msg.get(i..i + 4) else { break };
+                    i += 4;
+                    out.push((field, u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])), Vec::new()));
                 }
                 _ => break,
             }

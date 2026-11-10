@@ -6,7 +6,8 @@ tags: [firmware, mc, app, driver]
 # Motor-control application
 
 The `app_motorControl` module owns the drive loop across two cadences. The
-1 ms cycle owns the inputs and the gate: the speed target, mode selection,
+1 ms cycle owns the inputs and the gate: the speed and torque targets and
+their rate limits, mode selection,
 bus voltage, fault latching, alignment, and bridge enable. The
 PWM-synchronous cycle, entered from the bridge's per-cycle callback that
 `main.c` composes around the duration probe (`fw~mc_018~1`), runs the active
@@ -56,9 +57,9 @@ Needs: impl, test
 
 On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
 enabled with the alignment offset captured (`fw~mc_012~1`), the application
-shall run the active method's commutation step with the speed target and
-bus voltage as last published by the 1 ms cycle, the per-cycle rotor
-electrical angle (`fw~mc_019~1`) and velocity estimate
+shall run the active method's commutation step with the speed and torque
+targets and bus voltage as last published by the 1 ms cycle, the per-cycle rotor
+electrical angle (`fw~mc_019~1`) and mechanical velocity estimate
 (`fw~est_rotor_002~1`), and the cycle's phase currents, and apply the
 step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
 voltage vector (`fw~io_bridge_008~1`), and per-phase output enables
@@ -105,20 +106,31 @@ Needs: impl, test
 ### Rotor-frame current observation
 `fw~mc_016~1`
 
-Each commutation step, the application shall transform the bridge-reported
-phase currents (`fw~io_bridge_009~1`) into the rotor frame (`fw~mc_013~1`) at the active
-method's frame angle and hold the result as the drive's I_d and I_q:
+Each bridge cycle callback (`fw~io_bridge_007~1`), the application shall
+transform the bridge-reported phase currents (`fw~io_bridge_009~1`) into
+the rotor frame (`fw~mc_013~1`) at the active method's frame angle, hold
+the result as the drive's I_d and I_q, and set the estimator's torque
+input (`fw~est_rotor_002~1`) to K_t · I_q + T_k for the method's known
+cogging share T_k, for K_t the motor-control channel's configured torque
+constant in Nm/A and θ̂ the estimator's mechanical angle for the cycle:
 
-| Method                                                            | Frame angle                                      |
-|-------------------------------------------------------------------|--------------------------------------------------|
-| Six-step, sensored sinusoidal, field-oriented torque and velocity | Per-cycle rotor electrical angle (`fw~mc_019~1`) |
-| V/f                                                               | Commanded electrical angle (`fw~mc_010~1`)       |
+| Method                             | Frame angle                                      | Known cogging share T_k           |
+|------------------------------------|--------------------------------------------------|-----------------------------------|
+| Field-oriented torque and velocity | Per-cycle rotor electrical angle (`fw~mc_019~1`) | k_cog · T_cog(θ̂) (`fw~mc_028~1`) |
+| Six-step, sensored sinusoidal      | Per-cycle rotor electrical angle (`fw~mc_019~1`) | 0                                 |
+| V/f                                | Commanded electrical angle (`fw~mc_010~1`)       | 0                                 |
 
 Acceptance:
 - With the frame angle at 0 and phase currents (I, −I/2, −I/2), I_d = I and
   I_q = 0; with the frame angle at 90°, I_d = 0 and I_q = −I.
 - At constant speed with the phase currents rotating at the electrical
   frequency, I_d and I_q hold within 5% of their magnitude.
+- Under the six-step method each callback sets the estimator's torque
+  input to K_t · I_q, within 1 % of K_t · I_max (`fw~mc_022~1`).
+- Under the field-oriented torque method with the rotor held at an angle
+  where sin(28 · θ̂) = 1, A_1 = 0.2 Nm, n_1 = 28, φ_1 = 0, A_2 = 0 and
+  k_cog = 0.5 (`fw~mc_028~1`), each callback sets the estimator's torque
+  input to K_t · I_q + 0.1 Nm, within 1 % of 0.1 Nm.
 
 Covers:
 - `sys~mc_001~1`
@@ -136,7 +148,8 @@ alignment offset (`fw~mc_012~1`), times the pole-pair count, wrapped to
 [0, 2π).
 
 Acceptance:
-- At ω_n = 2π · 50 rad/s, ζ = 1 (`fw~est_rotor_001~1`), and 14 pole pairs,
+- At ω_n = 2π · 50 rad/s, ζ = 1, p_d = 157 rad/s (`fw~est_rotor_001~1`),
+  b and T_c configured zero (`fw~est_rotor_002~1`), and 14 pole pairs,
   after 100 ms at a constant 300 rad/s electrical, every PWM cycle's angle
   is within 3° of the rotor's electrical angle.
 
@@ -241,6 +254,34 @@ Acceptance:
 
 Covers:
 - `sys~mc_005~1`
+
+Needs: impl, test
+
+### Setpoint rate limit
+`fw~mc_027~1`
+
+Each 1 ms cycle, the application shall move the speed target and the
+torque target toward their most recently written values by at most each
+target's rate limit times 1 ms — a rate limit of zero moving the target
+to its written value at once — the speed target seeded from the rotor
+velocity estimate (`fw~est_rotor_002~1`) and the torque target from zero
+at each bridge enable, for the rate limit in rad/s² or Nm/s written with
+the target by the sequence player (`fw~ops_001~1`), and zero for a dial
+speed demand (`fw~mc_008~1`).
+
+Acceptance:
+- A speed target written as 10 rad/s with a limit of 20 rad/s² from a
+  standing 0 reaches 10 rad/s 500 ms later, advancing 0.02 rad/s per
+  cycle within 1 %.
+- A torque target written with a limit of zero is in effect the next
+  cycle.
+- At a bridge enable with the rotor turning at 5 rad/s, the speed target
+  in effect is 5 rad/s on the first cycle; the torque target in effect is
+  zero.
+- A dial speed demand (`fw~mc_008~1`) is in effect the next cycle.
+
+Covers:
+- `sys~ops_003~1`
 
 Needs: impl, test
 

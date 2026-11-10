@@ -298,16 +298,28 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
             break;
 
         case shared_Envelope_board_request_tag:
-            // The board hook owns the verdict; without one, every board
-            // command is rejected.
-            reply->which_payload = shared_Envelope_response_tag;
-            reply->payload.response.accepted = false;
-            (void) strcpy(reply->payload.response.cause, "unsupported request");
-            if (data->config->handleRequest != NULL)
+        {
+            // The board hook owns the answer, a Reply result or a Response
+            // verdict; without one, every board command is rejected.
+            board_Reply result = board_Reply_init_zero;
+            shared_Response verdict = shared_Response_init_zero;
+            if (data->config->handleRequest == NULL)
             {
-                data->config->handleRequest(&request->payload.board_request, &reply->payload.response);
+                (void) strcpy(verdict.cause, "unsupported request");
+            }
+            if ((data->config->handleRequest != NULL) &&
+                data->config->handleRequest(&request->payload.board_request, &result, &verdict))
+            {
+                reply->which_payload = shared_Envelope_board_reply_tag;
+                reply->payload.board_reply = result;
+            }
+            else
+            {
+                reply->which_payload = shared_Envelope_response_tag;
+                reply->payload.response = verdict;
             }
             break;
+        }
 
         // [impl->fw~conn_trace_006~1] accepted watch lists answer with the
         // capability report; rejections fall back to the Response verdict.
@@ -367,6 +379,24 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
     app_server_private_sendReply(reply);
 }
 
+// Envelope-level submsg_callback hook: nanopb wipes the payload union before
+// the chosen arm decodes, so the callbacks inside an arm are armed here.
+static bool app_server_private_envelopeCallback(pb_istream_t * stream, const pb_field_t * field, void ** arg)
+{
+    bool ret = true;
+    if (field->tag == shared_Envelope_board_request_tag)
+    {
+        board_Request * const request = (board_Request *) field->pData;
+        request->cb_command.funcs.decode = (data->config != NULL) ? data->config->prepareCommand : NULL;   // NULL: the arm decodes plain
+        request->cb_command.arg = NULL;
+    }
+    else
+    {
+        ret = app_server_trace_envelopeCallback(stream, field, arg);
+    }
+    return ret;
+}
+
 static void app_server_private_pumpRequests(void)
 {
     IO_COBSFrame_run();
@@ -381,7 +411,7 @@ static void app_server_private_pumpRequests(void)
         // The payload oneof is memset by nanopb before the chosen arm
         // decodes, so callback fields inside it are armed through the
         // envelope-level hook, not pre-set.
-        request->cb_payload.funcs.decode = app_server_trace_envelopeCallback;
+        request->cb_payload.funcs.decode = app_server_private_envelopeCallback;
         if (lib_protobuf_decode(shared_Envelope_fields, data->rxFrame, frameLen, request))
         {
             app_server_private_handleEnvelope(request);

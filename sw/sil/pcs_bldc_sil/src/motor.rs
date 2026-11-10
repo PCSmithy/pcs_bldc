@@ -52,6 +52,17 @@ pub struct MotorParams {
     /// The shaft held at rest: the drive torque goes into the clamp and the rotor
     /// never moves, so a current step sees the windings alone (fw~mc_023, fw~mc_024).
     pub rotor_locked: bool,
+    /// Cogging torque on the rotor as harmonics of the mechanical angle, each
+    /// `amp_nm * sin(per_rev * angle + phase_rad)`, positive with increasing angle.
+    pub cogging: [CogHarmonic; 2],
+}
+
+/// One harmonic of the cogging torque; a zero amplitude is no harmonic.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CogHarmonic {
+    pub amp_nm: f64,
+    pub per_rev: u16,
+    pub phase_rad: f64,
 }
 
 impl Default for MotorParams {
@@ -66,6 +77,7 @@ impl Default for MotorParams {
             t_c_nm: 4.4e-3,
             v_d: 0.8,
             rotor_locked: false,
+            cogging: [CogHarmonic::default(); 2],
         }
     }
 }
@@ -106,6 +118,7 @@ pub struct MotorModel {
 #[derive(Default, Clone, Copy)]
 struct MotorPorts {
     v_bus: Option<SigHandle>,
+    load_torque: Option<SigHandle>,
     duty: [Option<SigHandle>; 3],
     enable: [Option<SigHandle>; 3],
     moe: Option<SigHandle>,
@@ -173,8 +186,10 @@ impl Member for MotorModel {
     }
 
     fn advance(&mut self, dt_us: u64, ctx: &mut MemberCtx) {
-        // Input ports: the bridge command + bus voltage the sim wiring routed in.
+        // Input ports: the bridge command + bus voltage the sim wiring routed in,
+        // and the external load on the shaft (Nm, opposing positive rotation).
         let v_bus = observe_port(ctx.st, self.ports.v_bus);
+        let t_load = observe_port(ctx.st, self.ports.load_torque);
         let mut i_bus = 0.0;
 
         let duty = self.ports.duty.map(|h| observe_port(ctx.st, h));
@@ -278,8 +293,15 @@ impl Member for MotorModel {
             }
             self.torque_nm = self.params.ke_v_per_mech_rad_s * sum_flux;
 
-            // sum shaft torques - add to sum with T_cog, T_load, etc.
-            let t_drive = self.torque_nm; // TODO: + t_cog - t_load
+            // The shaft torque sum: the electromagnetic torque, the cogging torque
+            // at this angle, less the external load; friction follows below.
+            let t_cog: f64 = self
+                .params
+                .cogging
+                .iter()
+                .map(|h| h.amp_nm * (f64::from(h.per_rev) * self.angle_rad + h.phase_rad).sin())
+                .sum();
+            let t_drive = self.torque_nm + t_cog - t_load;
             if self.params.rotor_locked {
                 self.velocity_rad_s = 0.0;
             } else if (self.velocity_rad_s == 0.0) && (t_drive.abs() <= self.params.t_c_nm) {
@@ -366,6 +388,7 @@ impl Member for MotorModel {
             const PH: [&str; 3] = ["u", "v", "w"];
             // inputs
             self.ports.v_bus = register_port(st, &self.port_id("v_bus"), Some("V"));
+            self.ports.load_torque = register_port(st, &self.port_id("load_torque"), Some("Nm"));
             for (i, c) in PH.iter().enumerate() {
                 self.ports.duty[i] = register_port(st, &self.port_id(&format!("duty_{c}")), None);
                 self.ports.enable[i] = register_port(st, &self.port_id(&format!("enable_{c}")), None);

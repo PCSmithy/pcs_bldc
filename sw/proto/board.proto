@@ -25,28 +25,64 @@ enum DriveState {
 // Inbound board commands, dispatched to the board's handleRequest hook.
 message Request {
   oneof command {
-    SetMode     set_mode     = 1;
-    SetVelocity set_velocity = 2;
-    ClearFault  clear_fault  = 3;
+    ClearFault   clear_fault    = 1;
+    Command      run            = 2;   // run a Command: a mode and its setpoint sequence
+    GetMotorInfo get_motor_info = 3;
   }
 }
 
-message SetMode {
-  Mode mode = 1;
+// A mode and the timed setpoint sequence the board plays under it
+// (fw~conn_server_007, fw~ops_001). One setpoint at t_us = 0 is the manual
+// command; MODE_OFF with no setpoints stops; a stop setpoint ends a sequence
+// under its mode. The list decodes through a
+// nanopb callback into the sequencer's table (board.options), so its
+// length is bounded by the sequencer's capacity, not by this message.
+message Command {
+  Mode              mode      = 1;
+  repeated Setpoint setpoints = 2;
 }
 
-message SetVelocity {
-  float velocity_radps = 1;
+// One target to apply at t_us from the sequence's start. The target oneof
+// grows one arm per setpoint kind; the rate limit is in the kind's unit per
+// second (rad/s^2, Nm/s), zero for a step; a stop takes neither. A timing
+// alternative to t_us (the position sequencer's "after the previous move")
+// joins later.
+message Setpoint {
+  uint32 t_us = 1;
+  oneof target {
+    float velocity_radps = 2;
+    float torque_nm      = 3;
+    Stop  stop           = 5;   // the bridge disabled at t_us, as MODE_OFF does
+  }
+  float rate_limit = 4;
+}
+
+// The empty target: MODE_OFF at its t_us.
+message Stop {
+}
+
+// The motor-control channel's configured ratings (fw~conn_server_008): the
+// host bounds its setpoints to them.
+message GetMotorInfo {
+}
+
+message MotorInfo {
+  float kt_nm_per_a        = 1;
+  float i_max_a            = 2;
+  float max_torque_nm      = 3;
+  float max_velocity_radps = 4;
 }
 
 message ClearFault {
 }
 
 // Results for data-returning board commands (the board half of the
-// result-or-Response convention in shared.proto). Its result oneof grows
-// with the first such command; action-only commands are answered with the
-// framework Response and never appear here.
+// result-or-Response convention in shared.proto); action-only commands are
+// answered with the framework Response and never appear here.
 message Reply {
+  oneof result {
+    MotorInfo motor_info = 1;
+  }
 }
 
 // Periodic board status, published at 10 Hz while a host holds the serial
@@ -59,4 +95,7 @@ message Telemetry {
   float      bus_current_a           = 5;
   float      velocity_measured_radps = 6;
   float      velocity_setpoint_radps = 7;
+  float      torque_target_nm        = 8;   // in effect (fw~mc_027)
+  bool       sequence_running        = 9;   // fw~ops_001
+  uint32     sequence_elapsed_ms     = 10;  // since the running sequence's start
 }

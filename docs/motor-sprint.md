@@ -106,13 +106,53 @@ already in place.
 
 Outer loops and the first estimator work.
 
+- **Host command plane** — in build, for the step-response
+  test plan behind the gain and estimator decisions: one `Command` carrying
+  a mode and a timed setpoint list the firmware plays on its 1 ms tick
+  (`fw~conn_server_007`, `fw~ops_001`/`_002`), a torque target in Nm for
+  the torque method (`fw~mc_026`, `fw~mc_022` edited), a setpoint rate
+  limit (`fw~mc_027`, built after the plane), the motor rating report
+  (`fw~conn_server_008`), and the app's Command and Sequence widgets with
+  a capture export (`app~conn_004`, `app~views_024`..`_028`). `SetMode`
+  and `SetVelocity` retired with it. Built to take a new
+  setpoint kind without restructuring: the `Setpoint` oneof, one per-kind
+  write in the sequencer, one target struct per kind in motor control, a
+  per-kind bound in `MotorInfo`, one per-kind unit/bound row in the widgets.
+- **Position control** closes the sprint: a position method cascaded
+  around the velocity method, and position setpoints in the sequencer.
+  Open questions to settle when it starts:
+  - A position setpoint carries a maximum acceleration, not a velocity
+    limit, so moves between points are smooth splines; it may also carry
+    a velocity at the point, non-zero, so a chain of positions is one
+    continuous motion. Which profile: trapezoidal in acceleration, cubic
+    spline through (position, velocity) pairs, or jerk-limited S-curve?
+  - Timing needs an "as soon as the previous move completes" alternative
+    to the absolute `t_us`, so a sequence is a chain of moves rather than
+    a timetable. Candidate: `Setpoint.when` as a oneof of `t_us` and
+    `after_previous`; the sequencer's due test is then two branches. What
+    counts as "complete": position within a tolerance, velocity within a
+    tolerance, or the profile's planned end time?
+  - Mixing kinds in one sequence (a position move followed by a velocity
+    hold) versus one kind per sequence as the widgets assume today.
+  - Position bounds and wrap: a mechanical angle in [0, 2π) with the
+    shortest path, or an unwrapped multi-turn position with travel limits
+    in `MotorInfo`?
+  - Where the profile is generated: on the host, flattened into dense
+    timed setpoints (sequencer unchanged, capacity-bound), or on the
+    board from the sparse (position, velocity, a_max) points (sparse on
+    the wire, a profile generator in firmware).
+  - The sequence editor's chart for position: a second y axis or a
+    per-point velocity handle, and whether it draws the planned profile
+    from the same generator the firmware runs.
+
 - **Outer loops:** the field-oriented velocity method `fw~mc_025` — built,
   its Unity and SIL step-response tests pending:
   a PI on ω* − ω̂ in the commutation step sets a torque demand in Nm,
   i_q* = T*/K_t clamped at ±I_max with back-calculation, wrapping the
   torque method (`MODE_FOC_TORQUE`; `MODE_FOC_VELOCITY` is new); K_t joins
-  the FOC config, K_vp / K_vi are configured with the K_vp = J·ω_v
-  derivation noted in the header. Full dial sits at the voltage limit
+  the FOC config; K_vp / K_vi put the loop near 275 rad/s with the
+  integral corner at 12.5 rad/s, kept after the gain sweep in
+  `tools/trace_analysis/velocity_loop`. Full dial sits at the voltage limit
   under FOC (back-EMF at 200 rpm is ~11.5 V, the 20 V bus's linear ceiling),
   so the acceptance steps to 10 rad/s. Then position control cascaded around
   it, with any velocity-command shaping.
@@ -121,9 +161,10 @@ Outer loops and the first estimator work.
   form, corrected at 1 kHz and carried forward every PWM cycle
   (`app_rotorEstimation`), so FOC commutates on a lag-free angle at
   constant speed. Its constant-velocity model lags under acceleration
-  (angle a/K_i, velocity 2ζa/ω_n); once FOC supplies i_q, add a
-  known-input term B·u to the prediction with u the acceleration from the
-  commanded torque, B = [T²/2, T]ᵀ (a one-term edit to `fw~est_rotor_002`).
+  (angle a/K_i, velocity 2ζa/ω_n); specced, next to build: a known-input
+  term G·u in the prediction, u = (K_t·I_q − b·ω̂)/J from the measured
+  current, G = [T²/2, T]ᵀ, J and b in the estimator config
+  (`fw~est_rotor_002` edited in place, `fw~mc_016` sets the input).
 - **Motor parameter identification** — R / L / Ke, initially offline
   (measurement + datasheet) to seed the SIL model, with auto-commissioning
   scoped as a later phase.

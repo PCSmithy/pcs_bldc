@@ -18,14 +18,16 @@ While a host holds the device's serial port open
 message (`fw~conn_proto_001~1`) every 100 ms — within ± 2 % over any
 10-second window — reporting, as read at publication: the motor-control
 mode and drive state (`fw~mc_009~1`), the rotor velocity estimate
-(`fw~est_rotor_002~1`), the speed target, the bus voltage, the
-bus current, and the board's milliseconds since boot.
+(`fw~est_rotor_002~1`), the speed and torque targets in effect
+(`fw~mc_027~1`), whether a sequence is running and its milliseconds since
+start (`fw~ops_001~1`), the bus voltage, the bus current, and the board's
+milliseconds since boot.
 
 Acceptance:
 - Over a 10-second connected window, 100 ± 2 `Telemetry` messages
   arrive, timestamps advancing.
-- A mode change, drive-state change, or speed-target change appears in
-  the next published `Telemetry`.
+- A mode change, drive-state change, target change, or sequence start or
+  completion appears in the next published `Telemetry`.
 
 Covers:
 - sys~obs_001~1

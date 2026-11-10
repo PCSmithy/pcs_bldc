@@ -24,8 +24,11 @@ const I_A: f64 = 1.0;   // under the 1.2 A phase trip
 /// jitter (~1.5 LSB mechanical x 14 pole pairs, ~0.01 A at this magnitude).
 const TOL_A: f64 = 0.05;
 
-/// The 1 ms pass and the 20 kHz step both need a few passes after an injection.
-const SETTLE_MS: u64 = 10;
+/// The 1 ms pass and the 20 kHz step need a few passes after an injection, and
+/// the estimator needs the injected I_q, a torque input on a rotor that does not
+/// move, absorbed into its torque state (fw~est_rotor_001: poles at 157 and
+/// 2*pi*50 rad/s, settled in about 30 ms) before the frame is still.
+const SETTLE_MS: u64 = 50;
 
 /// A board world with the four motor -> sense routes suspended (the sense inputs
 /// take direct writes), the gate up, six-step selected, and the alignment captured.

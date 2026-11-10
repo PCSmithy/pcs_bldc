@@ -75,7 +75,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
 │   │   │       ├── dev/              Device drivers (switch, gateDriver, CYPD3177)
 │   │   │       └── app/              App-layer modules (rgbLedRing, motorControl,
-│   │   │                             rotorEstimation, server, cpuLoad)
+│   │   │                             rotorEstimation, sequencer, server, cpuLoad)
 │   │   └── rust/         Rust libraries, workspace-less path deps:
 │   │       ├── prng/         Deterministic PRNG (SIL models)
 │   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
@@ -99,7 +99,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │           │             bridge, i2c, COBSFrame)
 │           ├── dev/      pcs_bldc device configs (switch, gateDriver, CYPD3177)
 │           └── app/      pcs_bldc app-layer configs (rgbLedRing, motorControl,
-│                         rotorEstimation, server, userControls)
+│                         rotorEstimation, sequencer, server, userControls)
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC

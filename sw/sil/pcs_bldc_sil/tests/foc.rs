@@ -47,7 +47,7 @@ fn step_dial_to(sim: &mut Sil, fraction: f64) {
     let target = fraction * MAX_VELOCITY_RAD_S;
     for _ in 0..(500_000 / GRID_US) {
         sim.run_for_us(GRID_US);
-        if mc(sim, "velocitySetpointCurrent_radPerSec") > (0.5 * target) {
+        if mc(sim, "velocitySetpoint_radPerSec") > (0.5 * target) {
             return;
         }
     }

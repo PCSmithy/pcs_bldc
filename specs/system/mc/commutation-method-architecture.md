@@ -9,7 +9,7 @@ tags: [system, mc]
 `sys~mc_005~1`
 
 The firmware shall drive the motor through one of a set of selectable
-commutation methods — each receiving the speed target, motor shaft angle
+commutation methods — each receiving the speed and torque targets, motor shaft angle
 and velocity, phase currents, and bus voltage, and producing the
 three-phase bridge duty
 commands — with the active method selectable only while the bridge is

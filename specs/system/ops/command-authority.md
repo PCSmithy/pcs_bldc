@@ -9,9 +9,10 @@ tags: [system, ops]
 `sys~ops_002~1`
 
 Where the on-device controls and a host command the same requested
-value — the drive mode (`sys~mc_005~1`) or the speed target — the
-command most recently arriving at the motor-control application shall
-determine it.
+value — the drive mode (`sys~mc_005~1`), the speed target, or the torque
+target — the command most recently arriving at the motor-control
+application shall determine it, a host sequence's setpoints
+(`sys~ops_003~1`) arriving at their times.
 
 Acceptance:
 
@@ -20,6 +21,8 @@ Acceptance:
   dial's.
 - A mode commanded by the host is superseded by a subsequent on-device
   mode input, and the reverse.
+- A dial adjustment during a host sequence leaves the dial's value in
+  effect until the sequence's next setpoint arrives.
 
 Covers:
 

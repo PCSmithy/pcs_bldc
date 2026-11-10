@@ -396,7 +396,119 @@
   color: var(--color-neutral-200);
 }
 
-/* ── timeline bar (app~views_008): span pills + pause/resume ─────────────── */
+/* ── Command widget (app~views_024): mode, setpoint, limit, Send + verdict ── */
+.cmd-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px 14px;
+  overflow: auto;
+}
+.cmd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cmd-modes button { font-size: 10.5px; padding: 3px 10px; }
+.cmd-modes button:disabled { cursor: not-allowed; opacity: 0.45; }
+.cmd-fields { gap: 18px; align-items: flex-start; }
+.cmd-field { display: flex; flex-direction: column; gap: 4px; }
+.cmd-input { display: inline-flex; align-items: center; gap: 6px; }
+.cmd-input input {
+  width: 92px;
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-pill);
+  color: var(--color-neutral-200);
+  font-size: 12px;
+  padding: 4px 10px;
+  text-align: right;
+}
+.cmd-input input:focus { border-color: rgba(var(--lit-rgb), 0.55); outline: none; }
+.cmd-input input:disabled { opacity: 0.45; }
+.cmd-input input::placeholder { color: var(--color-neutral-600); }
+.cmd-unit { font-size: 11px; color: var(--color-neutral-500); min-width: 44px; }
+.cmd-hint { font-size: 10px; color: var(--color-neutral-600); }
+.cmd-send { margin-top: auto; }
+.cmd-verdict { font-size: 11.5px; color: var(--color-neutral-500); }
+.cmd-verdict--accepted { color: rgb(var(--ok-rgb)); }
+.cmd-verdict--rejected { color: var(--color-accent-400); }
+.cmd-offline { font-size: 11px; color: var(--color-neutral-600); }
+
+/* ── Sequence widget (app~views_025..027): editor chart, run marker, library ── */
+.seq-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 14px 12px;
+}
+.seq-toolbar { gap: 14px; }
+.seq-toolbar .cmd-input input { width: 64px; }
+.seq-library { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.seq-library input,
+.seq-library select,
+.seq-tip input {
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-pill);
+  color: var(--color-neutral-200);
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+.seq-library input { width: 100px; }
+.seq-library select option { background: var(--ink-raised); color: var(--color-neutral-200); }
+.seq-library select:disabled { opacity: 0.45; }
+.seq-chart {
+  flex: 1;
+  min-height: 120px;
+  position: relative;
+  background: var(--ink-well);
+  background-image: var(--well-grad);
+  border-radius: var(--r-canvas);
+  overflow: hidden;
+}
+.seq-canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; cursor: crosshair; }
+.seq-canvas:focus-visible { box-shadow: inset 0 0 0 1px rgba(var(--lit-rgb), 0.35); }
+.seq-tip {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--ink-raised);
+  border: 1px solid rgba(var(--hair-rgb), 0.16);
+  border-radius: var(--r-row);
+  font-size: 11px;
+  color: var(--color-neutral-300);
+  white-space: nowrap;
+}
+.seq-tip-field { display: inline-flex; align-items: center; gap: 5px; color: var(--color-neutral-500); }
+.seq-tip input { width: 56px; text-align: right; padding: 2px 7px; }
+.seq-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+  pointer-events: none;
+}
+.timeline-export { margin-left: auto; }
+
+/* run marks on every plot: the sample time a sequence run was accepted */
+.run-marks { position: absolute; inset: 0; pointer-events: none; }
+.run-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--color-accent-2-400); }
+.run-mark span {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-accent-2-400);
+  white-space: nowrap;
+}
+
+/* ── timeline bar (app~views_008): span pills + pause/resume + export ────── */
 
 .timeline-bar {
   display: flex;

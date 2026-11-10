@@ -20,7 +20,7 @@
 
 // A velocity write counts as a dial change only past this deadband from the
 // last SENT value, so encoder LSB noise can't re-assert the dial every cycle
-// against an app command (fw~conn_server_002 arbitration).
+// against a host command (sys~ops_002 arbitration).
 #define APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC (0.05f)
 
 // Window (ms) after a tap to wait for a second tap: a double-tap cycles the LED
@@ -244,9 +244,9 @@ void app_userControls_run1ms(void)
         }
 
         // set outputs — only on change, so the controls and app commands
-        // share the request state by order of arrival (fw~conn_server_002).
-        // An enable runs whichever method is selected (the board default, or
-        // the host's last SetMode).
+        // share the request state by order of arrival (sys~ops_002). An
+        // enable runs whichever method is selected (the board default, or
+        // the host's last Command).
         app_motorControl_snapshot_S motorSnapshot = { 0 };
         (void)app_motorControl_getSnapshot(data->config->motor, &motorSnapshot);
         const app_motorControl_mode_E modeOut =
@@ -261,7 +261,7 @@ void app_userControls_run1ms(void)
             (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
              APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC))
         {
-            app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec);
+            app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec, 0.0f);   // the dial steps (fw~mc_027)
             data->velocitySent_radPerSec = data->velocityRequest_radPerSec;
         }
         data->outputsSeeded = true;

@@ -1,7 +1,7 @@
 #pragma once
 
 // Boundary double of app_rotorEstimation — only the surface app_motorControl
-// uses (the per-cycle angle and velocity). Implementation + controls in
+// uses (the per-cycle angle, velocity and disturbance torque, the torque input). Implementation + controls in
 // mock_app_rotorEstimation. Rationale: the real estimator moves 63 % of the
 // way to a new angle per millisecond, so a test that places the rotor would
 // have to wait out its settling; the double lets a test just set the angle.
@@ -13,7 +13,8 @@
 extern "C" {
 #endif
 
-void app_rotorEstimation_getState(app_rotorEstimation_channel_E channel, float32_t * theta, float32_t * omega);
+void app_rotorEstimation_getState(app_rotorEstimation_channel_E channel, float32_t * theta, float32_t * omega, float32_t * unmodeledTorque);
+void app_rotorEstimation_setTorqueInput(app_rotorEstimation_channel_E channel, float32_t torque_Nm);
 
 #ifdef __cplusplus
 }

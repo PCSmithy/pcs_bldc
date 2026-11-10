@@ -200,10 +200,19 @@ def show(env, pb2, board_pb2, log_buffer, trace=None):
         t = env.telemetry
         mode = board_pb2.Mode.Name(t.mode)
         state = board_pb2.DriveState.Name(t.state)
+        seq = f" seq={t.sequence_elapsed_ms}ms" if t.sequence_running else ""
         print(f"[telemetry] t={t.timestamp_ms}ms {mode} {state} "
               f"vbus={t.bus_voltage_v:.2f}V ibus={t.bus_current_a:.3f}A "
               f"vel={t.velocity_measured_radps:+.2f}rad/s "
-              f"set={t.velocity_setpoint_radps:+.2f}rad/s")
+              f"set={t.velocity_setpoint_radps:+.2f}rad/s "
+              f"torque={t.torque_target_nm:+.3f}Nm{seq}")
+    elif kind == "board_reply":
+        if env.board_reply.WhichOneof("result") == "motor_info":
+            m = env.board_reply.motor_info
+            print(f"[motor-info] id={env.request_id} Kt={m.kt_nm_per_a:.4f}Nm/A Imax={m.i_max_a:.3f}A "
+                  f"Tmax={m.max_torque_nm:.4f}Nm wmax={m.max_velocity_radps:.3f}rad/s")
+        else:
+            print(f"[reply] id={env.request_id} {env.board_reply}")
     elif kind == "identity":
         print(f"[identity] id={env.request_id} build={env.identity.build_id}")
     elif kind == "response":
@@ -335,12 +344,19 @@ def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=10
     while commands:
         kind, value = commands.pop(0)
         env = pb2.Envelope(request_id=next(next_id))
-        if kind == "set_mode":
-            env.board_request.set_mode.mode = value
-        elif kind == "set_velocity":
-            env.board_request.set_velocity.velocity_radps = value
-        elif kind == "clear_fault":
+        if kind == "clear_fault":
             env.board_request.clear_fault.SetInParent()
+        elif kind == "run":
+            mode, is_torque, points = value
+            env.board_request.run.mode = mode
+            for t_us, target, limit, unit in points:
+                sp = env.board_request.run.setpoints.add(t_us=t_us, rate_limit=limit)
+                if (unit == "nm") or (is_torque and unit is None):
+                    sp.torque_nm = target
+                else:
+                    sp.velocity_radps = target
+        elif kind == "get_motor_info":
+            env.board_request.get_motor_info.SetInParent()
         elif kind == "read":
             env.read_request.address, env.read_request.size = value
         elif kind == "write":
@@ -375,16 +391,36 @@ def run(port: str, baud: int, args):
     import board_pb2
     import shared_pb2 as pb2
 
+    modes = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
+             "sinusoidal": board_pb2.MODE_SINUSOIDAL, "foc_torque": board_pb2.MODE_FOC_TORQUE,
+             "foc_velocity": board_pb2.MODE_FOC_VELOCITY}
     commands = []
-    if args.set_mode is not None:
-        mode = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
-                "sinusoidal": board_pb2.MODE_SINUSOIDAL, "foc_torque": board_pb2.MODE_FOC_TORQUE,
-                "foc_velocity": board_pb2.MODE_FOC_VELOCITY}[args.set_mode]
-        commands.append(("set_mode", mode))
-    if args.set_velocity is not None:
-        commands.append(("set_velocity", args.set_velocity))
+    if args.motor_info:
+        commands.append(("get_motor_info", None))
     if args.clear_fault:
-        commands.append(("clear_fault", None))
+        commands.append(("clear_fault", None))   # ahead of a run, so a cleared fault does not block it
+    if args.run is not None:
+        # MODE:T_MS=VALUE[UNIT][/LIMIT],... -- the whole sequence in one Command. The
+        # mode picks the unit (Nm under foc_torque, rad/s otherwise) unless a
+        # value says: 0.3Nm, 10rad/s.
+        try:
+            mode_s, spec = args.run.split(":", 1)
+            points = []
+            for item in filter(None, spec.split(",")):
+                t_s, rest = item.split("=")
+                value_s, _, limit_s = rest.partition("/")
+                unit = None
+                for suffix in ("nm", "rad/s"):
+                    if value_s.lower().endswith(suffix):
+                        unit, value_s = suffix, value_s[:-len(suffix)]
+                t_ms = float(t_s)
+                if not (0 <= t_ms <= 4_294_967):
+                    raise ValueError("time out of range")
+                points.append((int(t_ms * 1000), float(value_s), float(limit_s or 0), unit))
+            commands.append(("run", (modes[mode_s], mode_s == "foc_torque", points)))
+        except (ValueError, KeyError):
+            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT],..., "
+                     f"e.g. foc_velocity:0=0,200=10/50 or foc_torque:0=0.3Nm)")
     # Writes before reads, so a write -> read round trip works in one invocation.
     for spec in (args.write or []):
         try:
@@ -530,9 +566,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", help="serial port (e.g. COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=115200, help="ignored by USB CDC")
-    ap.add_argument("--set-mode", choices=["off", "six_step", "sinusoidal", "foc_torque", "foc_velocity"], help="send a SetMode command on connect")
-    ap.add_argument("--set-velocity", type=float, metavar="RAD_PER_S", help="send a SetVelocity command on connect")
     ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
+    ap.add_argument("--run", metavar="MODE:T_MS=VALUE[UNIT][/LIMIT],...",
+                    help="send a Command on connect: a mode and timed setpoints, rad/s (Nm under foc_torque, or "
+                         "as the value's unit says), LIMIT per second with 0 a step, e.g. foc_velocity:0=0,200=10/50,700=0")
+    ap.add_argument("--motor-info", action="store_true", help="request the motor ratings on connect")
     ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_CYCLES",
                     help="install a trace watch (repeatable, e.g. 0x20000000:4:20); "
                          "period is 1, 20, or 200 PWM cycles (50 us / 1 ms / 10 ms), "
@@ -559,10 +597,9 @@ def main():
     if not args.port:
         ap.error("--port is required (or use --selftest)")
     if (args.link_test is not None) and any((args.watch, args.read, args.write,
-                                             args.set_mode, args.clear_fault,
-                                             args.set_velocity is not None)):
+                                             args.clear_fault, args.run, args.motor_info)):
         ap.error("--link-test is a standalone measurement; run it without "
-                 "--watch/--read/--write/--set-mode/--set-velocity/--clear-fault")
+                 "--watch/--read/--write/--clear-fault/--run/--motor-info")
     try:
         run(args.port, args.baud, args)
     except KeyboardInterrupt:

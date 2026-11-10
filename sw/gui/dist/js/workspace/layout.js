@@ -12,6 +12,8 @@ import { store, notify, subscribe, prefs } from "../state.js";
 import { PlotWidget } from "./plotwidget.js";
 import { TableWidget } from "./tablewidget.js";
 import { CpuLoadWidget } from "./cpuloadwidget.js";
+import { CommandWidget } from "./commandwidget.js";
+import { SequenceWidget, namedEntries, restoreNamed } from "./sequencewidget.js";
 import { addWatch, removeWatch, meta } from "./watchflow.js";
 import { REMOVE_KEYS } from "../platform.js";
 import { restoreColors, colorSlots } from "./colors.js";
@@ -56,6 +58,8 @@ export function initLayout() {
     if (kind === "new-plot") addWidget({ type: "plot", signals: [] });
     if (kind === "new-table") addWidget({ type: "table", signals: [] });
     if (kind === "new-cpuload") addWidget({ type: "cpuload" });
+    if (kind === "new-command") addWidget({ type: "command", w: 500, h: 250 });
+    if (kind === "new-sequence") addWidget({ type: "sequence", w: 700, h: 400 });
   });
 
   restore();
@@ -65,6 +69,7 @@ export function initLayout() {
   // must persist too. Subscribed after restore(): its own notify is not a
   // reason to rewrite the snapshot mid-rebuild.
   subscribe("watched", persist);
+  subscribe("sequences", persist); // the named sequences ride the snapshot
 }
 
 function syncEmptyState() {
@@ -83,6 +88,8 @@ function wireLauncher(workspace) {
       <button role="menuitem" data-workspace="new-plot">Add plot</button>
       <button role="menuitem" data-workspace="new-table">Add table</button>
       <button role="menuitem" data-workspace="new-cpuload">Add CPU load</button>
+      <button role="menuitem" data-workspace="new-command">Add Command</button>
+      <button role="menuitem" data-workspace="new-sequence">Add Sequence</button>
     </div>
     <button class="launcher-fab" aria-label="Add a widget" aria-haspopup="menu"
       aria-expanded="false">+</button>`;
@@ -181,7 +188,7 @@ export function addWidget(cfg, at = null) {
   cfg.id = cfg.id ?? `w${nextId++}`;
   if (at) { cfg.x = at.x; cfg.y = at.y; }
   normalizeGeometry(cfg);
-  const Widget = { table: TableWidget, cpuload: CpuLoadWidget }[cfg.type] ?? PlotWidget;
+  const Widget = { table: TableWidget, cpuload: CpuLoadWidget, command: CommandWidget, sequence: SequenceWidget }[cfg.type] ?? PlotWidget;
   const widget = new Widget(cfg, hooks);
   widgets.push(widget);
   canvas.appendChild(widget.el);
@@ -269,10 +276,12 @@ function wireDrops(workspace) {
     if (!path) return;
     ev.preventDefault();
     if (store.gate !== "matched") return;
-    addWatch(path);
     const over = ev.target.closest(".widget");
-    if (over) {
-      widgets.find((w) => w.cfg.id === over.dataset.widgetId)?.addSignal(path);
+    const target = over ? widgets.find((w) => w.cfg.id === over.dataset.widgetId) : null;
+    if (target && typeof target.addSignal !== "function") return; // holds no signals
+    addWatch(path);
+    if (target) {
+      target.addSignal(path);
       persist();
     } else {
       // Reveal the canvas BEFORE measuring (first drop, empty state up): a
@@ -384,6 +393,7 @@ export function persist() {
     })),
     colors: colorSlots(),
     appearance: appearanceEntries(),
+    sequences: namedEntries(),
   };
   prefs.set(LS_KEY, snapshot);
 }
@@ -427,6 +437,7 @@ function restore() {
 
   restoreColors(snap_.colors);
   restoreAppearance(snap_.appearance); // before colors resolve: overrides win
+  restoreNamed(snap_.sequences);
   for (const w of snap_.watched || []) {
     meta.set(w.path, { size: w.size ?? 4, kind: w.kind ?? "f32", enums: w.enums });
     store.watched.set(w.path, { period_cycles: migratePeriod(w) });

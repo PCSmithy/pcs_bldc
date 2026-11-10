@@ -347,6 +347,12 @@ Workflow:
    - Any tag pointing at an ID that does not exist or has been
      version-bumped.
 
+Wrap prose so that no line begins with a bare spec ID: OFT reads a
+line that starts with `fw~xxx~1` as a new item's ID line, which splits
+the spec above it and detaches its `Needs:` (the trace then reports
+`unwanted coverage` on that spec). Start the line with a word or an
+opening parenthesis instead.
+
 Alternatives that were evaluated and rejected:
 
 - **StrictDoc** — better as a requirements *authoring* tool with prettier

@@ -97,6 +97,7 @@ export const store = {
   telemetry: null,          // last TelemetryEvent
   linkHz: 0,                // measured telemetry arrival rate
   traceStatus: null,        // last TraceStatusInfo
+  motorInfo: null,          // last MotorInfo: the board's ratings (app~conn_004)
   budgetVerdict: "—",       // 'accepted' | rejection cause | '—'
   watched: new Map(),       // path -> { period_cycles }  (workspace-owned)
   gapCount: 0,              // cumulative lost points: device drops + host shedding
@@ -203,6 +204,17 @@ export const api = {
     set({ traceStatus: status });
     return status;
   },
+  // The board command plane (app~conn_004): a Command { mode, setpoints:
+  // [{ t_us, velocity_radps | torque_nm, rate_limit }] } resolves to the
+  // verdict { accepted, cause }; the ratings land in the store.
+  async sendCommand(command) {
+    return invoke("send_command", { command });
+  },
+  async getMotorInfo() {
+    const info = await invoke("get_motor_info");
+    set({ motorInfo: info });
+    return info;
+  },
 };
 
 /** Wire the backend event stream into the store. Call once at boot. */
@@ -243,6 +255,15 @@ export async function attachEvents() {
     const lost = (batch.dropped_records || 0) + (batch.host_dropped_points || 0);
     if (lost) set({ gapCount: store.gapCount + lost });
     notify("samples", batch);
+  });
+  // Every session carries its own ratings: the edge into connected (the
+  // event and api.connect both set it) re-reads them; a failure leaves the
+  // last ones standing.
+  let wasConnected = false;
+  subscribe("connection", (c) => {
+    const now = c.state === "connected";
+    if (now && !wasConnected) api.getMotorInfo().catch(() => {});
+    wasConnected = now;
   });
 }
 

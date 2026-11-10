@@ -10,8 +10,11 @@
 #include "lib_build.h"
 #include "lib_utils.h"
 
+#include "pb_decode.h"
+
 #include "HW_ADC.h"
 #include "app_motorControl.h"
+#include "app_sequencer.h"
 
 /* Defines */
 
@@ -33,15 +36,31 @@
 #define APP_SERVER_VBUS_I_INPUT    (11U)
 #define APP_SERVER_VBUS_I_V_PER_A  (0.6f)
 
+/* Typedefs */
+
+// A Command's setpoints stream into the sequencer as they decode
+// (board.options); the first fault found rides here to the verdict.
+typedef struct
+{
+    bool     open;          // the sequencer took begin for this Command
+    uint32_t count;
+    uint32_t lastTime_us;
+    bool     rejected;
+    char     cause[sizeof(((shared_Response *) 0)->cause)];
+} app_server_config_staging_S;
+
 /* Private Function Declarations */
 
-static void app_server_config_private_handleRequest(const board_Request * const request,
+static bool app_server_config_private_handleRequest(const board_Request * const request,
+                                                    board_Reply * const reply,
                                                     shared_Response * const response);
+static bool app_server_config_private_prepareCommand(pb_istream_t * stream, const pb_field_t * field, void ** arg);
 static bool app_server_config_private_buildTelemetry(board_Telemetry * const telemetry);
 
 /* Private Data Definitions */
 
 static app_server_watch_S app_server_config_watchStorage[2U * APP_SERVER_WATCH_CAPACITY];
+static app_server_config_staging_S app_server_config_staging;
 static uint8_t app_server_config_sampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(APP_SERVER_SAMPLE_RAM_BYTES)];
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -99,6 +118,7 @@ const app_server_config_S app_server_config =
     .linkBudgetBytesPerS  = APP_SERVER_LINK_BUDGET_BYTES_PER_S,
 
     .handleRequest  = app_server_config_private_handleRequest,
+    .prepareCommand = app_server_config_private_prepareCommand,
     .buildTelemetry = app_server_config_private_buildTelemetry,
     // [impl->fw~conn_trace_008~1] the cycle sampler runs above the FreeRTOS
     // syscall priority, so this hook masks interrupts globally to hold it off.
@@ -107,103 +127,182 @@ const app_server_config_S app_server_config =
 
 /* Private Function Definitions */
 
+static void app_server_config_private_stageReject(const char * const cause)
+{
+    app_server_config_staging_S * const staging = &app_server_config_staging;
+    if (!staging->rejected)
+    {
+        staging->rejected = true;
+        (void) strcpy(staging->cause, cause);
+    }
+}
+
+// One Command.setpoints element, checked against the rejection table of
+// fw~conn_server_007 and appended to the staged sequence. The first fault
+// stands while the rest still decode, so the verdict names it.
+static void app_server_config_private_stageSetpoint(const board_Setpoint * const setpoint)
+{
+    app_server_config_staging_S * const staging = &app_server_config_staging;
+    app_motorControl_ratings_S ratings = { 0 };
+    (void) app_motorControl_getRatings(APP_MOTORCONTROL_CHANNEL_MAIN, &ratings);
+
+    app_sequencer_setpoint_S entry = {
+        .t_us = setpoint->t_us,
+        .kind = APP_SEQUENCER_KIND_COUNT,   // until the target arm names one
+        .value = 0.0f,
+        .rateLimit = setpoint->rate_limit,
+    };
+    float32_t bound = 0.0f;
+    switch (setpoint->which_target)
+    {
+        case board_Setpoint_velocity_radps_tag:
+            entry.kind = APP_SEQUENCER_KIND_VELOCITY;
+            entry.value = setpoint->target.velocity_radps;
+            bound = ratings.maxVelocity_radPerSec;
+            break;
+
+        case board_Setpoint_torque_nm_tag:
+            entry.kind = APP_SEQUENCER_KIND_TORQUE;
+            entry.value = setpoint->target.torque_nm;
+            bound = ratings.maxTorque_Nm;
+            break;
+
+        case board_Setpoint_stop_tag:
+            entry.kind = APP_SEQUENCER_KIND_STOP;   // a zero value within a zero bound
+            break;
+
+        default:
+            break;
+    }
+
+    if (entry.kind == APP_SEQUENCER_KIND_COUNT)
+    {
+        app_server_config_private_stageReject("setpoint has no target");
+    }
+    else if ((!isfinite(entry.value)) || (!isfinite(entry.rateLimit)))
+    {
+        app_server_config_private_stageReject("setpoint not finite");
+    }
+    else if (entry.rateLimit < 0.0f)
+    {
+        app_server_config_private_stageReject("rate limit negative");
+    }
+    else if (fabsf(entry.value) > bound)
+    {
+        app_server_config_private_stageReject("setpoint exceeds the motor rating");
+    }
+    else if ((staging->count > 0U) && (entry.t_us < staging->lastTime_us))
+    {
+        app_server_config_private_stageReject("setpoint times not in order");
+    }
+    else if (staging->open)
+    {
+        if (app_sequencer_append(APP_SEQUENCER_CHANNEL_MAIN, &entry))
+        {
+            staging->count++;
+            staging->lastTime_us = entry.t_us;
+        }
+        else
+        {
+            app_server_config_private_stageReject("sequence exceeds the player's capacity");
+        }
+    }
+    else
+    {
+        // Not open: the busy rejection already stands.
+    }
+}
+
+// nanopb callback: one repeated Command.setpoints element per call.
+static bool app_server_config_private_setpointCallback(pb_istream_t * stream, const pb_field_t * field, void ** arg)
+{
+    (void) field;
+    (void) arg;
+    board_Setpoint setpoint = board_Setpoint_init_zero;
+    const bool ret = pb_decode(stream, board_Setpoint_fields, &setpoint);
+    if (ret)
+    {
+        app_server_config_private_stageSetpoint(&setpoint);
+    }
+    return ret;
+}
+
+// [impl->fw~conn_server_007~1] the Request's command-arm hook: a Command's
+// setpoint list streams into the sequencer's staged table as it decodes. A
+// second run arm in one Request starts the staging over, no merge.
+static bool app_server_config_private_prepareCommand(pb_istream_t * stream, const pb_field_t * field, void ** arg)
+{
+    (void) stream;
+    (void) arg;
+    if (field->tag == board_Request_run_tag)
+    {
+        board_Command * const command = (board_Command *) field->pData;
+        app_server_config_staging_S * const staging = &app_server_config_staging;
+        *staging = (app_server_config_staging_S){ 0 };
+        staging->open = app_sequencer_begin(APP_SEQUENCER_CHANNEL_MAIN);
+        if (!staging->open)
+        {
+            app_server_config_private_stageReject("sequence player busy");   // a commit awaits its pass: retry
+        }
+        command->setpoints.funcs.decode = app_server_config_private_setpointCallback;
+        command->setpoints.arg = NULL;
+    }
+    return true;
+}
+
+// The board.Mode value as the motor control's mode; false for a value that
+// names no member.
+static bool app_server_config_private_mapMode(board_Mode wire, app_motorControl_mode_E * const mode)
+{
+    bool known = true;
+    switch (wire)
+    {
+        case board_Mode_MODE_OFF:           *mode = APP_MOTORCONTROL_MODE_OFF;           break;
+        case board_Mode_MODE_SIX_STEP_TRAP: *mode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP; break;
+        case board_Mode_MODE_SINUSOIDAL:    *mode = APP_MOTORCONTROL_MODE_SINUSOIDAL;    break;
+        case board_Mode_MODE_FOC_TORQUE:    *mode = APP_MOTORCONTROL_MODE_FOC_TORQUE;    break;
+        case board_Mode_MODE_FOC_VELOCITY:  *mode = APP_MOTORCONTROL_MODE_FOC_VELOCITY;  break;
+        default:                            known = false;                               break;
+    }
+    return known;
+}
+
+// Why a mode request is blocked, or NULL. MODE_OFF is the disable request
+// (fw~mc_006) and always passes; a method selects only while the bridge is
+// disabled or already running it (sys~mc_005), never while a fault is latched
+// (button-path parity, fw~mc_007). Called inside the critical section that
+// also acts, so the 1 ms task cannot enable the bridge or latch a fault
+// between check and act (bounded: compares + the stores).
+static const char * app_server_config_private_modeBlocked(app_motorControl_mode_E mode)
+{
+    const char * cause = NULL;
+    if (mode != APP_MOTORCONTROL_MODE_OFF)
+    {
+        app_motorControl_snapshot_S snapshot = { 0 };
+        (void) app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &snapshot);
+        if (snapshot.state == APP_MOTORCONTROL_STATE_FAULTED)
+        {
+            cause = "fault latched";
+        }
+        else if ((snapshot.state == APP_MOTORCONTROL_STATE_ENABLED) && (mode != snapshot.mode))
+        {
+            cause = "bridge enabled";
+        }
+    }
+    return cause;
+}
+
 // Board commands write the same requested-mode/setpoint state the on-device
 // controls write; the most recent command prevails (sys~ops_002).
-static void app_server_config_private_handleRequest(const board_Request * const request,
+static bool app_server_config_private_handleRequest(const board_Request * const request,
+                                                    board_Reply * const reply,
                                                     shared_Response * const response)
 {
+    bool isResult = false;
+    const char * cause = NULL;
     response->accepted = false;
     switch (request->which_command)
     {
-        // [impl->fw~conn_server_002~1]
-        case board_Request_set_mode_tag:
-        {
-            app_motorControl_mode_E requestedMode = APP_MOTORCONTROL_MODE_OFF;
-            bool modeKnown = true;
-            switch (request->command.set_mode.mode)
-            {
-                case board_Mode_MODE_OFF:
-                    requestedMode = APP_MOTORCONTROL_MODE_OFF;
-                    break;
-                case board_Mode_MODE_SIX_STEP_TRAP:
-                    requestedMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP;
-                    break;
-                case board_Mode_MODE_SINUSOIDAL:
-                    requestedMode = APP_MOTORCONTROL_MODE_SINUSOIDAL;
-                    break;
-                case board_Mode_MODE_FOC_TORQUE:
-                    requestedMode = APP_MOTORCONTROL_MODE_FOC_TORQUE;
-                    break;
-                case board_Mode_MODE_FOC_VELOCITY:
-                    requestedMode = APP_MOTORCONTROL_MODE_FOC_VELOCITY;
-                    break;
-                default:
-                    modeKnown = false;
-                    break;
-            }
-
-            if (!modeKnown)
-            {
-                (void) strcpy(response->cause, "unknown mode");
-            }
-            else if (requestedMode == APP_MOTORCONTROL_MODE_OFF)
-            {
-                // MODE_OFF is the disable request (fw~mc_006), never a method
-                // selection: a stop is always accepted.
-                app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, APP_MOTORCONTROL_MODE_OFF);
-                response->accepted = true;
-            }
-            else
-            {
-                // Method values: selection only while the bridge is disabled
-                // (sys~mc_005) and never while faulted (button-path parity,
-                // fw~mc_007). Verdict and setMode share one critical section
-                // so the 1 ms task cannot enable the bridge or latch a fault
-                // between check and act (bounded: compares + one enum store).
-                app_motorControl_snapshot_S snapshot = { 0 };
-                const char * cause = NULL;
-                taskENTER_CRITICAL();
-                (void) app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &snapshot);
-                if (snapshot.state == APP_MOTORCONTROL_STATE_FAULTED)
-                {
-                    cause = "fault latched";
-                }
-                else if ((snapshot.state == APP_MOTORCONTROL_STATE_ENABLED) &&
-                         (requestedMode != snapshot.mode))
-                {
-                    cause = "bridge enabled";
-                }
-                else
-                {
-                    app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, requestedMode);
-                    response->accepted = true;
-                }
-                taskEXIT_CRITICAL();
-                if (cause != NULL)
-                {
-                    (void) strcpy(response->cause, cause);
-                }
-            }
-            break;
-        }
-
-        // [impl->fw~conn_server_003~1]
-        case board_Request_set_velocity_tag:
-        {
-            const float32_t velocity_radPerSec = request->command.set_velocity.velocity_radps;
-            if ((isfinite(velocity_radPerSec)) &&
-                (fabsf(velocity_radPerSec) <= APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC))
-            {
-                app_motorControl_setVelocity(APP_MOTORCONTROL_CHANNEL_MAIN, velocity_radPerSec);
-                response->accepted = true;
-            }
-            else
-            {
-                (void) strcpy(response->cause, "velocity out of range");
-            }
-            break;
-        }
-
         // [impl->fw~conn_server_004~1]
         case board_Request_clear_fault_tag:
             // Idempotent: clearing an already-clear latch succeeds.
@@ -211,10 +310,71 @@ static void app_server_config_private_handleRequest(const board_Request * const 
             response->accepted = true;
             break;
 
+        // [impl->fw~conn_server_007~1] the setpoints already sit in the
+        // sequencer's staged table (prepareCommand); accepted, the mode request
+        // and the commit land together, so the sequence starts under its mode.
+        case board_Request_run_tag:
+        {
+            app_motorControl_mode_E mode = APP_MOTORCONTROL_MODE_OFF;
+            if (!app_server_config_private_mapMode(request->command.run.mode, &mode))
+            {
+                cause = "unknown mode";
+            }
+            else if (app_server_config_staging.rejected)
+            {
+                cause = app_server_config_staging.cause;
+            }
+            else
+            {
+                taskENTER_CRITICAL();
+                cause = app_server_config_private_modeBlocked(mode);
+                if (cause != NULL)
+                {
+                    // blocked: the verdict carries why
+                }
+                else if (!app_sequencer_commit(APP_SEQUENCER_CHANNEL_MAIN))
+                {
+                    cause = "sequence not staged";   // the arm did not decode through prepareCommand
+                }
+                else
+                {
+                    app_motorControl_setMode(APP_MOTORCONTROL_CHANNEL_MAIN, mode);
+                    response->accepted = true;
+                }
+                taskEXIT_CRITICAL();
+            }
+            break;
+        }
+
+        // [impl->fw~conn_server_008~1]
+        case board_Request_get_motor_info_tag:
+        {
+            app_motorControl_ratings_S ratings = { 0 };
+            if (app_motorControl_getRatings(APP_MOTORCONTROL_CHANNEL_MAIN, &ratings))
+            {
+                reply->which_result = board_Reply_motor_info_tag;
+                reply->result.motor_info.kt_nm_per_a        = ratings.torqueConstant_NmPerA;
+                reply->result.motor_info.i_max_a            = ratings.maxCurrent_A;
+                reply->result.motor_info.max_torque_nm      = ratings.maxTorque_Nm;
+                reply->result.motor_info.max_velocity_radps = ratings.maxVelocity_radPerSec;
+                isResult = true;
+            }
+            else
+            {
+                cause = "motor control not initialized";
+            }
+            break;
+        }
+
         default:
-            (void) strcpy(response->cause, "unknown command");
+            cause = "unknown command";
             break;
     }
+    if (cause != NULL)
+    {
+        (void) strcpy(response->cause, cause);
+    }
+    return isResult;
 }
 
 // [impl->fw~obs_status_001~1]
@@ -223,8 +383,10 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
     app_motorControl_snapshot_S snapshot = { 0 };
     // Snapshot under a critical section: the 1 ms control task outranks the
     // server task and could otherwise tear the multi-word copy.
+    app_sequencer_status_S sequence = { 0 };
     taskENTER_CRITICAL();
     (void) app_motorControl_getSnapshot(APP_MOTORCONTROL_CHANNEL_MAIN, &snapshot);
+    (void) app_sequencer_getStatus(APP_SEQUENCER_CHANNEL_MAIN, &sequence);
     taskEXIT_CRITICAL();
 
     float32_t vbusV_v = 0.0f;
@@ -269,5 +431,8 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
     telemetry->bus_current_a = vbusI_v / APP_SERVER_VBUS_I_V_PER_A;
     telemetry->velocity_measured_radps = snapshot.velocityMeasured_radPerSec;
     telemetry->velocity_setpoint_radps = snapshot.velocitySetpoint_radPerSec;
+    telemetry->torque_target_nm = snapshot.torqueTarget_Nm;
+    telemetry->sequence_running = sequence.running;
+    telemetry->sequence_elapsed_ms = sequence.elapsed_ms;
     return true;
 }

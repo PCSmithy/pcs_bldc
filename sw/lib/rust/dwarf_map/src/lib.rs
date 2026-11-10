@@ -108,7 +108,7 @@ pub struct LeafEnumeration {
     /// elements), sorted deterministically by top-level variable then walk order.
     pub paths: Vec<String>,
     /// Arrays skipped whole: over the element-count threshold (and not
-    /// include-forced), multi-dimensional, or of unknown length.
+    /// include-forced) or of unknown length.
     pub excluded_arrays: usize,
     /// Leaves skipped because their type is not a traceable scalar/enum (pointer,
     /// function, opaque/forward-declared aggregate, unsupported base type).
@@ -171,8 +171,8 @@ struct Maps {
     /// array type offset -> element type offset
     arrays: HashMap<usize, usize>,
     /// array type offset -> per-dimension element counts (one per
-    /// `DW_TAG_subrange_type` child, source order). The single-index resolver only
-    /// handles 1-D, so multi-dimensional arrays are enumeration-excluded.
+    /// `DW_TAG_subrange_type` child, source order), indexed row-major by the
+    /// resolver and counted whole against the enumeration threshold.
     array_dims: HashMap<usize, Vec<u64>>,
     /// any type offset -> byte size (for member/array address arithmetic)
     sizes: HashMap<usize, u64>,
@@ -296,9 +296,10 @@ impl DwarfMap {
     ///
     /// **Exclusion policy.** An array over `threshold` elements is skipped whole
     /// (drops task stacks, `ucHeap`, large scratch buffers) — unless an `include`
-    /// prefix reaches into it, forcing just the reached element(s). Multi-dimensional
-    /// and unknown-length arrays are skipped whole (resolver is 1-D only). Non-scalar
-    /// leaves (pointers, functions, opaque aggregates) are skipped and counted.
+    /// prefix reaches into it, forcing just the reached element(s). A
+    /// multi-dimensional array counts all its elements against the threshold; an
+    /// unknown-length one is skipped whole. Non-scalar leaves (pointers,
+    /// functions, opaque aggregates) are skipped and counted.
     pub fn enumerate_leaves(&self, threshold: usize, includes: &[String]) -> LeafEnumeration {
         let mut ctx = EnumCtx {
             threshold,
@@ -352,10 +353,7 @@ impl DwarfMap {
                 }
             };
             let total: u64 = dims.iter().product();
-            // A multi-dimensional array is never auto-mirrored: the resolver
-            // addresses `[i][j]` row-major, but expanding the whole grid would bloat
-            // the mirror, so only the element(s) an include reaches are kept.
-            let force = ((total as usize) > ctx.threshold) || (dims.len() > 1);
+            let force = (total as usize) > ctx.threshold;
             if force && !wanted(&path, ctx.includes) {
                 ctx.excluded_arrays += 1;
                 return;
@@ -369,8 +367,8 @@ impl DwarfMap {
                     child.push_str(&i.to_string());
                     child.push(']');
                 }
-                // On a force-expanded (over-threshold or multi-dim) array, keep only
-                // the element(s) an include actually reaches.
+                // On a force-expanded (over-threshold) array, keep only the
+                // element(s) an include actually reaches.
                 if !force || wanted(&child, ctx.includes) {
                     self.walk_leaves(child, elem, depth + 1, ctx);
                     if ctx.capped {
@@ -1193,6 +1191,12 @@ mod tests {
         assert_eq!(
             en.paths,
             vec![
+                "grid[0][0]".to_string(),
+                "grid[0][1]".to_string(),
+                "grid[0][2]".to_string(),
+                "grid[1][0]".to_string(),
+                "grid[1][1]".to_string(),
+                "grid[1][2]".to_string(),
                 "n".to_string(),
                 "s.a".to_string(),
                 "s.arr[0]".to_string(),
@@ -1200,8 +1204,8 @@ mod tests {
                 "s.arr[2]".to_string(),
             ]
         );
-        // grid (multi-dim) + s.big (over threshold) both excluded whole.
-        assert_eq!(en.excluded_arrays, 2);
+        // grid's 6 elements are under the threshold; s.big is excluded whole.
+        assert_eq!(en.excluded_arrays, 1);
         assert_eq!(en.skipped_leaves, 0);
         assert!(!en.capped);
     }
@@ -1214,8 +1218,8 @@ mod tests {
         assert!(en.paths.contains(&"s.big[1]".to_string()));
         assert!(!en.paths.contains(&"s.big[0]".to_string()));
         assert!(!en.paths.contains(&"s.big[2]".to_string()));
-        // Only grid remains excluded now (big was force-expanded).
-        assert_eq!(en.excluded_arrays, 1);
+        // Nothing remains excluded (big was force-expanded).
+        assert_eq!(en.excluded_arrays, 0);
     }
 
     #[test]
@@ -1229,8 +1233,8 @@ mod tests {
     #[test]
     fn include_forces_a_multidim_element() {
         let dw = synthetic();
-        let en = dw.enumerate_leaves(32, &["grid[1][2]".to_string()]);
-        // Exactly the one reached element joins; no other grid cell does.
+        // A threshold the 2x3 grid is over: its one included cell joins alone.
+        let en = dw.enumerate_leaves(4, &["grid[1][2]".to_string()]);
         assert!(en.paths.contains(&"grid[1][2]".to_string()));
         assert_eq!(
             en.paths.iter().filter(|p| p.starts_with("grid[")).count(),

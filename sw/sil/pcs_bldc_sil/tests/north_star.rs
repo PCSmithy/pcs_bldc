@@ -114,7 +114,7 @@ fn peak_plant_current_a(sim: &Sil) -> f64 {
 /// change deadband — so a hard zero reads back as a hard zero.
 fn setpoint_rad_s(sim: &Sil) -> f64 {
     sim.fw()
-        .read_cvar("app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec")
+        .read_cvar("app_motorControl_data.channels[0].velocitySetpoint_radPerSec")
         .as_f64()
         .expect("velocity setpoint reads as a number")
 }
@@ -445,7 +445,7 @@ fn dial_demand_spins_rotor_closed_loop() {
          {MAX_VELOCITY_RAD_S:.4} max), duty {:.3}",
         (offset_err_rad * POLE_PAIRS).to_degrees(),
         sim.read_f64(&cid(
-            "app_motorControl_data.channels[0].velocitySetpointCurrent_radPerSec"
+            "app_motorControl_data.channels[0].velocitySetpoint_radPerSec"
         )),
         max_phase_duty(&sim)
     );

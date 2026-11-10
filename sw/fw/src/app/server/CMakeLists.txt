@@ -6,6 +6,7 @@ target_link_libraries(app_server_config
   PUBLIC
     app_server
     app_motorControl
+    app_sequencer_channels
     hw_ADC
     lib_build
     lib_utils

@@ -13,7 +13,7 @@ import { appearanceOf, resolvedColor } from "./appearance.js";
 import { GlTraces, buildTraceGeometry, arcAtX, parseColor, DOT_SIZE_PX } from "./glrender.js";
 import { envelopeTable } from "./decimate.js";
 import { cursor, setCursorTick, clearCursor } from "./cursor.js";
-import { currentWindow, displayWindow, zoomAt, panBy, selectRange } from "./timeline.js";
+import { currentWindow, displayWindow, zoomAt, panBy, selectRange, runMarks } from "./timeline.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor, updateTitle } from "./titlebar.js";
 import { isAnchorModifier, ANCHOR_KEY } from "../platform.js";
@@ -130,6 +130,7 @@ export class PlotWidget {
           <div class="anchor-line-x" hidden></div>
           <div class="anchor-line-y" hidden></div>
           <div class="anchor-preview-y" hidden></div>
+          <div class="run-marks"></div>
           <div class="cursor-readout" hidden></div>
         </div>
         <div class="y-axis y-axis--right" ${split ? "" : "hidden"}></div>
@@ -152,6 +153,7 @@ export class PlotWidget {
       anchorX: $w(".anchor-line-x"),
       anchorY: $w(".anchor-line-y"),
       previewY: $w(".anchor-preview-y"),
+      runMarks: $w(".run-marks"),
     };
 
     // Both the ⋯ menu and the derived axis chip open the axes configuration —
@@ -343,6 +345,7 @@ export class PlotWidget {
     this._scrollOff = off;
     this.gl.scroll(off);
     if (cursor.tick !== null) this.positionCursor();
+    if (this._els.runMarks.childElementCount) this._els.runMarks.style.transform = `translateX(${off}px)`;
   }
 
   // ── pointed-trace emphasis (paused only): nearest rendered line ≤ 40 px
@@ -540,6 +543,20 @@ export class PlotWidget {
     const inY = a.value >= min && a.value <= max;
     ly.hidden = !inY;
     if (inY) ly.style.top = `${this.yPxOf(a.value, this.sideOf(a.path), 100).toFixed(2)}%`;
+  }
+
+  /** The sequence run marks (app~views_026) inside the batch window. */
+  renderRunMarks() {
+    const host = this._els?.runMarks;
+    if (!host) return;
+    // Placed on the batch window like the geometry; the scroll pass
+    // translates the host with it.
+    const [t0, t1] = this.window;
+    host.innerHTML = runMarks()
+      .filter((m) => m.tick >= t0 && m.tick <= t1)
+      .map((m) => `<div class="run-mark" data-tick="${m.tick}" style="left:${(((m.tick - t0) / (t1 - t0 || 1)) * 100).toFixed(2)}%"><span>${esc(m.label)}</span></div>`)
+      .join("");
+    host.style.transform = `translateX(${this._scrollOff || 0}px)`;
   }
 
   addSignal(path) {
@@ -861,6 +878,7 @@ export class PlotWidget {
     this.renderXAxis();
     this.renderGapRibbon();
     this.renderAnchor();
+    this.renderRunMarks();
     this.refreshPreview(); // ranges may have moved the candidate's y
     this.renderCursor();
   }

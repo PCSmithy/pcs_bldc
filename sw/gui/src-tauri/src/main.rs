@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod command;
 mod config;
 mod emitter;
 mod firmware;
@@ -20,6 +21,13 @@ fn set_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {
     window.set_zoom(factor).map_err(|e| e.to_string())
 }
 
+/// The capture export's writer (app~views_028): the frontend builds the
+/// file, the dialog plugin names it, the core writes it.
+#[tauri::command]
+fn write_text_file(path: String, text: String) -> Result<(), String> {
+    std::fs::write(&path, text).map_err(|e| format!("write {path}: {e}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -36,9 +44,12 @@ fn main() {
             trace::install_watches,
             trace::clear_watches,
             trace::trace_status,
+            command::send_command,
+            command::get_motor_info,
             config::load_config,
             config::save_config,
-            set_zoom
+            set_zoom,
+            write_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

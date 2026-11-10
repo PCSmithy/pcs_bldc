@@ -94,7 +94,7 @@ pub fn board_with_motor(options: SilOptions, initial_angle_rad: f64, motor: Moto
     fwm.register_cvar_in_state_table(INPUT_LEVEL_PB10);
     fwm.register_cvar_in_state_table(I2C_STATUS_REG);
     // The sim USB rx ring, so a scenario can hand the firmware a protocol
-    // request (method selection over SetMode).
+    // request (method selection over a Command).
     for i in 0..USB_RX_REG {
         fwm.register_cvar_in_state_table(&format!("HW_USB_sim_data.rx[{i}]"));
     }

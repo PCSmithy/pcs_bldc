@@ -47,15 +47,29 @@ typedef enum
     APP_MOTORCONTROL_STATE_COUNT,
 } app_motorControl_state_E;
 
+#define APP_MOTORCONTROL_COG_HARMONICS (2U)
+
+// One harmonic of the cogging model T_cog = sum A sin(n theta + phi) on the raw
+// mechanical angle, positive with increasing angle (fw~mc_028)
+typedef struct
+{
+    uint16_t  order_perRev;   // n, cycles per mechanical revolution
+    float32_t amplitude_Nm;   // A, >= 0; zero is no harmonic
+    float32_t phase_rad;      // phi
+} app_motorControl_cogHarmonic_S;
+
 typedef struct
 {
     float32_t maxCurrent_A;  // I_max: the FOC Q-axis current a full-scale target commands (fw~mc_022)
     float32_t motorL_H;
     float32_t motorR_ohm;
     float32_t torqueConstant_NmPerA;     // K_t = 1.5 * K_e for a sinusoidal motor, K_e the per-phase back-EMF constant in V/(rad/s)
-    float32_t velocityKp_NmPerRadPerSec; // K_vp = J * w_v for a velocity bandwidth w_v, ~1/5 of the estimator's (fw~mc_025)
-    float32_t velocityKi_NmPerRad;       // K_vi = K_vp * w_v / 10: the integral corner a decade under w_v
+    float32_t velocityKp_NmPerRadPerSec; // K_vp: velocity-loop bandwidth K_vp / J, kept under the estimator's poles (fw~mc_025)
+    float32_t velocityKi_NmPerRad;       // K_vi: the integral corner K_vi / K_vp, well under that bandwidth
     float32_t currentLoopBandwidth_radPerSec;
+    float32_t velocityKff;               // k_ff in [0, 1]: the share of the estimator's T_d fed forward against (fw~mc_025)
+    app_motorControl_cogHarmonic_S cogging[APP_MOTORCONTROL_COG_HARMONICS];
+    float32_t coggingKff;                // k_cog in [0, 1]: the share of T_cog compensated (fw~mc_028)
 } app_motorControl_focConfig_S;
 
 typedef struct
@@ -92,10 +106,22 @@ typedef struct
     app_motorControl_state_E state;                        // disabled / enabled / faulted
     bool                     isAligned;
     float32_t                magneticAngle_rad;            // rotor electrical angle
-    float32_t                velocitySetpoint_radPerSec;   // signed commanded speed target
+    float32_t                velocitySetpoint_radPerSec;   // the speed target in effect (fw~mc_027)
+    float32_t                torqueTarget_Nm;              // the torque target in effect (fw~mc_026, fw~mc_027)
     float32_t                velocityMeasured_radPerSec;   // the rotor estimator's velocity (fw~est_rotor_002)
     app_motorControl_mode_E  selectedMode;                 // the method an enable runs; OFF leaves it selected
+    uint16_t                 faultLatches;                 // fault latches since init, each counted once
 } app_motorControl_snapshot_S;
+
+// The channel's configured ratings, the bounds a host holds its setpoints to
+// (fw~conn_server_008).
+typedef struct
+{
+    float32_t torqueConstant_NmPerA;
+    float32_t maxCurrent_A;
+    float32_t maxTorque_Nm;          // K_t * I_max
+    float32_t maxVelocity_radPerSec;
+} app_motorControl_ratings_S;
 
 /* Public Function Declarations */
 
@@ -106,10 +132,18 @@ bool app_motorControl_init(const app_motorControl_config_S * const config);
 // module, leaving the destination unchanged.
 bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorControl_snapshot_S * const snapshot);
 
+// Copy out the channel's ratings; false for an out-of-range channel, a NULL
+// destination, or an uninitialized module.
+bool app_motorControl_getRatings(app_motorControl_channel_E channel, app_motorControl_ratings_S * const ratings);
+
 void app_motorControl_run1ms(void);
 void app_motorControl_run50us(void);
 
-void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec);
+// Write a target with its rate limit in the target's unit per second; zero
+// steps it to the value on the next 1 ms pass (fw~mc_027). A speed target
+// while the torque method is selected also writes the torque target (fw~mc_026).
+void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec, float32_t rateLimit_radPerSec2);
+void app_motorControl_setTorque(app_motorControl_channel_E channel, float32_t torque_Nm, float32_t rateLimit_NmPerSec);
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);
 
 // Release a latched overcurrent fault (fw~safety_001). The drive stays disabled

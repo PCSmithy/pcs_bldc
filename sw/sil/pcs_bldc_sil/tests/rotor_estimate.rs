@@ -1,6 +1,6 @@
 //! The rotor tracking estimator (fw~est_rotor_001 / _002) against the plant:
-//! the encoder-corrected angle and velocity the firmware holds, read by DWARF
-//! out of `app_rotorEstimation_data`. The spec's operating point is a 21 rad/s
+//! the encoder-corrected angle, velocity and unmodelled torque the firmware
+//! holds, read by DWARF out of `app_rotorEstimation_data`. The spec's operating point is a 21 rad/s
 //! constant rate, so the tracking checks drive the encoder by hand on the
 //! shaft -> encoder route's suspended seam; the board encoder carries its
 //! bench-measured noise throughout, and the encoder is wired forward with no
@@ -8,13 +8,14 @@
 
 mod common;
 
-use common::{f64_at, plant, select_method, set_bool, tap_button, GRID_US, MODE_SINUSOIDAL};
+use common::proto::{command, envelope, speed_setpoint, F_BOARD_REQUEST};
+use common::{f64_at, inject, plant, select_method, set_bool, tap_button, GRID_US, MODE_FOC_VELOCITY, MODE_SINUSOIDAL};
 use pcs_bldc_sil::board::{board, board_with, fault_latched, ALIGN_DWELL_MS, DIAL, ENCODER, GATE_BRINGUP_MS, MOTOR};
 use pcs_bldc_sil::{vid, Board, Sil};
 use std::f64::consts::{PI, TAU};
 use voyant::vsig_id;
 
-/// The estimator's state vector, `x_hat = [theta, omega]`, channel 0.
+/// The estimator's state vector, `x_hat = [theta, omega, T_d]`, channel 0.
 const EST: &str = "app_rotorEstimation_data.channels[0]";
 
 /// The spec's operating point.
@@ -29,6 +30,20 @@ fn est_angle(sim: &Sil) -> f64 {
 
 fn est_velocity(sim: &Sil) -> f64 {
     f64_at(sim, &format!("{EST}.x_hat.e[1][0]"))
+}
+
+fn est_torque(sim: &Sil) -> f64 {
+    f64_at(sim, &format!("{EST}.x_hat.e[2][0]"))
+}
+
+/// The advance's modelled torque, Nm, as the last cycle computed it.
+fn est_input(sim: &Sil) -> f64 {
+    f64_at(sim, &format!("{EST}.u"))
+}
+
+/// The estimator's configured inertia, read out of the channel config.
+fn configured_inertia(sim: &Sil) -> f64 {
+    f64_at(sim, "app_rotorEstimation_channelConfig[0].inertia_kgm2")
 }
 
 /// Signed angle error wrapped to (-pi, pi].
@@ -121,8 +136,9 @@ fn the_estimate_tracks_a_21_rad_s_encoder_every_cycle() {
     // The spec's operating point on the 50 us grid: the encoder angle advanced
     // every cycle at a constant 21 rad/s under the bench's 1.5-count noise, 100 ms
     // to lock, then a full second of cycles with every cycle's angle estimate
-    // within 0.15 deg of the noise-free encoder angle. The estimate read after a
-    // step stands for the end of that cycle, so it is held against the angle there.
+    // within 0.15 deg of the noise-free encoder angle. The angle written before a
+    // step is what the encoder carries through that step, so the estimate read
+    // after it is held against that angle.
     let mut sim = hand_driven_encoder(Sil::options().grid_us(GRID_US));
     let mut angle = 0.0_f64;
     let mut worst_deg = 0.0_f64;
@@ -130,9 +146,10 @@ fn the_estimate_tracks_a_21_rad_s_encoder_every_cycle() {
     for cycle in 0..(1100 * CYCLES_PER_MS) {
         sim.write(&vid(ENCODER, "angle"), angle).expect("advance the encoder");
         sim.step().expect("engine step");
+        let written = angle;
         angle = (angle + (RATE * TPWM)).rem_euclid(TAU);
         if cycle >= 100 * CYCLES_PER_MS {
-            let err = wrap_err(est_angle(&sim), angle);
+            let err = wrap_err(est_angle(&sim), written);
             worst_deg = worst_deg.max(err.abs().to_degrees());
             c += err.cos();
             s += err.sin();
@@ -175,29 +192,83 @@ fn the_estimate_tracks_the_spinning_rotor() {
     assert!(!fault_latched(&sim), "no fault through the spin");
 }
 
+/// A board world under the velocity method holding `omega` rad/s on the 50 us
+/// grid, aligned and settled.
+fn velocity_hold_world(omega: f32) -> Sil {
+    let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    select_method(&mut sim, MODE_FOC_VELOCITY);
+    tap_button(&mut sim);
+    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    inject(&mut sim, &envelope(1, F_BOARD_REQUEST, &command(MODE_FOC_VELOCITY, &[speed_setpoint(0, omega, 0.0)])));
+    sim.run_for_ms(1000);
+    assert!(!fault_latched(&sim), "no fault through the spin-up");
+    sim
+}
+
+/// The mean of a firmware float over `ms` milliseconds of running.
+fn mean_over_ms(sim: &mut Sil, path: &str, ms: u32) -> f64 {
+    let mut sum = 0.0;
+    for _ in 0..ms {
+        sim.run_for_ms(1);
+        sum += f64_at(sim, path);
+    }
+    sum / f64::from(ms)
+}
+
+// [test->fw~est_rotor_001~1]
+#[test]
+fn a_step_load_lands_in_the_torque_state() {
+    // The velocity loop holds 10 rad/s; a 10 mNm load stepped onto the shaft is
+    // a torque the model does not carry, so T_d moves by minus the load (the
+    // SIL plant's Coulomb friction differs from the configured one by a constant
+    // at steady speed, which the difference removes).
+    const LOAD_NM: f64 = 0.010;
+    let mut sim = velocity_hold_world(10.0);
+    let td_path = format!("{EST}.x_hat.e[2][0]");
+    let before = mean_over_ms(&mut sim, &td_path, 500);
+    let speed_before = plant(&sim, "velocity");
+    sim.write(&vid(MOTOR, "load_torque"), LOAD_NM).expect("apply the load");
+    sim.run_for_ms(300);
+    let after = mean_over_ms(&mut sim, &td_path, 500);
+    let speed_after = plant(&sim, "velocity");
+    println!("rotor_estimate: T_d {:+.2} -> {:+.2} mNm under a {:.0} mNm load; plant {speed_before:.2} -> {speed_after:.2} rad/s",
+             1e3 * before, 1e3 * after, 1e3 * LOAD_NM);
+    assert!(((after - before) + LOAD_NM).abs() < 0.1 * LOAD_NM, "T_d moves by minus the load within 10 %: {:+.2} mNm", 1e3 * (after - before));
+    assert!((speed_after - 10.0).abs() < 0.5, "the loop holds the speed under the load: {speed_after:.2} rad/s");
+    assert!(!fault_latched(&sim), "no fault under the load");
+}
+
 // [test->fw~est_rotor_001~1]
 #[test]
 fn invalid_reads_coast_the_estimate_on_its_velocity() {
     // A stalled encoder SPI makes every read invalid: through three milliseconds
-    // of cycles after the first stalled read the velocity estimate is held bit
-    // for bit, the angle coasts on it and stays on the shaft, and no encoder
+    // of cycles after the first stalled read the torque state is held bit for
+    // bit, the velocity advances by the modelled torque plus it over J alone,
+    // the angle coasts on the velocity and stays on the shaft, and no encoder
     // fault latches (fw~safety_002 needs more than five). Clearing the stall
     // resumes the corrections.
     let mut sim = spinning_world();
+    let inertia = configured_inertia(&sim);
     let omega_before = est_velocity(&sim);
     set_bool(&sim, &format!("HW_SPI_data.channels[{ENCODER_SPI}].stall"), true);
     sim.run_for_ms(1);   // the first stalled read lands
-    let omega_held = est_velocity(&sim);
+    let torque_held = est_torque(&sim);
     let mut worst_deg = 0.0_f64;
     for _ in 0..(3 * CYCLES_PER_MS) {
-        let before = est_angle(&sim);
+        let (theta_before, omega_prior) = (est_angle(&sim), est_velocity(&sim));
         sim.step().expect("engine step");
-        assert_eq!(est_velocity(&sim).to_bits(), omega_held.to_bits(), "the velocity estimate is held through invalid reads");
-        let advance = wrap_err(est_angle(&sim), before);
-        assert!((advance - (omega_held * TPWM)).abs() < 1e-5, "each cycle advances by omega * Tpwm: {advance:.6}");
+        assert_eq!(est_torque(&sim).to_bits(), torque_held.to_bits(), "the torque state is held through invalid reads");
+        let accel = (est_input(&sim) + torque_held) / inertia;
+        let omega_step = est_velocity(&sim) - omega_prior;
+        assert!((omega_step - (accel * TPWM)).abs() < 1e-4, "each cycle advances omega by (u + T_d) / J * Tpwm: {omega_step:+.6}");
+        let advance = wrap_err(est_angle(&sim), theta_before);
+        let expected = (omega_prior * TPWM) + (0.5 * accel * TPWM * TPWM);
+        assert!((advance - expected).abs() < 1e-5, "each cycle advances theta by omega * Tpwm plus the acceleration term: {advance:.6}");
         worst_deg = worst_deg.max(wrap_err(est_angle(&sim), plant(&sim, "angle")).abs().to_degrees());
     }
-    println!("rotor_estimate: stalled at {omega_before:.2} rad/s: velocity held at {omega_held:.3}, worst angle error {worst_deg:.3} deg");
+    println!("rotor_estimate: stalled at {omega_before:.2} rad/s: torque state held at {:+.4} Nm, velocity now {:.3} rad/s, worst angle error {worst_deg:.3} deg",
+             torque_held, est_velocity(&sim));
     assert!(worst_deg < 0.3, "the angle coasts on the held velocity: worst {worst_deg:.3} deg");
     assert!(!fault_latched(&sim), "four invalid reads do not latch the encoder fault");
 

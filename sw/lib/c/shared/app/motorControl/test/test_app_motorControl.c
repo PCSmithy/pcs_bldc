@@ -22,6 +22,7 @@
 #include "lib_timer.h"
 #include "HW_CORDIC.h"
 #include "unity.h"
+#include <math.h>
 
 /* ---- fake clock: the only thing lib_timer bottoms out on ---- */
 // Monotonic across the whole run (never rewound), so lib_timer's delta
@@ -129,7 +130,8 @@ static void buildConfigs(void)
         .maxVoltage_V = 10.0f,
         // K_p = 8 V/A, K_i T = 0.4 V/A per step: round numbers for the regulator tests
         .foc = { .maxCurrent_A = FOC_I_MAX, .motorL_H = FOC_L, .motorR_ohm = FOC_R, .currentLoopBandwidth_radPerSec = FOC_BW,
-                 .torqueConstant_NmPerA = FOC_KT, .velocityKp_NmPerRadPerSec = FOC_KVP, .velocityKi_NmPerRad = FOC_KVI },
+                 .torqueConstant_NmPerA = FOC_KT, .velocityKp_NmPerRadPerSec = FOC_KVP, .velocityKi_NmPerRad = FOC_KVI,
+                 .velocityKff = 0.0f },
         .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
         .prechargeTime_ms = PRECHARGE_MS };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
@@ -203,7 +205,7 @@ static void driveToRunning(float32_t velocity)
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
     mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, velocity);
+    app_motorControl_setVelocity(MOTOR_MC, velocity, 0.0f);
 
     tick();          // enters alignment (bridge enabled)
     advanceTime_ms(PRECHARGE_ADVANCE_MS);
@@ -220,7 +222,7 @@ static void alignAtZero(void)
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
     mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
     tick();          // alignment begins
     advanceTime_ms(PRECHARGE_ADVANCE_MS);
     tick();          // precharge done, alignment begins
@@ -232,7 +234,7 @@ static void alignAtZero(void)
 static void commutateAt(float32_t rotorDeg, float32_t velocity)
 {
     mock_app_rotorEstimation_setAngle(DEG2RAD(rotorDeg));
-    app_motorControl_setVelocity(MOTOR_MC, velocity);
+    app_motorControl_setVelocity(MOTOR_MC, velocity, 0.0f);
     tick();
 }
 
@@ -386,7 +388,7 @@ static void test_gate_blocks_bridge_when_not_operational(void)
     // Gate driver never made operational; request a full drive.
     mock_app_rotorEstimation_setAngle(0.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
 
     for (int i = 0; i < 5; i++)
     {
@@ -515,6 +517,35 @@ static void test_clear_fault_releases_latch_and_resumes(void)
     tick();
     TEST_ASSERT_TRUE(bridgeEnabled());                                  // drive resumes
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
+}
+
+static uint16_t faultLatches(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.faultLatches;
+}
+
+// [test->fw~ops_002~1]
+// Each latch counts once: not again while it holds, again after a clear and
+// a new trip.
+static void test_fault_latches_are_counted(void)
+{
+    driveToRunning(10.0f);
+    TEST_ASSERT_EQUAL_UINT16(0U, faultLatches());
+    setPhaseCurrentsUV(3.0f, 0.0f);
+    tick();
+    TEST_ASSERT_EQUAL_UINT16(1U, faultLatches());
+    tick();
+    TEST_ASSERT_EQUAL_UINT16(1U, faultLatches());
+
+    setNominalCurrents();
+    app_motorControl_clearFault(MOTOR_MC);
+    tick();
+    TEST_ASSERT_EQUAL_UINT16(1U, faultLatches());
+    setPhaseCurrentsUV(3.0f, 0.0f);
+    tick();
+    TEST_ASSERT_EQUAL_UINT16(2U, faultLatches());
 }
 
 /* ---- fw~safety_002: encoder-fault trip ---- */
@@ -715,6 +746,144 @@ static void startFocAt(float32_t rotorDeg, float32_t velocity)
     commutateAt(rotorDeg, velocity);
 }
 
+// The velocity method's first step, as startFocAt but selecting FOC_VELOCITY,
+// at a speed target.
+static void startFocVelocityAt(float32_t rotorDeg, float32_t velocityTarget)
+{
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    tick();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_VELOCITY);
+    commutateAt(rotorDeg, velocityTarget);
+}
+
+// Re-init with the cogging model's first harmonic (order 28) and second (order
+// 56) at the given amplitudes and phases and the compensation gain, then align.
+static void alignWithCogging(float32_t a1, float32_t phi1, float32_t a2, float32_t phi2, float32_t kcog)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.cogging[0] = (app_motorControl_cogHarmonic_S){ .order_perRev = 28U, .amplitude_Nm = a1, .phase_rad = phi1 };
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.cogging[1] = (app_motorControl_cogHarmonic_S){ .order_perRev = 56U, .amplitude_Nm = a2, .phase_rad = phi2 };
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.coggingKff = kcog;
+    TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
+    alignAtZero();
+}
+
+// The rotor angle in degrees at which sin(28 theta) = 1, and = -1.
+#define COG_PEAK_DEG    (90.0f / 28.0f)
+#define COG_TROUGH_DEG  (270.0f / 28.0f)
+
+// [test->fw~mc_028~1]
+// Both methods at zero demand: the first step commands -k_cog A sin(28 theta) / K_t
+// on the q axis, so -0.1 Nm's worth at the peak and nothing at theta = 0.
+static void test_cogging_compensation_subtracts_the_model_from_the_demand(void)
+{
+    const float32_t comp = 0.5f * 0.2f;   // k_cog A
+    const float32_t tolerance = 0.01f * FOC_KP * comp / FOC_KT;
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    alignWithCogging(0.2f, 0.0f, 0.0f, 0.0f, 0.5f);
+
+    startFocAt(COG_PEAK_DEG, 0.0f);
+    rotorFrameFromCompares(COG_PEAK_DEG, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, -FOC_KP * comp / FOC_KT, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vD);
+    startFocAt(0.0f, 0.0f);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vQ);
+
+    startFocVelocityAt(COG_PEAK_DEG, 0.0f);
+    rotorFrameFromCompares(COG_PEAK_DEG, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, -FOC_KP * comp / FOC_KT, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vD);
+    startFocVelocityAt(0.0f, 0.0f);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(tolerance, 0.0f, vQ);
+}
+
+// [test->fw~mc_028~1]
+// The second harmonic alone at phase pi/2: at theta = 0 it is at its peak.
+static void test_cogging_second_harmonic_carries_its_phase(void)
+{
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    alignWithCogging(0.0f, 0.0f, 0.2f, 3.14159265f / 2.0f, 1.0f);
+    startFocAt(0.0f, 0.0f);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * 0.2f / FOC_KT, -FOC_KP * 0.2f / FOC_KT, vQ);
+}
+
+// [test->fw~mc_028~1]
+// A full-scale torque target with the model at its trough adds to the demand:
+// the sum is clamped to K_t I_max and the first step commands I_max.
+static void test_cogging_compensation_is_clamped_with_the_demand(void)
+{
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    alignWithCogging(0.2f, 0.0f, 0.0f, 0.0f, 1.0f);
+    startFocAt(COG_TROUGH_DEG, MAX_VELOCITY);   // full-scale speed is K_t I_max under the torque method
+    rotorFrameFromCompares(COG_TROUGH_DEG, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, FOC_KP * FOC_I_MAX, vQ);
+}
+
+// [test->fw~mc_016~1]
+// The estimator's torque input carries the compensated cogging share under a
+// field-oriented method and K_t I_q alone under six-step.
+static void test_estimator_torque_input_carries_the_known_cogging_share(void)
+{
+    alignWithCogging(0.2f, 0.0f, 0.0f, 0.0f, 0.5f);   // six-step selected by the alignment
+    commutateAt(COG_PEAK_DEG, 10.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, mock_app_rotorEstimation_torqueInput());   // currents at zero: K_t I_q = 0
+    startFocAt(COG_PEAK_DEG, 0.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.1f, mock_app_rotorEstimation_torqueInput());
+}
+
+// Re-init with the FOC feed-forward gain `kff`, then align.
+static void alignWithFeedForward(float32_t kff)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKff = kff;
+    TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
+    alignAtZero();
+}
+
+// [test->fw~mc_025~1]
+// The estimate's velocity and the target both zero, T_d at D: the method's
+// first step commands i_q* = -k_ff D / K_t, read as K_p i_q* on the q axis.
+static void test_foc_velocity_feeds_the_disturbance_estimate_forward(void)
+{
+    const float32_t D = 0.2f;   // Nm, under K_t I_max = 0.5
+    alignWithFeedForward(0.5f);
+    mock_app_rotorEstimation_setUnmodeledTorque(D);
+    startFocVelocityAt(0.0f, 0.0f);
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    const float32_t iQ = -0.5f * D / FOC_KT;
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * fabsf(iQ), FOC_KP * iQ, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * fabsf(iQ), 0.0f, vD);
+}
+
+// [test->fw~mc_025~1]
+// k_ff = 1 and T_d = -2 K_t I_max: the first step clamps to +I_max and the
+// integral is solved net of the feed-forward, so with T_d gone the next steps
+// are -I_max. A tick runs two steps: the clamp step's current-loop integral
+// is cancelled by the first -I_max step, so the readback is K_p (-I_max).
+static void test_foc_velocity_back_calculates_the_integral_net_of_the_feed_forward(void)
+{
+    alignWithFeedForward(1.0f);
+    mock_app_rotorEstimation_setUnmodeledTorque(-2.0f * FOC_KT * FOC_I_MAX);
+    startFocVelocityAt(0.0f, 0.0f);
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, FOC_KP * FOC_I_MAX, vQ);
+
+    mock_app_rotorEstimation_setUnmodeledTorque(0.0f);
+    commutateAt(0.0f, 0.0f);
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, -FOC_KP * FOC_I_MAX, vQ);
+}
+
 // [test->fw~mc_022~1]
 // Currents at zero: the first step is (0, K_p i_q*) in the rotor frame, i_q* the
 // signed speed fraction of I_max, every phase enabled.
@@ -773,6 +942,7 @@ static void test_foc_integral_ramps_and_restarts_at_an_enable(void)
     tick();
     TEST_ASSERT_FALSE(bridgeEnabled());
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    app_motorControl_setVelocity(MOTOR_MC, I * MAX_VELOCITY / FOC_I_MAX, 0.0f);   // dark dropped the torque request (fw~mc_026)
     tick();
     advanceTime_ms(PRECHARGE_ADVANCE_MS);
     tick();                                   // precharged: the first step again
@@ -805,7 +975,8 @@ static void test_foc_limit_holds_the_vector_and_sets_the_integral(void)
     }
 
     startFocAt(0.0f, I * MAX_VELOCITY / FOC_I_MAX);   // one limited step
-    app_motorControl_setVelocity(MOTOR_MC, 0.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 0.0f, 0.0f);
+    app_motorControl_run1ms();                        // publishes the zero target
     app_motorControl_run50us();
     rotorFrameFromCompares(0.0f, &vD, &vQ);
     TEST_ASSERT_FLOAT_WITHIN(tolerance, vLim - (FOC_KP * I), vQ);
@@ -817,6 +988,177 @@ static void test_foc_limit_holds_the_vector_and_sets_the_integral(void)
     rotorFrameFromCompares(0.0f, &vD, &vQ);
     TEST_ASSERT_FLOAT_WITHIN(tolerance, vLim, sqrtf((vD * vD) + (vQ * vQ)));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -0.4f, vD / vQ);
+}
+
+/* ---- the targets in effect: rate limits and the enable seed (fw~mc_027), the torque target (fw~mc_026) ---- */
+
+static float32_t motorTorqueTarget(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.torqueTarget_Nm;
+}
+
+// Driving under the torque method at rotor angle 0, both targets at zero.
+static void driveInTorqueMode(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_TORQUE);
+    app_motorControl_setVelocity(MOTOR_MC, 0.0f, 0.0f);
+    tick();
+}
+
+// [test->fw~mc_027~1]
+// 10 rad/s at 20 rad/s^2 from a standing zero: 0.02 rad/s every pass, 5 rad/s
+// at pass 250, 10 rad/s at pass 500 and held there.
+static void test_speed_target_ramps_at_its_rate_limit(void)
+{
+    driveToRunning(0.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 20.0f);
+    float32_t last = motorSetpoint();
+    for (uint32_t pass = 1U; pass <= 500U; pass++)
+    {
+        tick();
+        TEST_ASSERT_FLOAT_WITHIN(0.0002f, 0.02f, motorSetpoint() - last);
+        last = motorSetpoint();
+        if (pass == 250U) { TEST_ASSERT_FLOAT_WITHIN(0.05f, 5.0f, last); }
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, motorSetpoint());
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 10.0f, motorSetpoint());
+}
+
+// [test->fw~mc_027~1]
+// A zero limit steps the torque target to its value on the next pass, and the
+// torque method's first step on it commands K_p T / K_t.
+static void test_torque_target_steps_at_a_zero_limit(void)
+{
+    driveInTorqueMode();
+    app_motorControl_setTorque(MOTOR_MC, 0.3f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.3f, motorTorqueTarget());
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, FOC_KP * 0.3f / FOC_KT, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_I_MAX, 0.0f, vD);
+}
+
+// [test->fw~mc_027~1]
+// An enable with the rotor turning at 5 rad/s: the speed target in effect is
+// 5 rad/s on the enable pass and the torque target zero, each then moving at
+// its limit from there.
+static void test_enable_seeds_speed_from_the_estimate_and_torque_from_zero(void)
+{
+    mock_dev_gateDriver_setOperational(GD_MAIN, true);
+    mock_app_rotorEstimation_setVelocity(5.0f);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_TORQUE);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 20.0f);   // and, under the torque method, 0.25 Nm at 0.5 Nm/s
+    tick();                                                  // the enable pass
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 5.0f, motorSetpoint());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorTorqueTarget());
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 5.02f, motorSetpoint());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0005f, motorTorqueTarget());
+}
+
+// [test->fw~mc_026~1]
+// The torque target takes its last writer: a torque setpoint, or a speed target
+// under the torque method as its fraction of K_t I_max; a setpoint past
+// K_t I_max saturates and a non-finite one to zero; another method's speed
+// target leaves it.
+static void test_torque_target_takes_the_last_writer_and_saturates(void)
+{
+    driveInTorqueMode();
+    app_motorControl_setTorque(MOTOR_MC, 0.4f, 0.0f);
+    app_motorControl_setVelocity(MOTOR_MC, MAX_VELOCITY / 2.0f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, FOC_KT * FOC_I_MAX / 2.0f, motorTorqueTarget());
+
+    app_motorControl_setVelocity(MOTOR_MC, MAX_VELOCITY / 2.0f, 0.0f);
+    app_motorControl_setTorque(MOTOR_MC, 0.4f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.4f, motorTorqueTarget());
+
+    app_motorControl_setTorque(MOTOR_MC, 2.0f * FOC_KT * FOC_I_MAX, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, FOC_KT * FOC_I_MAX, motorTorqueTarget());
+    app_motorControl_setTorque(MOTOR_MC, -2.0f * FOC_KT * FOC_I_MAX, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, -FOC_KT * FOC_I_MAX, motorTorqueTarget());
+    app_motorControl_setTorque(MOTOR_MC, NAN, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorTorqueTarget());
+
+    app_motorControl_setTorque(MOTOR_MC, -FOC_KT * FOC_I_MAX, 0.0f);
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SINUSOIDAL);
+    app_motorControl_setVelocity(MOTOR_MC, MAX_VELOCITY, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, -FOC_KT * FOC_I_MAX, motorTorqueTarget());
+}
+
+// [test->fw~mc_026~1]
+// A speed target of w_max / 2 at w_max / 2 rad/s^2 under the torque method
+// carries a limit of K_t I_max / 2 Nm/s: the torque target is at K_t I_max / 4
+// after 500 ms and K_t I_max / 2 after 1 s.
+static void test_speed_target_under_the_torque_method_scales_its_limit(void)
+{
+    driveInTorqueMode();
+    app_motorControl_setVelocity(MOTOR_MC, MAX_VELOCITY / 2.0f, MAX_VELOCITY / 2.0f);
+    for (uint32_t n = 0U; n < 500U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KT * FOC_I_MAX, FOC_KT * FOC_I_MAX / 4.0f, motorTorqueTarget());
+    for (uint32_t n = 0U; n < 500U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KT * FOC_I_MAX, FOC_KT * FOC_I_MAX / 2.0f, motorTorqueTarget());
+}
+
+// [test->fw~mc_026~1]
+// A written torque does not survive dark: after a disable and after a latched
+// fault, the re-enable with no further write leaves the target at zero.
+static void test_torque_request_is_cleared_by_disable_and_fault(void)
+{
+    driveInTorqueMode();
+    app_motorControl_setTorque(MOTOR_MC, 0.4f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.4f, motorTorqueTarget());
+
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_TORQUE);
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();
+    tick();
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorTorqueTarget());
+
+    app_motorControl_setTorque(MOTOR_MC, 0.4f, 0.0f);
+    tick();
+    setPhaseCurrentsUV(3.0f, 0.0f);
+    tick();
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_FAULTED, motorState());
+    setNominalCurrents();
+    app_motorControl_clearFault(MOTOR_MC);
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();
+    tick();
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_STATE_ENABLED, motorState());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorTorqueTarget());
+}
+
+// [test->fw~conn_server_008~1]
+// The ratings are the channel's configured constants, the torque ceiling
+// their product.
+static void test_ratings_are_the_configured_constants(void)
+{
+    app_motorControl_ratings_S ratings = { 0 };
+    TEST_ASSERT_TRUE(app_motorControl_getRatings(MOTOR_MC, &ratings));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FOC_KT, ratings.torqueConstant_NmPerA);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FOC_I_MAX, ratings.maxCurrent_A);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FOC_KT * FOC_I_MAX, ratings.maxTorque_Nm);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, MAX_VELOCITY, ratings.maxVelocity_radPerSec);
+    TEST_ASSERT_FALSE(app_motorControl_getRatings(MOTOR_MC, NULL));
+    TEST_ASSERT_FALSE(app_motorControl_getRatings(APP_MOTORCONTROL_CHANNEL_COUNT, &ratings));
 }
 
 /* ---- method selection ---- */
@@ -891,7 +1233,7 @@ static void test_cycle_step_wraps_the_offset_angle(void)
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
     mock_app_rotorEstimation_setAngle(2.0f);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
     tick();
     advanceTime_ms(PRECHARGE_ADVANCE_MS);
     tick();
@@ -920,7 +1262,7 @@ static void test_first_enable_precharges_before_alignment(void)
 {
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
 
     tick();
     TEST_ASSERT_TRUE(bridgeEnabled());
@@ -967,7 +1309,7 @@ static void test_cycle_step_not_the_ms_pass_writes_the_outputs(void)
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());
 
     mock_app_rotorEstimation_setAngle(DEG2RAD(90.0f));
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
     app_motorControl_run1ms();                           // publishes angle + target, decides Driving
     TEST_ASSERT_EQUAL_UINT32(DUTY_COMPARE(ALIGN_DUTY_01), drivenCompare());   // outputs untouched
 
@@ -985,7 +1327,7 @@ static void test_first_enable_aligns_then_captures_offset(void)
     mock_dev_gateDriver_setOperational(GD_MAIN, true);
     mock_app_rotorEstimation_setAngle(DEG2RAD(45.0f));
     app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_SIX_STEP_TRAP);
-    app_motorControl_setVelocity(MOTOR_MC, 10.0f);
+    app_motorControl_setVelocity(MOTOR_MC, 10.0f, 0.0f);
 
     // The precharge comes first on every enable (fw~mc_021).
     tick();
@@ -1122,6 +1464,40 @@ static void test_init_rejects_a_degenerate_velocity_loop(void)
     buildConfigs();
     appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKi_NmPerRad = -1.0f;
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    // the feed-forward gain is a share, [0, 1]
+    static const float32_t rejected[] = { -0.01f, 1.01f, NAN };
+    for (size_t i = 0U; i < COUNTOF(rejected); i++)
+    {
+        buildConfigs();
+        appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKff = rejected[i];
+        TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    }
+    static const float32_t accepted[] = { 0.0f, 1.0f };
+    for (size_t i = 0U; i < COUNTOF(accepted); i++)
+    {
+        buildConfigs();
+        appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.velocityKff = accepted[i];
+        TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
+    }
+}
+
+// [test->fw~mc_028~1]
+static void test_init_rejects_a_degenerate_cogging_model(void)
+{
+    static const float32_t rejected[] = { -0.01f, 1.01f, NAN };
+    for (size_t i = 0U; i < COUNTOF(rejected); i++)
+    {
+        buildConfigs();
+        appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.coggingKff = rejected[i];
+        TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    }
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.cogging[1].amplitude_Nm = -1.0e-3f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.coggingKff = 1.0f;
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.cogging[0].amplitude_Nm = 0.5f;
+    TEST_ASSERT_TRUE(app_motorControl_init(&appConfig));
 }
 
 int main(void)
@@ -1144,6 +1520,7 @@ int main(void)
     RUN_TEST(test_velocity_setpoint_exposed);
     RUN_TEST(test_velocity_view_is_the_estimators);
     RUN_TEST(test_clear_fault_releases_latch_and_resumes);
+    RUN_TEST(test_fault_latches_are_counted);
 
     RUN_TEST(test_encoder_fault_latches_past_limit);
     RUN_TEST(test_encoder_fault_count_resets_on_valid_read);
@@ -1156,7 +1533,20 @@ int main(void)
     RUN_TEST(test_sinusoidal_zero_target_centres_the_duties_with_the_bridge_up);
     RUN_TEST(test_foc_first_step_is_kp_times_the_current_target);
     RUN_TEST(test_foc_integral_ramps_and_restarts_at_an_enable);
+    RUN_TEST(test_foc_velocity_feeds_the_disturbance_estimate_forward);
+    RUN_TEST(test_foc_velocity_back_calculates_the_integral_net_of_the_feed_forward);
+    RUN_TEST(test_cogging_compensation_subtracts_the_model_from_the_demand);
+    RUN_TEST(test_cogging_second_harmonic_carries_its_phase);
+    RUN_TEST(test_cogging_compensation_is_clamped_with_the_demand);
+    RUN_TEST(test_estimator_torque_input_carries_the_known_cogging_share);
     RUN_TEST(test_foc_limit_holds_the_vector_and_sets_the_integral);
+    RUN_TEST(test_speed_target_ramps_at_its_rate_limit);
+    RUN_TEST(test_torque_target_steps_at_a_zero_limit);
+    RUN_TEST(test_enable_seeds_speed_from_the_estimate_and_torque_from_zero);
+    RUN_TEST(test_torque_target_takes_the_last_writer_and_saturates);
+    RUN_TEST(test_speed_target_under_the_torque_method_scales_its_limit);
+    RUN_TEST(test_torque_request_is_cleared_by_disable_and_fault);
+    RUN_TEST(test_ratings_are_the_configured_constants);
     RUN_TEST(test_selected_method_survives_off);
     RUN_TEST(test_init_rejects_off_default_mode);
     RUN_TEST(test_first_enable_precharges_before_alignment);
@@ -1174,6 +1564,7 @@ int main(void)
     RUN_TEST(test_init_rejects_a_current_limit_at_the_phase_trip);
     RUN_TEST(test_init_rejects_a_degenerate_current_loop);
     RUN_TEST(test_init_rejects_a_degenerate_velocity_loop);
+    RUN_TEST(test_init_rejects_a_degenerate_cogging_model);
 
     return UNITY_END();
 }

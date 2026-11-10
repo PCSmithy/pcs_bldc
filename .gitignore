@@ -35,6 +35,9 @@ fp-info-cache
 
 # Bench captures backing the trace-analysis notebooks stay tracked
 !tools/trace_analysis/**/*.csv
+# SIL captures regenerate from run_scenarios.sh
+tools/trace_analysis/estimator_order/sil/
+tools/trace_analysis/velocity_loop/sil/
 
 # Archived Backups (KiCad 6.0)
 **/*-backups/*.zip
