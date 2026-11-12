@@ -58,6 +58,9 @@ typedef struct
                                           // (0 = counter does not track sim time)
     uint32_t          rcr;                // repetition counter: reload events per
                                           // update event, minus one (0 = every reload)
+    bool              updateAtPeriod;     // center-aligned: the first countdown starts
+                                          // spent, so update events land on the period
+                                          // reload (crest), not the zero reload
 
     bool     configureBreakDeadTime;
     uint32_t deadTime;        // dead-time generator ticks (0..255)
@@ -76,6 +79,8 @@ typedef struct
     uint8_t              ocUnit;        // dense OC-unit index 0..3
     bool                 complementary; // models the paired CHxN line
     uint32_t             compare;       // initial compare value, raw counts
+    bool                 preload;       // a written compare takes effect at the next update
+                                        // event, as stm32g4 PWM-mode channels do
     uint32_t             inactiveLevel; // output level (0/1) while disabled or idle
     char *               channelNameStr; // SIL port base name; NULL registers no ports
 } HW_TIM_channelConfig_S;

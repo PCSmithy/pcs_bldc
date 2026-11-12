@@ -298,16 +298,28 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
             break;
 
         case shared_Envelope_board_request_tag:
-            // The board hook owns the verdict; without one, every board
-            // command is rejected.
-            reply->which_payload = shared_Envelope_response_tag;
-            reply->payload.response.accepted = false;
-            (void) strcpy(reply->payload.response.cause, "unsupported request");
-            if (data->config->handleRequest != NULL)
+        {
+            // The board hook owns the answer, a Reply result or a Response
+            // verdict; without one, every board command is rejected.
+            board_Reply result = board_Reply_init_zero;
+            shared_Response verdict = shared_Response_init_zero;
+            if (data->config->handleRequest == NULL)
             {
-                data->config->handleRequest(&request->payload.board_request, &reply->payload.response);
+                (void) strcpy(verdict.cause, "unsupported request");
+            }
+            if ((data->config->handleRequest != NULL) &&
+                data->config->handleRequest(&request->payload.board_request, &result, &verdict))
+            {
+                reply->which_payload = shared_Envelope_board_reply_tag;
+                reply->payload.board_reply = result;
+            }
+            else
+            {
+                reply->which_payload = shared_Envelope_response_tag;
+                reply->payload.response = verdict;
             }
             break;
+        }
 
         // [impl->fw~conn_trace_006~1] accepted watch lists answer with the
         // capability report; rejections fall back to the Response verdict.
@@ -367,35 +379,69 @@ static void app_server_private_handleEnvelope(const shared_Envelope * const requ
     app_server_private_sendReply(reply);
 }
 
+// Envelope-level submsg_callback hook: nanopb wipes the payload union before
+// the chosen arm decodes, so the callbacks inside an arm are armed here.
+static bool app_server_private_envelopeCallback(pb_istream_t * stream, const pb_field_t * field, void ** arg)
+{
+    bool ret = true;
+    if (field->tag == shared_Envelope_board_request_tag)
+    {
+        board_Request * const request = (board_Request *) field->pData;
+        request->cb_command.funcs.decode = (data->config != NULL) ? data->config->prepareCommand : NULL;   // NULL: the arm decodes plain
+        request->cb_command.arg = NULL;
+    }
+    else
+    {
+        ret = app_server_trace_envelopeCallback(stream, field, arg);
+    }
+    return ret;
+}
+
+// [impl->fw~conn_server_001~1] a frame with no readable request_id is answered
+// with that id 0.
+static void app_server_private_rejectUnread(const char * const cause)
+{
+    shared_Envelope * const reply = &data->txEnvelope;
+    app_server_private_zeroEnvelope(reply);
+    reply->which_payload = shared_Envelope_response_tag;
+    reply->payload.response.accepted = false;
+    (void) strcpy(reply->payload.response.cause, cause);
+    app_server_private_sendReply(reply);
+}
+
 static void app_server_private_pumpRequests(void)
 {
     IO_COBSFrame_run();
     size_t frameLen = 0U;
     // A held reply stops the pump: the next request stays framed until the
     // reply ahead of it has left, so no request loses its answer.
-    while ((data->pendingReplyLen == 0U) &&
-           IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen))
+    while (data->pendingReplyLen == 0U)
     {
-        shared_Envelope * const request = &data->rxEnvelope;
-        app_server_private_zeroEnvelope(request);
-        // The payload oneof is memset by nanopb before the chosen arm
-        // decodes, so callback fields inside it are armed through the
-        // envelope-level hook, not pre-set.
-        request->cb_payload.funcs.decode = app_server_trace_envelopeCallback;
-        if (lib_protobuf_decode(shared_Envelope_fields, data->rxFrame, frameLen, request))
+        const IO_COBSFrame_receive_E received =
+            IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen);
+        if (received == IO_COBSFRAME_RECEIVE_NONE)
         {
-            app_server_private_handleEnvelope(request);
+            break;
+        }
+        if (received == IO_COBSFRAME_RECEIVE_OVERSIZE)
+        {
+            app_server_private_rejectUnread("frame too large");
         }
         else
         {
-            // [impl->fw~conn_server_001~1] a CRC-valid but undecodable
-            // envelope is still answered (request_id unknowable: 0).
-            shared_Envelope * const reply = &data->txEnvelope;
-            app_server_private_zeroEnvelope(reply);
-            reply->which_payload = shared_Envelope_response_tag;
-            reply->payload.response.accepted = false;
-            (void) strcpy(reply->payload.response.cause, "decode error");
-            app_server_private_sendReply(reply);
+            shared_Envelope * const request = &data->rxEnvelope;
+            app_server_private_zeroEnvelope(request);
+            // nanopb memsets the payload oneof before its arm decodes, so the
+            // callbacks inside it are armed through the envelope-level hook.
+            request->cb_payload.funcs.decode = app_server_private_envelopeCallback;
+            if (lib_protobuf_decode(shared_Envelope_fields, data->rxFrame, frameLen, request))
+            {
+                app_server_private_handleEnvelope(request);
+            }
+            else
+            {
+                app_server_private_rejectUnread("decode error");
+            }
         }
         IO_COBSFrame_run();
     }

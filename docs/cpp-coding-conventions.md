@@ -65,7 +65,8 @@ consumers are all C++ is the first `enum class` candidate.
 ## Tests and host visibility
 
 Unity tests stay in C against the facade and observe private state only
-through its effects. No accessor, `friend`, or include-the-unit exists
+through its effects. A header-only C++ library with no C facade (`lib_pi`)
+has its Unity test in C++, against the class. No accessor, `friend`, or include-the-unit exists
 for a test. The SIL and the desktop app read private members through
 DWARF; a renamed or moved traced field ships with its SIL paths and a
 layout migration in the same commit. The traced object stays at namespace

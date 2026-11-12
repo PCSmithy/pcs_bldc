@@ -33,8 +33,15 @@ fp-info-cache
 *.xml
 *.csv
 
-# Bench captures backing the trace-analysis notebooks stay tracked
-!tools/trace_analysis/**/*.csv
+# Trace-analysis captures stay local (the *.csv rule above), except the five
+# small ones the notebooks read; SIL and bench capture dirs are local whole
+!tools/trace_analysis/alignment_ring/alignment_snap.csv
+!tools/trace_analysis/bemf_spin/rotor_free_spin.csv
+!tools/trace_analysis/encoder_noise_baseline/encoder_noise_raw.csv
+!tools/trace_analysis/pwm_isense/capture_20260821_204134.csv
+!tools/trace_analysis/stall_current_measure_r/motor_stall_various_duty.csv
+tools/trace_analysis/*/sil/
+tools/trace_analysis/*/bench/
 
 # Archived Backups (KiCad 6.0)
 **/*-backups/*.zip

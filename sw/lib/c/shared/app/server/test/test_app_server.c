@@ -64,11 +64,47 @@ static bool stubBuildTelemetry(board_Telemetry * const telemetry)
     return stubTelemetryValid;
 }
 
-static void stubHandleRequest(const board_Request * const request, shared_Response * const response)
+// Accepts every command; GetMotorInfo is answered with a result.
+static bool stubHandleRequest(const board_Request * const request, board_Reply * const reply,
+                              shared_Response * const response)
 {
     lastRequest = *request;
     requestCalls++;
-    response->accepted = true;
+    bool isResult = false;
+    if (request->which_command == board_Request_get_motor_info_tag)
+    {
+        reply->which_result = board_Reply_motor_info_tag;
+        reply->result.motor_info.kt_nm_per_a = 0.825f;
+        isResult = true;
+    }
+    else
+    {
+        response->accepted = true;
+    }
+    return isResult;
+}
+
+// One board.Setpoint, callback-encoded into a Command's list.
+static board_Setpoint sentSetpoint;
+
+static bool encodeOneSetpoint(pb_ostream_t * stream, const pb_field_t * field, void * const * arg)
+{
+    (void) arg;
+    return (pb_encode_tag_for_field(stream, field)) &&
+           (pb_encode_submessage(stream, board_Setpoint_fields, &sentSetpoint));
+}
+
+// Command-arm hook recorder: the tag of the arm it was run for.
+static uint32_t prepareCalls;
+static uint32_t preparedTag;
+
+static bool stubPrepareCommand(pb_istream_t * stream, const pb_field_t * field, void ** arg)
+{
+    (void) stream;
+    (void) arg;
+    prepareCalls++;
+    preparedTag = field->tag;
+    return true;
 }
 
 // Sampler-mask recorder: the trace-write bracket of fw~conn_trace_008.
@@ -103,6 +139,8 @@ void setUp(void)
     stubTelemetryValid = true;
     lastRequest = (board_Request)board_Request_init_zero;
     requestCalls = 0U;
+    prepareCalls = 0U;
+    preparedTag = 0U;
     samplerMaskCalls = 0U;
     samplerMasked = false;
     traceWordWhileMasked = 0U;
@@ -136,6 +174,7 @@ void setUp(void)
         .sampleRamBudgetBytes = TRACE_RAM_BUDGET,
         .linkBudgetBytesPerS  = TRACE_LINK_BUDGET,
         .handleRequest  = stubHandleRequest,
+        .prepareCommand = stubPrepareCommand,
         .buildTelemetry = stubBuildTelemetry,
         .setSamplerMasked = stubSetSamplerMasked,
     };
@@ -284,15 +323,16 @@ static void test_board_request_forwarded_to_hook(void)
     shared_Envelope req = shared_Envelope_init_zero;
     req.request_id = 11U;
     req.which_payload = shared_Envelope_board_request_tag;
-    req.payload.board_request.which_command = board_Request_set_velocity_tag;
-    req.payload.board_request.command.set_velocity.velocity_radps = 5.5f;
+    // The union's init_zero covers its first arm only; the Request's own
+    // callback slot must be zero before nanopb encodes it.
+    req.payload.board_request = (board_Request)board_Request_init_zero;
+    req.payload.board_request.which_command = board_Request_clear_fault_tag;
     injectEnvelope(&req);
 
     app_server_run1ms();
 
     TEST_ASSERT_EQUAL_UINT32(1U, requestCalls);
-    TEST_ASSERT_EQUAL(board_Request_set_velocity_tag, lastRequest.which_command);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.5f, lastRequest.command.set_velocity.velocity_radps);
+    TEST_ASSERT_EQUAL(board_Request_clear_fault_tag, lastRequest.which_command);
 
     shared_Envelope replies[4];
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
@@ -310,6 +350,7 @@ static void test_board_request_without_hook_rejected(void)
     shared_Envelope req = shared_Envelope_init_zero;
     req.request_id = 12U;
     req.which_payload = shared_Envelope_board_request_tag;
+    req.payload.board_request = (board_Request)board_Request_init_zero;
     req.payload.board_request.which_command = board_Request_clear_fault_tag;
     injectEnvelope(&req);
 
@@ -319,6 +360,80 @@ static void test_board_request_without_hook_rejected(void)
     TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
     TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
     TEST_ASSERT_TRUE(strlen(replies[0].payload.response.cause) > 0U);
+}
+
+// [test->fw~conn_server_001~1] a data-returning board command is answered with
+// the board Reply result the hook fills, not a Response.
+static void test_board_request_result_replies_with_board_reply(void)
+{
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 13U;
+    req.which_payload = shared_Envelope_board_request_tag;
+    req.payload.board_request = (board_Request)board_Request_init_zero;
+    req.payload.board_request.which_command = board_Request_get_motor_info_tag;
+    injectEnvelope(&req);
+
+    app_server_run1ms();
+
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL_UINT32(13U, replies[0].request_id);
+    TEST_ASSERT_EQUAL(shared_Envelope_board_reply_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL(board_Reply_motor_info_tag, replies[0].payload.board_reply.which_result);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.825f, replies[0].payload.board_reply.result.motor_info.kt_nm_per_a);
+}
+
+// [test->fw~conn_server_001~1] the board's command-arm hook runs as the arm
+// decodes, before the handler sees the request.
+static void test_board_command_arm_hook_runs_on_decode(void)
+{
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 14U;
+    req.which_payload = shared_Envelope_board_request_tag;
+    req.payload.board_request = (board_Request)board_Request_init_zero;
+    req.payload.board_request.which_command = board_Request_run_tag;
+    req.payload.board_request.command.run = (board_Command)board_Command_init_zero;   // the arm's own callback slot
+    req.payload.board_request.command.run.mode = board_Mode_MODE_SIX_STEP_TRAP;
+    injectEnvelope(&req);
+
+    app_server_run1ms();
+
+    TEST_ASSERT_EQUAL_UINT32(1U, prepareCalls);
+    TEST_ASSERT_EQUAL_UINT32(board_Request_run_tag, preparedTag);
+    TEST_ASSERT_EQUAL_UINT32(1U, requestCalls);
+    TEST_ASSERT_EQUAL(board_Request_run_tag, lastRequest.which_command);
+    TEST_ASSERT_EQUAL(board_Mode_MODE_SIX_STEP_TRAP, lastRequest.command.run.mode);
+}
+
+// [test->fw~conn_server_001~1] without a command-arm hook a Command's setpoints
+// are skipped and the request is still handled and answered.
+static void test_board_command_without_arm_hook_is_still_answered(void)
+{
+    serverConfig.prepareCommand = NULL;
+    TEST_ASSERT_TRUE(app_server_init(&serverConfig));
+
+    sentSetpoint = (board_Setpoint)board_Setpoint_init_zero;
+    sentSetpoint.which_target = board_Setpoint_velocity_radps_tag;
+    sentSetpoint.target.velocity_radps = 5.0f;
+    shared_Envelope req = shared_Envelope_init_zero;
+    req.request_id = 15U;
+    req.which_payload = shared_Envelope_board_request_tag;
+    req.payload.board_request = (board_Request)board_Request_init_zero;
+    req.payload.board_request.which_command = board_Request_run_tag;
+    req.payload.board_request.command.run = (board_Command)board_Command_init_zero;
+    req.payload.board_request.command.run.mode = board_Mode_MODE_SIX_STEP_TRAP;
+    req.payload.board_request.command.run.setpoints.funcs.encode = encodeOneSetpoint;
+    injectEnvelope(&req);
+
+    app_server_run1ms();
+
+    TEST_ASSERT_EQUAL_UINT32(0U, prepareCalls);
+    TEST_ASSERT_EQUAL_UINT32(1U, requestCalls);
+    TEST_ASSERT_EQUAL(board_Request_run_tag, lastRequest.which_command);
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(1U, collectReplies(replies, 4U));
+    TEST_ASSERT_TRUE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_UINT32(0U, strlen(replies[0].payload.response.cause));   // an acceptance carries no cause
 }
 
 // [test->fw~conn_server_001~1] a CRC-valid but undecodable envelope is still
@@ -350,6 +465,44 @@ static void test_undecodable_frame_rejected_with_cause(void)
     TEST_ASSERT_EQUAL_UINT32(0U, replies[0].request_id);
     TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
     TEST_ASSERT_NOT_NULL(strstr(replies[0].payload.response.cause, "decode"));
+}
+
+// [test->fw~conn_server_001~1] a frame past the 448-byte bound is answered
+// "frame too large" with request_id 0, and the ping behind it is answered after.
+static void test_oversize_frame_rejected_and_the_next_request_answered(void)
+{
+    uint8_t plain[IO_COBSFRAME_MAX_PAYLOAD + 1U + 4U];
+    for (size_t i = 0U; i < (IO_COBSFRAME_MAX_PAYLOAD + 1U); i++)
+    {
+        plain[i] = 0x08U;   // field 1 varint 8, repeated: an envelope, were it in bounds
+    }
+    const uint32_t crc = lib_crc32_compute(plain, IO_COBSFRAME_MAX_PAYLOAD + 1U);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 1U] = (uint8_t) (crc & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 2U] = (uint8_t) ((crc >> 8U) & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 3U] = (uint8_t) ((crc >> 16U) & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 4U] = (uint8_t) ((crc >> 24U) & 0xFFU);
+    uint8_t wire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD + 1U)];
+    wire[0] = 0x00U;
+    size_t cobsLen = 0U;
+    TEST_ASSERT_TRUE(lib_cobs_encode(plain, sizeof(plain), &wire[1], sizeof(wire) - 2U, &cobsLen));
+    wire[cobsLen + 1U] = 0x00U;
+    HW_USB_sim_injectRx(wire, (uint32_t) (cobsLen + 2U));
+
+    shared_Envelope ping = shared_Envelope_init_zero;
+    ping.request_id = 21U;
+    ping.which_payload = shared_Envelope_ping_tag;
+    injectEnvelope(&ping);
+
+    app_server_run1ms();
+
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(2U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].request_id);
+    TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_STRING("frame too large", replies[0].payload.response.cause);
+    TEST_ASSERT_EQUAL_UINT32(21U, replies[1].request_id);
+    TEST_ASSERT_TRUE(replies[1].payload.response.accepted);
 }
 
 /* ---- fw~obs_identity_002: identity query ---- */
@@ -453,8 +606,8 @@ static void test_log_overflow_retains_newest(void)
     for (uint32_t pass = 0U; pass < 8U; pass++)
     {
         app_server_run1ms();
-        const uint32_t n = collectReplies(replies, 2U);
-        for (uint32_t r = 0U; r < n; r++)
+        const uint32_t n = collectReplies(replies, COUNTOF(replies));
+        for (uint32_t r = 0U; (r < n) && (r < COUNTOF(replies)); r++)
         {
             TEST_ASSERT_EQUAL(shared_Envelope_log_tag, replies[r].which_payload);
             const size_t chunk = strlen(replies[r].payload.log.text);
@@ -2113,8 +2266,12 @@ int main(void)
     RUN_TEST(test_ping_accepted_with_request_id);
     RUN_TEST(test_unrecognized_payload_rejected_with_cause);
     RUN_TEST(test_undecodable_frame_rejected_with_cause);
+    RUN_TEST(test_oversize_frame_rejected_and_the_next_request_answered);
     RUN_TEST(test_board_request_forwarded_to_hook);
     RUN_TEST(test_board_request_without_hook_rejected);
+    RUN_TEST(test_board_request_result_replies_with_board_reply);
+    RUN_TEST(test_board_command_arm_hook_runs_on_decode);
+    RUN_TEST(test_board_command_without_arm_hook_is_still_answered);
 
     RUN_TEST(test_identity_request_returns_build_identity);
 

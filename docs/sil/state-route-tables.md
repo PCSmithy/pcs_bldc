@@ -442,7 +442,7 @@ One namespace, one access path, zero firmware-side data code.
   project allowlist?~~ **Resolved:** the firmware member mirrors the **whole
   traceable namespace** by default (every scalar/enum leaf under every static),
   minus a built-in exclusion policy (array-size threshold drops stacks/heap/large
-  buffers; pointers/functions/multi-dim skipped). Per-member
+  buffers; pointers/functions skipped). Per-member
   `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
   tune it; a general symbol/pattern trace filter is a later
   cosmetic addition ([`signal-trace.md`](signal-trace.md) §9).

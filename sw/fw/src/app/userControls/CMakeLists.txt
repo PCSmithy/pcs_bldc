@@ -13,7 +13,5 @@ target_link_libraries(app_userControls
 )
 
 if(PCS_TARGET STREQUAL "native")
-  # TODO: un-comment when the app_userControls test suite lands — the test/
-  # directory is empty and would break the native configure.
-  # add_subdirectory(test)
+  add_subdirectory(test)
 endif()

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod command;
 mod config;
 mod emitter;
 mod firmware;
@@ -20,6 +21,31 @@ fn set_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {
     window.set_zoom(factor).map_err(|e| e.to_string())
 }
 
+/// The capture export's writer (app~views_028): the frontend builds the file,
+/// the core's save dialog names it and the core writes it, so no path comes
+/// from the webview. Resolves the written path, or None when cancelled.
+// [impl->app~views_028~1]
+#[tauri::command]
+async fn save_capture_csv(app: tauri::AppHandle, text: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .set_file_name("capture.csv")
+            .add_filter("CSV", &["csv"])
+            .blocking_save_file();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let path = picked.into_path().map_err(|e| format!("save path: {e}"))?;
+        std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|e| format!("save capture: {e}"))?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -36,9 +62,12 @@ fn main() {
             trace::install_watches,
             trace::clear_watches,
             trace::trace_status,
+            command::send_command,
+            command::get_motor_info,
             config::load_config,
             config::save_config,
-            set_zoom
+            set_zoom,
+            save_capture_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

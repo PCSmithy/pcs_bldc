@@ -115,7 +115,7 @@ specs/
 
   firmware/                           fw~ requirements (STM32G4, C/C++)
     README.md                         MOC for firmware specs
-    conn/  est/  hal/  io/  mc/  obs/  pd/  safety/  ui/
+    conn/  est/  hal/  io/  mc/  obs/  ops/  pd/  safety/  ui/
       e.g. conn/trace.md, hal/adc.md
 
   desktop-app/                        app~ requirements (Rust + webview app)
@@ -346,6 +346,9 @@ Workflow:
    - Any spec without an upstream parent.
    - Any tag pointing at an ID that does not exist or has been
      version-bumped.
+
+No body line may begin with a spec ID; see rule 14 of
+[`spec-style.md`](spec-style.md).
 
 Alternatives that were evaluated and rejected:
 

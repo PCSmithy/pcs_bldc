@@ -402,3 +402,28 @@ the port list.
    is also the discovery seam the multi-device stretch goal
    (sys~arch_004) wants: enumerate = filter by our VID:PID.
 3. `tools/pcs_client.py` can reuse the same mapping for port hints.
+
+## Low-side shunt window at the voltage ceiling
+
+At 11.5 V on the 20 V bus the max SVM duty is ≈ 0.998, leaving ≈ 0.05 µs of
+low-side on-time around the crest sample; the injected sample (trigger 0.5 µs
+before the crest, last S/H ≈ 1.26 µs after) plus 0.3 µs dead time needs duty
+≲ 0.93 (≈ 9.9 V). Scope the INA240 output at rated speed first, then choose
+between a duty cap and reconstructing from the two lowest-duty phases (W is
+wired to ADC1 IN8).
+
+## ADC injected ISR: overrun loses a cycle silently
+
+JEOC/JEOS are cleared after the control-step callback, so a callback that
+overruns 50 µs swallows the next trigger's flags and that cycle is lost with
+no count or fault.
+
+## App: named-sequence library has no delete
+
+The Sequence widget saves sequences by name but offers no way to remove one.
+
+## cubemx_to_channels.py does not emit `updateAtPeriod`
+
+`HW_TIM_channels.cubemx.h` carries `updateAtPeriod` by hand; regenerating the
+header with `tools/cubemx_to_channels.py` drops it. Teach the generator the
+field (the sim-only `preload` flag lives in `HW_TIM_channels.c` and is safe).

@@ -66,6 +66,27 @@ Covers:
 
 Needs: impl, test
 
+### Update event and compare preload
+`fw~hal_tim_009~1`
+
+Each peripheral shall raise its update event once per RCR + 1 counter reloads
+(`fw~hal_tim_002~1`), on the zero reload or, for a center-aligned counter so
+configured, on the period reload; the update event loads each preloaded
+channel's most recently written compare value into the active compare and
+sources the update trigger (`fw~hal_tim_006~1`).
+
+Acceptance:
+- A center-aligned counter with RCR 1 raises its update events on consecutive
+  zero reloads; configured for the period reload, on consecutive period
+  reloads, the first at the first period reload after the start.
+- A compare value written to a preloaded channel reads back at once and drives
+  the channel's output from the next update event.
+
+Covers:
+- sys~arch_005~1
+
+Needs: impl, test
+
 ### Free-running counter readout
 `fw~hal_tim_003~1`
 

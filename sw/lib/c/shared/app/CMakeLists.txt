@@ -3,5 +3,6 @@
 add_subdirectory(rgbLedRing)
 add_subdirectory(motorControl)
 add_subdirectory(rotorEstimation)
+add_subdirectory(sequencer)
 add_subdirectory(server)
 add_subdirectory(cpuLoad)

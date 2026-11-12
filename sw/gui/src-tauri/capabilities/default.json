@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core IPC/events plus the file-open dialog for the .elf picker.",
+  "description": "Main window: core IPC/events plus the .elf picker's open dialog (the capture export's save dialog runs in the core).",
   "windows": ["main"],
   "permissions": ["core:default", "dialog:allow-open"]
 }

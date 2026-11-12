@@ -19,6 +19,13 @@ extern "C" {
 
 /* Typedefs */
 
+// The sine and cosine of one angle: a rotating frame for Park and its inverse.
+typedef struct
+{
+    float32_t sin;
+    float32_t cos;
+} lib_transforms_sinCos_S;
+
 
 /* Public Function Declarations  */
 // [impl->fw~mc_013~1]
@@ -64,8 +71,7 @@ static inline void lib_transforms_park(
     // inputs
     float32_t alpha,
     float32_t beta,
-    float32_t sinTheta,
-    float32_t cosTheta,
+    lib_transforms_sinCos_S theta,
     // outputs
     float32_t * d,
     float32_t * q
@@ -73,8 +79,8 @@ static inline void lib_transforms_park(
 {
     if ((d != NULL) && (q != NULL))
     {
-        *d = (alpha * cosTheta) + (beta * sinTheta);
-        *q = (-alpha * sinTheta) + (beta * cosTheta);
+        *d = (alpha * theta.cos) + (beta * theta.sin);
+        *q = (-alpha * theta.sin) + (beta * theta.cos);
     }
 }
 
@@ -83,8 +89,7 @@ static inline void lib_transforms_inversePark(
     // inputs
     float32_t d,
     float32_t q,
-    float32_t sinTheta,
-    float32_t cosTheta,
+    lib_transforms_sinCos_S theta,
     // outputs
     float32_t * alpha,
     float32_t * beta
@@ -92,8 +97,8 @@ static inline void lib_transforms_inversePark(
 {
     if ((alpha != NULL) && (beta != NULL))
     {
-        *alpha = (d * cosTheta) - (q * sinTheta);
-        *beta = (d * sinTheta) + (q * cosTheta);
+        *alpha = (d * theta.cos) - (q * theta.sin);
+        *beta = (d * theta.sin) + (q * theta.cos);
     }
 }
 

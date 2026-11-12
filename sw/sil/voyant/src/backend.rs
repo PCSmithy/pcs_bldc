@@ -227,7 +227,7 @@ pub(crate) struct CvarEnumeration {
     /// Each traceable leaf: its DWARF path and an optional fast-read handle
     /// (`None` → the member falls back to the string-path [`Backend::read_cvar`]).
     pub leaves: Vec<(String, Option<CvarHandle>)>,
-    /// Arrays skipped whole by the size threshold / multi-dim / unknown-length rule.
+    /// Arrays skipped whole by the size threshold / unknown-length rule.
     pub excluded_arrays: usize,
     /// Leaves skipped as non-traceable types (pointer/function/opaque/unresolvable).
     pub skipped_leaves: usize,

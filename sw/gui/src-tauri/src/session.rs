@@ -71,6 +71,18 @@ impl Drop for Session {
 #[derive(Default)]
 pub struct SessionState(pub Mutex<Option<Session>>);
 
+/// The live session's client, device build id and UI emitter, for a command
+/// running on a blocking thread; "not connected" without one.
+pub(crate) fn session_handles(session: &SessionState) -> Result<(Arc<Client>, String, Arc<UiEmitter>), String> {
+    let guard = session.0.lock().map_err(|_| "session state poisoned")?;
+    let session = guard.as_ref().ok_or("not connected")?;
+    Ok((
+        session.client.clone(),
+        session.device_build_id().to_string(),
+        session.ui_emitter(),
+    ))
+}
+
 #[derive(serde::Serialize)]
 pub struct PortInfo {
     name: String,
@@ -108,6 +120,11 @@ pub struct TelemetryEvent {
     bus_current_a: f32,
     velocity_measured_radps: f32,
     velocity_setpoint_radps: f32,
+    torque_target_nm: f32,
+    position_target_rad: f32,
+    rotor_position_rad: f32,
+    sequence_running: bool,
+    sequence_elapsed_ms: u32,
 }
 
 impl From<pcs_proto::board::Telemetry> for TelemetryEvent {
@@ -124,6 +141,11 @@ impl From<pcs_proto::board::Telemetry> for TelemetryEvent {
             bus_current_a: t.bus_current_a,
             velocity_measured_radps: t.velocity_measured_radps,
             velocity_setpoint_radps: t.velocity_setpoint_radps,
+            torque_target_nm: t.torque_target_nm,
+            position_target_rad: t.position_target_rad,
+            rotor_position_rad: t.rotor_position_rad,
+            sequence_running: t.sequence_running,
+            sequence_elapsed_ms: t.sequence_elapsed_ms,
         }
     }
 }

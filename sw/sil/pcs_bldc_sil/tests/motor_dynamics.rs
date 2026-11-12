@@ -3,7 +3,7 @@
 //! constants, common-mode rejection, and diode rectification on a collapsed bus.
 
 use pcs_bldc_sil::board::{MOTOR, VBUS_V};
-use pcs_bldc_sil::{vid, MotorModel, MotorParams, Sil, TICK_US};
+use pcs_bldc_sil::{vid, CogHarmonic, MotorModel, MotorParams, Sil, TICK_US};
 use std::f64::consts::{PI, TAU};
 use voyant::StateTableConfig;
 
@@ -114,6 +114,8 @@ fn locked_params(r_ohm: f64, l_h: f64) -> MotorParams {
         b_nm_per_rad_s: 1.0e2,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
+        ..MotorParams::default()
     }
 }
 
@@ -130,6 +132,8 @@ fn spin_params() -> MotorParams {
         b_nm_per_rad_s: 1.0e-4,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
+        ..MotorParams::default()
     }
 }
 
@@ -249,6 +253,8 @@ fn alignment_torque_pulls_to_equilibrium() {
         b_nm_per_rad_s: 0.03,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
+        ..MotorParams::default()
     };
     // The model keeps the shaft in [0, 2pi): -pi/6 reads as 11pi/6, approached from 3pi/2.
     let equilibrium = (11.0 * PI / 6.0) / f64::from(POLE_PAIRS);
@@ -520,6 +526,8 @@ fn svpwm_common_mode_rejected() {
         b_nm_per_rad_s: 1.0e-3,
         t_c_nm: 0.0,
         v_d: 0.8,
+        rotor_locked: false,
+        ..MotorParams::default()
     };
     let mut plain = world(params, 0.3, VBUS_V);
     let mut shifted = world(params, 0.3, VBUS_V);
@@ -760,6 +768,73 @@ fn breakaway_threshold_matches_coulomb() {
         "over-threshold drive breaks the rotor away: moved {:.3e} rad",
         (s.angle - start).abs()
     );
+}
+
+#[test]
+fn cogging_torque_accelerates_a_released_rotor_down_its_detent_slope() {
+    // A rotor released on the slope of a cogging detent, with no drive and no
+    // friction, picks up speed at amp / J over the first ticks.
+    const AMP_NM: f64 = 0.010;
+    const PER_REV: u16 = 28;
+    const TICKS: usize = 20;
+
+    let mut p = MotorParams { t_c_nm: 0.0, b_nm_per_rad_s: 0.0, cogging: [CogHarmonic::default(); 2], ..MotorParams::default() };
+    p.cogging[0] = CogHarmonic { amp_nm: AMP_NM, per_rev: PER_REV, phase_rad: 0.0 };
+    // sin(28 * angle) = 1 at angle = pi / 56: the detent's steepest point
+    let start = PI / (2.0 * f64::from(PER_REV));
+    let mut eng = world(p, start, MEASURED_VBUS_V);
+    for _ in 0..TICKS {
+        eng.step().expect("engine step");
+    }
+    let w = sample(&eng).velocity;
+    let expected = (AMP_NM / p.j_kg_m2) * (TICKS as f64) * TICK_S;
+    println!("cogging: released at sin = 1, omega {w:.4} rad/s after {TICKS} ticks vs {expected:.4} from amp / J");
+    assert!((w - expected).abs() < 0.05 * expected, "the detent slope accelerates the rotor at amp / J: {w:.4} vs {expected:.4}");
+}
+
+#[test]
+fn a_load_torque_shortens_the_coast_like_added_coulomb_friction() {
+    // The load_torque input opposes positive rotation: a coast under a load L
+    // below breakaway stops at the Coulomb analytic with T_c + L in place of
+    // T_c and stays parked (a load above T_c would back-drive the rotor). The
+    // analytic has no cogging, so neither has the rotor. The load is two thirds
+    // of the plant's T_c: under breakaway, and enough to shorten the coast.
+    const SPIN_TICKS: usize = 800;
+    const QUIET_TICKS: usize = 50;
+
+    let p = MotorParams { cogging: [CogHarmonic::default(); 2], ..MotorParams::default() };
+    let load_nm = (2.0 / 3.0) * p.t_c_nm;
+    let mut eng = world(p, PI / 8.0, MEASURED_VBUS_V);
+    let mut angle = PI / 8.0;
+    for _ in 0..SPIN_TICKS {
+        commutate(&mut eng, angle, p.pole_pairs, 0.9);
+        eng.step().expect("engine step");
+        angle = sample(&eng).angle;
+    }
+    let w0 = sample(&eng).velocity;
+    assert!(w0 > 10.0, "spinning before the coast: {w0:.2} rad/s");
+    drive(&mut eng, [0.0; 3], [false; 3], false);
+    eng.write(&vid(MOTOR, "load_torque"), load_nm).expect("apply the load");
+    let b = p.b_nm_per_rad_s;
+    let t_stop_s = (p.j_kg_m2 / b) * (1.0 + b * w0 / (p.t_c_nm + load_nm)).ln();
+    let mut k_stop = 0usize;
+    for k in 0..20_000usize {
+        eng.step().expect("engine step");
+        if sample(&eng).velocity == 0.0 {
+            k_stop = k + 1;
+            break;
+        }
+    }
+    assert!(k_stop > 0, "the loaded coast stops");
+    let t_stop = (k_stop as f64) * TICK_S;
+    println!("load_torque: omega0 = {w0:.3} rad/s under {load_nm} Nm, stopped at {t_stop:.4} s vs analytic {t_stop_s:.4} s");
+    assert!((t_stop - t_stop_s).abs() <= 2.0 * TICK_S, "stop time within two ticks of the analytic: {t_stop:.4} vs {t_stop_s:.4}");
+    let unloaded = (p.j_kg_m2 / b) * (1.0 + b * w0 / p.t_c_nm).ln();
+    assert!(t_stop < 0.8 * unloaded, "the load shortens the coast: {t_stop:.4} s against {unloaded:.4} s unloaded");
+    for _ in 0..QUIET_TICKS {
+        eng.step().expect("engine step");
+        assert_eq!(sample(&eng).velocity, 0.0, "a load under breakaway leaves the stopped rotor parked");
+    }
 }
 
 #[test]

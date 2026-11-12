@@ -47,10 +47,10 @@ bool HW_CORDIC_init(const HW_CORDIC_config_S * const config)
 }
 
 // [impl->fw~hal_cordic_002~1]
-bool HW_CORDIC_sinCos(float32_t theta_rad, float32_t * const sin_out, float32_t * const cos_out)
+bool HW_CORDIC_sinCos(float32_t theta_rad, lib_transforms_sinCos_S * const out)
 {
     bool ret = false;
-    if ((data->initialized) && (sin_out != NULL) && (cos_out != NULL))
+    if ((data->initialized) && (out != NULL))
     {
         // The angle as a fraction of a turn, wrapped into [0, 1) by truncating
         // whole turns away. Scaled to the 32-bit word, the unsigned value is
@@ -72,8 +72,8 @@ bool HW_CORDIC_sinCos(float32_t theta_rad, float32_t * const sin_out, float32_t 
         {
             // precisionCycles clocks
         }
-        *cos_out = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
-        *sin_out = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
+        out->cos = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
+        out->sin = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
         ret = true;
     }
     return ret;

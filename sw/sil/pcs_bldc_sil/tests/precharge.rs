@@ -1,11 +1,8 @@
 mod common;
 
-use common::{spin_up, tap_button};
+use common::{spin_up, tap_button, u64_at, MC_CONFIG};
 use pcs_bldc_sil::board::{board, fault_latched, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW, INPUT_LEVEL_PB10};
 use pcs_bldc_sil::{cid, Board, Sil};
-
-/// `prechargeTime_ms` in `app_motorControl_channels.c`.
-const PRECHARGE_MS: u32 = 5;
 use voyant::Value;
 
 // The drive state as its enumerator name (`Off`, `Precharging`, `Aligning`,
@@ -61,8 +58,9 @@ fn a_re_enable_precharges_then_drives_without_realigning() {
     println!("precharge: {precharge_ms} ms of precharge, driving at +{driving_at:?} ms");
     // The dwell is counted in whole 1 ms passes, so it runs the configured time
     // plus up to one pass.
+    let configured = u64_at(&sim, &format!("{MC_CONFIG}.prechargeTime_ms")) as u32;
     assert!(
-        (PRECHARGE_MS..=PRECHARGE_MS + 1).contains(&precharge_ms),
+        (configured..=configured + 1).contains(&precharge_ms),
         "the re-enable charges the bootstraps for the configured time first: {precharge_ms} ms"
     );
     assert!(!saw_aligning, "the alignment, already captured, is not repeated");

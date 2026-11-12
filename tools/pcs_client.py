@@ -17,6 +17,7 @@ sw/proto/ into tools/pcs_client_gen/ (gitignored).
 """
 
 import argparse
+import re
 import itertools
 import struct
 import subprocess
@@ -30,6 +31,10 @@ GEN_DIR = REPO / "tools" / "pcs_client_gen"
 # Silence after the requested count that ends a link test: long enough that a
 # stalled USB transfer isn't mistaken for the end of the stream.
 LINK_TEST_QUIET_S = 2.0
+
+# The board's frame bound on an encoded envelope (IO_COBSFRAME_MAX_PAYLOAD,
+# fw~conn_proto_005): a larger one is answered "frame too large".
+MAX_FRAME_PAYLOAD = 448
 
 
 def grow_rx_buffer(ser):
@@ -200,10 +205,21 @@ def show(env, pb2, board_pb2, log_buffer, trace=None):
         t = env.telemetry
         mode = board_pb2.Mode.Name(t.mode)
         state = board_pb2.DriveState.Name(t.state)
+        seq = f" seq={t.sequence_elapsed_ms}ms" if t.sequence_running else ""
         print(f"[telemetry] t={t.timestamp_ms}ms {mode} {state} "
               f"vbus={t.bus_voltage_v:.2f}V ibus={t.bus_current_a:.3f}A "
               f"vel={t.velocity_measured_radps:+.2f}rad/s "
-              f"set={t.velocity_setpoint_radps:+.2f}rad/s")
+              f"set={t.velocity_setpoint_radps:+.2f}rad/s "
+              f"torque={t.torque_target_nm:+.3f}Nm "
+              f"pos={t.rotor_position_rad:+.3f}rad pos*={t.position_target_rad:+.3f}rad{seq}")
+    elif kind == "board_reply":
+        if env.board_reply.WhichOneof("result") == "motor_info":
+            m = env.board_reply.motor_info
+            print(f"[motor-info] id={env.request_id} Kt={m.kt_nm_per_a:.4f}Nm/A Imax={m.i_max_a:.3f}A "
+                  f"Tmax={m.max_torque_nm:.4f}Nm wmax={m.max_velocity_radps:.3f}rad/s "
+                  f"thmax={m.max_position_rad:.3f}rad")
+        else:
+            print(f"[reply] id={env.request_id} {env.board_reply}")
     elif kind == "identity":
         print(f"[identity] id={env.request_id} build={env.identity.build_id}")
     elif kind == "response":
@@ -335,12 +351,13 @@ def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=10
     while commands:
         kind, value = commands.pop(0)
         env = pb2.Envelope(request_id=next(next_id))
-        if kind == "set_mode":
-            env.board_request.set_mode.mode = value
-        elif kind == "set_velocity":
-            env.board_request.set_velocity.velocity_radps = value
-        elif kind == "clear_fault":
+        if kind == "clear_fault":
             env.board_request.clear_fault.SetInParent()
+        elif kind == "run":
+            env.board_request.CopyFrom(value)
+            value = str(value.run).replace("\n", " ")
+        elif kind == "get_motor_info":
+            env.board_request.get_motor_info.SetInParent()
         elif kind == "read":
             env.read_request.address, env.read_request.size = value
         elif kind == "write":
@@ -375,15 +392,51 @@ def run(port: str, baud: int, args):
     import board_pb2
     import shared_pb2 as pb2
 
+    modes = {name[len("MODE_"):].lower(): value for name, value in board_pb2.Mode.items()}
+    default_units = {"foc_torque": "nm", "foc_position": "rad"}
+    target_fields = {"nm": "torque_nm", "rad": "position_rad", "rad/s": "velocity_radps"}
     commands = []
-    if args.set_mode is not None:
-        mode = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
-                "sinusoidal": board_pb2.MODE_SINUSOIDAL}[args.set_mode]
-        commands.append(("set_mode", mode))
-    if args.set_velocity is not None:
-        commands.append(("set_velocity", args.set_velocity))
+    if args.motor_info:
+        commands.append(("get_motor_info", None))
     if args.clear_fault:
-        commands.append(("clear_fault", None))
+        commands.append(("clear_fault", None))   # ahead of a run, so a cleared fault does not block it
+    if args.run is not None:
+        # MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],... -- the whole sequence in
+        # one Command; T_MS=stop is a stop. The mode picks the unit (Nm under
+        # foc_torque, rad under foc_position, rad/s otherwise) unless a value says.
+        try:
+            mode_s, spec = args.run.split(":", 1)
+            request = board_pb2.Request()
+            request.run.mode = modes[mode_s]
+            for item in filter(None, spec.split(",")):
+                t_s, rest = item.split("=")
+                t_ms = float(t_s)
+                if not (0 <= t_ms <= 4_294_967):
+                    raise ValueError("time out of range")
+                sp = request.run.setpoints.add(t_us=int(t_ms * 1000))
+                if rest.lower() == "stop":
+                    sp.stop.SetInParent()
+                    continue
+                # the unit before the limits, so rad/s is not read as a limit of "s"
+                m = re.fullmatch(r"([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)(nm|rad/s|rad)?(?:/(.*))?", rest, re.IGNORECASE)
+                if m is None:
+                    raise ValueError("bad setpoint")
+                unit = (m.group(2) or default_units.get(mode_s, "rad/s")).lower()
+                limits = [float(x or 0) for x in ((m.group(3) or "").split("/") + ["", "", ""])[:3]]
+                setattr(sp, target_fields[unit], float(m.group(1)))
+                sp.rate_limit = limits[0]
+                if unit == "rad":
+                    # a position's limits: velocity, acceleration, velocity at the point (fw~mc_030)
+                    sp.accel_limit_radps2, sp.velocity_at_point_radps = limits[1], limits[2]
+        except (ValueError, KeyError):
+            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]] or "
+                     f"T_MS=stop,..., MODE one of {', '.join(modes)}; e.g. foc_velocity:0=0,200=10/50,700=stop, "
+                     f"foc_torque:0=0.3Nm or foc_position:0=6.28/10/50/0)")
+        size = len(pb2.Envelope(request_id=0xFFFFFFFF, board_request=request).SerializeToString())
+        if size > MAX_FRAME_PAYLOAD:
+            sys.exit(f"--run encodes to {size} bytes, past the board's {MAX_FRAME_PAYLOAD}-byte frame; "
+                     f"send fewer setpoints")
+        commands.append(("run", request))
     # Writes before reads, so a write -> read round trip works in one invocation.
     for spec in (args.write or []):
         try:
@@ -521,6 +574,20 @@ def selftest() -> int:
     assert round_trip.link_test_frame.seq == 4321
     assert round_trip.link_test_frame.payload == bytes(range(256))
 
+    # A Command with a stop round-trips; 15 full position setpoints fit the frame.
+    import board_pb2
+    request = board_pb2.Request()
+    request.run.mode = board_pb2.MODE_FOC_POSITION
+    for i in range(15):
+        request.run.setpoints.add(t_us=4_000_000_000 + i, position_rad=6.28, rate_limit=10.0,
+                                  accel_limit_radps2=50.0, velocity_at_point_radps=1.0)
+    request.run.setpoints.add(t_us=4_100_000_000).stop.SetInParent()
+    env = pb2.Envelope(request_id=0xFFFFFFFF, board_request=request)
+    assert len(env.SerializeToString()) <= MAX_FRAME_PAYLOAD
+    round_trip = pb2.Envelope()
+    round_trip.ParseFromString(deframe(frame(env.SerializeToString())[1:-1]))
+    assert round_trip.board_request.run.setpoints[-1].WhichOneof("target") == "stop"
+
     print("selftest ok")
     return 0
 
@@ -529,9 +596,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", help="serial port (e.g. COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=115200, help="ignored by USB CDC")
-    ap.add_argument("--set-mode", choices=["off", "six_step", "sinusoidal"], help="send a SetMode command on connect")
-    ap.add_argument("--set-velocity", type=float, metavar="RAD_PER_S", help="send a SetVelocity command on connect")
     ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
+    ap.add_argument("--run", metavar="MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],...",
+                    help="send a Command on connect: a mode and timed setpoints, rad/s (Nm under foc_torque, rad under "
+                         "foc_position, or as the value's unit says), LIMIT per second with 0 a step; a position adds its "
+                         "acceleration limit and velocity at the point; T_MS=stop disables and ends the sequence, e.g. "
+                         "foc_velocity:0=0,200=10/50,700=stop or foc_position:0=6.28/10/50/0")
+    ap.add_argument("--motor-info", action="store_true", help="request the motor ratings on connect")
     ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_CYCLES",
                     help="install a trace watch (repeatable, e.g. 0x20000000:4:20); "
                          "period is 1, 20, or 200 PWM cycles (50 us / 1 ms / 10 ms), "
@@ -558,10 +629,9 @@ def main():
     if not args.port:
         ap.error("--port is required (or use --selftest)")
     if (args.link_test is not None) and any((args.watch, args.read, args.write,
-                                             args.set_mode, args.clear_fault,
-                                             args.set_velocity is not None)):
+                                             args.clear_fault, args.run, args.motor_info)):
         ap.error("--link-test is a standalone measurement; run it without "
-                 "--watch/--read/--write/--set-mode/--set-velocity/--clear-fault")
+                 "--watch/--read/--write/--clear-fault/--run/--motor-info")
     try:
         run(args.port, args.baud, args)
     except KeyboardInterrupt:

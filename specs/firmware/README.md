@@ -25,10 +25,17 @@ Sub-folders are created when a topic gets its first spec.
   the PWM-synchronous commutation step), `fw~mc_013~1` / `fw~mc_014~1`
   (frame transforms, space-vector modulation), `fw~mc_019~1` (the
   per-cycle rotor angle), the six-step, sensored sinusoidal, and V/f
-  methods; also FOC, motion, trajectory tracking
+  methods, `fw~mc_022~1` / `fw~mc_023~1` / `fw~mc_024~1` (the
+  field-oriented torque method, its current regulator and voltage limit,
+  [[mc/foc]]), `fw~mc_025~1` (the field-oriented velocity method),
+  `fw~mc_026~1` / `fw~mc_027~1` (the torque target, the setpoint rate
+  limit), `fw~mc_028~1` (cogging-torque compensation), the position
+  method `fw~mc_029~1` with `fw~mc_030~1` to `fw~mc_032~1` (the position
+  setpoint, the move profile, the rotor position); also trajectory
+  tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
-  (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (encoder
-  phase-locked rotor tracking, [[est/rotor]]); also the Kalman observer,
+  (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (the rotor
+  observer: angle, velocity, unmodelled torque, [[est/rotor]]); also the Kalman observer,
   sensorless observer, and parameter identification
 - `obs/` — observability and on-device status indication. Per-area sub-topic
   IDs, e.g. `fw~obs_led_001~1` (SK6805 RGB LED string driver),
@@ -40,10 +47,13 @@ Sub-folders are created when a topic gets its first spec.
 - `conn/` — device↔app connectivity (the firmware side). Per-area sub-topic
   IDs: `fw~conn_serial_*` (IO_serial byte-stream transport over USB CDC),
   `fw~conn_proto_*` (protobuf schema + IO_COBSFrame framing),
-  `fw~conn_server_*` (app_server request dispatch, link throughput
-  test), `fw~conn_trace_*` (app_server trace services: PWM-cycle watch
+  `fw~conn_server_*` (app_server request dispatch, the board command
+  plane and motor rating report, link throughput test),
+  `fw~conn_trace_*` (app_server trace services: PWM-cycle watch
   sampling and batched streaming, memory read/write, trace capability
   report)
+- `ops/` — operation sequencing, e.g. `fw~ops_001~1` (app_sequencer, the
+  host's timed setpoint sequence, [[ops/sequence-player]])
 - `safety/` — fault state machine, protection thresholds, recovery
   paths
 

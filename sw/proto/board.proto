@@ -11,6 +11,9 @@ enum Mode {
   MODE_OFF           = 0;
   MODE_SIX_STEP_TRAP = 1;
   MODE_SINUSOIDAL    = 2;
+  MODE_FOC_TORQUE    = 3;
+  MODE_FOC_VELOCITY  = 4;
+  MODE_FOC_POSITION  = 5;
 }
 
 // Coarse drive state (mirrors app_motorControl_state_E).
@@ -23,28 +26,63 @@ enum DriveState {
 // Inbound board commands, dispatched to the board's handleRequest hook.
 message Request {
   oneof command {
-    SetMode     set_mode     = 1;
-    SetVelocity set_velocity = 2;
-    ClearFault  clear_fault  = 3;
+    ClearFault   clear_fault    = 1;
+    Command      run            = 2;   // run a Command: a mode and its setpoint sequence
+    GetMotorInfo get_motor_info = 3;
   }
 }
 
-message SetMode {
-  Mode mode = 1;
+// A mode and the timed setpoint sequence played under it (fw~conn_server_007,
+// fw~ops_001): MODE_OFF takes only stops; a method speeds, stops, and its own kind.
+// Up to the player's capacity (board.options), the envelope within one 448-byte frame.
+message Command {
+  Mode              mode      = 1;
+  repeated Setpoint setpoints = 2;
 }
 
-message SetVelocity {
-  float velocity_radps = 1;
+// One target at t_us from the sequence's start. The rate limit is per second in
+// the kind's unit (a position's is its velocity limit), zero a step; a position
+// also carries its acceleration limit and the velocity held through the point.
+message Setpoint {
+  uint32 t_us = 1;
+  oneof target {
+    float velocity_radps = 2;
+    float torque_nm      = 3;
+    Stop  stop           = 5;   // MODE_OFF at t_us; the sequence ends, later setpoints dropped
+    float position_rad   = 6;
+  }
+  float rate_limit              = 4;
+  float accel_limit_radps2      = 7;   // position only; zero steps
+  float velocity_at_point_radps = 8;   // position only
+}
+
+// The empty target: MODE_OFF at its t_us, ending the sequence.
+message Stop {
+}
+
+// The motor-control channel's configured ratings (fw~conn_server_008): the
+// host bounds its setpoints to them.
+message GetMotorInfo {
+}
+
+message MotorInfo {
+  float kt_nm_per_a        = 1;
+  float i_max_a            = 2;
+  float max_torque_nm      = 3;
+  float max_velocity_radps = 4;
+  float max_position_rad   = 5;
 }
 
 message ClearFault {
 }
 
 // Results for data-returning board commands (the board half of the
-// result-or-Response convention in shared.proto). Its result oneof grows
-// with the first such command; action-only commands are answered with the
-// framework Response and never appear here.
+// result-or-Response convention in shared.proto); action-only commands are
+// answered with the framework Response and never appear here.
 message Reply {
+  oneof result {
+    MotorInfo motor_info = 1;
+  }
 }
 
 // Periodic board status, published at 10 Hz while a host holds the serial
@@ -57,4 +95,9 @@ message Telemetry {
   float      bus_current_a           = 5;
   float      velocity_measured_radps = 6;
   float      velocity_setpoint_radps = 7;
+  float      torque_target_nm        = 8;   // in effect (fw~mc_027)
+  bool       sequence_running        = 9;   // fw~ops_001; set from its acceptance
+  uint32     sequence_elapsed_ms     = 10;  // since the running sequence's start
+  float      position_target_rad     = 11;  // in effect (fw~mc_031)
+  float      rotor_position_rad      = 12;  // fw~mc_032
 }

@@ -15,25 +15,30 @@ like end-to-end.
 - **Firmware:** foundation platform plus first motor drive — a spec'd and
   traced driver stack (clocks, GPIO, ADC, DMA, SPI, I2C, timers, USB CDC,
   op-amps, encoder, LED ring, button, serial) with all board sensing
-  bench-verified in engineering units; six-step and sensored sinusoidal
-  drive spinning the motor through the STSPIN32G4 gate driver on an
-  encoder tracking estimator, with USB-PD sink monitoring and
-  overcurrent / encoder-fault protection; and a
-  protobuf-over-USB protocol carrying telemetry, a signal trace engine
-  sampling at the 20 kHz PWM rate, a link throughput test, and the log
-  stream. FOC is next (see
-  [`docs/motor-sprint.md`](docs/motor-sprint.md)).
+  bench-verified in engineering units; six-step, sensored sinusoidal and
+  field-oriented torque, velocity and position drive through the
+  STSPIN32G4 gate driver on a three-state encoder observer with a
+  disturbance estimate (position bench verification pending), with cogging
+  compensation, a host command plane playing timed setpoint sequences
+  (speeds, torques, and position moves profiled on the board) on the
+  1 ms tick, USB-PD sink monitoring, and overcurrent / encoder-fault
+  protection; and a protobuf-over-USB protocol carrying telemetry, a
+  signal trace engine sampling at the 20 kHz PWM rate, a link throughput
+  test, and the log stream. The sprint plan is
+  [`docs/motor-sprint.md`](docs/motor-sprint.md).
 - **Desktop app:** observability slice working on the bench — connect with
   a firmware-identity gate, DWARF-driven signal picker, live WebGL plots
   with honest min/max decimation, pause/zoom timeline with a comparison
-  cursor, value table, and session restore. Spec-driven like the firmware
+  cursor, value table, and session restore; Command and Sequence widgets
+  for the command plane, the sequence chart drawing the board's own
+  profiles, with a capture export. Spec-driven like the firmware
   ([`specs/desktop-app/`](specs/desktop-app/)), verified by a playwright
   UI suite.
 - **Simulation and analysis tooling:** an SIL harness (`sw/sil`) exercises
-  the native firmware build (protocol, trace engine, server); the
-  high-fidelity motor-model SIL and the formal `notebooks/` analysis
-  infrastructure are not yet started (ad-hoc trace analyses live in
-  `tools/trace_analysis/`).
+  the native firmware build against a motor model with cogging and load
+  torque (protocol, trace engine, server, the drive methods, the
+  estimator); the formal `notebooks/` analysis infrastructure is not yet
+  started (trace analyses live in `tools/trace_analysis/`).
 
 The hardware is a USB-PD-powered BLDC controller built around an STM32G431 MCU,
 an STSPIN32G4 integrated gate driver, and an AS5048 magnetic rotor encoder. It

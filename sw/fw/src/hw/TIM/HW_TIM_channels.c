@@ -25,6 +25,7 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         HW_TIM_CUBEMX_OC_TIM1_CH1
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
         .channelNameStr = "PWM_U",
+        .preload        = true,   // PWM mode: the compare latches at the update event
 #endif
     },
     [HW_TIM_CHANNEL_PWM_V] =
@@ -35,6 +36,7 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         HW_TIM_CUBEMX_OC_TIM1_CH2
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
         .channelNameStr = "PWM_V",
+        .preload        = true,   // PWM mode: the compare latches at the update event
 #endif
     },
     [HW_TIM_CHANNEL_PWM_W] =
@@ -45,6 +47,7 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         HW_TIM_CUBEMX_OC_TIM1_CH3
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
         .channelNameStr = "PWM_W",
+        .preload        = true,   // PWM mode: the compare latches at the update event
 #endif
     },
     [HW_TIM_CHANNEL_INJ_TRIG] =
@@ -55,6 +58,7 @@ const HW_TIM_channelConfig_S HW_TIM_channelConfig[HW_TIM_CHANNEL_COUNT] =
         HW_TIM_CUBEMX_OC_TIM1_CH4
 #if (BUILD_TARGET == BUILD_TARGET_SIM)
         .channelNameStr = "INJ_TRIG",
+        .preload        = true,   // PWM mode: the compare latches at the update event
 #endif
     },
 };

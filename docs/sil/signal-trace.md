@@ -96,7 +96,7 @@ enumerates every traceable leaf from DWARF at enable (scalars, recursed struct
 members, expanded array elements) and sweeps them all memory→table each tick —
 the cvar namespace is an automatic, accurate mirror of firmware memory. The
 built-in exclusion is a **default array-size threshold of 32** (arrays larger are
-skipped whole, dropping stacks / `ucHeap` / 512-byte buffers), plus multi-dim /
+skipped whole, dropping stacks / `ucHeap` / 512-byte buffers), plus
 unknown-length arrays and non-data leaves. Per-member
 `skip_cvar_registration_by_prefix(prefix)` / `register_cvar_in_state_table(path)`
 tune it. See [`state-route-tables.md`](state-route-tables.md) §1.
