@@ -9,9 +9,14 @@ float32_t               mock_app_motorControl_lastVelocity;
 float32_t               mock_app_motorControl_lastVelocityLimit;
 float32_t               mock_app_motorControl_lastTorque;
 float32_t               mock_app_motorControl_lastTorqueLimit;
+float32_t               mock_app_motorControl_lastPosition;
+float32_t               mock_app_motorControl_lastPositionVelocityLimit;
+float32_t               mock_app_motorControl_lastPositionAccelLimit;
+float32_t               mock_app_motorControl_lastPositionVelocityAtPoint;
 uint32_t                mock_app_motorControl_setModeCalls;
 uint32_t                mock_app_motorControl_setVelocityCalls;
 uint32_t                mock_app_motorControl_setTorqueCalls;
+uint32_t                mock_app_motorControl_setPositionSetpointCalls;
 uint32_t                mock_app_motorControl_clearFaultCalls;
 
 void mock_app_motorControl_setSnapshot(const app_motorControl_snapshot_S * const snapshot)
@@ -39,9 +44,14 @@ void mock_app_motorControl_reset(void)
     mock_app_motorControl_lastVelocityLimit = 0.0f;
     mock_app_motorControl_lastTorque = 0.0f;
     mock_app_motorControl_lastTorqueLimit = 0.0f;
+    mock_app_motorControl_lastPosition = 0.0f;
+    mock_app_motorControl_lastPositionVelocityLimit = 0.0f;
+    mock_app_motorControl_lastPositionAccelLimit = 0.0f;
+    mock_app_motorControl_lastPositionVelocityAtPoint = 0.0f;
     mock_app_motorControl_setModeCalls = 0U;
     mock_app_motorControl_setVelocityCalls = 0U;
     mock_app_motorControl_setTorqueCalls = 0U;
+    mock_app_motorControl_setPositionSetpointCalls = 0U;
     mock_app_motorControl_clearFaultCalls = 0U;
 }
 
@@ -90,6 +100,17 @@ void app_motorControl_setTorque(app_motorControl_channel_E channel, float32_t to
     mock_app_motorControl_lastTorque = torque_Nm;
     mock_app_motorControl_lastTorqueLimit = rateLimit_NmPerSec;
     mock_app_motorControl_setTorqueCalls++;
+}
+
+void app_motorControl_setPositionSetpoint(app_motorControl_channel_E channel, float32_t position_rad, float32_t velocityLimit_radPerSec,
+                                          float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec)
+{
+    (void) channel;
+    mock_app_motorControl_lastPosition = position_rad;
+    mock_app_motorControl_lastPositionVelocityLimit = velocityLimit_radPerSec;
+    mock_app_motorControl_lastPositionAccelLimit = accelLimit_radPerSec2;
+    mock_app_motorControl_lastPositionVelocityAtPoint = velocityAtPoint_radPerSec;
+    mock_app_motorControl_setPositionSetpointCalls++;
 }
 
 void app_motorControl_clearFault(app_motorControl_channel_E channel)

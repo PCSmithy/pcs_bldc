@@ -22,6 +22,10 @@
 // last SENT value, so encoder LSB noise can't re-assert the dial every cycle
 // against a host command (sys~ops_002 arbitration).
 #define APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC (0.05f)
+// The same for a position write under the position method: 0.01 rad is about
+// half a degree of dial travel, clear of the dial encoder's noise, so a host
+// position sequence is not rewritten by a dial that only jitters.
+#define APP_USERCONTROLS_POSITION_SEND_DEADBAND_RAD (0.01f)
 
 // Window (ms) after a tap to wait for a second tap: a double-tap cycles the LED
 // ring's display mode, a lone tap (window elapsed) toggles run/stop.
@@ -61,6 +65,7 @@ typedef struct
     // state) is not re-overwritten every cycle — later writer prevails.
     app_motorControl_mode_E modeSent;
     float32_t velocitySent_radPerSec;
+    float32_t positionSent_rad;
     bool outputsSeeded;   // first cycle always writes
 } app_userControls_data_S;
 
@@ -257,9 +262,20 @@ void app_userControls_run1ms(void)
             app_motorControl_setMode(data->config->motor, modeOut);
             data->modeSent = modeOut;
         }
-        if ((!data->outputsSeeded) ||
-            (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
-             APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC))
+        if (motorSnapshot.selectedMode == APP_MOTORCONTROL_MODE_FOC_POSITION)
+        {
+            // the dial's accumulated travel is the position target: half a turn each way
+            const float32_t positionRequest_rad = DEG_TO_RAD(data->dialAccum_deg);
+            if ((!data->outputsSeeded) ||
+                (fabsf(positionRequest_rad - data->positionSent_rad) > APP_USERCONTROLS_POSITION_SEND_DEADBAND_RAD))
+            {
+                app_motorControl_setPositionSetpoint(data->config->motor, positionRequest_rad, 0.0f, 0.0f, 0.0f);   // at the maximum velocity, stepping (fw~mc_031)
+                data->positionSent_rad = positionRequest_rad;
+            }
+        }
+        else if ((!data->outputsSeeded) ||
+                 (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
+                  APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC))
         {
             app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec, 0.0f);   // the dial steps (fw~mc_027)
             data->velocitySent_radPerSec = data->velocityRequest_radPerSec;

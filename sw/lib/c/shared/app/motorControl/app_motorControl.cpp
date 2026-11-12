@@ -62,6 +62,7 @@ class Motor
         bool getSnapshot(app_motorControl_snapshot_S * const snapshot);
         bool getRatings(app_motorControl_ratings_S * const ratings) const;
         void setVelocity(float32_t velocity_radPerSec, float32_t rateLimit_radPerSec2);
+        void setPositionSetpoint(float32_t position_rad, float32_t velocityLimit_radPerSec, float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec);
         void setTorque(float32_t torque_Nm, float32_t rateLimit_NmPerSec);
         void setMode(app_motorControl_mode_E mode);
         void clearFault();
@@ -88,9 +89,11 @@ class Motor
 
         void focTorqueLoop(const float32_t targetTorque_Nm, const theta_S * const rotorAngle);   // current regulator, voltage limit, inverse Park
         void focVelocityLoop(const float32_t targetVelocity_radPerSec, const theta_S * const rotorAngle);   // velocity PI to a torque demand, then the torque loop
+        void focPositionLoop(const float32_t positionTarget_rad, const float32_t profileVelocity_radPerSec, const theta_S * const rotorAngle);   // position PI plus the profile velocity to a velocity command, then the velocity loop
 
         // called in run1ms()
         void updateOvercurrentLatch();
+        void runMoveProfile();   // the position target and profile velocity (fw~mc_031)
         void latchFault();
 
         app_motorControl_channelConfig_S const * config;
@@ -110,10 +113,33 @@ class Motor
         float32_t torqueSetpointRequested_Nm;
         float32_t torqueRateLimit_NmPerSec;
 
+        // the position setpoint (fw~mc_030): written by the API, planned from by run1ms
+        enum class LastWrite : uint8_t { None, Position, Speed };
+        struct PositionSetpoint
+        {
+            float32_t position_rad;               // theta_s
+            float32_t velocityLimit_radPerSec;    // v, at most w_max (a zero write stands for w_max)
+            float32_t accelLimit_radPerSec2;      // a; zero steps
+            float32_t velocityAtPoint_radPerSec;  // |w_s|, at most v
+        };
+        PositionSetpoint positionSetpoint;
+        volatile bool positionSetpointPending;   // a write run1ms has not yet planned from
+        volatile LastWrite lastWrite;            // which of the setpoint and the speed target stands (fw~mc_031)
+
+        // the move profile (fw~mc_031), run1ms-owned
+        float32_t positionTarget_rad;             // theta*
+        float32_t profileVelocity_radPerSec;      // w_f
+        bool      profileArrived;                 // theta* reached theta_s: w_f held at w_s in the approach direction
+        float32_t profileHeldVelocity_radPerSec;
+
         float32_t rotorAngle_rad;        // the estimator's mechanical angle, before the alignment offset
         float32_t mechanicalAngle_rad;   // rotorAngle_rad less the alignment offset
         float32_t magneticAngle_rad;
         float32_t magneticAngleTarget_rad;
+        float32_t rotorPosition_rad;      // the multi-turn rotor position, zero at the enable (fw~mc_032)
+        float32_t rotorPositionZero_rad;  // rotorAngle_rad at that zero
+        float32_t rotorAnglePrev_rad;     // last cycle's rotorAngle_rad, for the seam crossings
+        int32_t   rotorTurns;             // seam crossings of rotorAngle_rad since the zero
 
         float32_t rotorTorque_Nm;
         float32_t coggingTorque_Nm;      // T_cog at this cycle's rotor angle (fw~mc_028)
@@ -134,6 +160,7 @@ class Motor
 
         PiRegulator currentPi[APP_MOTORCONTROL_AXIS_COUNT];
         PiRegulator velocityPi;
+        PiRegulator positionPi;
 
         // setpoint
         float32_t duty[IO_BRIDGE_PHASE_COUNT];
@@ -233,6 +260,20 @@ void Motor::updateRotorPosition()
     app_rotorEstimation_getState(this->config->rotorEstimator, &this->rotorAngle_rad, &this->velocityMeasured_radPerSec, &this->unmodeledTorque_Nm);
     this->mechanicalAngle_rad = this->rotorAngle_rad - this->alignmentOffset_rad;
     this->updateMagneticAngle();
+
+    // [impl->fw~mc_032~1] turns counted at the seam crossings of the raw angle and
+    // the position rebuilt from them each cycle, so no accumulation error at any travel
+    const float32_t delta_rad = this->rotorAngle_rad - this->rotorAnglePrev_rad;
+    if (delta_rad < -PI)
+    {
+        this->rotorTurns++;
+    }
+    else if (delta_rad > PI)
+    {
+        this->rotorTurns--;
+    }
+    this->rotorAnglePrev_rad = this->rotorAngle_rad;
+    this->rotorPosition_rad = ((float32_t)this->rotorTurns * TWO_PI) + (this->rotorAngle_rad - this->rotorPositionZero_rad);
 }
 
 // [impl->fw~mc_028~1] the cogging model at the cycle's raw mechanical angle
@@ -365,6 +406,108 @@ void Motor::focVelocityLoop(const float32_t targetVelocity_radPerSec, const thet
     this->focTorqueLoop(targetTorque_Nm, rotorAngle);
 }
 
+// [impl->fw~mc_029~1] w_c = K_pp e + K_pi S_p + w_f, clamped to +/-w_max with the
+// integral held through the clamp, onto the velocity method's step. Not
+// back-calculated: with w_f itself at w_max that would wind S_p against the
+// proportional term and leave the loop limp when the profile stops.
+void Motor::focPositionLoop(const float32_t positionTarget_rad, const float32_t profileVelocity_radPerSec, const theta_S * const rotorAngle)
+{
+    const float32_t positionError_rad = positionTarget_rad - this->rotorPosition_rad;
+    float32_t velocityCommand_radPerSec = this->positionPi.step(positionError_rad) + profileVelocity_radPerSec;
+
+    if (fabsf(velocityCommand_radPerSec) > this->config->maxVelocity_radPerSec)
+    {
+        velocityCommand_radPerSec = SIGN(velocityCommand_radPerSec) * this->config->maxVelocity_radPerSec;
+        this->positionPi.hold(positionError_rad);
+    }
+    this->focVelocityLoop(velocityCommand_radPerSec, rotorAngle);
+}
+
+// [impl->fw~mc_031~1] theta* advances by w_f each pass, saturated to +/-theta_max; w_f
+// from whichever of the position setpoint and the speed target was written last:
+// the minimum-time profile to theta_s arriving at w_s, or the jog.
+void Motor::runMoveProfile()
+{
+    const float32_t T = RUN1MS_PERIOD_S;
+    float32_t omegaF = ZERO;
+
+    if (this->positionSetpointPending)
+    {
+        this->positionSetpointPending = false;
+        this->profileArrived = false;
+    }
+
+    switch (this->lastWrite)
+    {
+        case LastWrite::Speed:
+            omegaF = this->velocitySetpoint_radPerSec;
+            break;
+
+        case LastWrite::Position:
+        {
+            if (this->profileArrived)
+            {
+                omegaF = this->profileHeldVelocity_radPerSec;
+            }
+            else
+            {
+                const PositionSetpoint sp = this->positionSetpoint;
+                const float32_t distance_rad = sp.position_rad - this->positionTarget_rad;
+                const float32_t direction = (distance_rad < ZERO) ? -1.0f : 1.0f;
+                const float32_t remaining_rad = fabsf(distance_rad);
+                if (sp.accelLimit_radPerSec2 > ZERO)
+                {
+                    // The speed from which braking at a, one a T step per pass, reaches w_s
+                    // exactly at theta_s; w_f moves toward it, or toward v, at a per second.
+                    const float32_t aT = sp.accelLimit_radPerSec2 * T;
+                    const float32_t halfAT = 0.5f * aT;
+                    const float32_t ws = sp.velocityAtPoint_radPerSec;
+                    const float32_t radicand = MAX_OF(ZERO, (halfAT * halfAT) + (ws * ws) - (aT * ws) + (2.0f * sp.accelLimit_radPerSec2 * remaining_rad));
+                    const float32_t speed = MIN_OF(sp.velocityLimit_radPerSec, sqrtf(radicand) - halfAT);
+                    omegaF = app_motorControl_private_slewToward(this->profileVelocity_radPerSec, direction * speed, sp.accelLimit_radPerSec2, T);
+                }
+                else
+                {
+                    omegaF = direction * sp.velocityLimit_radPerSec;
+                }
+
+                // this pass reaches theta_s while closing on it: on it at rest, or past it at w_s
+                if (((omegaF * direction) >= ZERO) && (remaining_rad <= (fabsf(omegaF) * T)))
+                {
+                    this->profileArrived = true;
+                    this->profileHeldVelocity_radPerSec = direction * sp.velocityAtPoint_radPerSec;
+                    omegaF = this->profileHeldVelocity_radPerSec;
+                    if (sp.velocityAtPoint_radPerSec == ZERO)
+                    {
+                        this->positionTarget_rad = sp.position_rad;
+                    }
+                }
+            }
+            break;
+        }
+
+        default:
+        case LastWrite::None:
+            break;
+    }
+
+    // w_f zero while it would push theta* past a bound
+    float32_t next_rad = this->positionTarget_rad + (omegaF * T);
+    const float32_t bound_rad = this->config->foc.maxPosition_rad;
+    if (next_rad > bound_rad)
+    {
+        next_rad = bound_rad;
+        omegaF = ZERO;
+    }
+    else if (next_rad < -bound_rad)
+    {
+        next_rad = -bound_rad;
+        omegaF = ZERO;
+    }
+    this->positionTarget_rad = next_rad;
+    this->profileVelocity_radPerSec = omegaF;
+}
+
 /* Public Class Function Definitions */
 bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
 {
@@ -403,6 +546,10 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
     {
         isValid &= (channelConfig->foc.cogging[i].amplitude_Nm >= ZERO);
     }
+    // [impl->fw~mc_029~1] the position gains positive; [impl->fw~mc_031~1] the travel bound positive
+    isValid &= (channelConfig->foc.positionKp_perSec > ZERO);
+    isValid &= (channelConfig->foc.positionKi_perSec2 > ZERO);
+    isValid &= (channelConfig->foc.maxPosition_rad > ZERO);
 
     if (isValid)
     {
@@ -431,6 +578,10 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->rotorAngle_rad = ZERO;
         this->mechanicalAngle_rad = ZERO;
         this->magneticAngle_rad = ZERO;
+        this->rotorPosition_rad = ZERO;
+        this->rotorPositionZero_rad = ZERO;
+        this->rotorAnglePrev_rad = ZERO;
+        this->rotorTurns = 0;
         this->velocityMeasured_radPerSec = ZERO;
         this->coggingTorque_Nm = ZERO;
 
@@ -440,6 +591,14 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->torqueSetpoint_Nm = ZERO;
         this->torqueSetpointRequested_Nm = ZERO;
         this->torqueRateLimit_NmPerSec = ZERO;
+
+        this->positionSetpoint = PositionSetpoint{};
+        this->positionSetpointPending = false;
+        this->lastWrite = LastWrite::None;
+        this->positionTarget_rad = ZERO;
+        this->profileVelocity_radPerSec = ZERO;
+        this->profileArrived = false;
+        this->profileHeldVelocity_radPerSec = ZERO;
 
         PiConfig piConfig =
         {
@@ -455,6 +614,11 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         piConfig.kp = channelConfig->foc.velocityKp_NmPerRadPerSec;
         piConfig.ki = channelConfig->foc.velocityKi_NmPerRad;
         this->velocityPi.init(piConfig);
+
+
+        piConfig.kp = channelConfig->foc.positionKp_perSec;
+        piConfig.ki = channelConfig->foc.positionKi_perSec2;
+        this->positionPi.init(piConfig);
     }
     return isValid;
 }
@@ -537,6 +701,14 @@ void Motor::run1ms()
             // starts from a fresh write, never a stale torque
             this->torqueSetpointRequested_Nm = ZERO;
             this->torqueRateLimit_NmPerSec = ZERO;
+            if (lastState != DriveState::Off)
+            {
+                // [impl->fw~mc_030~1] a disable or fault drops the position setpoint
+                // once; a write while dark is held to the enable
+                this->positionSetpoint = PositionSetpoint{};
+                this->positionSetpointPending = false;
+                this->lastWrite = LastWrite::None;
+            }
         }
         else if (lastState == DriveState::Off)
         {
@@ -551,6 +723,18 @@ void Motor::run1ms()
             this->torqueSetpoint_Nm = app_motorControl_private_slewToward(
                 this->torqueSetpoint_Nm, this->torqueSetpointRequested_Nm,
                 this->torqueRateLimit_NmPerSec, RUN1MS_PERIOD_S);
+        }
+
+        // [impl->fw~mc_031~1] theta* and w_f zero until the method's first step after the enable
+        if (this->driveState == DriveState::Driving)
+        {
+            this->runMoveProfile();
+        }
+        else
+        {
+            this->positionTarget_rad = ZERO;
+            this->profileVelocity_radPerSec = ZERO;
+            this->profileArrived = false;
         }
 
         switch (this->driveState)
@@ -619,7 +803,8 @@ void Motor::run50us()
         );
 
         const bool isFOC = ((this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_TORQUE) ||
-                            (this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_VELOCITY));
+                            (this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_VELOCITY) ||
+                            (this->modeCurrent == APP_MOTORCONTROL_MODE_FOC_POSITION));
 
         // [impl->fw~mc_016~1] the estimator's known torque: K_t I_q plus, while a
         // field-oriented method drives, the compensated share of the cogging model
@@ -642,9 +827,17 @@ void Motor::run50us()
             this->currentPi[APP_MOTORCONTROL_AXIS_Q].reset();
         }
         if ((this->driveState != DriveState::Driving) ||
-            (this->modeCurrent != APP_MOTORCONTROL_MODE_FOC_VELOCITY) || isMethodChange)
+            (!isFOC) || isMethodChange)
         {
             this->velocityPi.reset();
+            this->positionPi.reset();
+        }
+        // [impl->fw~mc_032~1] the position is zero until the first commutation step after the enable
+        if (this->driveState != DriveState::Driving)
+        {
+            this->rotorTurns = 0;
+            this->rotorPositionZero_rad = this->rotorAngle_rad;
+            this->rotorPosition_rad = ZERO;
         }
 
         if (this->driveState == DriveState::Driving)
@@ -735,6 +928,13 @@ void Motor::run50us()
                     this->focVelocityLoop(this->velocitySetpoint_radPerSec, &rotorAngle);
                     break;
                 }
+
+                case APP_MOTORCONTROL_MODE_FOC_POSITION:
+                {
+                    isVectorControl = true;
+                    this->focPositionLoop(this->positionTarget_rad, this->profileVelocity_radPerSec, &rotorAngle);
+                    break;
+                }
             }
         }
 
@@ -776,6 +976,9 @@ bool Motor::getSnapshot(app_motorControl_snapshot_S * const snapshot)
         snapshot->velocitySetpoint_radPerSec = this->velocitySetpoint_radPerSec;
         snapshot->torqueTarget_Nm   = this->torqueSetpoint_Nm;
         snapshot->velocityMeasured_radPerSec = this->velocityMeasured_radPerSec;
+        snapshot->positionTarget_rad = this->positionTarget_rad;
+        snapshot->profileVelocity_radPerSec = this->profileVelocity_radPerSec;
+        snapshot->rotorPosition_rad = this->rotorPosition_rad;
         snapshot->faultLatches      = this->faultLatches;
 
         // Coarse state the ring reads for fw~mc_009 (the ring carries that impl
@@ -806,6 +1009,7 @@ bool Motor::getRatings(app_motorControl_ratings_S * const ratings) const
         ratings->maxCurrent_A           = this->config->foc.maxCurrent_A;
         ratings->maxTorque_Nm           = this->config->foc.torqueConstant_NmPerA * this->config->foc.maxCurrent_A;
         ratings->maxVelocity_radPerSec  = this->config->maxVelocity_radPerSec;
+        ratings->maxPosition_rad        = this->config->foc.maxPosition_rad;
         ret = true;
     }
     return ret;
@@ -821,6 +1025,10 @@ void Motor::setVelocity(float32_t velocity_radPerSec, float32_t rateLimit_radPer
         std::atomic_signal_fence(std::memory_order_seq_cst);
         this->velocitySetpointRequested_radPerSec = app_motorControl_private_saturate(velocity_radPerSec, this->config->maxVelocity_radPerSec);
 
+        if (this->modeSelected == APP_MOTORCONTROL_MODE_FOC_POSITION)
+        {
+            this->lastWrite = LastWrite::Speed;   // [impl->fw~mc_031~1] a speed target under the position method jogs
+        }
         if (this->modeSelected == APP_MOTORCONTROL_MODE_FOC_TORQUE)
         {
             // [impl->fw~mc_026~1] under the torque method a speed target is its
@@ -829,6 +1037,27 @@ void Motor::setVelocity(float32_t velocity_radPerSec, float32_t rateLimit_radPer
             this->setTorque(this->velocitySetpointRequested_radPerSec * torquePerSpeed_NmPerRadPerSec,
                             this->velocityRateLimit_radPerSec2 * torquePerSpeed_NmPerRadPerSec);
         }
+    }
+}
+
+// [impl->fw~mc_030~1] the most recent write stands: theta_s saturated to +/-theta_max,
+// v to w_max (zero, negative or non-finite standing for w_max), a non-finite or
+// negative stepping, |w_s| at most v
+void Motor::setPositionSetpoint(float32_t position_rad, float32_t velocityLimit_radPerSec, float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec)
+{
+    if (this->config != NULL)
+    {
+        PositionSetpoint sp = {};
+        sp.position_rad = app_motorControl_private_saturate(position_rad, this->config->foc.maxPosition_rad);
+        sp.velocityLimit_radPerSec = ((isfinite(velocityLimit_radPerSec)) && (velocityLimit_radPerSec > ZERO))
+                                         ? MIN_OF(velocityLimit_radPerSec, this->config->maxVelocity_radPerSec)
+                                         : this->config->maxVelocity_radPerSec;
+        sp.accelLimit_radPerSec2 = app_motorControl_private_clampRateLimit(accelLimit_radPerSec2);
+        sp.velocityAtPoint_radPerSec = fabsf(app_motorControl_private_saturate(velocityAtPoint_radPerSec, sp.velocityLimit_radPerSec));
+        this->positionSetpoint = sp;
+        std::atomic_signal_fence(std::memory_order_seq_cst);   // the fields before the flags, as setVelocity
+        this->positionSetpointPending = true;
+        this->lastWrite = LastWrite::Position;
     }
 }
 
@@ -936,6 +1165,15 @@ void app_motorControl_setTorque(app_motorControl_channel_E channel, float32_t to
     if (channel < APP_MOTORCONTROL_CHANNEL_COUNT)
     {
         data->channels[channel].setTorque(torque_Nm, rateLimit_NmPerSec);
+    }
+}
+
+void app_motorControl_setPositionSetpoint(app_motorControl_channel_E channel, float32_t position_rad, float32_t velocityLimit_radPerSec,
+                                          float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec)
+{
+    if (channel < APP_MOTORCONTROL_CHANNEL_COUNT)
+    {
+        data->channels[channel].setPositionSetpoint(position_rad, velocityLimit_radPerSec, accelLimit_radPerSec2, velocityAtPoint_radPerSec);
     }
 }
 

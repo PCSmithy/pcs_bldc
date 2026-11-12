@@ -19,7 +19,8 @@ message (`fw~conn_proto_001~1`) every 100 ms — within ± 2 % over any
 10-second window — reporting, as read at publication: the motor-control
 mode and drive state (`fw~mc_009~1`), the rotor velocity estimate
 (`fw~est_rotor_002~1`), the speed and torque targets in effect
-(`fw~mc_027~1`), whether a sequence is running and its milliseconds since
+(`fw~mc_027~1`), the position target (`fw~mc_031~1`), the rotor position
+(`fw~mc_032~1`), whether a sequence is running and its milliseconds since
 start (`fw~ops_001~1`), the bus voltage, the bus current, and the board's
 milliseconds since boot.
 

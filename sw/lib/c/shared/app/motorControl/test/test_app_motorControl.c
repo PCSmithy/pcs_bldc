@@ -131,7 +131,8 @@ static void buildConfigs(void)
         // K_p = 8 V/A, K_i T = 0.4 V/A per step: round numbers for the regulator tests
         .foc = { .maxCurrent_A = FOC_I_MAX, .motorL_H = FOC_L, .motorR_ohm = FOC_R, .currentLoopBandwidth_radPerSec = FOC_BW,
                  .torqueConstant_NmPerA = FOC_KT, .velocityKp_NmPerRadPerSec = FOC_KVP, .velocityKi_NmPerRad = FOC_KVI,
-                 .velocityKff = 0.0f },
+                 .velocityKff = 0.0f,
+                 .positionKp_perSec = 30.0f, .positionKi_perSec2 = 90.0f, .maxPosition_rad = 20.0f * PI },
         .defaultMode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP,
         .prechargeTime_ms = PRECHARGE_MS };
     appConfig = (app_motorControl_config_S){ .channels = appCfg, .numChannels = APP_MOTORCONTROL_CHANNEL_COUNT };
@@ -1452,6 +1453,442 @@ static void test_init_rejects_a_degenerate_current_loop(void)
     TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
 }
 
+/* ---- fw~mc_029..032: the position method, its setpoint, the move profile, the rotor position ---- */
+
+#define TWO_PI_F        (6.28318530718f)
+#define RAD2DEG(r)      ((float32_t)(r) * 180.0f / 3.14159265f)
+#define POS_KPP         (30.0f)         // the test config's position gains (mirror buildConfigs)
+#define POS_MAX         (20.0f * 3.14159265f)
+
+static float32_t motorPositionTarget(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.positionTarget_rad;
+}
+
+static float32_t motorProfileVelocity(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.profileVelocity_radPerSec;
+}
+
+static float32_t motorRotorPosition(void)
+{
+    app_motorControl_snapshot_S s = { 0 };
+    (void)app_motorControl_getSnapshot(MOTOR_MC, &s);
+    return s.rotorPosition_rad;
+}
+
+// The position method driving at rest: aligned at zero, selected, its first step
+// run on a zero target with nothing written since the enable.
+static void driveInPositionMode(void)
+{
+    alignAtZero();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_POSITION);
+    tick();
+    TEST_ASSERT_TRUE(bridgeEnabled());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorPositionTarget());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorProfileVelocity());
+}
+
+// Passes until theta* rests on target (w_f zero, within 1e-4 rad), at most maxPasses.
+// The peak |w_f| and the largest theta* seen come back through the optional pointers.
+static uint32_t runToRest(float32_t target, uint32_t maxPasses, float32_t * const peakSpeed, float32_t * const maxTarget)
+{
+    uint32_t passes = 0U;
+    bool atRest = false;
+    float32_t peak = 0.0f;
+    float32_t largest = motorPositionTarget();
+    while ((!atRest) && (passes < maxPasses))
+    {
+        tick();
+        passes++;
+        const float32_t w = motorProfileVelocity();
+        const float32_t t = motorPositionTarget();
+        if (fabsf(w) > peak) { peak = fabsf(w); }
+        if (t > largest) { largest = t; }
+        atRest = ((fabsf(w) < 1e-6f) && (fabsf(t - target) < 1e-4f));
+    }
+    TEST_ASSERT_TRUE_MESSAGE(atRest, "the profile did not come to rest on the target");
+    if (peakSpeed != NULL) { *peakSpeed = peak; }
+    if (maxTarget != NULL) { *maxTarget = largest; }
+    return passes;
+}
+
+// Passes until theta* first reaches target, at most maxPasses.
+static uint32_t runToReach(float32_t target, uint32_t maxPasses)
+{
+    uint32_t passes = 0U;
+    bool reached = false;
+    while ((!reached) && (passes < maxPasses))
+    {
+        tick();
+        passes++;
+        reached = (motorPositionTarget() >= (target - 1e-6f));
+    }
+    TEST_ASSERT_TRUE_MESSAGE(reached, "the target was not reached");
+    return passes;
+}
+
+// The bridge dark, then the position method re-enabled through its precharge: the
+// pass that begins driving (its second cycle is the method's first step).
+static void disableThenReenable(void)
+{
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    TEST_ASSERT_FALSE(bridgeEnabled());
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_POSITION);
+    tick();                                   // precharging
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();                                   // driving: the first step
+    TEST_ASSERT_TRUE(bridgeEnabled());
+}
+
+// [test->fw~mc_031~1]
+// 2 pi at 10 rad/s, 50 rad/s^2, stopping: at the limit 200 ms in, at rest on 2 pi
+// at 828 ms, never past it.
+static void test_profile_trapezoid_to_two_pi(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, TWO_PI_F, 10.0f, 50.0f, 0.0f);
+    for (uint32_t n = 0U; n < 200U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 10.0f, motorProfileVelocity());
+    float32_t largest = 0.0f;
+    const uint32_t passes = 200U + runToRest(TWO_PI_F, 2000U, NULL, &largest);
+    TEST_ASSERT_UINT32_WITHIN(2U, 828U, passes);
+    TEST_ASSERT_TRUE(largest <= (TWO_PI_F + 1e-5f));
+}
+
+// [test->fw~mc_031~1]
+// 0.5 rad under the same limits is a triangle: 5 rad/s at 100 ms, at rest at 200 ms.
+static void test_profile_triangle_to_half_a_radian(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 0.5f, 10.0f, 50.0f, 0.0f);
+    for (uint32_t n = 0U; n < 100U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 5.0f, motorProfileVelocity());
+    const uint32_t passes = 100U + runToRest(0.5f, 1000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 200U, passes);
+}
+
+// [test->fw~mc_031~1]
+// A zero acceleration limit steps w_f to v on the next pass: 2 pi at 10 rad/s in 628 ms.
+static void test_profile_steps_at_a_zero_acceleration_limit(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, TWO_PI_F, 10.0f, 0.0f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 10.0f, motorProfileVelocity());
+    const uint32_t passes = 1U + runToRest(TWO_PI_F, 2000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 628U, passes);
+}
+
+// [test->fw~mc_031~1]
+// A zero velocity limit stands for w_max: 4 pi at 50 rad/s^2 reaches it before the point.
+static void test_profile_zero_velocity_limit_is_the_maximum_velocity(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 2.0f * TWO_PI_F, 0.0f, 50.0f, 0.0f);
+    uint32_t passes = 0U;
+    while ((motorProfileVelocity() < (0.99f * MAX_VELOCITY)) && (passes < 2000U)) { tick(); passes++; }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * MAX_VELOCITY, MAX_VELOCITY, motorProfileVelocity());
+    TEST_ASSERT_TRUE(motorPositionTarget() < (2.0f * TWO_PI_F));
+    (void)runToRest(2.0f * TWO_PI_F, 2000U, NULL, NULL);
+}
+
+// [test->fw~mc_031~1]
+// A velocity at the point of 10 rad/s: 2 pi is reached at 728 ms still at 10 rad/s and
+// w_f holds past it; 4 pi stopping, written at that moment, is reached 728 ms later.
+static void test_profile_arrives_at_the_velocity_at_the_point_and_chains(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, TWO_PI_F, 10.0f, 50.0f, 10.0f);
+    const uint32_t passes = runToReach(TWO_PI_F, 2000U);
+    TEST_ASSERT_UINT32_WITHIN(2U, 728U, passes);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 10.0f, motorProfileVelocity());
+
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 2.0f * TWO_PI_F, 10.0f, 50.0f, 0.0f);
+    const uint32_t chained = runToRest(2.0f * TWO_PI_F, 2000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 728U, chained);
+}
+
+// [test->fw~mc_031~1]
+// Past the point w_f holds at w_s: 100 ms later theta* has moved a further radian, and
+// 4 pi stopping written then is reached 628 ms later.
+static void test_profile_holds_the_velocity_past_the_point(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, TWO_PI_F, 10.0f, 50.0f, 10.0f);
+    (void)runToReach(TWO_PI_F, 2000U);
+    const float32_t atPoint = motorPositionTarget();
+    for (uint32_t n = 0U; n < 100U; n++)
+    {
+        tick();
+        TEST_ASSERT_FLOAT_WITHIN(1e-3f, 10.0f, motorProfileVelocity());
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, motorPositionTarget() - atPoint);
+
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 2.0f * TWO_PI_F, 10.0f, 50.0f, 0.0f);
+    const uint32_t late = runToRest(2.0f * TWO_PI_F, 2000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 628U, late);
+}
+
+// [test->fw~mc_031~1]
+// Rewritten to 0 while cruising at 10 rad/s toward 2 pi: w_f falls 0.05 rad/s a pass
+// through zero, and theta* comes back to rest on 0.
+static void test_profile_reverses_at_the_acceleration_limit(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, TWO_PI_F, 10.0f, 50.0f, 0.0f);
+    for (uint32_t n = 0U; n < 300U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 10.0f, motorProfileVelocity());
+
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 0.0f, 10.0f, 50.0f, 0.0f);
+    float32_t last = motorProfileVelocity();
+    bool crossedZero = false;
+    for (uint32_t n = 0U; n < 200U; n++)
+    {
+        tick();
+        TEST_ASSERT_FLOAT_WITHIN(1e-4f, -0.05f, motorProfileVelocity() - last);
+        last = motorProfileVelocity();
+        if (last < 0.0f) { crossedZero = true; }
+    }
+    TEST_ASSERT_TRUE(crossedZero);
+    (void)runToRest(0.0f, 3000U, NULL, NULL);
+}
+
+// [test->fw~mc_031~1]
+// A speed target under the position method jogs: 2 rad/s steps w_f to 2 and theta* on
+// by 0.002 a pass, zero holds, and a position setpoint a radian on from that rest is
+// reached in 283 ms.
+static void test_speed_target_jogs_the_position_target(void)
+{
+    driveInPositionMode();
+    app_motorControl_setVelocity(MOTOR_MC, 2.0f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 2.0f, motorProfileVelocity());
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.002f, motorPositionTarget());
+    for (uint32_t n = 0U; n < 9U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.02f, motorPositionTarget());
+
+    app_motorControl_setVelocity(MOTOR_MC, 0.0f, 0.0f);
+    tick();
+    const float32_t held = motorPositionTarget();
+    for (uint32_t n = 0U; n < 10U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, held, motorPositionTarget());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorProfileVelocity());
+
+    app_motorControl_setPositionSetpoint(MOTOR_MC, held + 1.0f, 10.0f, 50.0f, 0.0f);
+    const uint32_t passes = runToRest(held + 1.0f, 1000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 283U, passes);
+}
+
+// [test->fw~mc_031~1]
+// A jog at w_max stops theta* on theta_max with w_f zero; a jog of -w_max moves it off.
+static void test_profile_stops_at_the_travel_bound(void)
+{
+    driveInPositionMode();
+    app_motorControl_setVelocity(MOTOR_MC, MAX_VELOCITY, 0.0f);
+    (void)runToReach(POS_MAX, 5000U);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, POS_MAX, motorPositionTarget());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorProfileVelocity());
+
+    app_motorControl_setVelocity(MOTOR_MC, -MAX_VELOCITY, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, -MAX_VELOCITY, motorProfileVelocity());
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, POS_MAX - (MAX_VELOCITY * 1e-3f), motorPositionTarget());
+}
+
+// [test->fw~mc_031~1] [test->fw~mc_030~1]
+// 1 rad written during the precharge of a re-enable is held: theta* is zero until the
+// method's first step and rests on 1 rad 283 ms after it.
+static void test_setpoint_written_in_precharge_runs_from_the_first_step(void)
+{
+    driveInPositionMode();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_POSITION);
+    tick();                                   // precharging
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 1.0f, 10.0f, 50.0f, 0.0f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorPositionTarget());
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();                                   // driving: the first step
+    const uint32_t passes = 1U + runToRest(1.0f, 1000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 283U, passes);
+}
+
+// [test->fw~mc_030~1]
+// Two position setpoints in one pass leave the second held: theta* rests on it.
+static void test_position_setpoint_takes_the_last_write(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 1.0f, 10.0f, 50.0f, 0.0f);
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 2.0f, 10.0f, 50.0f, 0.0f);
+    float32_t largest = 0.0f;
+    (void)runToRest(2.0f, 1000U, NULL, &largest);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.0f, largest);
+}
+
+// [test->fw~mc_030~1]
+// A setpoint written while driving does not survive a disable: the re-enable with no
+// further write leaves theta* at zero.
+static void test_position_setpoint_is_dropped_by_a_disable(void)
+{
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 2.0f, 10.0f, 50.0f, 0.0f);
+    tick();
+    TEST_ASSERT_TRUE(motorProfileVelocity() > 0.0f);
+    disableThenReenable();
+    for (uint32_t n = 0U; n < 100U; n++) { tick(); }
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorPositionTarget());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorProfileVelocity());
+}
+
+// [test->fw~mc_030~1]
+// A setpoint written while the bridge is dark is held at the following enable.
+static void test_position_setpoint_written_while_dark_is_held_to_the_enable(void)
+{
+    driveInPositionMode();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    tick();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 1.0f, 10.0f, 50.0f, 0.0f);
+    tick();
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_POSITION);
+    tick();
+    advanceTime_ms(PRECHARGE_ADVANCE_MS);
+    tick();
+    const uint32_t passes = 1U + runToRest(1.0f, 1000U, NULL, NULL);
+    TEST_ASSERT_UINT32_WITHIN(2U, 283U, passes);
+}
+
+// [test->fw~mc_032~1]
+// The estimator's angle stepped across the seam, 6.2 to 0.1 rad and back, moves the
+// rotor position by +0.1832 then -0.1832 rad.
+static void test_rotor_position_follows_the_angle_across_the_seam(void)
+{
+    driveInPositionMode();
+    mock_app_rotorEstimation_setAngle(6.2f);
+    tick();
+    const float32_t before = motorRotorPosition();
+    mock_app_rotorEstimation_setAngle(0.1f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.1832f, motorRotorPosition() - before);
+    mock_app_rotorEstimation_setAngle(6.2f);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, before, motorRotorPosition());
+}
+
+// Step the estimator's angle by quarter turns, `steps` of them, forward or back.
+static void turnRotor(int32_t steps)
+{
+    static int32_t quarterTurns = 0;
+    const int32_t dir = (steps < 0) ? -1 : 1;
+    for (int32_t n = 0; n < (dir * steps); n++)
+    {
+        quarterTurns += dir;
+        const float32_t angle = fmodf(fmodf((float32_t)quarterTurns * (TWO_PI_F / 4.0f), TWO_PI_F) + TWO_PI_F, TWO_PI_F);
+        mock_app_rotorEstimation_setAngle(angle);
+        tick();
+    }
+}
+
+// [test->fw~mc_032~1]
+// Three turns forward and one back read 4 pi; ten forward and ten back read zero; the
+// position is zero through a disable and the next enable's precharge.
+static void test_rotor_position_counts_turns(void)
+{
+    driveInPositionMode();
+    turnRotor(12);
+    turnRotor(-4);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 2.0f * TWO_PI_F, motorRotorPosition());
+    turnRotor(40);
+    turnRotor(-48);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.0f, motorRotorPosition());
+    turnRotor(5);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 1.25f * TWO_PI_F, motorRotorPosition());
+
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_OFF);
+    tick();
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorRotorPosition());
+    app_motorControl_setMode(MOTOR_MC, APP_MOTORCONTROL_MODE_FOC_POSITION);
+    tick();                                   // precharging
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, motorRotorPosition());
+}
+
+// [test->fw~mc_029~1]
+// Nothing written, the estimator's angle stepped by -E after the first step: the next
+// step commands i_q* = K_vp K_pp E / K_t, read as K_p i_q* on the q axis.
+static void test_position_first_step_is_the_proportional_velocity_command(void)
+{
+    const float32_t E = 0.2f;   // K_pp E = 6 rad/s under w_max, K_vp K_pp E = 0.06 Nm under K_t I_max
+    driveInPositionMode();
+    mock_app_rotorEstimation_setAngle(-E);
+    app_motorControl_run50us();
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(RAD2DEG(-E), &vD, &vQ);
+    const float32_t iQ = FOC_KVP * POS_KPP * E / FOC_KT;
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * iQ, FOC_KP * iQ, vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * iQ, 0.0f, vD);
+}
+
+// [test->fw~mc_029~1]
+// K_pp E at 1.5 w_max: the step commands w_max, and the step after the angle steps
+// back commands zero, the integral held through the clamp. The second readback
+// carries the first step's current-loop integral, K_i T times its i_q*.
+static void test_position_clamps_the_velocity_command_and_holds_the_integral(void)
+{
+    const float32_t E = 1.5f * MAX_VELOCITY / POS_KPP;
+    driveInPositionMode();
+    mock_app_rotorEstimation_setAngle(-E);
+    app_motorControl_run50us();
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(RAD2DEG(-E), &vD, &vQ);
+    const float32_t iQmax = FOC_KVP * MAX_VELOCITY / FOC_KT;
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * iQmax, FOC_KP * iQmax, vQ);
+
+    mock_app_rotorEstimation_setAngle(0.0f);
+    app_motorControl_run50us();
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * iQmax, FOC_KI_T * iQmax, vQ);
+}
+
+// [test->fw~mc_029~1]
+// The angle held, 4 rad at v = F stepping: the first step after the next pass commands
+// F (1 + K_pp 1 ms), the profile velocity fed forward past the position error it made.
+static void test_position_feeds_the_profile_velocity_forward(void)
+{
+    const float32_t F = 10.0f;
+    driveInPositionMode();
+    app_motorControl_setPositionSetpoint(MOTOR_MC, 4.0f, F, 0.0f, 0.0f);
+    tick();
+    float32_t vD = 0.0f;
+    float32_t vQ = 0.0f;
+    rotorFrameFromCompares(0.0f, &vD, &vQ);
+    const float32_t iQ = FOC_KVP * F * (1.0f + (POS_KPP * 1e-3f)) / FOC_KT;
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * FOC_KP * FOC_KVP * F / FOC_KT, FOC_KP * iQ, vQ);
+}
+
+// [test->fw~mc_029~1] K_pp, K_pi at or below zero rejected; [test->fw~mc_031~1] the travel bound likewise
+static void test_init_rejects_a_degenerate_position_loop(void)
+{
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.positionKp_perSec = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.positionKi_perSec2 = -1.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+    buildConfigs();
+    appCfg[APP_MOTORCONTROL_CHANNEL_MAIN].foc.maxPosition_rad = 0.0f;
+    TEST_ASSERT_FALSE(app_motorControl_init(&appConfig));
+}
+
 // [test->fw~mc_025~1]
 static void test_init_rejects_a_degenerate_velocity_loop(void)
 {
@@ -1564,6 +2001,25 @@ int main(void)
     RUN_TEST(test_init_rejects_a_current_limit_at_the_phase_trip);
     RUN_TEST(test_init_rejects_a_degenerate_current_loop);
     RUN_TEST(test_init_rejects_a_degenerate_velocity_loop);
+    RUN_TEST(test_init_rejects_a_degenerate_position_loop);
+    RUN_TEST(test_profile_trapezoid_to_two_pi);
+    RUN_TEST(test_profile_triangle_to_half_a_radian);
+    RUN_TEST(test_profile_steps_at_a_zero_acceleration_limit);
+    RUN_TEST(test_profile_zero_velocity_limit_is_the_maximum_velocity);
+    RUN_TEST(test_profile_arrives_at_the_velocity_at_the_point_and_chains);
+    RUN_TEST(test_profile_holds_the_velocity_past_the_point);
+    RUN_TEST(test_profile_reverses_at_the_acceleration_limit);
+    RUN_TEST(test_speed_target_jogs_the_position_target);
+    RUN_TEST(test_profile_stops_at_the_travel_bound);
+    RUN_TEST(test_setpoint_written_in_precharge_runs_from_the_first_step);
+    RUN_TEST(test_position_setpoint_takes_the_last_write);
+    RUN_TEST(test_position_setpoint_is_dropped_by_a_disable);
+    RUN_TEST(test_position_setpoint_written_while_dark_is_held_to_the_enable);
+    RUN_TEST(test_rotor_position_follows_the_angle_across_the_seam);
+    RUN_TEST(test_rotor_position_counts_turns);
+    RUN_TEST(test_position_first_step_is_the_proportional_velocity_command);
+    RUN_TEST(test_position_clamps_the_velocity_command_and_holds_the_integral);
+    RUN_TEST(test_position_feeds_the_profile_velocity_forward);
     RUN_TEST(test_init_rejects_a_degenerate_cogging_model);
 
     return UNITY_END();

@@ -18,16 +18,18 @@ sends), [[timeline]] (the shared time axis the progress marker follows).
 A Sequence widget shall edit a sequence under one mode as points on a
 chart — time from start on the horizontal axis over the sequence's
 configured duration, setpoint on the vertical axis bounded by the
-reported maximum velocity or maximum torque for the mode
+reported maximum velocity, torque or position for the mode
 (`app~conn_004~1`, `MotorInfo`) — per the gestures below, the chart
 drawing the written targets as a zero-order hold between points and, for
 each point with a nonzero rate limit, the target in effect as a ramp at
-that limit from the previous value (`fw~mc_027~1`).
+that limit from the previous value (`fw~mc_027~1`), and under the
+position method each point's move at its limits and velocity at the
+point from the previous point's value and velocity (`fw~mc_031~1`).
 
 | Gesture | Behavior |
 |---------|----------|
 | Click on empty chart | Adds a point at the pointer's time and value |
-| Click on a point | Selects it, marked; its time, value, and rate limit shown in an editable tooltip, a typed time or value moving it as a drag does |
+| Click on a point | Selects it, marked; its time, value, and limits shown in an editable tooltip, a typed time or value moving it as a drag does |
 | Drag a point | Moves it, clamped to the bounds and to between its neighbours' times |
 | Delete with a point selected | Removes the point |
 
@@ -44,6 +46,13 @@ Acceptance:
   reaching 10 rad/s at 400 ms is drawn over the step.
 - Selecting the torque method relabels the vertical axis to Nm and bounds
   it at the maximum torque.
+- Under the position method, points at (0 ms, 0) and (200 ms, 2π rad)
+  with limits 10 rad/s and 50 rad/s² and a velocity at the point of zero
+  draw a move from 0 at 200 ms reaching 2π at 1028 ms, at 10 rad/s
+  between 400 and 828 ms; with the velocity at the point 10 rad/s, the
+  move reaches 2π at 928 ms and continues at 10 rad/s.
+- Selecting the position method relabels the vertical axis to rad and
+  bounds it at the maximum position.
 
 Covers:
 - sys~ops_003~1
@@ -84,7 +93,7 @@ Needs: impl, test
 `app~views_027~1`
 
 A Sequence widget shall hold its mode, duration, and points — each
-point's time, value, and rate limit — as workspace configuration
+point's time, value, and limits — as workspace configuration
 (`app~views_004~1`), restored on restart, and offer its sequences by
 name: Save as naming the current sequence, Load replacing the editor's
 contents with a named one, the named sequences held in the workspace

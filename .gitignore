@@ -101,3 +101,6 @@ docs/handoff.md
 
 # Cygwin/MSYS crash dumps (e.g. left by the CubeMX conversion script)
 *.stackdump
+
+# Bench and analysis captures stay local: hundreds of MB that are not referred back to
+tools/trace_analysis/**/*.csv

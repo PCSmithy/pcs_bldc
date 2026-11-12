@@ -55,8 +55,8 @@ app_sequencer_setpoint_S * Sequencer::table(const uint32_t half) const
     return &this->config->storage[half * this->config->capacity];
 }
 
-// One write per kind (fw~mc_027), the stop a MODE_OFF request (fw~mc_006);
-// position adds a case.
+// One write per kind: the speed and torque targets (fw~mc_027), the position
+// setpoint (fw~mc_030), the stop a MODE_OFF request (fw~mc_006).
 void Sequencer::write(const app_sequencer_setpoint_S & setpoint) const
 {
     switch (setpoint.kind)
@@ -67,6 +67,11 @@ void Sequencer::write(const app_sequencer_setpoint_S & setpoint) const
 
         case APP_SEQUENCER_KIND_TORQUE:
             app_motorControl_setTorque(this->config->motor, setpoint.value, setpoint.rateLimit);
+            break;
+
+        case APP_SEQUENCER_KIND_POSITION:
+            app_motorControl_setPositionSetpoint(this->config->motor, setpoint.value, setpoint.rateLimit,
+                                                 setpoint.accelLimit, setpoint.velocityAtPoint);
             break;
 
         case APP_SEQUENCER_KIND_STOP:

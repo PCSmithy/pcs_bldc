@@ -411,6 +411,7 @@
 .cmd-modes button:disabled { cursor: not-allowed; opacity: 0.45; }
 .cmd-fields { gap: 18px; align-items: flex-start; }
 .cmd-field { display: flex; flex-direction: column; gap: 4px; }
+.cmd-field[hidden] { display: none; }
 .cmd-input { display: inline-flex; align-items: center; gap: 6px; }
 .cmd-input input {
   width: 92px;
@@ -483,6 +484,7 @@
   white-space: nowrap;
 }
 .seq-tip-field { display: inline-flex; align-items: center; gap: 5px; color: var(--color-neutral-500); }
+.seq-tip-field[hidden] { display: none; }
 .seq-tip input { width: 56px; text-align: right; padding: 2px 7px; }
 .seq-hint {
   position: absolute;

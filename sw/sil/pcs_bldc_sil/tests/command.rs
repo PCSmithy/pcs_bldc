@@ -8,21 +8,23 @@ use pcs_bldc_sil::{cid, wire::Deframer, Sil};
 
 mod common;
 use common::proto::{
-    self, command, field_bytes, field_varint, parse_envelope, parse_fields, put_len, speed_setpoint as speed_at,
-    stop_setpoint as stop_at, F_BOARD_REPLY, F_BOARD_REQUEST, F_RESPONSE,
+    self, command, field_bytes, field_varint, parse_envelope, parse_fields, position_setpoint as position_at, put_len,
+    speed_setpoint as speed_at, stop_setpoint as stop_at, F_BOARD_REPLY, F_BOARD_REQUEST, F_RESPONSE,
 };
-use common::{assert_status, drain_tx, f64_at, inject, Status, MODE_FOC_VELOCITY, MODE_OFF};
+use common::{assert_status, drain_tx, f64_at, inject, Status, MODE_FOC_POSITION, MODE_FOC_VELOCITY, MODE_OFF};
 
 const REQUESTED: &str = "app_motorControl_data.channels[0].velocitySetpointRequested_radPerSec";
+const POSITION_SETPOINT: &str = "app_motorControl_data.channels[0].positionSetpoint";
 const MODE_REQUESTED: &str = "app_motorControl_data.channels[0].modeRequested";
 const BRIDGE_ENABLED: &str = "app_motorControl_data.channels[0].bridgeEnabled";
 const OFF: Status = Status { name: "APP_MOTORCONTROL_MODE_OFF", ordinal: 0 };
 const FOC_VELOCITY: Status = Status { name: "APP_MOTORCONTROL_MODE_FOC_VELOCITY", ordinal: 4 };
 
-/// `app_motorControl_channels.c`: K_t = 0.825 Nm/A, I_max = 1 A, 200 rpm.
+/// `app_motorControl_channels.c`: K_t = 0.825 Nm/A, I_max = 1 A, 18 rad/s, ten turns.
 const KT_NM_PER_A: f64 = 0.825;
 const I_MAX_A: f64 = 1.0;
-const MAX_VELOCITY_RAD_S: f64 = 200.0 * std::f64::consts::TAU / 60.0;
+const MAX_VELOCITY_RAD_S: f64 = 18.0;
+const MAX_POSITION_RAD: f64 = 10.0 * std::f64::consts::TAU;
 
 /// `board.Request { get_motor_info (3) }`.
 fn get_motor_info() -> Vec<u8> {
@@ -148,6 +150,41 @@ fn a_setpoint_past_the_rating_is_rejected_and_the_running_sequence_plays_on() {
     assert!(accepted(field, &bytes), "MODE_OFF with no setpoints stops");
 }
 
+// [test->fw~conn_server_007~1]
+// [test->fw~ops_001~1]
+#[test]
+fn a_position_setpoint_is_accepted_and_reaches_the_position_setpoint() {
+    let mut sim = connected_board();
+    let request = command(MODE_FOC_POSITION, &[position_at(100_000, 6.0, 10.0, 50.0, 2.0)]);
+    let (field, bytes, _) = exchange(&mut sim, 6, &request);
+    assert!(accepted(field, &bytes), "a position setpoint within its bounds is accepted under the position method");
+    let field_at = |sim: &Sil, name: &str| f64_at(sim, &format!("{POSITION_SETPOINT}.{name}"));
+    sim.run_for_ms(80);
+    assert_eq!(field_at(&sim, "position_rad"), 0.0, "not yet written at 80 ms");
+    sim.run_for_ms(30);
+    assert!((field_at(&sim, "position_rad") - 6.0).abs() < 1e-6, "the position written at its 100 ms");
+    assert!((field_at(&sim, "velocityLimit_radPerSec") - 10.0).abs() < 1e-6, "with its velocity limit");
+    assert!((field_at(&sim, "accelLimit_radPerSec2") - 50.0).abs() < 1e-6, "its acceleration limit");
+    assert!((field_at(&sim, "velocityAtPoint_radPerSec") - 2.0).abs() < 1e-6, "and its velocity at the point");
+}
+
+// [test->fw~conn_server_007~1]
+#[test]
+fn a_position_setpoint_past_its_bounds_is_rejected() {
+    let mut sim = connected_board();
+    let rejected = |sim: &mut Sil, id: u64, setpoint: Vec<u8>, what: &str| {
+        let (field, bytes, _) = exchange(sim, id, &command(MODE_FOC_POSITION, &[setpoint]));
+        assert!(!accepted(field, &bytes), "{what} is rejected");
+        let cause = String::from_utf8_lossy(&field_bytes(&parse_fields(&bytes), 2)).into_owned();
+        assert!(!cause.is_empty(), "the verdict names a cause for {what}");
+    };
+    rejected(&mut sim, 7, position_at(0, 70.0, 10.0, 50.0, 0.0), "70 rad past the ten-turn bound");
+    rejected(&mut sim, 8, position_at(0, 1.0, 25.0, 50.0, 0.0), "a velocity limit of 25 rad/s past the 18 rad/s rating");
+    rejected(&mut sim, 9, position_at(0, 1.0, 10.0, 50.0, 12.0), "a velocity at the point past its 10 rad/s limit");
+    rejected(&mut sim, 10, position_at(0, 1.0, 0.0, 50.0, 25.0), "a velocity at the point past the rating at a zero limit");
+    assert!(!sim.read_bool(&cid(BRIDGE_ENABLED)), "nothing enabled the drive");
+}
+
 // [test->fw~conn_server_008~1]
 #[test]
 fn get_motor_info_reports_the_board_ratings() {
@@ -162,4 +199,5 @@ fn get_motor_info_reports_the_board_ratings() {
     assert!(within(f(2), I_MAX_A), "I_max {}", f(2));
     assert!(within(f(3), KT_NM_PER_A * I_MAX_A), "max torque {}", f(3));
     assert!(within(f(4), MAX_VELOCITY_RAD_S), "max velocity {}", f(4));
+    assert!(within(f(5), MAX_POSITION_RAD), "max position {}", f(5));
 }

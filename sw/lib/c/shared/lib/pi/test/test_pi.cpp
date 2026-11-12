@@ -114,6 +114,29 @@ static void test_release_from_the_limit_leaves_the_integral_term(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, V_LIM - FIRST, pi.step(0.0f));
 }
 
+/* ---- [test->fw~mc_029~1] the integral held through a clamp ---- */
+
+// Three steps, each held: the integral never moves, so the fourth step is still
+// kp * e; a step not held then adds its ramp as usual.
+static void test_hold_leaves_the_integral_where_it_was(void)
+{
+    for (uint32_t n = 0U; n < 3U; n++)
+    {
+        (void)pi.step(ERR);
+        pi.hold(ERR);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FIRST, pi.step(ERR));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FIRST + RAMP, pi.step(ERR));
+}
+
+static void test_hold_before_init_does_nothing(void)
+{
+    PiRegulator r = {};
+    r.hold(ERR);
+    TEST_ASSERT_TRUE(r.init(kNominal));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, FIRST, r.step(ERR));
+}
+
 static void test_back_calculation_before_init_does_nothing(void)
 {
     PiRegulator r = {};
@@ -134,5 +157,7 @@ int main(void)
     RUN_TEST(test_back_calculation_makes_the_next_step_the_limit);
     RUN_TEST(test_release_from_the_limit_leaves_the_integral_term);
     RUN_TEST(test_back_calculation_before_init_does_nothing);
+    RUN_TEST(test_hold_leaves_the_integral_where_it_was);
+    RUN_TEST(test_hold_before_init_does_nothing);
     return UNITY_END();
 }

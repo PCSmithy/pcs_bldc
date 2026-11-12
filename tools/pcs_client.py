@@ -17,6 +17,7 @@ sw/proto/ into tools/pcs_client_gen/ (gitignored).
 """
 
 import argparse
+import re
 import itertools
 import struct
 import subprocess
@@ -205,12 +206,14 @@ def show(env, pb2, board_pb2, log_buffer, trace=None):
               f"vbus={t.bus_voltage_v:.2f}V ibus={t.bus_current_a:.3f}A "
               f"vel={t.velocity_measured_radps:+.2f}rad/s "
               f"set={t.velocity_setpoint_radps:+.2f}rad/s "
-              f"torque={t.torque_target_nm:+.3f}Nm{seq}")
+              f"torque={t.torque_target_nm:+.3f}Nm "
+              f"pos={t.rotor_position_rad:+.3f}rad pos*={t.position_target_rad:+.3f}rad{seq}")
     elif kind == "board_reply":
         if env.board_reply.WhichOneof("result") == "motor_info":
             m = env.board_reply.motor_info
             print(f"[motor-info] id={env.request_id} Kt={m.kt_nm_per_a:.4f}Nm/A Imax={m.i_max_a:.3f}A "
-                  f"Tmax={m.max_torque_nm:.4f}Nm wmax={m.max_velocity_radps:.3f}rad/s")
+                  f"Tmax={m.max_torque_nm:.4f}Nm wmax={m.max_velocity_radps:.3f}rad/s "
+                  f"thmax={m.max_position_rad:.3f}rad")
         else:
             print(f"[reply] id={env.request_id} {env.board_reply}")
     elif kind == "identity":
@@ -347,12 +350,19 @@ def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=10
         if kind == "clear_fault":
             env.board_request.clear_fault.SetInParent()
         elif kind == "run":
-            mode, is_torque, points = value
+            mode, default_unit, points = value
             env.board_request.run.mode = mode
-            for t_us, target, limit, unit in points:
-                sp = env.board_request.run.setpoints.add(t_us=t_us, rate_limit=limit)
-                if (unit == "nm") or (is_torque and unit is None):
+            for t_us, target, limits, unit in points:
+                sp = env.board_request.run.setpoints.add(t_us=t_us, rate_limit=limits[0])
+                unit = unit or default_unit
+                if unit == "nm":
                     sp.torque_nm = target
+                elif unit == "rad":
+                    # a position: the rate limit is its velocity limit, then the
+                    # acceleration limit and the velocity at the point (fw~mc_030)
+                    sp.position_rad = target
+                    sp.accel_limit_radps2 = limits[1]
+                    sp.velocity_at_point_radps = limits[2]
                 else:
                     sp.velocity_radps = target
         elif kind == "get_motor_info":
@@ -393,34 +403,39 @@ def run(port: str, baud: int, args):
 
     modes = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
              "sinusoidal": board_pb2.MODE_SINUSOIDAL, "foc_torque": board_pb2.MODE_FOC_TORQUE,
-             "foc_velocity": board_pb2.MODE_FOC_VELOCITY}
+             "foc_velocity": board_pb2.MODE_FOC_VELOCITY, "foc_position": board_pb2.MODE_FOC_POSITION}
+    default_units = {"foc_torque": "nm", "foc_position": "rad"}
     commands = []
     if args.motor_info:
         commands.append(("get_motor_info", None))
     if args.clear_fault:
         commands.append(("clear_fault", None))   # ahead of a run, so a cleared fault does not block it
     if args.run is not None:
-        # MODE:T_MS=VALUE[UNIT][/LIMIT],... -- the whole sequence in one Command. The
-        # mode picks the unit (Nm under foc_torque, rad/s otherwise) unless a
-        # value says: 0.3Nm, 10rad/s.
+        # MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],... -- the whole sequence in
+        # one Command. The mode picks the unit (Nm under foc_torque, rad under
+        # foc_position, rad/s otherwise) unless a value says: 0.3Nm, 10rad/s, 6.28rad.
+        # A position's limits are its velocity limit, acceleration limit and the
+        # velocity held at the point, each 0 for the board's default.
         try:
             mode_s, spec = args.run.split(":", 1)
             points = []
             for item in filter(None, spec.split(",")):
                 t_s, rest = item.split("=")
-                value_s, _, limit_s = rest.partition("/")
-                unit = None
-                for suffix in ("nm", "rad/s"):
-                    if value_s.lower().endswith(suffix):
-                        unit, value_s = suffix, value_s[:-len(suffix)]
+                # the unit before the limits, so rad/s is not read as a limit of "s"
+                m = re.fullmatch(r"([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)(nm|rad/s|rad)?(?:/(.*))?", rest, re.IGNORECASE)
+                if m is None:
+                    raise ValueError("bad setpoint")
+                value_s, unit = m.group(1), (m.group(2).lower() if m.group(2) else None)
+                limit_parts = m.group(3).split("/") if m.group(3) is not None else []
+                limits = tuple(float(s or 0) for s in (limit_parts + ["", "", ""])[:3])
                 t_ms = float(t_s)
                 if not (0 <= t_ms <= 4_294_967):
                     raise ValueError("time out of range")
-                points.append((int(t_ms * 1000), float(value_s), float(limit_s or 0), unit))
-            commands.append(("run", (modes[mode_s], mode_s == "foc_torque", points)))
+                points.append((int(t_ms * 1000), float(value_s), limits, unit))
+            commands.append(("run", (modes[mode_s], default_units.get(mode_s), points)))
         except (ValueError, KeyError):
-            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT],..., "
-                     f"e.g. foc_velocity:0=0,200=10/50 or foc_torque:0=0.3Nm)")
+            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],..., "
+                     f"e.g. foc_velocity:0=0,200=10/50, foc_torque:0=0.3Nm or foc_position:0=6.28/10/50/0)")
     # Writes before reads, so a write -> read round trip works in one invocation.
     for spec in (args.write or []):
         try:
@@ -567,9 +582,11 @@ def main():
     ap.add_argument("--port", help="serial port (e.g. COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=115200, help="ignored by USB CDC")
     ap.add_argument("--clear-fault", action="store_true", help="send a ClearFault command on connect")
-    ap.add_argument("--run", metavar="MODE:T_MS=VALUE[UNIT][/LIMIT],...",
-                    help="send a Command on connect: a mode and timed setpoints, rad/s (Nm under foc_torque, or "
-                         "as the value's unit says), LIMIT per second with 0 a step, e.g. foc_velocity:0=0,200=10/50,700=0")
+    ap.add_argument("--run", metavar="MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],...",
+                    help="send a Command on connect: a mode and timed setpoints, rad/s (Nm under foc_torque, rad under "
+                         "foc_position, or as the value's unit says), LIMIT per second with 0 a step; a position adds its "
+                         "acceleration limit and velocity at the point, e.g. foc_velocity:0=0,200=10/50,700=0 or "
+                         "foc_position:0=6.28/10/50/0")
     ap.add_argument("--motor-info", action="store_true", help="request the motor ratings on connect")
     ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_CYCLES",
                     help="install a trace watch (repeatable, e.g. 0x20000000:4:20); "

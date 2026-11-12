@@ -11,7 +11,8 @@
 
 // Discrete PI regulator, fw~mc_023's form: v = kp * e + ki * S, then
 // S <- S + period * e. backCalculate() is fw~mc_024's anti-windup: after the
-// caller limits v, S is set so kp * e + ki * S equals the limited v.
+// caller limits v, S is set so kp * e + ki * S equals the limited v. hold()
+// is the other kind: the step's accumulation undone, S as it was before it.
 struct PiConfig
 {
     float32_t kp;
@@ -63,6 +64,16 @@ class PiRegulator
             if (this->initialized)
             {
                 this->integral = (vLimited - this->config.kp * error) / this->config.ki;
+            }
+        }
+
+        // S <- S - period * e: the step just taken at this error left out of
+        // the integral, which holds through a clamp.
+        void hold(float32_t error)
+        {
+            if (this->initialized)
+            {
+                this->integral = this->integral - this->config.period_s * error;
             }
         }
 

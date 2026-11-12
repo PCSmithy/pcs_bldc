@@ -40,8 +40,11 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
             .cogging = { { .order_perRev = 28U, .amplitude_Nm = 9.0e-3f, .phase_rad = 1.1f },
                          { .order_perRev = 56U, .amplitude_Nm = 0.9e-3f, .phase_rad = -1.75f } },
             .coggingKff = 1.0f,
+            .positionKp_perSec = 30.0f,
+            .positionKi_perSec2 = 90.0f,
+            .maxPosition_rad = 20.0f * PI,   // ten turns either side of the enable point
         },
-        .defaultMode = APP_MOTORCONTROL_MODE_FOC_VELOCITY,
+        .defaultMode = APP_MOTORCONTROL_MODE_FOC_POSITION,   // the dial moves a position; a host Command selects any method
         .prechargeTime_ms = 5U,   // bootstrap caps through the gate driver's own diodes
     },
 };

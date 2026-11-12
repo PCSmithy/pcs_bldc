@@ -12,21 +12,24 @@ extern "C" {
 
 /* Typedefs */
 
-// One kind per motor-control target, and the stop; position joins here.
+// One kind per motor-control target, and the stop.
 typedef enum
 {
     APP_SEQUENCER_KIND_VELOCITY,   // rad/s, rate limit in rad/s^2
     APP_SEQUENCER_KIND_TORQUE,     // Nm, rate limit in Nm/s
-    APP_SEQUENCER_KIND_STOP,       // MODE_OFF requested; value and rate limit unused
+    APP_SEQUENCER_KIND_STOP,       // MODE_OFF requested; value and limits unused
+    APP_SEQUENCER_KIND_POSITION,   // rad, rate limit its velocity limit in rad/s, with the two fields below
     APP_SEQUENCER_KIND_COUNT,
 } app_sequencer_kind_E;
 
 typedef struct
 {
-    uint32_t             t_us;        // from the sequence's start
+    uint32_t             t_us;              // from the sequence's start
     app_sequencer_kind_E kind;
     float32_t            value;
-    float32_t            rateLimit;   // per second in the kind's unit; zero steps (fw~mc_027)
+    float32_t            rateLimit;         // per second in the kind's unit; zero steps (fw~mc_027)
+    float32_t            accelLimit;        // position only: rad/s^2, zero steps (fw~mc_031)
+    float32_t            velocityAtPoint;   // position only: rad/s, held through the point
 } app_sequencer_setpoint_S;
 
 typedef struct

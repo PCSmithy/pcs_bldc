@@ -345,8 +345,8 @@ setInterval(() => {
 // mode gates and the busy row are not modelled). A malformed spec throws, as
 // the core's build step does. An accepted Command runs for its last
 // setpoint's time in the telemetry below.
-const MOTOR_INFO = { kt_nm_per_a: 0.825, i_max_a: 1.0, max_torque_nm: 0.825, max_velocity_radps: 20.944 };
-const MODES = ["MODE_OFF", "MODE_SIX_STEP_TRAP", "MODE_SINUSOIDAL", "MODE_FOC_TORQUE", "MODE_FOC_VELOCITY"];
+const MOTOR_INFO = { kt_nm_per_a: 0.825, i_max_a: 1.0, max_torque_nm: 0.825, max_velocity_radps: 20.944, max_position_rad: 62.83 };
+const MODES = ["MODE_OFF", "MODE_SIX_STEP_TRAP", "MODE_SINUSOIDAL", "MODE_FOC_TORQUE", "MODE_FOC_VELOCITY", "MODE_FOC_POSITION"];
 const SEQUENCE_CAPACITY = 24;
 let sequence = null;   // { startMs, durationMs, mode, setpoints } while a Command plays
 window.__devmockLastCommand = null;
@@ -362,15 +362,24 @@ function runCommand(command) {
     const hasTorque = sp.torque_nm != null;
     const hasSpeed = sp.velocity_radps != null;
     const hasStop = sp.stop != null;
-    if (Number(hasTorque) + Number(hasSpeed) + Number(hasStop) !== 1) throw `setpoint ${i}: exactly one target`;
+    const hasPosition = sp.position_rad != null;
+    if (Number(hasTorque) + Number(hasSpeed) + Number(hasStop) + Number(hasPosition) !== 1) throw `setpoint ${i}: exactly one target`;
     if (!Number.isInteger(sp.t_us) || sp.t_us < 0) throw `setpoint ${i}: missing field t_us`;
     // A stop stages as a zero within a zero bound, as the firmware does.
-    const value = hasTorque ? sp.torque_nm : hasSpeed ? sp.velocity_radps : 0;
-    const bound = hasTorque ? MOTOR_INFO.max_torque_nm : hasSpeed ? MOTOR_INFO.max_velocity_radps : 0;
+    const value = hasTorque ? sp.torque_nm : hasSpeed ? sp.velocity_radps : hasPosition ? sp.position_rad : 0;
+    const bound = hasTorque ? MOTOR_INFO.max_torque_nm : hasSpeed ? MOTOR_INFO.max_velocity_radps
+      : hasPosition ? MOTOR_INFO.max_position_rad : 0;
     const limit = sp.rate_limit ?? 0;
-    if (!Number.isFinite(value) || !Number.isFinite(limit)) return reject("setpoint not finite");
-    if (limit < 0) return reject("rate limit negative");
+    const accel = sp.accel_limit_radps2 ?? 0;
+    const atPoint = sp.velocity_at_point_radps ?? 0;
+    if (![value, limit, accel, atPoint].every(Number.isFinite)) return reject("setpoint not finite");
+    if (limit < 0 || accel < 0) return reject("rate limit negative");
     if (Math.abs(value) > bound) return reject("setpoint exceeds the motor rating");
+    // A position's rate limit is its velocity limit; it bounds the velocity at the point.
+    if (hasPosition && limit > MOTOR_INFO.max_velocity_radps) return reject("velocity limit exceeds the motor rating");
+    if (hasPosition && Math.abs(atPoint) > (limit > 0 ? limit : MOTOR_INFO.max_velocity_radps)) {
+      return reject("velocity at the point exceeds the velocity limit");
+    }
     if (sp.t_us < lastT) return reject("setpoint times not in order");
     lastT = sp.t_us;
   }
@@ -383,7 +392,7 @@ function runCommand(command) {
  *  due setpoint of each kind stands as the commanded target; a due stop has
  *  the drive off with zero targets, as the firmware's dark bridge does. */
 function sequenceState(now) {
-  if (!sequence) return { running: false, elapsed_ms: 0, torque_nm: 0, velocity_radps: 146.6, stopped: false };
+  if (!sequence) return { running: false, elapsed_ms: 0, torque_nm: 0, velocity_radps: 146.6, position_rad: 0, stopped: false };
   const elapsed = now - sequence.startMs;
   const running = elapsed < sequence.durationMs;
   const due = sequence.setpoints.filter((sp) => sp.t_us / 1000 <= elapsed);
@@ -394,6 +403,7 @@ function sequenceState(now) {
     elapsed_ms: running ? elapsed : sequence.durationMs,
     torque_nm: lastOf("torque_nm"),
     velocity_radps: lastOf("velocity_radps"),
+    position_rad: lastOf("position_rad"),
     stopped,
   };
 }
@@ -414,6 +424,8 @@ setInterval(() => {
     velocity_measured_radps: meas,
     velocity_setpoint_radps: seq.velocity_radps,
     torque_target_nm: seq.torque_nm,
+    position_target_rad: seq.position_rad,
+    rotor_position_rad: seq.position_rad + Math.sin(t / 500) * 0.002,
     sequence_running: seq.running,
     sequence_elapsed_ms: seq.elapsed_ms,
   });

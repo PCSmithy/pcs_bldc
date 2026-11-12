@@ -78,9 +78,10 @@ command, the requested state and the running sequence unchanged, when:
 | A method other than the active one is named while the bridge is enabled (`sys~mc_005~1`) |
 | A method is named while a fault is latched (`fw~safety_001~1`, `fw~safety_002~1`) |
 | A setpoint names no target |
-| A setpoint's value or rate limit is not finite, or a rate limit is negative |
+| A setpoint's value or a limit is not finite, or a limit is negative |
 | A speed setpoint's magnitude exceeds the configured maximum velocity (`fw~mc_008~1`) |
 | A torque setpoint's magnitude exceeds K_t · I_max (`fw~mc_026~1`) |
+| A position setpoint's magnitude exceeds the configured maximum position (`fw~mc_031~1`), its velocity limit exceeds the configured maximum velocity (`fw~mc_008~1`), or its velocity at the point exceeds its velocity limit (the maximum velocity for a limit of zero) |
 | A setpoint's time precedes the setpoint before it |
 | The list exceeds the player's capacity (`fw~ops_001~1`) |
 | A `Command` accepted in the same 1 ms pass has not started (`fw~ops_001~1`); the host resends |
@@ -90,7 +91,8 @@ Acceptance:
   speed setpoint at time zero is accepted; the bridge enable is requested
   with that method and the list reaches the player. `MODE_OFF` with an
   empty list is accepted in every state. A stop setpoint is accepted
-  under a method value.
+  under a method value. A method value with one position setpoint at
+  time zero within its bounds is accepted.
 - A list at the player's capacity is accepted; one setpoint more is
   rejected.
 - Each rejection condition rejects the command.
@@ -107,12 +109,13 @@ Needs: impl, test
 A `GetMotorInfo` request shall be answered with a `MotorInfo` result
 (`fw~conn_server_001~1`) reporting the motor-control channel's configured
 torque constant K_t in Nm/A, maximum current I_max in A, maximum torque
-K_t · I_max in Nm, and maximum velocity in rad/s (`fw~mc_008~1`).
+K_t · I_max in Nm, maximum velocity in rad/s (`fw~mc_008~1`), and maximum
+position in rad (`fw~mc_031~1`).
 
 Acceptance:
 - The result carries the configured values — on this board K_t = 0.825,
-  I_max = 1.0, maximum torque 0.825, maximum velocity 20.94 — each within
-  0.1 %.
+  I_max = 1.0, maximum torque 0.825, maximum velocity 18.0, maximum
+  position 62.83 — each within 0.1 %.
 
 Covers:
 - sys~obs_011~1

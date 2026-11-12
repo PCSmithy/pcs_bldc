@@ -118,32 +118,33 @@ Outer loops and the first estimator work.
   setpoint kind without restructuring: the `Setpoint` oneof, one per-kind
   write in the sequencer, one target struct per kind in motor control, a
   per-kind bound in `MotorInfo`, one per-kind unit/bound row in the widgets.
-- **Position control** closes the sprint: a position method cascaded
-  around the velocity method, and position setpoints in the sequencer.
-  Open questions to settle when it starts:
-  - A position setpoint carries a maximum acceleration, not a velocity
-    limit, so moves between points are smooth splines; it may also carry
-    a velocity at the point, non-zero, so a chain of positions is one
-    continuous motion. Which profile: trapezoidal in acceleration, cubic
-    spline through (position, velocity) pairs, or jerk-limited S-curve?
-  - Timing needs an "as soon as the previous move completes" alternative
-    to the absolute `t_us`, so a sequence is a chain of moves rather than
-    a timetable. Candidate: `Setpoint.when` as a oneof of `t_us` and
-    `after_previous`; the sequencer's due test is then two branches. What
-    counts as "complete": position within a tolerance, velocity within a
-    tolerance, or the profile's planned end time?
-  - Mixing kinds in one sequence (a position move followed by a velocity
-    hold) versus one kind per sequence as the widgets assume today.
-  - Position bounds and wrap: a mechanical angle in [0, 2π) with the
-    shortest path, or an unwrapped multi-turn position with travel limits
-    in `MotorInfo`?
-  - Where the profile is generated: on the host, flattened into dense
-    timed setpoints (sequencer unchanged, capacity-bound), or on the
-    board from the sparse (position, velocity, a_max) points (sparse on
-    the wire, a profile generator in firmware).
-  - The sequence editor's chart for position: a second y axis or a
-    per-point velocity handle, and whether it draws the planned profile
-    from the same generator the firmware runs.
+- **Position control** closes the sprint, specced and built 2026-11-10
+  (bench verification pending; SIL: a 2π move lands within 1 mrad, a
+  10 mNm load at rest moves the rotor 2 mrad): the
+  position method `fw~mc_029` cascaded around the velocity method (a PI
+  on the rotor position `fw~mc_032` with the move profile's velocity fed
+  forward), the position setpoint `fw~mc_030` and the on-board move
+  profile `fw~mc_031` (a minimum-time trapezoid under per-setpoint
+  velocity and acceleration limits, a velocity at the point for chained
+  moves, a jog from the speed target), the position arm through the
+  command plane (`fw~conn_server_007`/`_008`, `fw~ops_001`,
+  `app~conn_004`, `app~views_024`/`_025`/`_027`) and Telemetry
+  (`fw~obs_status_001`). Settled: a multi-turn position, zero at the
+  bridge enable, bounded to ±10 turns; profiles generated on the board
+  from the sparse points, the sequence chart drawing the same profile;
+  absolute `t_us` timing, the planner setting each point's time from the
+  profile; a reversal in a chain stops at the turn; on the wire a
+  position's `rate_limit` is its velocity limit. Bench 2026-11-11: moves
+  at 10 rad/s track the profile within a few mrad; at the 200 rpm rating
+  the voltage ceiling held the rotor 0.5 rad/s short and the clamp's
+  back-calculation wound the position integral against the proportional
+  term, so the rating is now 18 rad/s and the clamp holds the integral
+  instead. The end-to-end path, with the planner examples and the bench
+  capture, is written up in `docs/position-trajectory-path.pdf`. The dial under the
+  position method writes a position with a 0.01 rad send deadband, so a
+  jittering dial does not rewrite a host sequence. Still open: an "after
+  the previous move completes" timing alternative, and mixing setpoint
+  kinds in one sequence editor.
 
 - **Outer loops:** the field-oriented velocity method `fw~mc_025` — built,
   its Unity and SIL step-response tests pending:

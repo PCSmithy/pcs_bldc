@@ -27,6 +27,7 @@ typedef enum
     APP_MOTORCONTROL_MODE_SINUSOIDAL,
     APP_MOTORCONTROL_MODE_FOC_TORQUE,
     APP_MOTORCONTROL_MODE_FOC_VELOCITY,
+    APP_MOTORCONTROL_MODE_FOC_POSITION,
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
 
@@ -70,6 +71,9 @@ typedef struct
     float32_t velocityKff;               // k_ff in [0, 1]: the share of the estimator's T_d fed forward against (fw~mc_025)
     app_motorControl_cogHarmonic_S cogging[APP_MOTORCONTROL_COG_HARMONICS];
     float32_t coggingKff;                // k_cog in [0, 1]: the share of T_cog compensated (fw~mc_028)
+    float32_t positionKp_perSec;         // K_pp: rad/s of velocity command per rad of position error (fw~mc_029)
+    float32_t positionKi_perSec2;        // K_pi: per rad.s of integrated error
+    float32_t maxPosition_rad;           // the travel bound either side of the enable point (fw~mc_031)
 } app_motorControl_focConfig_S;
 
 typedef struct
@@ -109,6 +113,9 @@ typedef struct
     float32_t                velocitySetpoint_radPerSec;   // the speed target in effect (fw~mc_027)
     float32_t                torqueTarget_Nm;              // the torque target in effect (fw~mc_026, fw~mc_027)
     float32_t                velocityMeasured_radPerSec;   // the rotor estimator's velocity (fw~est_rotor_002)
+    float32_t                positionTarget_rad;           // theta*, the position target in effect (fw~mc_031)
+    float32_t                profileVelocity_radPerSec;    // w_f, the profile velocity (fw~mc_031)
+    float32_t                rotorPosition_rad;            // the multi-turn rotor position, zero at the enable (fw~mc_032)
     app_motorControl_mode_E  selectedMode;                 // the method an enable runs; OFF leaves it selected
     uint16_t                 faultLatches;                 // fault latches since init, each counted once
 } app_motorControl_snapshot_S;
@@ -121,6 +128,7 @@ typedef struct
     float32_t maxCurrent_A;
     float32_t maxTorque_Nm;          // K_t * I_max
     float32_t maxVelocity_radPerSec;
+    float32_t maxPosition_rad;
 } app_motorControl_ratings_S;
 
 /* Public Function Declarations */
@@ -144,6 +152,11 @@ void app_motorControl_run50us(void);
 // while the torque method is selected also writes the torque target (fw~mc_026).
 void app_motorControl_setVelocity(app_motorControl_channel_E channel, float32_t velocity_radPerSec, float32_t rateLimit_radPerSec2);
 void app_motorControl_setTorque(app_motorControl_channel_E channel, float32_t torque_Nm, float32_t rateLimit_NmPerSec);
+// Write the position setpoint (fw~mc_030): the position, its velocity and acceleration
+// limits (zero: the maximum velocity, a step) and the velocity at the point. The move
+// profile (fw~mc_031) drives the position target to it; a disable drops it.
+void app_motorControl_setPositionSetpoint(app_motorControl_channel_E channel, float32_t position_rad, float32_t velocityLimit_radPerSec,
+                                          float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec);
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);
 
 // Release a latched overcurrent fault (fw~safety_001). The drive stays disabled

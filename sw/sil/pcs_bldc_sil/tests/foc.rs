@@ -17,7 +17,7 @@ const BANDWIDTH_RAD_S: f64 = 1000.0;
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
 const DIAL_FULL_SCALE_DEG: f64 = 180.0;
 /// `APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC`: the full-scale speed target.
-const MAX_VELOCITY_RAD_S: f64 = 200.0 * std::f64::consts::TAU / 60.0;   // 200 rpm
+const MAX_VELOCITY_RAD_S: f64 = 18.0;
 
 const MC: &str = "app_motorControl_data.channels[0]";
 

@@ -9,12 +9,15 @@ Current control on the encoder: PI regulators on the rotor-frame currents
 set a rotor-frame voltage, applied through the inverse Park transform at
 the per-cycle rotor angle and the modulator. The torque method takes its
 demand from the torque target (fw~mc_026~1); the velocity method from a PI
-regulator on the rotor velocity estimate; either, less the cogging
-compensation (fw~mc_028~1), sets the q-axis current target.
+regulator on the rotor velocity estimate; the position method runs the
+velocity method on a PI regulator on the rotor position with the move
+profile's velocity fed forward. The torque and velocity demands, less the
+cogging compensation (fw~mc_028~1), set the q-axis current target.
 
 See also: [[motor-control-application]] (fw~mc_015~1 runs each method's
 step each PWM cycle, fw~mc_016~1 supplies I_d and I_q, fw~mc_019~1 the
-per-cycle rotor angle), [[rotor]] (fw~est_rotor_002~1, the per-cycle
+per-cycle rotor angle, fw~mc_030~1 and fw~mc_031~1 the position setpoint
+and move profile, fw~mc_032~1 the rotor position), [[rotor]] (fw~est_rotor_002~1, the per-cycle
 velocity estimate), [[modulation]] (fw~mc_013~1 is the inverse Park
 transform, fw~mc_014~1 the modulator), [[bridge]] (the voltage vector is
 applied by the bridge, fw~io_bridge_008~1; fw~io_bridge_009~1 the
@@ -91,8 +94,9 @@ Needs: impl, test
 ### Field-oriented velocity commutation
 `fw~mc_025~1`
 
-Each commutation step while active, the field-oriented velocity method
-shall command, as the torque method does (fw~mc_022~1), the
+Each commutation step while active, and each step the position method
+runs it (fw~mc_029~1), the field-oriented velocity method shall
+command, as the torque method does (fw~mc_022~1), the
 voltage-limited (fw~mc_024~1) output of the current regulator
 (fw~mc_023~1) with all three phases enabled for the targets i_d* = 0 and
 i_q* = T_q / K_t, T_q the q-axis torque command (fw~mc_028~1) formed from
@@ -102,9 +106,10 @@ T* = K_vp · e + K_vi · S_v − k_ff · T̂_d, then S_v ← S_v + T · e, for e
 
 a T* of magnitude at or above K_t · I_max then clamped to ±K_t · I_max
 with S_v set so that K_vp · e + K_vi · S_v − k_ff · T̂_d equals the clamped
-T*, and S_v zero at the method's first commutation step after each bridge
-enable and each method selection, for ω* the speed target and ω̂ the
-per-cycle rotor velocity estimate, both in mechanical rad/s, T̂_d the
+T*, and S_v zero at the active method's first commutation step after each
+bridge enable and each method selection, for ω* the speed target, or the
+velocity command when run by the position method (fw~mc_029~1), and ω̂
+the per-cycle rotor velocity estimate, both in mechanical rad/s, T̂_d the
 per-cycle unmodelled-torque estimate in Nm (fw~est_rotor_002~1), T the
 PWM period, I_max the channel's configured maximum current, K_t its
 configured torque constant in Nm/A, K_vp and K_vi its configured velocity
@@ -154,6 +159,58 @@ Covers:
 
 Needs: impl, test
 
+### Field-oriented position commutation
+`fw~mc_029~1`
+
+Each commutation step while active, the field-oriented position method
+shall run the velocity method's step (fw~mc_025~1) on the velocity
+command
+
+ω_c = K_pp · e + K_pi · S_p + ω_f, then S_p ← S_p + T · e, for e = θ* − θ̂_p
+
+an ω_c of magnitude at or above ω_max then clamped to ±ω_max with S_p
+left as it was before that step, and S_p zero at the method's first
+commutation step after each bridge enable and each method selection, for θ* the position target and ω_f the profile
+velocity (fw~mc_031~1), θ̂_p the rotor position (fw~mc_032~1), T the PWM
+period, ω_max the channel's configured maximum velocity, and K_pp and
+K_pi its configured position gains in 1/s and 1/s², above zero.
+
+Acceptance:
+- With ω̂ and T̂_d held at zero, the cogging amplitudes zero
+  (fw~mc_028~1), no position setpoint held (fw~mc_030~1) and the
+  estimator's angle stepped by −E after the method's first commutation
+  step, for |E| below π with K_pp · E + 20 · K_pi · T · E below ω_max and
+  K_vp · K_pp · E below K_t · I_max: the next step sets
+  i_q* = K_vp · K_pp · E / K_t within 1 % of it, and with the angle held
+  the velocity command 20 steps later is K_pp · E + 20 · K_pi · T · E
+  within 1 % of K_pp · E.
+- With the same setup and K_pp · E between ω_max and 2 · ω_max, every
+  step's velocity command is ω_max, and the step after the estimator's
+  angle steps back by +E commands zero, each within 1 % of ω_max.
+- With the estimator's angle held, a position setpoint of 4 rad with
+  v = F, a = 0 and ω_s = 0 written at rest (fw~mc_031~1), for 0 < F below
+  ω_max: the first commutation step after the next 1 ms cycle commands
+  F · (1 + K_pp · 1 ms) within 1 % of F.
+- At K_pp = 30 1/s, K_pi = 90 1/s², K_vp = 0.04 Nm per rad/s,
+  K_vi = 0.5 Nm per rad, k_ff = 1, the cogging amplitudes zero,
+  K_t · I_max above 0.4 Nm, ω_max above 10 rad/s and θ_max above 2π
+  (fw~mc_031~1), on a free rotor of 1.6e-4 kg·m² tracked by an estimator
+  configured for it (fw~est_rotor_001~1, fw~est_rotor_002~1), a position
+  setpoint of 2π rad with v = 10 rad/s, a = 50 rad/s² and ω_s = 0 from
+  rest leaves the rotor's angle within 0.02 rad of 2π from 100 ms after
+  the profile's end, the rotor's angle at most 2π + 0.05 rad throughout.
+- Under the same configuration, at rest on a position setpoint, a load
+  torque of 10 mNm applied to the rotor moves its angle less than
+  0.05 rad, and the rotor's angle is back within 0.01 rad of the
+  setpoint 1 s after the load's application.
+- Init rejects K_pp or K_pi at or below zero.
+
+Covers:
+- sys~mc_001~1
+- sys~mc_005~1
+
+Needs: impl, test
+
 ### Cogging-torque compensation
 `fw~mc_028~1`
 
@@ -164,7 +221,8 @@ shall form the q-axis torque command T_q, from which i_q* = T_q / K_t
 T_q = T_m − k_cog · T_cog(θ̂), clamped to ±K_t · I_max, with T_cog(θ̂) = A_1 · sin(n_1 · θ̂ + φ_1) + A_2 · sin(n_2 · θ̂ + φ_2)
 
 for T_m the method's demand (the torque target, fw~mc_026~1, under the
-torque method; the clamped T* under the velocity method, fw~mc_025~1),
+torque method; the clamped T* under the velocity and position
+methods, fw~mc_025~1 and fw~mc_029~1),
 θ̂ the estimator's mechanical angle for the cycle in rad
 (fw~est_rotor_002~1), T_cog the configured model of the cogging torque on
 the rotor in Nm, positive in the direction of increasing θ̂, with n_1 and

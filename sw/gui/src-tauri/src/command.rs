@@ -12,8 +12,10 @@ use crate::protocol::{payload_kind, Client};
 use crate::session::{session_handles, SessionState};
 
 /// One setpoint as the UI states it: a time from the sequence's start, one
-/// target (a speed, a torque, or a stop), and a rate limit (zero steps).
-#[derive(Clone, Debug, serde::Deserialize)]
+/// target (a speed, a torque, a position, or a stop), and a rate limit (zero
+/// steps); a position's rate limit is its velocity limit, with an
+/// acceleration limit and a velocity at the point beside it.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SetpointSpec {
     pub t_us: u32,
     #[serde(default)]
@@ -21,9 +23,15 @@ pub struct SetpointSpec {
     #[serde(default)]
     pub torque_nm: Option<f32>,
     #[serde(default)]
+    pub position_rad: Option<f32>,
+    #[serde(default)]
     pub stop: Option<StopSpec>,
     #[serde(default)]
     pub rate_limit: f32,
+    #[serde(default)]
+    pub accel_limit_radps2: f32,
+    #[serde(default)]
+    pub velocity_at_point_radps: f32,
 }
 
 /// The stop target, `{}` as the UI states it.
@@ -50,6 +58,7 @@ pub struct MotorInfo {
     pub i_max_a: f32,
     pub max_torque_nm: f32,
     pub max_velocity_radps: f32,
+    pub max_position_rad: f32,
 }
 
 /// A Command landing before the previous one's start pass is rejected with
@@ -64,15 +73,18 @@ pub fn build_command(spec: &CommandSpec) -> Result<board::Command, String> {
         .ok_or_else(|| format!("unknown mode {}", spec.mode))?;
     let mut setpoints = Vec::with_capacity(spec.setpoints.len());
     for (i, sp) in spec.setpoints.iter().enumerate() {
-        let target = match (sp.velocity_radps, sp.torque_nm, sp.stop.is_some()) {
-            (Some(v), None, false) => board::setpoint::Target::VelocityRadps(v),
-            (None, Some(t), false) => board::setpoint::Target::TorqueNm(t),
-            (None, None, true) => board::setpoint::Target::Stop(board::Stop {}),
+        let target = match (sp.velocity_radps, sp.torque_nm, sp.position_rad, sp.stop.is_some()) {
+            (Some(v), None, None, false) => board::setpoint::Target::VelocityRadps(v),
+            (None, Some(t), None, false) => board::setpoint::Target::TorqueNm(t),
+            (None, None, Some(p), false) => board::setpoint::Target::PositionRad(p),
+            (None, None, None, true) => board::setpoint::Target::Stop(board::Stop {}),
             _ => return Err(format!("setpoint {i}: exactly one target")),
         };
         setpoints.push(board::Setpoint {
             t_us: sp.t_us,
             rate_limit: sp.rate_limit,
+            accel_limit_radps2: sp.accel_limit_radps2,
+            velocity_at_point_radps: sp.velocity_at_point_radps,
             target: Some(target),
         });
     }
@@ -122,6 +134,7 @@ pub fn motor_info_blocking(client: &Client) -> Result<MotorInfo, String> {
             i_max_a: m.i_max_a,
             max_torque_nm: m.max_torque_nm,
             max_velocity_radps: m.max_velocity_radps,
+            max_position_rad: m.max_position_rad,
         }),
         Payload::Response(r) => Err(format!("motor info rejected: {}", r.cause)),
         other => Err(format!("unexpected reply: {}", payload_kind(&other))),
@@ -186,8 +199,8 @@ mod tests {
         CommandSpec {
             mode: "MODE_FOC_VELOCITY".into(),
             setpoints: vec![
-                SetpointSpec { t_us: 0, velocity_radps: Some(2.0), torque_nm: None, stop: None, rate_limit: 0.0 },
-                SetpointSpec { t_us: 250_000, velocity_radps: Some(4.0), torque_nm: None, stop: None, rate_limit: 20.0 },
+                SetpointSpec { t_us: 0, velocity_radps: Some(2.0), rate_limit: 0.0, ..Default::default() },
+                SetpointSpec { t_us: 250_000, velocity_radps: Some(4.0), rate_limit: 20.0, ..Default::default() },
             ],
         }
     }
@@ -281,7 +294,7 @@ mod tests {
 
     // [test->app~conn_004~1]
     #[test]
-    fn get_motor_info_resolves_the_four_fields() {
+    fn get_motor_info_resolves_the_five_fields() {
         let buf = SharedBuf::default();
         let client = Arc::new(Client::new(Box::new(buf.clone())));
         let mut pump = client.pump(Box::new(|_| {}));
@@ -300,12 +313,19 @@ mod tests {
                     i_max_a: 1.0,
                     max_torque_nm: 0.825,
                     max_velocity_radps: 20.944,
+                    max_position_rad: 62.83,
                 })),
             }),
         ));
         assert_eq!(
             worker.join().unwrap(),
-            Ok(MotorInfo { kt_nm_per_a: 0.825, i_max_a: 1.0, max_torque_nm: 0.825, max_velocity_radps: 20.944 })
+            Ok(MotorInfo {
+                kt_nm_per_a: 0.825,
+                i_max_a: 1.0,
+                max_torque_nm: 0.825,
+                max_velocity_radps: 20.944,
+                max_position_rad: 62.83,
+            })
         );
     }
 
@@ -313,7 +333,12 @@ mod tests {
     fn a_setpoint_needs_exactly_one_target() {
         let spec = CommandSpec {
             mode: "MODE_FOC_TORQUE".into(),
-            setpoints: vec![SetpointSpec { t_us: 0, velocity_radps: Some(1.0), torque_nm: Some(0.1), stop: None, rate_limit: 0.0 }],
+            setpoints: vec![SetpointSpec { t_us: 0, velocity_radps: Some(1.0), torque_nm: Some(0.1), ..Default::default() }],
+        };
+        assert!(build_command(&spec).is_err());
+        let spec = CommandSpec {
+            mode: "MODE_FOC_POSITION".into(),
+            setpoints: vec![SetpointSpec { t_us: 0, position_rad: Some(1.0), stop: Some(StopSpec {}), ..Default::default() }],
         };
         assert!(build_command(&spec).is_err());
         let spec = CommandSpec { mode: "MODE_WARP".into(), setpoints: Vec::new() };
@@ -325,12 +350,55 @@ mod tests {
     fn a_stop_setpoint_encodes_the_stop_target() {
         let spec = CommandSpec {
             mode: "MODE_FOC_VELOCITY".into(),
-            setpoints: vec![SetpointSpec {
-                t_us: 1_000_000, velocity_radps: None, torque_nm: None, stop: Some(StopSpec {}), rate_limit: 0.0,
-            }],
+            setpoints: vec![SetpointSpec { t_us: 1_000_000, stop: Some(StopSpec {}), ..Default::default() }],
         };
         let cmd = build_command(&spec).expect("a stop is one target");
         assert_eq!(cmd.setpoints[0].t_us, 1_000_000);
         assert_eq!(cmd.setpoints[0].target, Some(board::setpoint::Target::Stop(board::Stop {})));
+    }
+
+    // [test->app~conn_004~1]
+    #[test]
+    fn a_position_setpoint_encodes_its_limits_and_velocity_at_the_point() {
+        let spec = CommandSpec {
+            mode: "MODE_FOC_POSITION".into(),
+            setpoints: vec![
+                SetpointSpec { t_us: 0, position_rad: Some(0.0), ..Default::default() },
+                SetpointSpec {
+                    t_us: 200_000,
+                    position_rad: Some(6.283),
+                    rate_limit: 10.0,
+                    accel_limit_radps2: 50.0,
+                    velocity_at_point_radps: 5.0,
+                    ..Default::default()
+                },
+            ],
+        };
+        let cmd = build_command(&spec).expect("a position is one target");
+        assert_eq!(cmd.mode, board::Mode::FocPosition as i32);
+        assert_eq!(cmd.mode, 5);
+        assert_eq!(cmd.setpoints[0].target, Some(board::setpoint::Target::PositionRad(0.0)));
+        assert_eq!(cmd.setpoints[0].accel_limit_radps2, 0.0);
+        assert_eq!(cmd.setpoints[0].velocity_at_point_radps, 0.0);
+        let sp = &cmd.setpoints[1];
+        assert_eq!(sp.t_us, 200_000);
+        assert_eq!(sp.target, Some(board::setpoint::Target::PositionRad(6.283)));
+        assert_eq!(sp.rate_limit, 10.0);
+        assert_eq!(sp.accel_limit_radps2, 50.0);
+        assert_eq!(sp.velocity_at_point_radps, 5.0);
+    }
+
+    // [test->app~conn_004~1]
+    #[test]
+    fn a_position_setpoint_deserialises_from_the_ui() {
+        let spec: CommandSpec = serde_json::from_str(
+            r#"{"mode":"MODE_FOC_POSITION","setpoints":[{"t_us":0,"position_rad":3.0,"rate_limit":0,
+                "accel_limit_radps2":20,"velocity_at_point_radps":0},{"t_us":1000000,"stop":{}}]}"#,
+        )
+        .expect("the UI's position setpoint");
+        let cmd = build_command(&spec).expect("encodes");
+        assert_eq!(cmd.setpoints[0].target, Some(board::setpoint::Target::PositionRad(3.0)));
+        assert_eq!(cmd.setpoints[0].accel_limit_radps2, 20.0);
+        assert_eq!(cmd.setpoints[1].target, Some(board::setpoint::Target::Stop(board::Stop {})));
     }
 }

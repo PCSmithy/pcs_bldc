@@ -20,9 +20,14 @@ extern float32_t               mock_app_motorControl_lastVelocity;
 extern float32_t               mock_app_motorControl_lastVelocityLimit;
 extern float32_t               mock_app_motorControl_lastTorque;
 extern float32_t               mock_app_motorControl_lastTorqueLimit;
+extern float32_t               mock_app_motorControl_lastPosition;
+extern float32_t               mock_app_motorControl_lastPositionVelocityLimit;
+extern float32_t               mock_app_motorControl_lastPositionAccelLimit;
+extern float32_t               mock_app_motorControl_lastPositionVelocityAtPoint;
 extern uint32_t                mock_app_motorControl_setModeCalls;
 extern uint32_t                mock_app_motorControl_setVelocityCalls;
 extern uint32_t                mock_app_motorControl_setTorqueCalls;
+extern uint32_t                mock_app_motorControl_setPositionSetpointCalls;
 extern uint32_t                mock_app_motorControl_clearFaultCalls;
 
 #ifdef __cplusplus

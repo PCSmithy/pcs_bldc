@@ -5,6 +5,7 @@ Run:  .venv/Scripts/python sw/gui/tests/test_views.py
 """
 
 import json
+import math
 import os
 import sys
 import threading
@@ -4509,6 +4510,71 @@ def run_command_widget(page):
         off,
     )
 
+    # ── [test->app~views_024~1] the position method relabels the setpoint to
+    #    rad bounded at the maximum position and shows the velocity-limit,
+    #    acceleration-limit and velocity-at-the-point fields, zero read as
+    #    max, step, and stop; Send carries all three ──
+    pos_state = """(w) => ({
+        unit: w.el.querySelector('[data-unit]').textContent,
+        bound: w.el.querySelector('[data-bound]').textContent,
+        limitLabel: w.el.querySelector('[data-limitlabel]').textContent,
+        limitUnit: w.el.querySelector('[data-limitunit]').textContent,
+        shown: [...w.el.querySelectorAll('[data-poslimit]')].map(f => !f.hidden && f.offsetParent !== null),
+        placeholders: ['[data-limit]', '[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).placeholder),
+        values: ['[data-setpoint]', '[data-limit]', '[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).value),
+        disabled: ['[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).disabled),
+        saved: w.toJSON(),
+    })"""
+    page.click(f"{cmd_sel} [data-mode='MODE_FOC_POSITION']")
+    cp0 = widget_eval(page, cmd_id, pos_state)
+    check(
+        "views_024 position relabels to rad bounded at 62.83 and shows velocity, acceleration, and velocity-at-the-point limits (max / step / stop)",
+        cp0["unit"] == "rad" and cp0["bound"] == "≤ 62.83 rad" and cp0["limitLabel"] == "velocity limit"
+        and cp0["limitUnit"] == "rad/s" and cp0["shown"] == [True, True]
+        and cp0["placeholders"] == ["max", "step", "stop"] and cp0["values"] == ["0", "", "", ""]
+        and cp0["disabled"] == [False, False],
+        cp0,
+    )
+
+    def fill(field, text):
+        page.fill(f"{cmd_sel} {field}", text)
+        page.press(f"{cmd_sel} {field}", "Enter")
+
+    fill("[data-setpoint]", "100")
+    fill("[data-limit]", "30")
+    fill("[data-atpoint]", "25")
+    over = widget_eval(page, cmd_id, pos_state)["values"]
+    fill("[data-setpoint]", "6.283")
+    fill("[data-limit]", "10")
+    fill("[data-accel]", "50")
+    rebounded = widget_eval(page, cmd_id, pos_state)
+    check(
+        "views_024 position bounds: setpoint at 62.83, velocity limit at 20.944, velocity at the point at the limit",
+        over == ["62.83", "20.944", "", "20.944"]
+        and rebounded["values"] == ["6.283", "10", "50", "10"]
+        and {k: rebounded["saved"][k] for k in ("mode", "setpoint", "limit", "accel", "at_point")}
+        == {"mode": "MODE_FOC_POSITION", "setpoint": 6.283, "limit": 10, "accel": 50, "at_point": 10},
+        (over, rebounded),
+    )
+    page.click(f"{cmd_sel} [data-send]")
+    wait_verdict()
+    sent = page.evaluate("() => window.__devmockLastCommand")
+    check(
+        "views_024 Send under the position method carries the position, velocity limit, acceleration limit, and velocity at the point",
+        sent == {"mode": "MODE_FOC_POSITION", "setpoints": [{
+            "t_us": 0, "rate_limit": 10, "position_rad": 6.283,
+            "accel_limit_radps2": 50, "velocity_at_point_radps": 10}]}
+        and widget_eval(page, cmd_id, cmd_state)["verdict"] == "accepted",
+        sent,
+    )
+    page.click(f"{cmd_sel} [data-mode='MODE_FOC_VELOCITY']")
+    cv2 = widget_eval(page, cmd_id, pos_state)
+    check(
+        "views_024 a velocity method hides the position limits and reads the rate limit, zero a step",
+        cv2["shown"] == [False, False] and cv2["limitLabel"] == "rate limit" and cv2["placeholders"][0] == "step",
+        cv2,
+    )
+
     # ── + views_004/023: a signal drop on the widget is ignored, its menu
     #    offers removal only, Delete inside its inputs edits text ──
     watched0 = page.evaluate("() => __cockpit.store.watched.size")
@@ -4860,6 +4926,113 @@ def run_sequence_widget(page):
         "views_026 disconnected disables Run and Stop; reconnected restores them",
         dc["disabled"] == [True, True] and dc["offline"] and rc["disabled"] == [False, False] and not rc["offline"],
         (dc["disabled"], rc["disabled"]),
+    )
+
+    # ── [test->app~views_025~1] the position method relabels the vertical
+    #    axis to rad bounded at the maximum position ──
+    page.click(f"{seq_sel} [data-mode='MODE_FOC_POSITION']")
+    sp0 = widget_eval(page, seq_id, seq_state)
+    check(
+        "views_025 the position method relabels the axis to rad bounded at 62.83",
+        sp0["unit"] == "rad · ±62.83" and sp0["mode"] == "MODE_FOC_POSITION",
+        sp0["unit"],
+    )
+
+    # ── [test->app~views_025~1] the tooltip edits a point's velocity limit,
+    #    acceleration limit, and velocity at the point (zero: max, step, stop) ──
+    two_pi = 2 * math.pi
+    widget_eval(
+        page, seq_id,
+        "(w, v) => { w.setDuration(2000); w.setPoints([{ t_ms: 0, value: 0, limit: 0 }, { t_ms: 200, value: v, limit: 0 }]); }",
+        two_pi,
+    )
+    page.mouse.click(*px(200, two_pi))
+    tip_state = """(w) => ({
+        shown: [...w.el.querySelectorAll('[data-tip-poslimit]')].map(f => !f.hidden && f.offsetParent !== null),
+        placeholders: ['[data-tip-limit]', '[data-tip-accel]', '[data-tip-atpoint]'].map(s => w.el.querySelector(s).placeholder),
+        point: w.cfg.points[1],
+        selected: w.selected,
+    })"""
+    tp0 = widget_eval(page, seq_id, tip_state)
+
+    def tip(field, text):
+        page.fill(f"{seq_sel} {field}", text)
+        page.press(f"{seq_sel} {field}", "Enter")
+
+    tip("[data-tip-limit]", "10")
+    tip("[data-tip-accel]", "50")
+    tp1 = widget_eval(page, seq_id, tip_state)
+    check(
+        "views_025 the position tooltip shows the velocity limit, acceleration limit, and velocity at the point (max / step / stop) and edits them",
+        tp0["selected"] == 1 and tp0["shown"] == [True, True] and tp0["placeholders"] == ["max", "step", "stop"]
+        and tp1["point"] == {"t_ms": 200, "value": two_pi, "limit": 10, "accel": 50},
+        (tp0, tp1),
+    )
+
+    # ── [test->app~views_025~1] the move: (0, 0) and (200 ms, 2π) at 10 rad/s
+    #    and 50 rad/s², stopping on the point, move from 0 at 200 ms at
+    #    10 rad/s between 400 and 828 ms reaching 2π at 1028 ms; with a
+    #    velocity at the point of 10 rad/s, reaching 2π at 928 ms and holding
+    #    10 rad/s (the drawn polyline's math) ──
+    move_of = """(w) => {
+        const [ts, vs, ws] = __cockpit.sequence.positionTrajectory(w.cfg.points, w.cfg.duration_ms, __cockpit.store.motorInfo, 1);
+        const reach = vs.findIndex((v) => v >= 2 * Math.PI - 1e-6);
+        const cruise = ws.slice(401, 828).every((v) => Math.abs(v - 10) < 1e-6);
+        return { start: [vs[200], ws[200], vs[201] > 0], at400: ws[400], cruise, reach,
+                 after: [vs[reach + 100], ws[reach + 100]] };
+    }"""
+    stop_move = widget_eval(page, seq_id, move_of)
+    tip("[data-tip-atpoint]", "30")
+    held_at = widget_eval(page, seq_id, "(w) => w.cfg.points[1].at_point")
+    tip("[data-tip-atpoint]", "10")
+    pass_move = widget_eval(page, seq_id, move_of)
+    check(
+        "views_025 position move stopping on the point: from 0 at 200 ms, 10 rad/s over 400..828 ms, 2 pi at 1028 ms",
+        stop_move["start"] == [0, 0, True] and abs(stop_move["at400"] - 10) < 1e-6 and stop_move["cruise"]
+        and abs(stop_move["reach"] - 1028) <= 1 and abs(stop_move["after"][0] - two_pi) < 1e-9
+        and stop_move["after"][1] == 0,
+        stop_move,
+    )
+    check(
+        "views_025 position move at 10 rad/s through the point: 2 pi at 928 ms, then 10 rad/s on; velocity at the point held at the limit",
+        held_at == 10 and abs(pass_move["reach"] - 928) <= 1 and abs(pass_move["after"][1] - 10) < 1e-6
+        and abs(pass_move["after"][0] - (two_pi + 1.0)) < 0.02,
+        (held_at, pass_move),
+    )
+
+    # ── [test->app~views_026~1] Run under the position method sends each
+    #    point's position with its three limits, then the stop ──
+    page.click(f"{seq_sel} [data-run]")
+    wait_verdict()
+    sent = page.evaluate("() => window.__devmockLastCommand")
+    check(
+        "views_026 Run under the position method sends each position with its velocity limit, acceleration limit, and velocity at the point",
+        sent == {"mode": "MODE_FOC_POSITION", "setpoints": [
+            {"t_us": 0, "position_rad": 0, "rate_limit": 0, "accel_limit_radps2": 0, "velocity_at_point_radps": 0},
+            {"t_us": 200000, "position_rad": two_pi, "rate_limit": 10, "accel_limit_radps2": 50, "velocity_at_point_radps": 10},
+            {"t_us": 2000000, "stop": {}}]}
+        and widget_eval(page, seq_id, seq_state)["verdict"] == "accepted",
+        sent,
+    )
+
+    # ── [test->app~views_027~1] a named sequence and the workspace carry the
+    #    position limits through a restart ──
+    page.fill(f"{seq_sel} [data-seqname]", "move 2pi")
+    page.click(f"{seq_sel} [data-saveas]")
+    widget_eval(page, seq_id, "(w) => w.setPoints([{ t_ms: 0, value: 1, limit: 0 }])")
+    page.select_option(f"{seq_sel} [data-load]", "move 2pi")
+    moved = {"t_ms": 200, "value": two_pi, "limit": 10, "accel": 50, "at_point": 10}
+    loaded = widget_eval(page, seq_id, "(w) => w.cfg.points")
+    restart(
+        page,
+        wait_js="() => { let n = 0; __cockpit.forEachWidget(w => { if (w.toJSON().type === 'sequence') n++; }); return n >= 1; }",
+    )
+    rp = widget_eval(page, seq_id, seq_state)
+    check(
+        "views_027 a named position sequence loads with its limits; the limits and the mode survive a restart",
+        loaded[1] == moved and rp is not None and rp["mode"] == "MODE_FOC_POSITION" and rp["points"][1] == moved
+        and "move 2pi" in rp["names"],
+        (loaded, rp and rp["points"]),
     )
 
 

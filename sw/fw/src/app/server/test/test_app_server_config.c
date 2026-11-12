@@ -17,12 +17,14 @@ extern const app_sequencer_config_S app_sequencer_config;   // the board's table
 #define TEST_I_MAX       (1.0f)
 #define TEST_MAX_TORQUE  (TEST_KT * TEST_I_MAX)
 #define TEST_MAX_VEL     (20.0f)
+#define TEST_MAX_POS     (62.83f)
 #define SEQ              (APP_SEQUENCER_CHANNEL_MAIN)
 
 static void setTestRatings(void)
 {
     const app_motorControl_ratings_S ratings = { .torqueConstant_NmPerA = TEST_KT, .maxCurrent_A = TEST_I_MAX,
-                                                 .maxTorque_Nm = TEST_MAX_TORQUE, .maxVelocity_radPerSec = TEST_MAX_VEL };
+                                                 .maxTorque_Nm = TEST_MAX_TORQUE, .maxVelocity_radPerSec = TEST_MAX_VEL,
+                                                 .maxPosition_rad = TEST_MAX_POS };
     mock_app_motorControl_setRatings(&ratings);
 }
 
@@ -51,6 +53,8 @@ static void test_telemetry_maps_snapshot_and_bus_measurements(void)
     snap.velocityMeasured_radPerSec = 12.5f;
     snap.velocitySetpoint_radPerSec = 10.0f;
     snap.torqueTarget_Nm = 0.25f;
+    snap.positionTarget_rad = 3.5f;
+    snap.rotorPosition_rad = 3.25f;
     mock_app_motorControl_setSnapshot(&snap);
 
     // VBUS pins: 1.8 V / 0.15 = 12 V bus; 0.3 V / 0.6 = 0.5 A.
@@ -66,6 +70,8 @@ static void test_telemetry_maps_snapshot_and_bus_measurements(void)
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 12.5f, telemetry.velocity_measured_radps);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 10.0f, telemetry.velocity_setpoint_radps);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.25f, telemetry.torque_target_nm);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.5f, telemetry.position_target_rad);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.25f, telemetry.rotor_position_rad);
 }
 
 // [test->fw~obs_status_001~1]
@@ -90,6 +96,7 @@ static void test_telemetry_reports_each_method_mode(void)
         { APP_MOTORCONTROL_MODE_SINUSOIDAL,    board_Mode_MODE_SINUSOIDAL },
         { APP_MOTORCONTROL_MODE_FOC_TORQUE,    board_Mode_MODE_FOC_TORQUE },
         { APP_MOTORCONTROL_MODE_FOC_VELOCITY,  board_Mode_MODE_FOC_VELOCITY },
+        { APP_MOTORCONTROL_MODE_FOC_POSITION,  board_Mode_MODE_FOC_POSITION },
     };
     for (uint32_t i = 0U; i < COUNTOF(cases); i++)
     {
@@ -149,6 +156,18 @@ static board_Setpoint torqueAt(uint32_t t_us, float32_t value, float32_t limit)
     sp.which_target = board_Setpoint_torque_nm_tag;
     sp.target.torque_nm = value;
     sp.rate_limit = limit;
+    return sp;
+}
+
+static board_Setpoint positionAt(uint32_t t_us, float32_t value, float32_t vLimit, float32_t aLimit, float32_t atPoint)
+{
+    board_Setpoint sp = board_Setpoint_init_zero;
+    sp.t_us = t_us;
+    sp.which_target = board_Setpoint_position_rad_tag;
+    sp.target.position_rad = value;
+    sp.rate_limit = vLimit;
+    sp.accel_limit_radps2 = aLimit;
+    sp.velocity_at_point_radps = atPoint;
     return sp;
 }
 
@@ -249,6 +268,54 @@ static void test_a_torque_setpoint_reaches_the_torque_target(void)
     app_sequencer_run1ms();
     TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_setTorqueCalls);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.3f, mock_app_motorControl_lastTorque);
+}
+
+// [test->fw~conn_server_007~1]
+// The position method with one position setpoint at time zero within its bounds
+// is accepted, and the setpoint reaches the position setter with its four fields.
+static void test_a_position_setpoint_reaches_the_position_setpoint(void)
+{
+    const board_Setpoint sp = positionAt(0U, 6.0f, 10.0f, 50.0f, 2.0f);
+    TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_FOC_POSITION, &sp, 1U).accepted);
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_FOC_POSITION, mock_app_motorControl_lastMode);
+    app_sequencer_run1ms();
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_setPositionSetpointCalls);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.0f, mock_app_motorControl_lastPosition);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 10.0f, mock_app_motorControl_lastPositionVelocityLimit);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 50.0f, mock_app_motorControl_lastPositionAccelLimit);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, mock_app_motorControl_lastPositionVelocityAtPoint);
+}
+
+// [test->fw~conn_server_007~1]
+// The position rows of the rejection table: past the maximum position, a velocity
+// limit past the maximum velocity, a velocity at the point past its limit (the
+// maximum velocity for a limit of zero), a negative or non-finite acceleration.
+// At the bounds, with a zero limit, each is accepted.
+static void test_each_position_rejection_condition_rejects(void)
+{
+    board_Setpoint sp = positionAt(0U, TEST_MAX_POS + 0.1f, 10.0f, 50.0f, 0.0f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // past the maximum position
+    sp = positionAt(0U, -(TEST_MAX_POS + 0.1f), 10.0f, 50.0f, 0.0f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);
+    sp = positionAt(0U, 1.0f, TEST_MAX_VEL + 0.1f, 50.0f, 0.0f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // velocity limit past the maximum velocity
+    sp = positionAt(0U, 1.0f, 10.0f, 50.0f, 10.1f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // velocity at the point past its limit
+    sp = positionAt(0U, 1.0f, 10.0f, 50.0f, -10.1f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);
+    sp = positionAt(0U, 1.0f, 0.0f, 50.0f, TEST_MAX_VEL + 0.1f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // past the maximum velocity at a zero limit
+    sp = positionAt(0U, 1.0f, 10.0f, -1.0f, 0.0f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // acceleration negative
+    sp = positionAt(0U, 1.0f, 10.0f, NAN, 0.0f);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // acceleration not finite
+    sp = positionAt(0U, 1.0f, 10.0f, 50.0f, INFINITY);
+    assertRejected(board_Mode_MODE_FOC_POSITION, &sp, 1U);                   // velocity at the point not finite
+
+    const board_Setpoint atBounds[3] = { positionAt(0U, TEST_MAX_POS, TEST_MAX_VEL, 0.0f, TEST_MAX_VEL),
+                                         positionAt(0U, -TEST_MAX_POS, 10.0f, 50.0f, 10.0f),
+                                         positionAt(0U, 1.0f, 0.0f, 0.0f, TEST_MAX_VEL) };
+    TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_FOC_POSITION, atBounds, 3U).accepted);
 }
 
 // [test->fw~conn_server_007~1]
@@ -430,6 +497,7 @@ static void test_get_motor_info_reports_the_ratings(void)
     TEST_ASSERT_FLOAT_WITHIN(0.001f * TEST_I_MAX, TEST_I_MAX, reply.result.motor_info.i_max_a);
     TEST_ASSERT_FLOAT_WITHIN(0.001f * TEST_MAX_TORQUE, TEST_MAX_TORQUE, reply.result.motor_info.max_torque_nm);
     TEST_ASSERT_FLOAT_WITHIN(0.001f * TEST_MAX_VEL, TEST_MAX_VEL, reply.result.motor_info.max_velocity_radps);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f * TEST_MAX_POS, TEST_MAX_POS, reply.result.motor_info.max_position_rad);
 }
 
 // [test->fw~obs_status_001~1]
@@ -480,6 +548,8 @@ int main(void)
     RUN_TEST(test_empty_command_rejected);
     RUN_TEST(test_command_is_accepted_and_its_sequence_plays);
     RUN_TEST(test_a_torque_setpoint_reaches_the_torque_target);
+    RUN_TEST(test_a_position_setpoint_reaches_the_position_setpoint);
+    RUN_TEST(test_each_position_rejection_condition_rejects);
     RUN_TEST(test_stop_is_accepted_in_every_state);
     RUN_TEST(test_an_accepted_command_replaces_the_running_sequence);
     RUN_TEST(test_capacity_is_accepted_and_one_more_rejected);

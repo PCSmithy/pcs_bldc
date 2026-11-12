@@ -1,9 +1,10 @@
 // Command widget: one command to the board — a mode, a setpoint in the
-// mode's unit bounded by the reported rating, and a rate limit (zero: a
-// step) — sent as a Command with one setpoint at time zero; Stop sends
-// MODE_OFF with no setpoints, the selection kept. The verdict stands beside
-// the controls until the next send; the fields, Send, and Stop follow the
-// connection. Mode, setpoint, and limit persist with the workspace.
+// mode's unit bounded by the reported rating, and its limits (a rate limit,
+// zero a step; a position's velocity limit, acceleration limit and velocity
+// at the point) — sent as a Command with one setpoint at time zero; Stop
+// sends MODE_OFF with no setpoints, the selection kept. The verdict stands
+// beside the controls until the next send; the fields, Send, and Stop follow
+// the connection. Mode, setpoint, and limits persist with the workspace.
 // [impl->app~views_024~1]
 
 import { icon } from "../icons.js";
@@ -19,13 +20,31 @@ export const COMMAND_MODES = [
   { mode: "MODE_SINUSOIDAL", label: "sinusoidal", kind: "velocity" },
   { mode: "MODE_FOC_TORQUE", label: "FOC torque", kind: "torque" },
   { mode: "MODE_FOC_VELOCITY", label: "FOC velocity", kind: "velocity" },
+  { mode: "MODE_FOC_POSITION", label: "FOC position", kind: "position" },
 ];
 
-/** One row per setpoint kind: units, the wire field, and its rating. */
+/** One row per setpoint kind: units, the wire field, its rating, and what
+ *  its rate limit is (a position's is its velocity limit, zero the maximum). */
 export const SETPOINT_KINDS = {
-  velocity: { unit: "rad/s", limitUnit: "rad/s²", field: "velocity_radps", bound: (m) => m?.max_velocity_radps },
-  torque: { unit: "Nm", limitUnit: "Nm/s", field: "torque_nm", bound: (m) => m?.max_torque_nm },
+  velocity: { unit: "rad/s", limitUnit: "rad/s²", limitLabel: "rate limit", limitZero: "step", field: "velocity_radps", bound: (m) => m?.max_velocity_radps },
+  torque: { unit: "Nm", limitUnit: "Nm/s", limitLabel: "rate limit", limitZero: "step", field: "torque_nm", bound: (m) => m?.max_torque_nm },
+  position: { unit: "rad", limitUnit: "rad/s", limitLabel: "velocity limit", limitZero: "max", field: "position_rad", bound: (m) => m?.max_position_rad },
 };
+
+/** The velocity at the point's bound: the velocity limit, the maximum velocity for zero. */
+export const atPointBound = (limit, motorInfo) => (limit > 0 ? limit : motorInfo?.max_velocity_radps);
+
+/** A position's limits held in place: the velocity limit at the maximum
+ *  velocity, the velocity at the point at the velocity limit. */
+export function boundPositionLimits(p, motorInfo) {
+  p.limit = clampToBound(p.limit, motorInfo?.max_velocity_radps);
+  p.at_point = clampToBound(p.at_point ?? 0, atPointBound(p.limit, motorInfo));
+}
+
+/** A position setpoint's wire fields beside its rate limit (its velocity limit). */
+export function positionLimitFields(p) {
+  return { accel_limit_radps2: p.accel ?? 0, velocity_at_point_radps: p.at_point ?? 0 };
+}
 
 export const kindOf = (mode) => COMMAND_MODES.find((m) => m.mode === mode)?.kind ?? null;
 const isMode = (mode) => COMMAND_MODES.some((m) => m.mode === mode);
@@ -45,18 +64,21 @@ export function buildCommand(cfg, motorInfo) {
   const k = SETPOINT_KINDS[kind];
   const setpoint = { t_us: 0, rate_limit: cfg.limit };
   setpoint[k.field] = clampToBound(cfg.setpoint, k.bound(motorInfo));
+  if (kind === "position") Object.assign(setpoint, positionLimitFields(cfg));
   return { mode: cfg.mode, setpoints: [setpoint] };
 }
 
 const fmt = (v) => (Number.isFinite(v) ? String(+v.toFixed(4)) : "");
 
 export class CommandWidget {
-  /** cfg: { id, mode, setpoint, limit } */
+  /** cfg: { id, mode, setpoint, limit, accel, at_point } */
   constructor(cfg, hooks) {
     this.cfg = cfg;
     this.cfg.mode = isMode(cfg.mode) ? cfg.mode : "MODE_OFF";
     this.cfg.setpoint = Number.isFinite(cfg.setpoint) ? cfg.setpoint : 0;
     this.cfg.limit = Number.isFinite(cfg.limit) ? cfg.limit : 0;
+    this.cfg.accel = Number.isFinite(cfg.accel) ? cfg.accel : 0;
+    this.cfg.at_point = Number.isFinite(cfg.at_point) ? cfg.at_point : 0;
     // Layout and the configuration popover read a widget's signal set.
     Object.defineProperty(this.cfg, "signals", { get: () => [], configurable: true, enumerable: false });
     this.hooks = hooks;
@@ -68,7 +90,7 @@ export class CommandWidget {
     this.render();
     this.unsubs = [
       subscribe("connection", () => this.refresh()),
-      subscribe("motorInfo", () => this.setSetpoint(this.cfg.setpoint)), // re-bounded
+      subscribe("motorInfo", () => this.rebound()),
     ];
   }
 
@@ -103,12 +125,28 @@ export class CommandWidget {
             <span class="cmd-hint mono" data-bound></span>
           </label>
           <label class="cmd-field">
-            <span class="field-label">rate limit</span>
+            <span class="field-label" data-limitlabel>rate limit</span>
             <span class="cmd-input">
               <input class="mono" data-limit inputmode="decimal" placeholder="step" aria-label="Rate limit">
               <span class="cmd-unit" data-limitunit></span>
             </span>
-            <span class="cmd-hint">per second · empty or 0 steps</span>
+            <span class="cmd-hint" data-limithint>per second · empty or 0 steps</span>
+          </label>
+          <label class="cmd-field" data-poslimit hidden>
+            <span class="field-label">acceleration limit</span>
+            <span class="cmd-input">
+              <input class="mono" data-accel inputmode="decimal" placeholder="step" aria-label="Acceleration limit">
+              <span class="cmd-unit">rad/s²</span>
+            </span>
+            <span class="cmd-hint">empty or 0 steps</span>
+          </label>
+          <label class="cmd-field" data-poslimit hidden>
+            <span class="field-label">velocity at the point</span>
+            <span class="cmd-input">
+              <input class="mono" data-atpoint inputmode="decimal" placeholder="stop" aria-label="Velocity at the point">
+              <span class="cmd-unit">rad/s</span>
+            </span>
+            <span class="cmd-hint" data-atpointhint></span>
           </label>
         </div>
         <div class="cmd-row cmd-send">
@@ -135,12 +173,19 @@ export class CommandWidget {
       if (b) this.setMode(b.dataset.mode);
     });
     const setpoint = this.el.querySelector("[data-setpoint]");
-    const limit = this.el.querySelector("[data-limit]");
+    const limits = {
+      limit: this.el.querySelector("[data-limit]"),
+      accel: this.el.querySelector("[data-accel]"),
+      at_point: this.el.querySelector("[data-atpoint]"),
+    };
     const commit = (input) => {
       if (input === setpoint) this.setSetpoint(parseFloat(input.value));
-      else this.setLimit(input.value.trim() === "" ? 0 : parseFloat(input.value));
+      else {
+        const which = Object.keys(limits).find((key) => limits[key] === input);
+        this.setLimit(which, input.value.trim() === "" ? 0 : parseFloat(input.value));
+      }
     };
-    for (const input of [setpoint, limit]) {
+    for (const input of [setpoint, ...Object.values(limits)]) {
       input.addEventListener("change", () => commit(input));
       input.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") commit(input);
@@ -156,8 +201,14 @@ export class CommandWidget {
     if (!isMode(mode)) return;
     const kindChanged = kindOf(mode) !== kindOf(this.cfg.mode);
     this.cfg.mode = mode;
-    if (kindChanged) this.cfg.limit = 0;
+    if (kindChanged) this.cfg.limit = this.cfg.accel = this.cfg.at_point = 0;
     this.setSetpoint(kindChanged ? 0 : this.cfg.setpoint);
+  }
+
+  /** A rating arrived: the setpoint and a position's limits held within it. */
+  rebound() {
+    if (kindOf(this.cfg.mode) === "position") boundPositionLimits(this.cfg, store.motorInfo);
+    this.setSetpoint(this.cfg.setpoint);
   }
 
   /** Setpoint held within the mode's rating; a non-number leaves it. */
@@ -171,9 +222,11 @@ export class CommandWidget {
     this.refresh(true);
   }
 
-  setLimit(value) {
+  /** which: limit, accel, or at_point; a position's held within their bounds. */
+  setLimit(which, value) {
     if (Number.isFinite(value)) {
-      this.cfg.limit = value;
+      this.cfg[which] = value;
+      if (kindOf(this.cfg.mode) === "position") boundPositionLimits(this.cfg, store.motorInfo);
       this.hooks.onChange();
     }
     this.refresh(true);
@@ -215,9 +268,26 @@ export class CommandWidget {
     }
     const setpoint = this.el.querySelector("[data-setpoint]");
     const limit = this.el.querySelector("[data-limit]");
+    const accel = this.el.querySelector("[data-accel]");
+    const atPoint = this.el.querySelector("[data-atpoint]");
+    const position = kind === "position";
+    const shown = (v) => (k && v !== 0 ? fmt(v) : "");
     if (resync || document.activeElement !== setpoint) setpoint.value = k ? fmt(this.cfg.setpoint) : "";
-    if (resync || document.activeElement !== limit) limit.value = k && this.cfg.limit !== 0 ? fmt(this.cfg.limit) : "";
+    if (resync || document.activeElement !== limit) limit.value = shown(this.cfg.limit);
+    if (resync || document.activeElement !== accel) accel.value = position ? shown(this.cfg.accel) : "";
+    if (resync || document.activeElement !== atPoint) atPoint.value = position ? shown(this.cfg.at_point) : "";
     setpoint.disabled = limit.disabled = !live || !k;
+    accel.disabled = atPoint.disabled = !live || !position;
+    for (const f of this.el.querySelectorAll("[data-poslimit]")) f.hidden = !position;
+    limit.placeholder = k?.limitZero ?? "step";
+    limit.setAttribute("aria-label", k?.limitLabel === "velocity limit" ? "Velocity limit" : "Rate limit");
+    this.el.querySelector("[data-limitlabel]").textContent = k?.limitLabel ?? "rate limit";
+    const maxVelocity = store.motorInfo?.max_velocity_radps;
+    const atMost = (b) => (Number.isFinite(b) ? `≤ ${fmt(b)} rad/s · ` : "");
+    this.el.querySelector("[data-limithint]").textContent = position
+      ? `${atMost(maxVelocity)}empty or 0 is the maximum`
+      : "per second · empty or 0 steps";
+    this.el.querySelector("[data-atpointhint]").textContent = `${atMost(atPointBound(this.cfg.limit, store.motorInfo))}empty or 0 stops`;
     this.el.querySelector("[data-unit]").textContent = k?.unit ?? "—";
     this.el.querySelector("[data-limitunit]").textContent = k?.limitUnit ?? "—";
     this.el.querySelector("[data-bound]").textContent = !k
@@ -241,7 +311,7 @@ export class CommandWidget {
   }
 
   toJSON() {
-    const { id, mode, setpoint, limit, x, y, w, h, title } = this.cfg;
-    return { type: "command", id, mode, setpoint, limit, x, y, w, h, ...(title ? { title } : {}) };
+    const { id, mode, setpoint, limit, accel, at_point, x, y, w, h, title } = this.cfg;
+    return { type: "command", id, mode, setpoint, limit, accel, at_point, x, y, w, h, ...(title ? { title } : {}) };
   }
 }

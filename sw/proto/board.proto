@@ -13,6 +13,7 @@ enum Mode {
   MODE_SINUSOIDAL    = 2;
   MODE_FOC_TORQUE    = 3;
   MODE_FOC_VELOCITY  = 4;
+  MODE_FOC_POSITION  = 5;
 }
 
 // Coarse drive state (mirrors app_motorControl_state_E).
@@ -44,17 +45,22 @@ message Command {
 
 // One target to apply at t_us from the sequence's start. The target oneof
 // grows one arm per setpoint kind; the rate limit is in the kind's unit per
-// second (rad/s^2, Nm/s), zero for a step; a stop takes neither. A timing
-// alternative to t_us (the position sequencer's "after the previous move")
-// joins later.
+// second (rad/s^2, Nm/s, and a position's velocity limit in rad/s), zero for
+// a step (the maximum velocity for a position); a stop takes none. A position
+// also carries its acceleration limit and the velocity held through the point
+// (fw~mc_030). A timing alternative to t_us ("after the previous move") joins
+// later.
 message Setpoint {
   uint32 t_us = 1;
   oneof target {
     float velocity_radps = 2;
     float torque_nm      = 3;
     Stop  stop           = 5;   // the bridge disabled at t_us, as MODE_OFF does
+    float position_rad   = 6;
   }
-  float rate_limit = 4;
+  float rate_limit              = 4;
+  float accel_limit_radps2      = 7;   // position only; zero steps
+  float velocity_at_point_radps = 8;   // position only
 }
 
 // The empty target: MODE_OFF at its t_us.
@@ -71,6 +77,7 @@ message MotorInfo {
   float i_max_a            = 2;
   float max_torque_nm      = 3;
   float max_velocity_radps = 4;
+  float max_position_rad   = 5;
 }
 
 message ClearFault {
@@ -98,4 +105,6 @@ message Telemetry {
   float      torque_target_nm        = 8;   // in effect (fw~mc_027)
   bool       sequence_running        = 9;   // fw~ops_001
   uint32     sequence_elapsed_ms     = 10;  // since the running sequence's start
+  float      position_target_rad     = 11;  // in effect (fw~mc_031)
+  float      rotor_position_rad      = 12;  // fw~mc_032
 }

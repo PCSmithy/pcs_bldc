@@ -9,8 +9,10 @@ tags: [system, ops]
 `sys~ops_003~1`
 
 The system shall accept from the host one sequence of timed setpoints
-under one commutation method — each setpoint a speed target or a torque
-target with its rate limit and its time from the sequence's start, a newly
+under one commutation method — each setpoint carrying its time from the
+sequence's start and either a speed or torque target with its rate limit
+or a position with its velocity and acceleration limits and its velocity
+at the point, a newly
 accepted sequence replacing the running one — and apply each setpoint on
 the device's clock at its time.
 

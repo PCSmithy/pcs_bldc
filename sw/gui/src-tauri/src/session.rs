@@ -121,6 +121,8 @@ pub struct TelemetryEvent {
     velocity_measured_radps: f32,
     velocity_setpoint_radps: f32,
     torque_target_nm: f32,
+    position_target_rad: f32,
+    rotor_position_rad: f32,
     sequence_running: bool,
     sequence_elapsed_ms: u32,
 }
@@ -140,6 +142,8 @@ impl From<pcs_proto::board::Telemetry> for TelemetryEvent {
             velocity_measured_radps: t.velocity_measured_radps,
             velocity_setpoint_radps: t.velocity_setpoint_radps,
             torque_target_nm: t.torque_target_nm,
+            position_target_rad: t.position_target_rad,
+            rotor_position_rad: t.rotor_position_rad,
             sequence_running: t.sequence_running,
             sequence_elapsed_ms: t.sequence_elapsed_ms,
         }

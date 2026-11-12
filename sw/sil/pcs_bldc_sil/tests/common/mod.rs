@@ -65,6 +65,7 @@ pub const MODE_SIX_STEP_TRAP: u64 = 1;
 pub const MODE_SINUSOIDAL: u64 = 2;
 pub const MODE_FOC_TORQUE: u64 = 3;
 pub const MODE_FOC_VELOCITY: u64 = 4;
+pub const MODE_FOC_POSITION: u64 = 5;
 
 /// Select a commutation method over the protocol: a `Command` naming the method
 /// selects (and enables), one naming `MODE_OFF` disables with the selection kept,
@@ -325,6 +326,32 @@ pub mod proto {
         if limit != 0.0 {
             sp.push(0x25);
             sp.extend_from_slice(&limit.to_le_bytes());
+        }
+        sp
+    }
+
+    /// `board.Setpoint { t_us (1), rate_limit (4, the velocity limit), position_rad (6),
+    /// accel_limit_radps2 (7), velocity_at_point_radps (8) }`, the floats fixed32; a
+    /// zero limit or velocity is left off the wire as proto3 would.
+    pub fn position_setpoint(t_us: u32, position: f32, velocity_limit: f32, accel_limit: f32, at_point: f32) -> Vec<u8> {
+        let mut sp = Vec::new();
+        if t_us != 0 {
+            sp.push(0x08);
+            put_varint(u64::from(t_us), &mut sp);
+        }
+        if velocity_limit != 0.0 {
+            sp.push(0x25);
+            sp.extend_from_slice(&velocity_limit.to_le_bytes());
+        }
+        sp.push(0x35);
+        sp.extend_from_slice(&position.to_le_bytes());
+        if accel_limit != 0.0 {
+            sp.push(0x3D);
+            sp.extend_from_slice(&accel_limit.to_le_bytes());
+        }
+        if at_point != 0.0 {
+            sp.push(0x45);
+            sp.extend_from_slice(&at_point.to_le_bytes());
         }
         sp
     }

@@ -151,8 +151,14 @@ static void app_server_config_private_stageSetpoint(const board_Setpoint * const
         .kind = APP_SEQUENCER_KIND_COUNT,   // until the target arm names one
         .value = 0.0f,
         .rateLimit = setpoint->rate_limit,
+        .accelLimit = 0.0f,
+        .velocityAtPoint = 0.0f,
     };
     float32_t bound = 0.0f;
+    // a position's rate limit is its velocity limit, itself bounded, and bounds
+    // its velocity at the point (the maximum velocity for a limit of zero)
+    float32_t limitBound = INFINITY;
+    float32_t velocityAtPointBound = INFINITY;
     switch (setpoint->which_target)
     {
         case board_Setpoint_velocity_radps_tag:
@@ -171,6 +177,16 @@ static void app_server_config_private_stageSetpoint(const board_Setpoint * const
             entry.kind = APP_SEQUENCER_KIND_STOP;   // a zero value within a zero bound
             break;
 
+        case board_Setpoint_position_rad_tag:
+            entry.kind = APP_SEQUENCER_KIND_POSITION;
+            entry.value = setpoint->target.position_rad;
+            entry.accelLimit = setpoint->accel_limit_radps2;
+            entry.velocityAtPoint = setpoint->velocity_at_point_radps;
+            bound = ratings.maxPosition_rad;
+            limitBound = ratings.maxVelocity_radPerSec;
+            velocityAtPointBound = (entry.rateLimit > 0.0f) ? entry.rateLimit : ratings.maxVelocity_radPerSec;
+            break;
+
         default:
             break;
     }
@@ -179,17 +195,26 @@ static void app_server_config_private_stageSetpoint(const board_Setpoint * const
     {
         app_server_config_private_stageReject("setpoint has no target");
     }
-    else if ((!isfinite(entry.value)) || (!isfinite(entry.rateLimit)))
+    else if ((!isfinite(entry.value)) || (!isfinite(entry.rateLimit)) ||
+             (!isfinite(entry.accelLimit)) || (!isfinite(entry.velocityAtPoint)))
     {
         app_server_config_private_stageReject("setpoint not finite");
     }
-    else if (entry.rateLimit < 0.0f)
+    else if ((entry.rateLimit < 0.0f) || (entry.accelLimit < 0.0f))
     {
         app_server_config_private_stageReject("rate limit negative");
     }
     else if (fabsf(entry.value) > bound)
     {
         app_server_config_private_stageReject("setpoint exceeds the motor rating");
+    }
+    else if (entry.rateLimit > limitBound)
+    {
+        app_server_config_private_stageReject("velocity limit exceeds the motor rating");
+    }
+    else if (fabsf(entry.velocityAtPoint) > velocityAtPointBound)
+    {
+        app_server_config_private_stageReject("velocity at the point exceeds the velocity limit");
     }
     else if ((staging->count > 0U) && (entry.t_us < staging->lastTime_us))
     {
@@ -262,6 +287,7 @@ static bool app_server_config_private_mapMode(board_Mode wire, app_motorControl_
         case board_Mode_MODE_SINUSOIDAL:    *mode = APP_MOTORCONTROL_MODE_SINUSOIDAL;    break;
         case board_Mode_MODE_FOC_TORQUE:    *mode = APP_MOTORCONTROL_MODE_FOC_TORQUE;    break;
         case board_Mode_MODE_FOC_VELOCITY:  *mode = APP_MOTORCONTROL_MODE_FOC_VELOCITY;  break;
+        case board_Mode_MODE_FOC_POSITION:  *mode = APP_MOTORCONTROL_MODE_FOC_POSITION;  break;
         default:                            known = false;                               break;
     }
     return known;
@@ -357,6 +383,7 @@ static bool app_server_config_private_handleRequest(const board_Request * const 
                 reply->result.motor_info.i_max_a            = ratings.maxCurrent_A;
                 reply->result.motor_info.max_torque_nm      = ratings.maxTorque_Nm;
                 reply->result.motor_info.max_velocity_radps = ratings.maxVelocity_radPerSec;
+                reply->result.motor_info.max_position_rad   = ratings.maxPosition_rad;
                 isResult = true;
             }
             else
@@ -410,6 +437,9 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
         case APP_MOTORCONTROL_MODE_FOC_VELOCITY:
             telemetry->mode = board_Mode_MODE_FOC_VELOCITY;
             break;
+        case APP_MOTORCONTROL_MODE_FOC_POSITION:
+            telemetry->mode = board_Mode_MODE_FOC_POSITION;
+            break;
         default:
             telemetry->mode = board_Mode_MODE_OFF;
             break;
@@ -432,6 +462,8 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
     telemetry->velocity_measured_radps = snapshot.velocityMeasured_radPerSec;
     telemetry->velocity_setpoint_radps = snapshot.velocitySetpoint_radPerSec;
     telemetry->torque_target_nm = snapshot.torqueTarget_Nm;
+    telemetry->position_target_rad = snapshot.positionTarget_rad;
+    telemetry->rotor_position_rad = snapshot.rotorPosition_rad;
     telemetry->sequence_running = sequence.running;
     telemetry->sequence_elapsed_ms = sequence.elapsed_ms;
     return true;

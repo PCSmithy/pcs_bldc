@@ -56,6 +56,12 @@ static app_sequencer_setpoint_S torqueAt(uint32_t t_us, float32_t value, float32
     return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_TORQUE, .value = value, .rateLimit = limit };
 }
 
+static app_sequencer_setpoint_S positionAt(uint32_t t_us, float32_t value, float32_t vLimit, float32_t aLimit, float32_t atPoint)
+{
+    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_POSITION, .value = value,
+                                       .rateLimit = vLimit, .accelLimit = aLimit, .velocityAtPoint = atPoint };
+}
+
 static void append(app_sequencer_setpoint_S sp)
 {
     TEST_ASSERT_TRUE(app_sequencer_append(SEQ, &sp));
@@ -133,6 +139,25 @@ static void test_same_time_setpoints_write_in_list_order(void)
     app_sequencer_run1ms();                                  // pass 100
     TEST_ASSERT_EQUAL_UINT32(2U, writes());
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, mock_app_motorControl_lastVelocity);
+}
+
+// [test->fw~ops_001~1]
+// A position setpoint at 100 000 us reaches the position setter at pass 100 with
+// its limits and its velocity at the point.
+static void test_a_position_setpoint_writes_the_position_setpoint(void)
+{
+    TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
+    append(positionAt(100000U, 6.28f, 10.0f, 50.0f, 2.0f));
+    TEST_ASSERT_TRUE(app_sequencer_commit(SEQ));
+    passes(100U);                                            // passes 0..99
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_setPositionSetpointCalls);
+    app_sequencer_run1ms();                                  // pass 100
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_setPositionSetpointCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, writes());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.28f, mock_app_motorControl_lastPosition);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 10.0f, mock_app_motorControl_lastPositionVelocityLimit);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 50.0f, mock_app_motorControl_lastPositionAccelLimit);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, mock_app_motorControl_lastPositionVelocityAtPoint);
 }
 
 // [test->fw~ops_001~1]
@@ -360,6 +385,7 @@ int main(void)
     RUN_TEST(test_setpoints_are_written_at_their_passes);
     RUN_TEST(test_same_time_setpoints_write_in_list_order);
     RUN_TEST(test_a_torque_setpoint_writes_the_torque_target);
+    RUN_TEST(test_a_position_setpoint_writes_the_position_setpoint);
     RUN_TEST(test_a_stop_setpoint_requests_mode_off_at_its_pass);
     RUN_TEST(test_capacity_is_held_in_full);
     RUN_TEST(test_no_write_after_the_last_setpoint);

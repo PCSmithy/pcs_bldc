@@ -29,8 +29,10 @@ Sub-folders are created when a topic gets its first spec.
   field-oriented torque method, its current regulator and voltage limit,
   [[mc/foc]]), `fw~mc_025~1` (the field-oriented velocity method),
   `fw~mc_026~1` / `fw~mc_027~1` (the torque target, the setpoint rate
-  limit), `fw~mc_028~1` (cogging-torque compensation); also motion,
-  trajectory tracking
+  limit), `fw~mc_028~1` (cogging-torque compensation), the position
+  method `fw~mc_029~1` with `fw~mc_030~1` to `fw~mc_032~1` (the position
+  setpoint, the move profile, the rotor position); also trajectory
+  tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
   (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (encoder
   phase-locked rotor tracking, [[est/rotor]]); also the Kalman observer,

@@ -6,8 +6,8 @@ tags: [firmware, mc, app, driver]
 # Motor-control application
 
 The `app_motorControl` module owns the drive loop across two cadences. The
-1 ms cycle owns the inputs and the gate: the speed and torque targets and
-their rate limits, mode selection,
+1 ms cycle owns the inputs and the gate: the speed, torque and position
+targets and their limits, mode selection,
 bus voltage, fault latching, alignment, and bridge enable. The
 PWM-synchronous cycle, entered from the bridge's per-cycle callback that
 `main.c` composes around the duration probe (`fw~mc_018~1`), runs the active
@@ -58,7 +58,8 @@ Needs: impl, test
 On each bridge cycle callback (`fw~io_bridge_007~1`) while the bridge is
 enabled with the alignment offset captured (`fw~mc_012~1`), the application
 shall run the active method's commutation step with the speed and torque
-targets and bus voltage as last published by the 1 ms cycle, the per-cycle rotor
+targets, the position target and profile velocity (`fw~mc_031~1`) and bus
+voltage as last published by the 1 ms cycle, the per-cycle rotor
 electrical angle (`fw~mc_019~1`) and mechanical velocity estimate
 (`fw~est_rotor_002~1`), and the cycle's phase currents, and apply the
 step's bridge commands — per-phase duties (`fw~io_bridge_002~1`) or a
@@ -116,7 +117,7 @@ constant in Nm/A and θ̂ the estimator's mechanical angle for the cycle:
 
 | Method                             | Frame angle                                      | Known cogging share T_k           |
 |------------------------------------|--------------------------------------------------|-----------------------------------|
-| Field-oriented torque and velocity | Per-cycle rotor electrical angle (`fw~mc_019~1`) | k_cog · T_cog(θ̂) (`fw~mc_028~1`) |
+| Field-oriented torque, velocity and position | Per-cycle rotor electrical angle (`fw~mc_019~1`) | k_cog · T_cog(θ̂) (`fw~mc_028~1`) |
 | Six-step, sensored sinusoidal      | Per-cycle rotor electrical angle (`fw~mc_019~1`) | 0                                 |
 | V/f                                | Commanded electrical angle (`fw~mc_010~1`)       | 0                                 |
 
@@ -152,6 +153,28 @@ Acceptance:
   b and T_c configured zero (`fw~est_rotor_002~1`), and 14 pole pairs,
   after 100 ms at a constant 300 rad/s electrical, every PWM cycle's angle
   is within 3° of the rotor's electrical angle.
+
+Covers:
+- `sys~mc_005~1`
+
+Needs: impl, test
+
+### Rotor position
+`fw~mc_032~1`
+
+Each PWM cycle, the application shall hold the rotor position θ̂_p in
+rad: zero until the active method's first commutation step after a
+bridge enable, then accumulating each cycle's change in the estimator's
+mechanical angle (`fw~est_rotor_002~1`) taken in (−π, π].
+
+Acceptance:
+- The estimator's angle stepped from 6.2 rad to 0.1 rad moves θ̂_p by
+  +0.1832 rad; stepped from 0.1 rad to 6.2 rad, by −0.1832 rad, each
+  within 1e-4 rad.
+- After three turns forward and one back, θ̂_p is 4π within 1e-3 rad.
+- After ten turns forward and ten back, θ̂_p is zero within 1e-3 rad.
+- Through a bridge disable and the next enable's precharge, θ̂_p is
+  zero.
 
 Covers:
 - `sys~mc_005~1`
@@ -281,6 +304,89 @@ Acceptance:
 - A dial speed demand (`fw~mc_008~1`) is in effect the next cycle.
 
 Covers:
+- `sys~ops_003~1`
+
+Needs: impl, test
+
+### Position setpoint
+`fw~mc_030~1`
+
+The application shall hold the position setpoint the move profile
+(`fw~mc_031~1`) drives to — a position θ_s in rad with a velocity limit
+v in rad/s, an acceleration limit a in rad/s² and a velocity at the
+point ω_s in rad/s, written by each position setpoint of the sequence
+player (`fw~ops_001~1`), the most recent write standing
+(`sys~ops_002~1`), and none held from each bridge disable and each
+latched fault until the next write.
+
+Acceptance:
+- Two position setpoints written in one pass leave the second held.
+- A position setpoint written, then a bridge disable, a re-enable and
+  the method's first commutation step: none is held.
+- A position setpoint written while the bridge is disabled is held at
+  the following enable.
+
+Covers:
+- `sys~ops_002~1`
+- `sys~ops_003~1`
+
+Needs: impl, test
+
+### Move profile
+`fw~mc_031~1`
+
+Each 1 ms cycle from the active method's first commutation step after a
+bridge enable, the application shall advance the position target θ* by
+ω_f · 1 ms, saturated to ±θ_max, and set the profile velocity ω_f by the
+row below of whichever of the position setpoint (`fw~mc_030~1`) and,
+while the position method (`fw~mc_029~1`) is active, the speed target
+was written last — θ* and ω_f zero at the bridge enable and until that
+first step, and ω_f zero while it would move θ* past a bound — for
+ω_max the channel's configured maximum velocity and θ_max its
+configured maximum position in rad, above zero:
+
+| Written last | ω_f |
+|---|---|
+| The position setpoint θ_s with v, a and ω_s | The minimum-time profile to θ_s arriving at speed \|ω_s\| in the direction of approach: ω_f changing by a · 1 ms per cycle toward ±v while θ* is farther from θ_s than (ω_f² − ω_s²) / (2 · a), moving toward ω_s by a · 1 ms per cycle inside it, equal to ω_s as θ* reaches θ_s, and held at ω_s past it; a limit v of zero standing for ω_max, a limit a of zero for ω_f stepping to ±v and to ω_s |
+| The speed target, a jog | The speed target in effect (`fw~mc_027~1`) |
+| Neither since the enable | Zero |
+
+Acceptance:
+- From rest, θ_s = 2π rad with v = 10 rad/s, a = 50 rad/s² and ω_s = 0:
+  ω_f is 10 rad/s 200 ms after the write, θ* is 2π with ω_f zero 828 ms
+  after it, each within 2 ms, θ* at most 2π throughout.
+- From rest, θ_s = 0.5 rad with the same limits: ω_f peaks at 5 rad/s
+  100 ms after the write and θ* is 0.5 rad with ω_f zero 200 ms after
+  it, each within 2 ms.
+- From rest, θ_s = 2π with v = 10 rad/s, a = 0 and ω_s = 0: ω_f is
+  10 rad/s on the next cycle and θ* is 2π 628 ms after the write, within
+  2 ms.
+- From rest, θ_s = 4π with v = 0, a = 50 rad/s² and ω_s = 0, ω_max at
+  most 25 rad/s and θ_max at least 4π: ω_f reaches ω_max within 1 %
+  before θ* reaches 4π.
+- From rest, θ_s = 2π with v = 10 rad/s, a = 50 rad/s² and ω_s = 10 rad/s:
+  θ* is 2π with ω_f 10 rad/s 728 ms after the write, within 2 ms, and ω_f
+  stays 10 rad/s past it; θ_s = 4π with ω_s = 0 written at that moment is
+  reached with ω_f zero 728 ms later, or 628 ms after a write 100 ms
+  later, each within 2 ms.
+- θ_s rewritten to 0 with v = 10 rad/s, a = 50 rad/s² and ω_s = 0 while
+  ω_f is 10 rad/s toward 2π: ω_f falls 0.05 rad/s per cycle through
+  zero, and θ* returns to 0 with ω_f zero.
+- With the position method active, a speed target of 2 rad/s written
+  with a rate limit of zero: ω_f is 2 rad/s the next cycle and θ*
+  advances 0.002 rad per cycle; a speed target of zero with a rate limit
+  of zero holds θ*; a position setpoint of θ* + 1 rad with v = 10 rad/s,
+  a = 50 rad/s² and ω_s = 0 written from that rest is reached 283 ms
+  after its write, within 2 ms.
+- A jog at ω_max toward θ_max leaves θ* at θ_max with ω_f zero; a jog
+  of −ω_max then moves θ* off it.
+- θ_s = 1 rad with v = 10 rad/s, a = 50 rad/s² and ω_s = 0 written during
+  a bridge enable's precharge: θ* is 1 rad with ω_f zero 283 ms after the
+  method's first commutation step, within 2 ms.
+- Init rejects θ_max at or below zero.
+
+Covers:
+- `sys~ops_002~1`
 - `sys~ops_003~1`
 
 Needs: impl, test

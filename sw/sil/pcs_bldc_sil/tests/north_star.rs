@@ -20,9 +20,9 @@ const INITIAL_ANGLE_RAD: f64 = 0.8;
 /// The master output enable, named off the wiring table.
 const MOE: &str = BRIDGE_PORTS[6].0;
 
-/// `APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC` (200 rpm) and the pole pairs both the
+/// `APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC` (18 rad/s) and the pole pairs both the
 /// firmware channel config and the plant carry.
-const MAX_VELOCITY_RAD_S: f64 = 200.0 * TAU / 60.0;
+const MAX_VELOCITY_RAD_S: f64 = 18.0;
 const POLE_PAIRS: f64 = 14.0;
 
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
