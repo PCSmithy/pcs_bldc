@@ -2,6 +2,7 @@
 
 #include "lib_types.h"
 #include "lib_timer.h"
+#include "lib_utils.h"
 
 #include "HW_ADC.h"
 #include "stm32g4xx_hal.h"
@@ -90,11 +91,24 @@ typedef struct
     bool initialized;
 } HW_ADC_data_S;
 
+// A HAL register-field constant and the value it encodes.
+typedef struct
+{
+    uint32_t constant;
+    uint32_t value;
+} HW_ADC_constantMap_S;
+
 /* Private Function Declarations */
 
+static bool HW_ADC_private_lookupConstant(const HW_ADC_constantMap_S * const table,
+                                          size_t count,
+                                          uint32_t constant,
+                                          uint32_t * const value);
 static uint8_t HW_ADC_private_resolutionToNumBits(uint32_t resolution);
-static uint32_t HW_ADC_private_oversamplingRatio(uint32_t ratioConstant);
-static uint8_t HW_ADC_private_oversamplingShift(uint32_t shiftConstant);
+static bool HW_ADC_private_injectedOversampling(const ADC_InjectionConfTypeDef * const first,
+                                                uint8_t numBits,
+                                                uint32_t * const ratio,
+                                                uint32_t * const shift);
 static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel);
 static bool    HW_ADC_private_rankToOrdinal(uint32_t rankConstant, uint8_t * const ordinal);
 static bool    HW_ADC_private_initOneChannel(HW_ADC_channels_E channel);
@@ -115,6 +129,26 @@ static const uint32_t HW_ADC_injectedRankConstants[HW_ADC_INJECTED_INPUTS_PER_CH
 static const uint32_t HW_ADC_injectedExternalTriggerMapping[HW_ADC_INJECTED_TRIGGER_COUNT] =
 {
     [HW_ADC_INJECTED_TRIGGER_TIM1_TRGO2] = ADC_EXTERNALTRIGINJEC_T1_TRGO2,
+};
+
+static const HW_ADC_constantMap_S HW_ADC_resolutionBits[] =
+{
+    { ADC_RESOLUTION_12B, 12U }, { ADC_RESOLUTION_10B, 10U }, { ADC_RESOLUTION_8B, 8U }, { ADC_RESOLUTION_6B, 6U },
+};
+
+static const HW_ADC_constantMap_S HW_ADC_oversamplingRatios[] =
+{
+    { ADC_OVERSAMPLING_RATIO_2, 2U },    { ADC_OVERSAMPLING_RATIO_4, 4U },
+    { ADC_OVERSAMPLING_RATIO_8, 8U },    { ADC_OVERSAMPLING_RATIO_16, 16U },
+    { ADC_OVERSAMPLING_RATIO_32, 32U },  { ADC_OVERSAMPLING_RATIO_64, 64U },
+    { ADC_OVERSAMPLING_RATIO_128, 128U }, { ADC_OVERSAMPLING_RATIO_256, 256U },
+};
+
+static const HW_ADC_constantMap_S HW_ADC_oversamplingShifts[] =
+{
+    { ADC_RIGHTBITSHIFT_NONE, 0U }, { ADC_RIGHTBITSHIFT_1, 1U }, { ADC_RIGHTBITSHIFT_2, 2U },
+    { ADC_RIGHTBITSHIFT_3, 3U },    { ADC_RIGHTBITSHIFT_4, 4U }, { ADC_RIGHTBITSHIFT_5, 5U },
+    { ADC_RIGHTBITSHIFT_6, 6U },    { ADC_RIGHTBITSHIFT_7, 7U }, { ADC_RIGHTBITSHIFT_8, 8U },
 };
 
 /* Inline Private Function Definitions */
@@ -228,48 +262,49 @@ static inline void HW_ADC_private_startDmaRegularConversion(const HW_ADC_channel
 
 static uint8_t HW_ADC_private_resolutionToNumBits(uint32_t resolution)
 {
-    switch (resolution)
-    {
-        case ADC_RESOLUTION_12B: return 12U;
-        case ADC_RESOLUTION_10B: return 10U;
-        case ADC_RESOLUTION_8B:  return 8U;
-        case ADC_RESOLUTION_6B:  return 6U;
-        default:                 return 12U;
-    }
+    uint32_t numBits = 12U;
+    (void)HW_ADC_private_lookupConstant(HW_ADC_resolutionBits, COUNTOF(HW_ADC_resolutionBits), resolution, &numBits);
+    return (uint8_t)numBits;
 }
 
-// The HAL oversampling constants are CFGR2 field encodings; map them back to
-// the ratio and the shift they stand for.
-static uint32_t HW_ADC_private_oversamplingRatio(uint32_t ratioConstant)
+// HAL resolution and oversampling constants are register-field encodings; map
+// one back to the value it stands for. False for a constant the table lacks.
+static bool HW_ADC_private_lookupConstant(const HW_ADC_constantMap_S * const table,
+                                          size_t count,
+                                          uint32_t constant,
+                                          uint32_t * const value)
 {
-    switch (ratioConstant)
+    bool found = false;
+    for (size_t i = 0U; (i < count) && !found; i++)
     {
-        case ADC_OVERSAMPLING_RATIO_2:   return 2U;
-        case ADC_OVERSAMPLING_RATIO_4:   return 4U;
-        case ADC_OVERSAMPLING_RATIO_8:   return 8U;
-        case ADC_OVERSAMPLING_RATIO_16:  return 16U;
-        case ADC_OVERSAMPLING_RATIO_32:  return 32U;
-        case ADC_OVERSAMPLING_RATIO_64:  return 64U;
-        case ADC_OVERSAMPLING_RATIO_128: return 128U;
-        case ADC_OVERSAMPLING_RATIO_256: return 256U;
-        default:                         return 1U;
+        if (table[i].constant == constant)
+        {
+            *value = table[i].value;
+            found = true;
+        }
     }
+    return found;
 }
 
-static uint8_t HW_ADC_private_oversamplingShift(uint32_t shiftConstant)
+// [impl->fw~hal_adc_001~1] the injected group's oversampling ratio and shift (1
+// and 0 when off); false for an unknown constant or a full-scale sum past 16 bits.
+static bool HW_ADC_private_injectedOversampling(const ADC_InjectionConfTypeDef * const first,
+                                                uint8_t numBits,
+                                                uint32_t * const ratio,
+                                                uint32_t * const shift)
 {
-    switch (shiftConstant)
+    bool ret = true;
+    *ratio = 1U;
+    *shift = 0U;
+    if (first->InjecOversamplingMode == ENABLE)
     {
-        case ADC_RIGHTBITSHIFT_1: return 1U;
-        case ADC_RIGHTBITSHIFT_2: return 2U;
-        case ADC_RIGHTBITSHIFT_3: return 3U;
-        case ADC_RIGHTBITSHIFT_4: return 4U;
-        case ADC_RIGHTBITSHIFT_5: return 5U;
-        case ADC_RIGHTBITSHIFT_6: return 6U;
-        case ADC_RIGHTBITSHIFT_7: return 7U;
-        case ADC_RIGHTBITSHIFT_8: return 8U;
-        default:                  return 0U;
+        ret = (HW_ADC_private_lookupConstant(HW_ADC_oversamplingRatios, COUNTOF(HW_ADC_oversamplingRatios),
+                                             first->InjecOversampling.Ratio, ratio) &&
+               HW_ADC_private_lookupConstant(HW_ADC_oversamplingShifts, COUNTOF(HW_ADC_oversamplingShifts),
+                                             first->InjecOversampling.RightBitShift, shift));
     }
+    const uint32_t fullScale = (1UL << numBits) - 1UL;
+    return ret && (((*ratio * fullScale) >> *shift) <= (uint32_t)UINT16_MAX);
 }
 
 // The HAL regular-rank constants (ADC_REGULAR_RANK_n) are SQRx register-
@@ -517,13 +552,20 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
     // Reference: ODrive uses these same HAL_ADCEx_Injected* APIs for
     // FOC current sensing on STM32F405 — see
     //   https://github.com/odriverobotics/ODrive
+    const ADC_InjectionConfTypeDef * const first = &channelConfig->injectedInputs[0].sConfig;
+    const uint8_t numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
+    uint32_t oversamplingRatio = 1U;
+    uint32_t oversamplingShift = 0U;
+    if (ret && (numEnabledInjected > 0U))
+    {
+        ret = HW_ADC_private_injectedOversampling(first, numBits, &oversamplingRatio, &oversamplingShift);
+    }
     if (ret && (numEnabledInjected > 0U))
     {
         for (uint8_t r = 0U; r < numEnabledInjected; r++)
         {
             ADC_InjectionConfTypeDef iConfig = channelConfig->injectedInputs[r].sConfig;
             // One CFGR2 ratio and shift serve the whole injected group
-            const ADC_InjectionConfTypeDef * const first = &channelConfig->injectedInputs[0].sConfig;
             if ((iConfig.InjecOversamplingMode != first->InjecOversamplingMode) ||
                 (iConfig.InjecOversampling.Ratio != first->InjecOversampling.Ratio) ||
                 (iConfig.InjecOversampling.RightBitShift != first->InjecOversampling.RightBitShift))
@@ -558,19 +600,12 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
         {
             data->channelData[channel].rankOrder[r] = rankOrder[r];
         }
-        data->channelData[channel].numBits = HW_ADC_private_resolutionToNumBits(channelConfig->hadc.Init.Resolution);
-        data->channelData[channel].voltsPerCount =
-            channelConfig->vref / (float32_t)((1UL << data->channelData[channel].numBits) - 1UL);
+        data->channelData[channel].numBits = numBits;
+        data->channelData[channel].voltsPerCount = channelConfig->vref / (float32_t)((1UL << numBits) - 1UL);
 
         // [impl->fw~hal_adc_006~1] an oversampled injected count is the sum of
         // ratio conversions shifted right, so its volts scale by shift over ratio
-        float32_t injectedSumScale = 1.0f;
-        const ADC_InjectionConfTypeDef * const first = &channelConfig->injectedInputs[0].sConfig;
-        if ((numEnabledInjected > 0U) && (first->InjecOversamplingMode == ENABLE))
-        {
-            injectedSumScale = (float32_t) HW_ADC_private_oversamplingRatio(first->InjecOversampling.Ratio)
-                             / (float32_t) (1UL << HW_ADC_private_oversamplingShift(first->InjecOversampling.RightBitShift));
-        }
+        const float32_t injectedSumScale = (float32_t)oversamplingRatio / (float32_t)(1UL << oversamplingShift);
         data->channelData[channel].injectedVoltsPerCount = data->channelData[channel].voltsPerCount / injectedSumScale;
     }
 
@@ -655,9 +690,8 @@ static void HW_ADC_private_dmaXferComplete(HW_DMA_channel_E dmaChannel, void * c
     }
 }
 
-// Called by HAL
-// [impl->fw~hal_adc_008~1]
-// The per-cycle path: the interrupt handler already knows the channel.
+// [impl->fw~hal_adc_008~1] the injected completion: counts, status, callback.
+// Reached from the interrupt handler's per-cycle path and the HAL's dispatch.
 static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel)
 {
     HW_ADC_channelData_S * const channelData = &data->channelData[channel];
@@ -676,7 +710,7 @@ static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel)
     }
 }
 
-// The HAL's generic dispatch lands here, with the handle to resolve.
+// Called by HAL: the generic dispatch lands here, with the handle to resolve.
 void HW_ADC_private_injectedConversionSequenceCompleteCallback(ADC_HandleTypeDef * hadc)
 {
     if (data->initialized)

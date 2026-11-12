@@ -28,19 +28,18 @@ static void setTestRatings(void)
     mock_app_motorControl_setRatings(&ratings);
 }
 
+static void setMotor(app_motorControl_mode_E mode, app_motorControl_state_E state);
+
 void setUp(void)
 {
     mock_HW_ADC_reset();
     mock_app_motorControl_reset();
-    app_motorControl_snapshot_S snap = { 0 };
-    mock_app_motorControl_setSnapshot(&snap);
+    setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_DISABLED);
     setTestRatings();
     TEST_ASSERT_TRUE(app_sequencer_init(&app_sequencer_config));
 }
 
 void tearDown(void) {}
-
-static void setMotor(app_motorControl_mode_E mode, app_motorControl_state_E state);
 
 /* ---- buildTelemetry: the board's snapshot + VBUS mapping ---- */
 
@@ -159,6 +158,14 @@ static board_Setpoint torqueAt(uint32_t t_us, float32_t value, float32_t limit)
     return sp;
 }
 
+static board_Setpoint stopAt(uint32_t t_us)
+{
+    board_Setpoint sp = board_Setpoint_init_zero;
+    sp.t_us = t_us;
+    sp.which_target = board_Setpoint_stop_tag;
+    return sp;
+}
+
 static board_Setpoint positionAt(uint32_t t_us, float32_t value, float32_t vLimit, float32_t aLimit, float32_t atPoint)
 {
     board_Setpoint sp = board_Setpoint_init_zero;
@@ -202,21 +209,26 @@ static uint32_t writes(void)
     return mock_app_motorControl_setVelocityCalls + mock_app_motorControl_setTorqueCalls;
 }
 
+static app_motorControl_snapshot_S motorSnap;
+
 static void setMotor(app_motorControl_mode_E mode, app_motorControl_state_E state)
 {
-    app_motorControl_snapshot_S snap = { 0 };
-    snap.mode = mode;
-    snap.state = state;
-    mock_app_motorControl_setSnapshot(&snap);
+    motorSnap = (app_motorControl_snapshot_S){ 0 };
+    motorSnap.mode = mode;
+    motorSnap.state = state;
+    mock_app_motorControl_setSnapshot(&motorSnap);
 }
 
-// A running sequence a rejection must leave alone: MODE_OFF is accepted in
-// every state and its setpoints play regardless; the 3 ms one is the witness.
+// A running sequence a rejection must leave alone, accepted from a disabled
+// motor and the motor state then restored; the 3 ms setpoint is the witness.
 static void startWitnessSequence(void)
 {
+    const app_motorControl_snapshot_S held = motorSnap;
+    setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_DISABLED);
     const board_Setpoint list[2] = { speedAt(0U, 1.0f, 0.0f), speedAt(3000U, 9.0f, 0.0f) };
-    TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_OFF, list, 2U).accepted);
+    TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_FOC_VELOCITY, list, 2U).accepted);
     app_sequencer_run1ms();                                  // started: the 0 ms setpoint written
+    setMotor(held.mode, held.state);
 }
 
 // A rejection: no acceptance, a cause, no mode request.
@@ -240,10 +252,9 @@ static void assertRejected(board_Mode mode, const board_Setpoint * const setpoin
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 9.0f, mock_app_motorControl_lastVelocity);
 }
 
-// [test->fw~conn_server_007~1]
-// Disabled and unfaulted, a method with one speed setpoint at time zero is
-// accepted: the enable is requested with that method, and the setpoint
-// reaches the speed target on the pass after.
+// [test->fw~conn_server_007~1] disabled and unfaulted, a method with one speed
+// setpoint at time zero is accepted: the enable is requested with that method,
+// the setpoint reaching the speed target on the pass after.
 static void test_command_is_accepted_and_its_sequence_plays(void)
 {
     const board_Setpoint sp = speedAt(0U, 5.0f, 10.0f);
@@ -286,11 +297,9 @@ static void test_a_position_setpoint_reaches_the_position_setpoint(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, mock_app_motorControl_lastPositionVelocityAtPoint);
 }
 
-// [test->fw~conn_server_007~1]
-// The position rows of the rejection table: past the maximum position, a velocity
-// limit past the maximum velocity, a velocity at the point past its limit (the
-// maximum velocity for a limit of zero), a negative or non-finite acceleration.
-// At the bounds, with a zero limit, each is accepted.
+// [test->fw~conn_server_007~1] the position rows of the rejection table, each
+// past its bound (a zero velocity limit standing for the maximum velocity); at
+// the bounds, each is accepted.
 static void test_each_position_rejection_condition_rejects(void)
 {
     board_Setpoint sp = positionAt(0U, TEST_MAX_POS + 0.1f, 10.0f, 50.0f, 0.0f);
@@ -319,8 +328,8 @@ static void test_each_position_rejection_condition_rejects(void)
 }
 
 // [test->fw~conn_server_007~1]
-// MODE_OFF with an empty list is accepted in every state and requests the
-// disable.
+// MODE_OFF with an empty list, or a stop alone, is accepted in every state and
+// requests the disable.
 static void test_stop_is_accepted_in_every_state(void)
 {
     setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_DISABLED);
@@ -331,8 +340,53 @@ static void test_stop_is_accepted_in_every_state(void)
     app_sequencer_run1ms();
     setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_FAULTED);
     TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_OFF, NULL, 0U).accepted);
-    TEST_ASSERT_EQUAL_UINT32(3U, mock_app_motorControl_setModeCalls);
+    app_sequencer_run1ms();
+    const board_Setpoint stop = stopAt(0U);
+    TEST_ASSERT_TRUE(sendRun(board_Mode_MODE_OFF, &stop, 1U).accepted);
+    TEST_ASSERT_EQUAL_UINT32(4U, mock_app_motorControl_setModeCalls);
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_OFF, mock_app_motorControl_lastMode);
+}
+
+// [test->fw~conn_server_007~1]
+// A setpoint kind the mode does not take rejects the command with its cause:
+// torque outside the torque method, position outside the position method, and
+// any target under MODE_OFF; the kind rows below are accepted.
+static void test_a_setpoint_kind_the_mode_does_not_take_rejects(void)
+{
+    static const struct { board_Mode mode; pb_size_t kind; bool taken; } cases[] = {
+        { board_Mode_MODE_OFF,           board_Setpoint_velocity_radps_tag, false },
+        { board_Mode_MODE_OFF,           board_Setpoint_torque_nm_tag,      false },
+        { board_Mode_MODE_OFF,           board_Setpoint_position_rad_tag,   false },
+        { board_Mode_MODE_OFF,           board_Setpoint_stop_tag,           true },
+        { board_Mode_MODE_SIX_STEP_TRAP, board_Setpoint_velocity_radps_tag, true },
+        { board_Mode_MODE_SINUSOIDAL,    board_Setpoint_torque_nm_tag,      false },
+        { board_Mode_MODE_FOC_VELOCITY,  board_Setpoint_torque_nm_tag,      false },
+        { board_Mode_MODE_FOC_VELOCITY,  board_Setpoint_position_rad_tag,   false },
+        { board_Mode_MODE_FOC_VELOCITY,  board_Setpoint_stop_tag,           true },
+        { board_Mode_MODE_FOC_TORQUE,    board_Setpoint_torque_nm_tag,      true },
+        { board_Mode_MODE_FOC_TORQUE,    board_Setpoint_velocity_radps_tag, true },
+        { board_Mode_MODE_FOC_TORQUE,    board_Setpoint_position_rad_tag,   false },
+        { board_Mode_MODE_FOC_POSITION,  board_Setpoint_position_rad_tag,   true },
+        { board_Mode_MODE_FOC_POSITION,  board_Setpoint_velocity_radps_tag, true },
+        { board_Mode_MODE_FOC_POSITION,  board_Setpoint_torque_nm_tag,      false },
+    };
+    for (uint32_t i = 0U; i < COUNTOF(cases); i++)
+    {
+        board_Setpoint sp = positionAt(0U, 0.1f, 0.0f, 0.0f, 0.0f);
+        sp.which_target = cases[i].kind;   // every float arm reads 0.1, within its bound
+        setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_DISABLED);
+        app_sequencer_run1ms();                              // no commit awaits its pass
+        const shared_Response response = sendRun(cases[i].mode, &sp, 1U);
+        TEST_ASSERT_EQUAL_MESSAGE(cases[i].taken, response.accepted, "case index in the table");
+        if (!cases[i].taken)
+        {
+            TEST_ASSERT_EQUAL_STRING("setpoint kind not for this mode", response.cause);
+        }
+    }
+
+    // a mismatched kind after an accepted one still rejects, the running sequence unchanged
+    const board_Setpoint mixed[2] = { speedAt(0U, 1.0f, 0.0f), torqueAt(1000U, 0.1f, 0.0f) };
+    assertRejected(board_Mode_MODE_FOC_VELOCITY, mixed, 2U);
 }
 
 // [test->fw~conn_server_007~1]
@@ -551,6 +605,7 @@ int main(void)
     RUN_TEST(test_a_position_setpoint_reaches_the_position_setpoint);
     RUN_TEST(test_each_position_rejection_condition_rejects);
     RUN_TEST(test_stop_is_accepted_in_every_state);
+    RUN_TEST(test_a_setpoint_kind_the_mode_does_not_take_rejects);
     RUN_TEST(test_an_accepted_command_replaces_the_running_sequence);
     RUN_TEST(test_capacity_is_accepted_and_one_more_rejected);
     RUN_TEST(test_each_rejection_condition_rejects);

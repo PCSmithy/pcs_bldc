@@ -46,6 +46,11 @@ static const app_motorControl_channelConfig_S app_motorControl_channelConfig[] =
         },
         .defaultMode = APP_MOTORCONTROL_MODE_FOC_POSITION,   // the dial moves a position; a host Command selects any method
         .prechargeTime_ms = 5U,   // bootstrap caps through the gate driver's own diodes
+        .alignmentDuty01 = 0.3f,
+        .alignmentDwell_ms = 500U,
+        .overcurrentPhaseTrip_A = 1.2f,   // sys~safety_001
+        .overcurrentBusTrip_A = 1.5f,
+        .encoderFaultLimit = 5U,
     },
 };
 

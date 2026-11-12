@@ -13,7 +13,7 @@ use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use voyant::{
-    Engine, Firmware, FirmwareMember, StateTable, StateTableConfig, Value,
+    Engine, Firmware, FirmwareMember, SignalId, StateTable, StateTableConfig, Value,
     DEFAULT_SWEEP_PERIOD_US,
 };
 
@@ -64,6 +64,13 @@ impl SilOptions {
     /// default change deadband would blur.
     pub fn state_config(mut self, config: StateTableConfig) -> Self {
         self.state = config;
+        self
+    }
+
+    /// One signal's change-detection epsilon, for a signal whose resolution is finer
+    /// than the table's default deadband.
+    pub fn signal_epsilon(mut self, id: SignalId, epsilon: f64) -> Self {
+        self.state.signal_epsilon.insert(id, epsilon);
         self
     }
 

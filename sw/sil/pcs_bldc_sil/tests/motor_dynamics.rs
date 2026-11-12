@@ -778,7 +778,7 @@ fn cogging_torque_accelerates_a_released_rotor_down_its_detent_slope() {
     const PER_REV: u16 = 28;
     const TICKS: usize = 20;
 
-    let mut p = MotorParams { t_c_nm: 0.0, b_nm_per_rad_s: 0.0, ..MotorParams::default() };
+    let mut p = MotorParams { t_c_nm: 0.0, b_nm_per_rad_s: 0.0, cogging: [CogHarmonic::default(); 2], ..MotorParams::default() };
     p.cogging[0] = CogHarmonic { amp_nm: AMP_NM, per_rev: PER_REV, phase_rad: 0.0 };
     // sin(28 * angle) = 1 at angle = pi / 56: the detent's steepest point
     let start = PI / (2.0 * f64::from(PER_REV));
@@ -796,12 +796,14 @@ fn cogging_torque_accelerates_a_released_rotor_down_its_detent_slope() {
 fn a_load_torque_shortens_the_coast_like_added_coulomb_friction() {
     // The load_torque input opposes positive rotation: a coast under a load L
     // below breakaway stops at the Coulomb analytic with T_c + L in place of
-    // T_c and stays parked (a load above T_c would back-drive the rotor).
+    // T_c and stays parked (a load above T_c would back-drive the rotor). The
+    // analytic has no cogging, so neither has the rotor. The load is two thirds
+    // of the plant's T_c: under breakaway, and enough to shorten the coast.
     const SPIN_TICKS: usize = 800;
     const QUIET_TICKS: usize = 50;
-    const LOAD_NM: f64 = 0.003;
 
-    let p = MotorParams::default();
+    let p = MotorParams { cogging: [CogHarmonic::default(); 2], ..MotorParams::default() };
+    let load_nm = (2.0 / 3.0) * p.t_c_nm;
     let mut eng = world(p, PI / 8.0, MEASURED_VBUS_V);
     let mut angle = PI / 8.0;
     for _ in 0..SPIN_TICKS {
@@ -812,9 +814,9 @@ fn a_load_torque_shortens_the_coast_like_added_coulomb_friction() {
     let w0 = sample(&eng).velocity;
     assert!(w0 > 10.0, "spinning before the coast: {w0:.2} rad/s");
     drive(&mut eng, [0.0; 3], [false; 3], false);
-    eng.write(&vid(MOTOR, "load_torque"), LOAD_NM).expect("apply the load");
+    eng.write(&vid(MOTOR, "load_torque"), load_nm).expect("apply the load");
     let b = p.b_nm_per_rad_s;
-    let t_stop_s = (p.j_kg_m2 / b) * (1.0 + b * w0 / (p.t_c_nm + LOAD_NM)).ln();
+    let t_stop_s = (p.j_kg_m2 / b) * (1.0 + b * w0 / (p.t_c_nm + load_nm)).ln();
     let mut k_stop = 0usize;
     for k in 0..20_000usize {
         eng.step().expect("engine step");
@@ -825,7 +827,7 @@ fn a_load_torque_shortens_the_coast_like_added_coulomb_friction() {
     }
     assert!(k_stop > 0, "the loaded coast stops");
     let t_stop = (k_stop as f64) * TICK_S;
-    println!("load_torque: omega0 = {w0:.3} rad/s under {LOAD_NM} Nm, stopped at {t_stop:.4} s vs analytic {t_stop_s:.4} s");
+    println!("load_torque: omega0 = {w0:.3} rad/s under {load_nm} Nm, stopped at {t_stop:.4} s vs analytic {t_stop_s:.4} s");
     assert!((t_stop - t_stop_s).abs() <= 2.0 * TICK_S, "stop time within two ticks of the analytic: {t_stop:.4} vs {t_stop_s:.4}");
     let unloaded = (p.j_kg_m2 / b) * (1.0 + b * w0 / p.t_c_nm).ln();
     assert!(t_stop < 0.8 * unloaded, "the load shortens the coast: {t_stop:.4} s against {unloaded:.4} s unloaded");

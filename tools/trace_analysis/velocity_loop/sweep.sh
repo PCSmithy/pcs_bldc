@@ -45,8 +45,7 @@ capture() {   # label
   if command -v cygpath >/dev/null 2>&1; then dll="$(cygpath -m "$dll")"; fi
   (cd "$ROOT/sw/sil" && PCS_SIL_DLL="$dll" PCS_EST_DESIGN=C PCS_EST_OUT="$HERE/sil/$1" PCS_EST_VARIANTS=nominal \
      PCS_EST_PLANT_TC_NM="$PLANT_TC" PCS_EST_PLANT_B="$PLANT_B" \
-     cargo nextest run -p pcs_bldc_sil --release --run-ignored ignored-only -E 'test(s4_velocity_step)' --no-capture 2>&1 \
-     | grep -E "estimator_order:|FAIL|panicked")
+     cargo run --release -p pcs_bldc_sil --example estimator_order -- S4_velstep 2>&1 | tail -3)
 }
 
 for wv in "${WV[@]}"; do

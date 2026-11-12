@@ -19,7 +19,9 @@ the timeline's selected range (`app~views_008~1`) — or over its visible
 span with no range selected — to a comma-separated file the operator
 names in a save dialog: one header row of `time_ms` followed by each
 signal's path, one row per distinct sample time in the range, each
-signal's cell its sample at that time or empty where it has none; Export
+signal's cell its sample at that time or empty where it has none, the
+core showing the save dialog and writing the file so no path passes
+through the webview; a cancelled dialog writing nothing; Export
 unavailable while no signal is watched.
 
 Acceptance:
@@ -28,6 +30,7 @@ Acceptance:
   the other signal's cell empty where it did not sample.
 - The header names `time_ms` and both signals' paths.
 - With no range selected, the rows span the timeline's visible span.
+- A cancelled save dialog writes no file.
 
 Covers:
 - sys~arch_002~1

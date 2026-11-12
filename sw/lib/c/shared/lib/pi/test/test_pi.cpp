@@ -1,7 +1,5 @@
-// lib_pi: the discrete PI regulator in fw~mc_023's form and fw~mc_024's
-// back-calculation. Numbers are round so the expected sequences are exact:
-// kp = 2, ki = 100, T = 50 us, e = 0.5 gives a first step of 1.0 and
-// ki * T * e = 0.0025 more on each later step.
+// lib_pi: fw~mc_023's regulator, fw~mc_024's back-calculation, fw~mc_029's hold.
+// kp = 2, ki = 100, T = 50 us, e = 0.5: a first step of 1.0, then 0.0025 more a step.
 #include "lib_pi.hpp"
 #include "unity.h"
 

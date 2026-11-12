@@ -4364,6 +4364,7 @@ def run(page):
 
     run_command_widget(page)
     run_sequence_widget(page)
+    run_sequence_runs(page)
     run_export(page)
 
 
@@ -4421,9 +4422,9 @@ def run_command_widget(page):
     page.click(f"{cmd_sel} [data-mode='MODE_FOC_VELOCITY']")
     cv = widget_eval(page, cmd_id, cmd_state)
     check(
-        "views_024 torque relabels to Nm / Nm/s bounded at 0.825; velocity to rad/s / rad/s² at 20.944",
+        "views_024 torque relabels to Nm / Nm/s bounded at 0.825; velocity to rad/s / rad/s² at 18",
         ct["unit"] == "Nm" and ct["limitUnit"] == "Nm/s" and ct["bound"] == "≤ 0.825 Nm"
-        and cv["unit"] == "rad/s" and cv["limitUnit"] == "rad/s²" and cv["bound"] == "≤ 20.944 rad/s"
+        and cv["unit"] == "rad/s" and cv["limitUnit"] == "rad/s²" and cv["bound"] == "≤ 18 rad/s"
         and cv["disabled"] == [False, False, False, False],
         (ct, cv),
     )
@@ -4433,12 +4434,14 @@ def run_command_widget(page):
     clamped = widget_eval(page, cmd_id, field_of)
     page.fill(f"{cmd_sel} [data-limit]", "50")
     page.press(f"{cmd_sel} [data-limit]", "Enter")
+    page.click(f"{cmd_sel} [data-mode='MODE_SINUSOIDAL']")
+    samekind = widget_eval(page, cmd_id, field_of)
     page.click(f"{cmd_sel} [data-mode='MODE_FOC_TORQUE']")
     rekinded = widget_eval(page, cmd_id, field_of)
     check(
-        "views_024 a setpoint past the rating holds at the rating, shown as such; a new kind starts from zero",
-        clamped[:2] == [20.944, "20.944"] and rekinded == [0, "0", 0, ""],
-        (clamped, rekinded),
+        "views_024 a setpoint past the rating holds at the rating; a same-kind mode keeps the values; a new kind starts from zero",
+        clamped[:2] == [18, "18"] and samekind == [18, "18", 50, "50"] and rekinded == [0, "0", 0, ""],
+        (clamped, samekind, rekinded),
     )
     # Enter commits and re-syncs the field under focus; Escape reverts.
     page.fill(f"{cmd_sel} [data-setpoint]", "abc")
@@ -4475,16 +4478,38 @@ def run_command_widget(page):
         (sent, cs),
     )
 
-    # ── [test->app~views_024~1] a rejected command shows the board's cause ──
+    # ── [test->app~views_024~1] a rejected command shows the board's cause;
+    #    a negative limit holds at zero (the devmock injects the rejection) ──
     page.fill(f"{cmd_sel} [data-limit]", "-1")
     page.press(f"{cmd_sel} [data-limit]", "Enter")
+    negative = widget_eval(page, cmd_id, field_of)
+    page.evaluate("() => { window.__devmockRejectNext = 'setpoint exceeds the motor rating'; }")
     page.click(f"{cmd_sel} [data-send]")
     wait_verdict()
     cr = widget_eval(page, cmd_id, cmd_state)
     check(
-        "views_024 a rejected command shows its cause beside Send",
-        cr["verdict"] == "rate limit negative" and cr["rejected"],
-        cr,
+        "views_024 a negative limit holds at zero; a rejected command shows its cause beside Send",
+        negative[2:] == [0, ""] and cr["verdict"] == "setpoint exceeds the motor rating" and cr["rejected"],
+        (negative, cr),
+    )
+    # ── [test->app~views_024~1] Stop goes out while a Send is in flight;
+    #    the later send's verdict stands ──
+    page.evaluate("() => { window.__devmockCommandDelayMs = 400; window.__devmockCommands = []; }")
+    page.click(f"{cmd_sel} [data-send]")
+    inflight = widget_eval(
+        page, cmd_id, "(w) => [w.el.querySelector('[data-send]').disabled, w.el.querySelector('[data-stop]').disabled]"
+    )
+    page.click(f"{cmd_sel} [data-stop]")
+    page.wait_for_function("() => window.__devmockCommands.length === 2")
+    page.wait_for_timeout(600)
+    page.evaluate("() => { window.__devmockCommandDelayMs = 0; }")
+    order = page.evaluate("() => window.__devmockCommands.map(c => c.mode)")
+    cf = widget_eval(page, cmd_id, cmd_state)
+    check(
+        "views_024 Stop stays live while a Send is in flight and goes out after it; the verdict is the Stop's",
+        inflight == [True, False] and order == ["MODE_FOC_VELOCITY", "MODE_OFF"]
+        and cf["verdict"] == "accepted" and cf["disabled"][2:] == [False, False],
+        (inflight, order, cf["verdict"]),
     )
     # ── [test->app~views_024~1] Stop sends MODE_OFF with no setpoints in one
     #    press; the selected mode and setpoint stay ──
@@ -4519,7 +4544,7 @@ def run_command_widget(page):
         bound: w.el.querySelector('[data-bound]').textContent,
         limitLabel: w.el.querySelector('[data-limitlabel]').textContent,
         limitUnit: w.el.querySelector('[data-limitunit]').textContent,
-        shown: [...w.el.querySelectorAll('[data-poslimit]')].map(f => !f.hidden && f.offsetParent !== null),
+        shown: [...w.el.querySelectorAll('[data-extra]')].map(f => !f.hidden && f.offsetParent !== null),
         placeholders: ['[data-limit]', '[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).placeholder),
         values: ['[data-setpoint]', '[data-limit]', '[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).value),
         disabled: ['[data-accel]', '[data-atpoint]'].map(s => w.el.querySelector(s).disabled),
@@ -4549,8 +4574,8 @@ def run_command_widget(page):
     fill("[data-accel]", "50")
     rebounded = widget_eval(page, cmd_id, pos_state)
     check(
-        "views_024 position bounds: setpoint at 62.83, velocity limit at 20.944, velocity at the point at the limit",
-        over == ["62.83", "20.944", "", "20.944"]
+        "views_024 position bounds: setpoint at 62.83, velocity limit at 18, velocity at the point at the limit",
+        over == ["62.83", "18", "", "18"]
         and rebounded["values"] == ["6.283", "10", "50", "10"]
         and {k: rebounded["saved"][k] for k in ("mode", "setpoint", "limit", "accel", "at_point")}
         == {"mode": "MODE_FOC_POSITION", "setpoint": 6.283, "limit": 10, "accel": 50, "at_point": 10},
@@ -4695,7 +4720,7 @@ def run_sequence_widget(page):
     check(
         "views_025 launcher adds a Sequence widget: velocity method, 2000 ms, no points, hint shown",
         s0 is not None and s0["mode"] == "MODE_FOC_VELOCITY" and s0["duration"] == 2000
-        and s0["points"] == [] and s0["unit"] == "rad/s · ±20.944" and s0["title"] == "Sequence"
+        and s0["points"] == [] and s0["unit"] == "rad/s · ±18" and s0["title"] == "Sequence"
         and s0["hint"] and s0["disabled"] == [False, False],
         s0,
     )
@@ -4720,8 +4745,8 @@ def run_sequence_widget(page):
     drag(px(p0["t_ms"], p0["value"]), px(300, 30))
     s3 = widget_eval(page, seq_id, seq_state)
     check(
-        "views_025 a drag to (300 ms, 12 rad/s) moves the point; past the maximum it holds at 20.944",
-        near(p0, 300, 12) and s3["points"][0]["value"] == 20.944 and abs(s3["points"][0]["t_ms"] - 300) <= 4,
+        "views_025 a drag to (300 ms, 12 rad/s) moves the point; past the maximum it holds at 18",
+        near(p0, 300, 12) and s3["points"][0]["value"] == 18 and abs(s3["points"][0]["t_ms"] - 300) <= 4,
         (s2["points"], s3["points"]),
     )
     page.mouse.click(*px(600, 5))
@@ -4749,6 +4774,24 @@ def run_sequence_widget(page):
         limited == [1, 25] and s5 is not None and len(s5["points"]) == 1 and s5["selected"] is None,
         (limited, s5 and s5["points"]),
     )
+    # A held Delete removes the selected point once; the repeats and a
+    # Delete with nothing selected leave the widget in place.
+    widget_eval(page, seq_id, "(w) => w.setPoints([...w.cfg.points, { t_ms: 1500, value: 3, limit: 0 }, { t_ms: 1700, value: 4, limit: 0 }])")
+    page.mouse.click(*px(1500, 3))
+    page.focus(f"{seq_sel} .seq-canvas")
+    for _ in range(4):
+        page.keyboard.down("Delete")
+    page.keyboard.up("Delete")
+    held = widget_eval(page, seq_id, "(w) => w ? w.cfg.points.map(p => p.t_ms) : null")
+    page.keyboard.press("Delete")
+    page.keyboard.press("Delete")
+    still = widget_eval(page, seq_id, "(w) => w ? w.cfg.points.length : null")
+    check(
+        "views_025 a held Delete removes the selected point once; Delete with no point selected keeps the widget",
+        held == [s5["points"][0]["t_ms"], 1700] and still == 2,
+        (held, still),
+    )
+    widget_eval(page, seq_id, "(w) => w.setPoints(w.cfg.points.slice(0, 1))")
 
     # ── [test->app~views_025~1] the tooltip's time and value fields move the
     #    selected point as a drag does, a value past the maximum held at it ──
@@ -4766,8 +4809,8 @@ def run_sequence_widget(page):
     page.press(f"{seq_sel} [data-tip-value]", "Enter")
     over = widget_eval(page, seq_id, "(w) => [w.cfg.points[0].value, w.el.querySelector('[data-tip-value]').value]")
     check(
-        "views_025 typing 250 and 9 into the tooltip moves the point to (250 ms, 9 rad/s); 30 holds at 20.944",
-        typed == [0, {"t_ms": 250, "value": 9, "limit": 0}, "250", "9"] and over == [20.944, "20.944"],
+        "views_025 typing 250 and 9 into the tooltip moves the point to (250 ms, 9 rad/s); 30 holds at 18",
+        typed == [0, {"t_ms": 250, "value": 9, "limit": 0}, "250", "9"] and over == [18, "18"],
         (typed, over),
     )
 
@@ -4778,29 +4821,49 @@ def run_sequence_widget(page):
         page, seq_id,
         """(w) => {
           w.setPoints([{ t_ms: 0, value: 0, limit: 0 }, { t_ms: 200, value: 10, limit: 0 }]);
-          const [ts0, vs0] = __cockpit.sequence.trajectory(w.cfg.points, w.cfg.duration_ms, 1);
+          const s0 = w.series;
+          const [ts0, vs0] = s0.values;
           const step = [vs0[199], vs0[200], vs0[300]];
+          w.refresh();
+          const cached = w.series === s0;
           w.setPoints([{ t_ms: 0, value: 0, limit: 0 }, { t_ms: 200, value: 10, limit: 50 }]);
-          const [ts, vs] = __cockpit.sequence.trajectory(w.cfg.points, w.cfg.duration_ms, 1);
-          return { step, ramp: [vs[200], vs[300], vs[399], vs[400], vs[401]] };
+          const [ts, vs] = w.series.values;
+          return { step, cached, edited: w.series !== s0, step_ms: w.series.step_ms,
+                   rate: w.series.fn === __cockpit.sequence.rateTrajectory,
+                   ramp: [vs[200], vs[300], vs[399], vs[400], vs[401]] };
         }""",
     )
     check(
-        "views_025 the hold steps at 200 ms; a 50 rad/s² limit ramps from 0 at 200 ms to 10 at 400 ms (the drawn polyline's math)",
+        "views_025 the drawn hold steps at 200 ms; a 50 rad/s² limit draws a ramp from 0 at 200 ms to 10 at 400 ms, recomputed only on an edit",
         traj["step"] == [0, 10, 10] and traj["ramp"][0] == 0 and abs(traj["ramp"][1] - 5) <= 1e-6
-        and traj["ramp"][2] < 10 and abs(traj["ramp"][3] - 10) <= 1e-6 and abs(traj["ramp"][4] - 10) <= 1e-6,
+        and traj["ramp"][2] < 10 and abs(traj["ramp"][3] - 10) <= 1e-6 and abs(traj["ramp"][4] - 10) <= 1e-6
+        and traj["cached"] and traj["edited"] and traj["rate"] and traj["step_ms"] == 1,
         traj,
     )
 
     # ── [test->app~views_025~1] the torque method relabels the vertical
     #    axis to Nm bounded by the maximum torque (and starts empty) ──
+    #    A mode of the same kind keeps the points; another kind clears them,
+    #    confirmed first, Keep leaving mode and points as they were.
+    confirm_of = "(w) => w.el.querySelector('[data-confirm]').hidden ? null : w.el.querySelector('[data-confirm-text]').textContent"
+    page.click(f"{seq_sel} [data-mode='MODE_SINUSOIDAL']")
+    same = widget_eval(page, seq_id, "(w) => [w.cfg.mode, w.cfg.points.length]")
+    page.click(f"{seq_sel} [data-mode='MODE_FOC_VELOCITY']")
     page.click(f"{seq_sel} [data-mode='MODE_FOC_TORQUE']")
+    asked = [widget_eval(page, seq_id, confirm_of), widget_eval(page, seq_id, "(w) => [w.cfg.mode, w.cfg.points.length]")]
+    page.click(f"{seq_sel} [data-confirm-keep]")
+    kept = [widget_eval(page, seq_id, confirm_of), widget_eval(page, seq_id, "(w) => [w.cfg.mode, w.cfg.points.length]")]
+    page.click(f"{seq_sel} [data-mode='MODE_FOC_TORQUE']")
+    page.click(f"{seq_sel} [data-confirm-clear]")
     st = widget_eval(page, seq_id, seq_state)
     page.click(f"{seq_sel} [data-mode='MODE_FOC_VELOCITY']")
     check(
-        "views_025 the torque method relabels the axis to Nm bounded at 0.825; the points hold within it",
-        st["unit"] == "Nm · ±0.825" and [p["value"] for p in st["points"]] == [0, 0.825],
-        st,
+        "views_025 a same-kind mode keeps the points; the torque method asks, Keep keeps, Clear relabels to Nm ±0.825 with no points",
+        same == ["MODE_SINUSOIDAL", 2]
+        and asked == ["a new setpoint kind clears 2 points", ["MODE_FOC_VELOCITY", 2]]
+        and kept == [None, ["MODE_FOC_VELOCITY", 2]]
+        and st["unit"] == "Nm · ±0.825" and st["mode"] == "MODE_FOC_TORQUE" and st["points"] == [],
+        (same, asked, kept, st),
     )
 
     # ── [test->app~views_026~1] Run sends one Command with every point in
@@ -4863,14 +4926,17 @@ def run_sequence_widget(page):
 
     # ── [test->app~views_026~1] a rejected run shows its cause and no marker ──
     widget_eval(page, seq_id, "(w) => w.setPoints([{ t_ms: 0, value: 1, limit: -1 }])")
+    clamped_limit = widget_eval(page, seq_id, "(w) => w.cfg.points[0].limit")
+    page.evaluate("() => { window.__devmockRejectNext = 'setpoint exceeds the motor rating'; }")
     page.click(f"{seq_sel} [data-run]")
     wait_verdict()
     rj = widget_eval(page, seq_id, seq_state)
     marks_after = page.evaluate("() => __cockpit.timeline.runMarks().length")
     check(
-        "views_026 a rejected run shows its cause, leaves no marker and no new timeline mark",
-        rj["verdict"] == "rate limit negative" and rj["rejected"] and rj["run"] is None and marks_after == 1,
-        (rj["verdict"], rj["run"], marks_after),
+        "views_026 a rejected run shows its cause, leaves no marker and no new timeline mark; a negative limit holds at zero",
+        rj["verdict"] == "setpoint exceeds the motor rating" and rj["rejected"] and rj["run"] is None
+        and marks_after == 1 and clamped_limit == 0,
+        (rj["verdict"], rj["run"], marks_after, clamped_limit),
     )
 
     # ── [test->app~views_026~1] Stop sends MODE_OFF with no setpoints ──
@@ -4931,6 +4997,7 @@ def run_sequence_widget(page):
     # ── [test->app~views_025~1] the position method relabels the vertical
     #    axis to rad bounded at the maximum position ──
     page.click(f"{seq_sel} [data-mode='MODE_FOC_POSITION']")
+    page.click(f"{seq_sel} [data-confirm-clear]")
     sp0 = widget_eval(page, seq_id, seq_state)
     check(
         "views_025 the position method relabels the axis to rad bounded at 62.83",
@@ -4948,7 +5015,7 @@ def run_sequence_widget(page):
     )
     page.mouse.click(*px(200, two_pi))
     tip_state = """(w) => ({
-        shown: [...w.el.querySelectorAll('[data-tip-poslimit]')].map(f => !f.hidden && f.offsetParent !== null),
+        shown: [...w.el.querySelectorAll('.seq-tip [data-extra]')].map(f => !f.hidden && f.offsetParent !== null),
         placeholders: ['[data-tip-limit]', '[data-tip-accel]', '[data-tip-atpoint]'].map(s => w.el.querySelector(s).placeholder),
         point: w.cfg.points[1],
         selected: w.selected,
@@ -4973,12 +5040,14 @@ def run_sequence_widget(page):
     #    and 50 rad/s², stopping on the point, move from 0 at 200 ms at
     #    10 rad/s between 400 and 828 ms reaching 2π at 1028 ms; with a
     #    velocity at the point of 10 rad/s, reaching 2π at 928 ms and holding
-    #    10 rad/s (the drawn polyline's math) ──
+    #    10 rad/s (what the chart drew, its series under the position method) ──
     move_of = """(w) => {
-        const [ts, vs, ws] = __cockpit.sequence.positionTrajectory(w.cfg.points, w.cfg.duration_ms, __cockpit.store.motorInfo, 1);
+        const s = w.series;
+        const [ts, vs, ws] = s.values;
         const reach = vs.findIndex((v) => v >= 2 * Math.PI - 1e-6);
         const cruise = ws.slice(401, 828).every((v) => Math.abs(v - 10) < 1e-6);
-        return { start: [vs[200], ws[200], vs[201] > 0], at400: ws[400], cruise, reach,
+        return { position: s.fn === __cockpit.sequence.positionTrajectory, step_ms: s.step_ms,
+                 start: [vs[200], ws[200], vs[201] > 0], at400: ws[400], cruise, reach,
                  after: [vs[reach + 100], ws[reach + 100]] };
     }"""
     stop_move = widget_eval(page, seq_id, move_of)
@@ -4988,7 +5057,8 @@ def run_sequence_widget(page):
     pass_move = widget_eval(page, seq_id, move_of)
     check(
         "views_025 position move stopping on the point: from 0 at 200 ms, 10 rad/s over 400..828 ms, 2 pi at 1028 ms",
-        stop_move["start"] == [0, 0, True] and abs(stop_move["at400"] - 10) < 1e-6 and stop_move["cruise"]
+        stop_move["position"] and stop_move["step_ms"] == 1
+        and stop_move["start"] == [0, 0, True] and abs(stop_move["at400"] - 10) < 1e-6 and stop_move["cruise"]
         and abs(stop_move["reach"] - 1028) <= 1 and abs(stop_move["after"][0] - two_pi) < 1e-9
         and stop_move["after"][1] == 0,
         stop_move,
@@ -5033,6 +5103,217 @@ def run_sequence_widget(page):
         loaded[1] == moved and rp is not None and rp["mode"] == "MODE_FOC_POSITION" and rp["points"][1] == moved
         and "move 2pi" in rp["names"],
         (loaded, rp and rp["points"]),
+    )
+
+
+def run_sequence_runs(page):
+    """Sequence runs at the edges (app~views_025..027): who owns the run
+    marker, Stop in flight, the frame limit, a validated load."""
+    fresh_boot(page)
+    page.wait_for_function("() => __cockpit.store.motorInfo !== null")
+    ids = page.evaluate(
+        "() => [0, 1].map(i => __cockpit.addWidget({ type: 'sequence', x: 0, y: i * 400, w: 700, h: 380 }).cfg.id)"
+    )
+    a, b = ids
+    sel_a = f"[data-widget-id='{a}']"
+    run_of = "(w) => w.run && { marker: w.run.marker_ms, running: w.run.running }"
+
+    def setup(wid, duration, points, mode="MODE_FOC_VELOCITY"):
+        widget_eval(
+            page, wid,
+            "(w, a) => { w.setPoints([]); w.setMode(a[2]); w.setDuration(a[0]); w.setPoints(a[1]); }",
+            [duration, points, mode],
+        )
+
+    def run_and_wait(wid):
+        widget_eval(page, wid, "(w) => { w.verdict = null; w.runSequence(); }")
+        page.wait_for_function(
+            "(id) => { let v = null; __cockpit.forEachWidget(w => { if (w.cfg.id === id) v = w.verdict; });"
+            " return v && v.text !== 'sending…'; }",
+            arg=wid, timeout=5000,
+        )
+
+    def wait_running(wid):
+        page.wait_for_function(
+            "(id) => { let r = false; __cockpit.forEachWidget(w => { if (w.cfg.id === id) r = w.run?.seen && w.run.running; }); return r; }",
+            arg=wid, timeout=3000,
+        )
+
+    # ── [test->app~views_026~1] a run shorter than a telemetry period is
+    #    never reported running: its marker ends at its duration of wall time ──
+    setup(a, 50, [{"t_ms": 0, "value": 1, "limit": 0}])
+    run_and_wait(a)
+    page.wait_for_timeout(400)
+    short = widget_eval(page, a, run_of)
+    check(
+        "views_026 a run shorter than one telemetry period ends its marker at the duration",
+        short == {"marker": 50, "running": False},
+        short,
+    )
+
+    # ── [test->app~views_026~1] two Sequence widgets in turn: the second's
+    #    accepted run holds the first's marker, which no later telemetry moves ──
+    setup(a, 1500, [{"t_ms": 0, "value": 2, "limit": 0}])
+    setup(b, 1500, [{"t_ms": 0, "value": 3, "limit": 0}])
+    run_and_wait(a)
+    wait_running(a)
+    run_and_wait(b)
+    held_a = widget_eval(page, a, run_of)
+    wait_running(b)
+    page.wait_for_timeout(300)
+    later_a = widget_eval(page, a, run_of)
+    running_b = widget_eval(page, b, run_of)
+    check(
+        "views_026 a second widget's run holds the first's marker; telemetry moves only the second's",
+        held_a is not None and not held_a["running"] and later_a == held_a
+        and running_b["running"] and running_b["marker"] > 0,
+        (held_a, later_a, running_b),
+    )
+
+    # ── [test->app~views_026~1] a disconnect mid-run holds the marker in the
+    #    held colour; the verdict stays the run's ──
+    run_and_wait(a)
+    wait_running(a)
+    page.evaluate("() => window.__devmockConn.pull()")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'lost'")
+    lost = widget_eval(
+        page, a,
+        "(w) => ({ run: { marker: w.run.marker_ms, running: w.run.running }, verdict: w.verdict.text,"
+        " disabled: [...w.el.querySelectorAll('[data-run], [data-stop]')].map(e => e.disabled) })",
+    )
+    page.evaluate("() => { window.__devmockConn.replug(); return __cockpit.api.connect('COM8'); }")
+    page.wait_for_function("() => __cockpit.store.connection.state === 'connected'")
+    page.wait_for_timeout(300)
+    after = widget_eval(page, a, run_of)
+    check(
+        "views_026 a disconnect mid-run holds the marker; the verdict stays accepted; Run and Stop go unavailable",
+        not lost["run"]["running"] and lost["run"]["marker"] > 0 and lost["verdict"] == "accepted"
+        and lost["disabled"] == [True, True] and after == lost["run"],
+        (lost, after),
+    )
+
+    # ── [test->app~views_026~1] Stop goes out while a Run is in flight ──
+    page.evaluate("() => { window.__devmockCommandDelayMs = 400; window.__devmockCommands = []; }")
+    page.click(f"{sel_a} [data-run]")
+    inflight = widget_eval(
+        page, a, "(w) => [w.el.querySelector('[data-run]').disabled, w.el.querySelector('[data-stop]').disabled]"
+    )
+    page.click(f"{sel_a} [data-stop]")
+    page.wait_for_function("() => window.__devmockCommands.length === 2")
+    page.wait_for_timeout(600)
+    page.evaluate("() => { window.__devmockCommandDelayMs = 0; }")
+    order = page.evaluate("() => window.__devmockCommands.map(c => c.setpoints.length)")
+    stopped = widget_eval(page, a, "(w) => [w.verdict.text, w.run.running]")
+    check(
+        "views_026 Stop stays live while a Run is in flight and goes out after it; the Stop's verdict stands, the marker held",
+        inflight == [True, False] and order == [2, 0] and stopped == ["accepted", False],
+        (inflight, order, stopped),
+    )
+
+    # ── [test->app~views_026~1] a sequence over the board's frame is refused
+    #    unsent, its cause shown, no marker ──
+    many = [{"t_ms": 50 * (i + 1), "value": 1 + i * 0.1, "limit": 10, "accel": 50, "at_point": 5} for i in range(20)]
+    setup(a, 1500, many, "MODE_FOC_POSITION")
+    page.evaluate("() => { window.__devmockCommands = []; }")
+    run_and_wait(a)
+    big = widget_eval(page, a, "(w) => [w.verdict.text, w.verdict.rejected, w.run]")
+    check(
+        "views_026 a sequence over the 448 B frame shows frame too large and runs nothing",
+        big[0].startswith("frame too large: ") and big[0].endswith("the board takes 448 B") and big[1]
+        and big[2] is None,
+        big,
+    )
+
+    # ── [test->app~views_027~1] a restored named sequence loads through the
+    #    editor's validation: duration, times, values, and limits held ──
+    page.evaluate(
+        """() => {
+          const cfg = JSON.parse(localStorage.getItem('cockpit.config.v1'));
+          cfg['cockpit.workspace.v1'].sequences = { bad: { mode: 'MODE_WARP', duration_ms: 1e9,
+            points: [{ t_ms: 5e8, value: 99, limit: -3, accel: -2 }, { t_ms: 'x', value: 1 }, null] } };
+          localStorage.setItem('cockpit.config.v1', JSON.stringify(cfg));
+        }"""
+    )
+    restart(
+        page,
+        wait_js="() => { let n = 0; __cockpit.forEachWidget(w => { if (w.toJSON().type === 'sequence') n++; }); return n === 2; }",
+    )
+    widget_eval(page, a, "(w) => { w.setPoints([]); w.setMode('MODE_FOC_VELOCITY'); }")
+    page.wait_for_function("() => __cockpit.store.motorInfo !== null")
+    page.select_option(f"{sel_a} [data-load]", "bad")
+    bad = widget_eval(page, a, "(w) => ({ mode: w.cfg.mode, duration: w.cfg.duration_ms, points: w.cfg.points })")
+    check(
+        "views_027 a named sequence loads validated: mode kept, duration at 600 s, the point within the duration, rating, and a zero limit",
+        bad == {"mode": "MODE_FOC_VELOCITY", "duration": 600000, "points": [{"t_ms": 600000, "value": 18, "limit": 0}]},
+        bad,
+    )
+
+    # ── [test->app~views_027~1] Save as onto an existing name replaces it ──
+    widget_eval(page, a, "(w) => { w.setDuration(1000); w.setPoints([{ t_ms: 100, value: 1, limit: 0 }]); }")
+    page.fill(f"{sel_a} [data-seqname]", "dup")
+    page.click(f"{sel_a} [data-saveas]")
+    widget_eval(page, a, "(w) => w.setPoints([{ t_ms: 300, value: 4, limit: 0 }])")
+    page.fill(f"{sel_a} [data-seqname]", "dup")
+    page.click(f"{sel_a} [data-saveas]")
+    widget_eval(page, a, "(w) => w.setPoints([])")
+    page.select_option(f"{sel_a} [data-load]", "dup")
+    dup = [page.evaluate("() => __cockpit.sequence.namedSequences().filter(n => n === 'dup').length"),
+           widget_eval(page, a, "(w) => w.cfg.points")]
+    check(
+        "views_027 Save as onto an existing name replaces that sequence",
+        dup == [1, [{"t_ms": 300, "value": 4, "limit": 0}]],
+        dup,
+    )
+
+    # ── [test->app~views_026~1] a sequence with no points runs as the stop alone ──
+    widget_eval(page, a, "(w) => { w.setDuration(800); w.setPoints([]); }")
+    run_and_wait(a)
+    empty = [page.evaluate("() => window.__devmockLastCommand"), widget_eval(page, a, "(w) => w.verdict.text")]
+    check(
+        "views_026 Run with no points sends only the stop at the duration",
+        empty == [{"mode": "MODE_FOC_VELOCITY", "setpoints": [{"t_us": 800000, "stop": {}}]}, "accepted"],
+        empty,
+    )
+
+    # ── [test->app~views_024~1] [test->app~views_025~1] no MotorInfo reported:
+    #    the Command widget reads rating unknown, the Sequence chart takes its
+    #    fixed fallback bound and says so ──
+    cmd = page.evaluate("() => __cockpit.addWidget({ type: 'command', x: 720, y: 0, w: 500, h: 250 }).cfg.id")
+    page.click(f"[data-widget-id='{cmd}'] [data-mode='MODE_FOC_VELOCITY']")
+    page.evaluate("() => { __cockpit.store.motorInfo = null; __cockpit.notify('motorInfo', null); }")
+    unrated = [
+        widget_eval(page, cmd, "(w) => w.el.querySelector('[data-bound]').textContent"),
+        widget_eval(page, a, "(w) => w.el.querySelector('[data-unit]').textContent"),
+    ]
+    page.evaluate("() => __cockpit.api.getMotorInfo()")
+    rated = widget_eval(page, a, "(w) => w.el.querySelector('[data-unit]').textContent")
+    check(
+        "views_024/025 with no rating reported: rating unknown; the chart bound falls back to ±50",
+        unrated == ["rating unknown", "rad/s · ±50 · rating unknown"] and rated == "rad/s · ±18",
+        (unrated, rated),
+    )
+
+    # ── the devmock's kind-vs-mode row, mirroring the board (fw~conn_server_007):
+    #    speed under any driving method, torque and position only under their
+    #    own; MODE_OFF takes no value setpoint; the per-setpoint causes first ──
+    kinds = page.evaluate(
+        """async () => {
+          const send = (mode, sp) => __cockpit.api.sendCommand({ mode, setpoints: [{ t_us: 0, rate_limit: 0, ...sp }] })
+            .then(v => v.accepted ? 'accepted' : v.cause);
+          return [
+            await send('MODE_FOC_VELOCITY', { torque_nm: 0.1 }),
+            await send('MODE_FOC_TORQUE', { position_rad: 1 }),
+            await send('MODE_OFF', { velocity_radps: 1 }),
+            await send('MODE_FOC_TORQUE', { velocity_radps: 1 }),
+            await send('MODE_FOC_POSITION', { velocity_radps: 1 }),
+            await send('MODE_FOC_VELOCITY', { torque_nm: 5 }),
+          ];
+        }"""
+    )
+    check(
+        "devmock rejects a setpoint kind the mode cannot use, after the per-setpoint causes",
+        kinds == ["setpoint kind not for this mode"] * 3 + ["accepted", "accepted", "setpoint exceeds the motor rating"],
+        kinds,
     )
 
 
@@ -5114,19 +5395,29 @@ def run_export(page):
     )
 
     # ── [test->app~views_028~1] no range selected: the rows span the visible span ──
+    #    (checked against the window the export itself used: the live window
+    #    moves between any separate read and the click)
     newest = page.evaluate("() => { window.__devmockWritten = undefined; __cockpit.timeline.resume(); return __cockpit.timeline.globalNewest(); }")
     page.wait_for_function(f"() => __cockpit.timeline.globalNewest() > {newest}")
-    win = page.evaluate("() => __cockpit.timeline.currentWindow()")
-    page.click(".timeline-bar [data-export]")
-    page.wait_for_function("() => window.__devmockWritten !== undefined")
+    used = page.evaluate("async () => (await __cockpit.capture.exportCapture()).range")
+    span = page.evaluate("() => __cockpit.store.timeline.span_ms")
     _, header2, rows2 = parse_csv()
     times2 = [float(r[0]) for r in rows2]
     check(
         "views_028 with no range selected the rows span the timeline's visible span",
-        header2 == header and len(rows2) > len(rows) and abs(times2[0] - win[0]) <= 150
-        and times2[-1] <= win[1] + 100 and win[1] - times2[-1] <= 300,
-        (win, times2[0], times2[-1], len(rows2)),
+        header2 == header and len(rows2) > len(rows) and abs((used[1] - used[0]) - span) < 1e-6
+        # the first row within a 120 ms dropout plus a 10 ms period of the start
+        and used[0] <= times2[0] <= used[0] + 130 and times2[-1] <= used[1] and used[1] - times2[-1] <= 300,
+        (used, times2[0], times2[-1], len(rows2)),
     )
+
+    # ── [test->app~views_028~1] a cancelled save dialog writes nothing ──
+    cancelled = page.evaluate(
+        "async () => { window.__devmockWritten = undefined; window.__devmockCancelSave = true;"
+        " const r = await __cockpit.capture.exportCapture(); window.__devmockCancelSave = false;"
+        " return [r, window.__devmockWritten === undefined]; }"
+    )
+    check("views_028 a cancelled save dialog writes no file", cancelled == [None, True], cancelled)
 
 
 BUDGET_FULL = os.environ.get("PCS_RENDER_BUDGET") == "full"

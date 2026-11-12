@@ -8,7 +8,7 @@
 #include "unity.h"
 
 #define SEQ        (APP_SEQUENCER_CHANNEL_MAIN)
-#define CAPACITY   (24U)   // the board's
+#define CAPACITY   (APP_SEQUENCER_CAPACITY)
 
 static app_sequencer_setpoint_S storage[2U * CAPACITY];
 static app_sequencer_channelConfig_S channelCfg[APP_SEQUENCER_CHANNEL_COUNT];
@@ -48,23 +48,28 @@ void tearDown(void) {}
 
 static app_sequencer_setpoint_S velocityAt(uint32_t t_us, float32_t value, float32_t limit)
 {
-    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_VELOCITY, .value = value, .rateLimit = limit };
+    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_VELOCITY, .target = { value, limit } };
 }
 
 static app_sequencer_setpoint_S torqueAt(uint32_t t_us, float32_t value, float32_t limit)
 {
-    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_TORQUE, .value = value, .rateLimit = limit };
+    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_TORQUE, .target = { value, limit } };
 }
 
 static app_sequencer_setpoint_S positionAt(uint32_t t_us, float32_t value, float32_t vLimit, float32_t aLimit, float32_t atPoint)
 {
-    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_POSITION, .value = value,
-                                       .rateLimit = vLimit, .accelLimit = aLimit, .velocityAtPoint = atPoint };
+    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_POSITION,
+                                       .move = { value, vLimit, aLimit, atPoint } };
+}
+
+static app_sequencer_setpoint_S stopAt(uint32_t t_us)
+{
+    return (app_sequencer_setpoint_S){ .t_us = t_us, .kind = APP_SEQUENCER_KIND_STOP };
 }
 
 static void append(app_sequencer_setpoint_S sp)
 {
-    TEST_ASSERT_TRUE(app_sequencer_append(SEQ, &sp));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_OK, app_sequencer_append(SEQ, &sp));
 }
 
 static void passes(uint32_t n)
@@ -103,7 +108,7 @@ static void test_setpoints_are_written_at_their_passes(void)
 {
     commitThreeSpeeds();
     TEST_ASSERT_EQUAL_UINT32(0U, writes());
-    TEST_ASSERT_FALSE(status().running);
+    TEST_ASSERT_EQUAL_UINT32(0U, status().elapsed_ms);
 
     app_sequencer_run1ms();                                  // pass 0
     TEST_ASSERT_EQUAL_UINT32(1U, writes());
@@ -176,14 +181,13 @@ static void test_a_torque_setpoint_writes_the_torque_target(void)
 
 // [test->fw~ops_001~1]
 // A stop at 300 000 us requests MODE_OFF at pass 300 from the start and
-// writes no target; the sequence ends with it.
+// writes no target; the sequence ends with it, the speed after it never written.
 static void test_a_stop_setpoint_requests_mode_off_at_its_pass(void)
 {
-    const app_sequencer_setpoint_S stop = {
-        .t_us = 300000U, .kind = APP_SEQUENCER_KIND_STOP, .value = 0.0f, .rateLimit = 0.0f };
     TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
     append(velocityAt(0U, 2.0f, 0.0f));
-    append(stop);
+    append(stopAt(300000U));
+    append(velocityAt(400000U, 5.0f, 0.0f));
     TEST_ASSERT_TRUE(app_sequencer_commit(SEQ));
     passes(300U);   // the start pass and 299 more: the stop is not yet due
     TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_setModeCalls);
@@ -193,6 +197,9 @@ static void test_a_stop_setpoint_requests_mode_off_at_its_pass(void)
     TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_OFF, mock_app_motorControl_lastMode);
     TEST_ASSERT_EQUAL_UINT32(1U, writes());
     TEST_ASSERT_FALSE(status().running);
+    passes(200U);                                            // past the 400 ms speed
+    TEST_ASSERT_EQUAL_UINT32(1U, writes());
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_setModeCalls);
 }
 
 // [test->fw~ops_001~1]
@@ -211,7 +218,7 @@ static void test_capacity_is_held_in_full(void)
         append(velocityAt(i * 1000U, (float32_t)i, 0.0f));
     }
     app_sequencer_setpoint_S extra = velocityAt(CAPACITY * 1000U, 99.0f, 0.0f);
-    TEST_ASSERT_FALSE(app_sequencer_append(SEQ, &extra));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_FULL, app_sequencer_append(SEQ, &extra));
     TEST_ASSERT_TRUE(app_sequencer_commit(SEQ));
 
     passes(CAPACITY);                                        // passes 0..23
@@ -318,7 +325,7 @@ static void test_begin_is_refused_while_a_commit_awaits_its_pass(void)
     commitThreeSpeeds();
     TEST_ASSERT_FALSE(app_sequencer_begin(SEQ));
     app_sequencer_setpoint_S sp = velocityAt(0U, 7.0f, 0.0f);
-    TEST_ASSERT_FALSE(app_sequencer_append(SEQ, &sp));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_NOT_STAGING, app_sequencer_append(SEQ, &sp));
     app_sequencer_run1ms();                                  // pass 0 of the accepted sequence
     TEST_ASSERT_EQUAL_UINT32(1U, writes());
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, mock_app_motorControl_lastVelocity);
@@ -338,7 +345,7 @@ static void test_append_and_commit_need_a_begin(void)
     commitThreeSpeeds();
     passes(501U);                                            // played out
     app_sequencer_setpoint_S sp = velocityAt(0U, 7.0f, 0.0f);
-    TEST_ASSERT_FALSE(app_sequencer_append(SEQ, &sp));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_NOT_STAGING, app_sequencer_append(SEQ, &sp));
     TEST_ASSERT_FALSE(app_sequencer_commit(SEQ));
     passes(600U);
     TEST_ASSERT_EQUAL_UINT32(3U, writes());
@@ -356,7 +363,41 @@ static void test_append_refuses_an_unknown_kind(void)
     TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
     app_sequencer_setpoint_S sp = velocityAt(0U, 1.0f, 0.0f);
     sp.kind = APP_SEQUENCER_KIND_COUNT;
-    TEST_ASSERT_FALSE(app_sequencer_append(SEQ, &sp));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_INVALID, app_sequencer_append(SEQ, &sp));
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_INVALID, app_sequencer_append(SEQ, NULL));
+}
+
+// A setpoint whose time precedes the one before it is refused; an equal time is taken.
+static void test_append_refuses_a_time_out_of_order(void)
+{
+    TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
+    append(velocityAt(250000U, 1.0f, 0.0f));
+    app_sequencer_setpoint_S early = velocityAt(100000U, 2.0f, 0.0f);
+    TEST_ASSERT_EQUAL(APP_SEQUENCER_APPEND_OUT_OF_ORDER, app_sequencer_append(SEQ, &early));
+    append(velocityAt(250000U, 3.0f, 0.0f));
+}
+
+// Between a commit and the pass that starts it, the status reports the
+// committed sequence running with nothing elapsed; an empty commit reports
+// not running.
+static void test_status_reports_a_committed_sequence_before_its_start(void)
+{
+    commitThreeSpeeds();
+    passes(100U);
+    TEST_ASSERT_EQUAL_UINT32(100U, status().elapsed_ms);
+
+    TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
+    append(velocityAt(0U, 9.0f, 0.0f));
+    TEST_ASSERT_TRUE(app_sequencer_commit(SEQ));
+    TEST_ASSERT_TRUE(status().running);
+    TEST_ASSERT_EQUAL_UINT32(0U, status().elapsed_ms);
+
+    passes(600U);                                            // played out
+    TEST_ASSERT_FALSE(status().running);
+    TEST_ASSERT_TRUE(app_sequencer_begin(SEQ));
+    TEST_ASSERT_TRUE(app_sequencer_commit(SEQ));
+    TEST_ASSERT_FALSE(status().running);
+    TEST_ASSERT_EQUAL_UINT32(0U, status().elapsed_ms);
 }
 
 static void test_init_rejects_a_degenerate_config(void)
@@ -397,6 +438,8 @@ int main(void)
     RUN_TEST(test_begin_is_refused_while_a_commit_awaits_its_pass);
     RUN_TEST(test_append_and_commit_need_a_begin);
     RUN_TEST(test_append_refuses_an_unknown_kind);
+    RUN_TEST(test_append_refuses_a_time_out_of_order);
+    RUN_TEST(test_status_reports_a_committed_sequence_before_its_start);
     RUN_TEST(test_init_rejects_a_degenerate_config);
     return UNITY_END();
 }

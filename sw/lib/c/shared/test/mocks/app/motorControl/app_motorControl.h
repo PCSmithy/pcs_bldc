@@ -39,7 +39,6 @@ typedef struct
     float32_t                torqueTarget_Nm;
     float32_t                velocityMeasured_radPerSec;
     float32_t                positionTarget_rad;
-    float32_t                profileVelocity_radPerSec;
     float32_t                rotorPosition_rad;
     app_motorControl_mode_E  selectedMode;
     uint16_t                 faultLatches;

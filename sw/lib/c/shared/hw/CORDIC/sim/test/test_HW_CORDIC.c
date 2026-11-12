@@ -17,10 +17,10 @@ void tearDown(void) {}
 // [test->fw~hal_cordic_002~1] runs first: the driver starts uninitialised.
 static void test_before_init_returns_false_and_leaves_outputs(void)
 {
-    theta_S out = { .sin_rad = 7.0f, .cos_rad = 7.0f };
+    lib_transforms_sinCos_S out = { .sin = 7.0f, .cos = 7.0f };
     TEST_ASSERT_FALSE(HW_CORDIC_sinCos(0.5f, &out));
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.sin_rad);
-    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.cos_rad);
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.sin);
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, out.cos);
 }
 
 // [test->fw~hal_cordic_001~1]
@@ -54,10 +54,10 @@ static void test_reference_angles(void)
     const float32_t cosines[] = { 1.0f, 0.86602540f, 0.0f, -1.0f, 0.86602540f, 0.86602540f, 0.0f };
     for (size_t i = 0U; i < (sizeof(angles) / sizeof(angles[0])); i++)
     {
-        theta_S out = { .sin_rad = 0.0f, .cos_rad = 0.0f };
+        lib_transforms_sinCos_S out = { .sin = 0.0f, .cos = 0.0f };
         TEST_ASSERT_TRUE(HW_CORDIC_sinCos(angles[i], &out));
-        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, sines[i], out.sin_rad);
-        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, cosines[i], out.cos_rad);
+        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, sines[i], out.sin);
+        TEST_ASSERT_FLOAT_WITHIN(TOLERANCE, cosines[i], out.cos);
     }
 }
 

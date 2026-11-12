@@ -28,11 +28,3 @@ export async function pickFile(filters) {
   }
   return (await devmock()).pickFile();
 }
-
-/** Native save dialog via the dialog plugin; returns a path or null. */
-export async function saveFile(defaultPath, filters) {
-  if (isTauri) {
-    return tauri.core.invoke("plugin:dialog|save", { options: { defaultPath, filters } });
-  }
-  return (await devmock()).saveFile(defaultPath);
-}

@@ -2,15 +2,16 @@
 # shared app_motorControl and HW_ADC mocks and the REAL sequencer with the
 # board's table; the hooks are exercised directly through the config's
 # function pointers, a Command through the nanopb decode its arm hook arms.
+set(PCS_SHARED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../lib/c/shared)
 add_executable(test_app_server_config
   test_app_server_config.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../app_server_config.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../sequencer/app_sequencer_channels.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../lib/c/shared/app/sequencer/app_sequencer.cpp
+  ${PCS_SHARED_DIR}/app/sequencer/app_sequencer.cpp
 )
 target_include_directories(test_app_server_config PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../sequencer                              # the board's channel enum + capacity
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../lib/c/shared/app/sequencer    # app_sequencer.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../sequencer   # the board's channel enum + capacity
+  ${PCS_SHARED_DIR}/app/sequencer               # app_sequencer.h
 )
 target_link_libraries(test_app_server_config PRIVATE
   lib_types

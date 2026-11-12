@@ -1,7 +1,7 @@
 // app_rotorEstimation over the IO_AS5048 double. The spec's numbers: omega_n
 // = 2*pi*50 rad/s, zeta = 1, p_d = 157 rad/s, Ts = 1 ms, Tpwm = 50 us, J =
-// 3e-4 kg m^2, b = Tc = 0, so K = [l1, l2, l3] * Ts = [0.7853, 197.34,
-// 4.6486]. Effects are read through the public state getter.
+// 1.45e-4 kg m^2, b = Tc = 0, so K = [l1, l2, l3] * Ts = [0.7853, 197.34,
+// 2.2468]. Effects are read through the public state getter.
 #include "app_rotorEstimation.h"
 #include "IO_AS5048.h"
 #include "mock_IO_AS5048.h"
@@ -16,11 +16,12 @@
 #define PD          (157.0f)
 #define TS          (0.001f)
 #define TPWM        (50.0e-6f)
-#define INERTIA     (3.0e-4f)
+#define INERTIA     (1.45e-4f)
 #define VISCOUS     (7.2e-4f)    // Nm per rad/s, the friction tests' b
 #define COULOMB     (0.01f)      // Nm, the friction tests' Tc
 #define OMEGA_DB    (2.0f)       // rad/s, where the Coulomb term reaches +-Tc
 #define CYCLES_PER_MS (20U)
+#define RESEED_AFTER  (5U)       // invalid reads, the board's encoder-fault limit
 #define L1_TS       (((2.0f * ZETA * OMEGA_N) + PD) * TS)
 #define L2_TS       (((OMEGA_N * OMEGA_N) + (2.0f * ZETA * OMEGA_N * PD)) * TS)
 #define L3_TS       (INERTIA * OMEGA_N * OMEGA_N * PD * TS)
@@ -40,6 +41,7 @@ static void nominalConfig(void)
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].coulombFriction_Nm = 0.0f;
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].disturbancePole_radPerSec = PD;
     channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].coulombRampVelocity_radPerSec = OMEGA_DB;
+    channelConfig[APP_ROTORESTIMATION_CHANNEL_MAIN].reseedAfterInvalidReads = RESEED_AFTER;
     config.channels = channelConfig;
     config.numChannels = APP_ROTORESTIMATION_CHANNEL_COUNT;
 }
@@ -241,6 +243,49 @@ static void test_invalid_read_skips_the_correction(void)
     TEST_ASSERT_EQUAL_FLOAT(0.0f, torqueHat());
 }
 
+// Seed at rest at 1.0 rad, then `outage` ticks with invalid reads.
+static void seedThenOutage(uint32_t outage)
+{
+    tick(1.0f);
+    mock_IO_AS5048_setStatus(IO_AS5048_CHANNEL_MOTOR, IO_AS5048_STATUS_FAULT);
+    for (uint32_t ms = 0U; ms < outage; ms++)
+    {
+        tick(1.0f);
+    }
+    mock_IO_AS5048_setStatus(IO_AS5048_CHANNEL_MOTOR, IO_AS5048_STATUS_OK);
+}
+
+static void test_valid_read_after_an_outage_past_the_limit_reseeds(void)
+{
+    seedThenOutage(RESEED_AFTER + 1U);
+    tick(1.0f + 3.0f);                                 // an error near pi
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 4.0f, theta());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, omega());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, torqueHat());
+}
+
+static void test_valid_read_after_an_outage_at_the_limit_corrects(void)
+{
+    seedThenOutage(RESEED_AFTER);
+    const float32_t e = 0.01f;
+    mock_IO_AS5048_setAngle(IO_AS5048_CHANNEL_MOTOR, 1.0f + e);
+    app_rotorEstimation_run1ms();
+    cycles(1U);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f * L3_TS * e, L3_TS * e, torqueHat());
+}
+
+static void test_reseed_is_reposted_until_it_lands(void)
+{
+    seedThenOutage(RESEED_AFTER + 1U);
+    mock_IO_AS5048_setAngle(IO_AS5048_CHANNEL_MOTOR, 4.0f);
+    app_rotorEstimation_run1ms();                      // no cycle consumes this one
+    app_rotorEstimation_run1ms();
+    cycles(1U);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 4.0f, theta());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, omega());
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, torqueHat());
+}
+
 static void test_velocity_converges_within_1pct_inside_50ms_and_holds_through_wraps(void)
 {
     const float32_t rate = 21.0f;   // rad/s, about 3.3 turns per second
@@ -390,6 +435,9 @@ int main(void)
     RUN_TEST(test_valid_read_applies_gain_times_error_by_the_next_cycle);
     RUN_TEST(test_error_is_wrapped_across_two_pi);
     RUN_TEST(test_invalid_read_skips_the_correction);
+    RUN_TEST(test_valid_read_after_an_outage_past_the_limit_reseeds);
+    RUN_TEST(test_valid_read_after_an_outage_at_the_limit_corrects);
+    RUN_TEST(test_reseed_is_reposted_until_it_lands);
     RUN_TEST(test_velocity_converges_within_1pct_inside_50ms_and_holds_through_wraps);
     RUN_TEST(test_constant_acceleration_lands_in_the_torque_state);
     RUN_TEST(test_cycles_advance_the_angle_by_velocity_times_period);

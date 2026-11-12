@@ -79,6 +79,8 @@ typedef struct
     uint8_t              ocUnit;        // dense OC-unit index 0..3
     bool                 complementary; // models the paired CHxN line
     uint32_t             compare;       // initial compare value, raw counts
+    bool                 preload;       // a written compare takes effect at the next update
+                                        // event, as stm32g4 PWM-mode channels do
     uint32_t             inactiveLevel; // output level (0/1) while disabled or idle
     char *               channelNameStr; // SIL port base name; NULL registers no ports
 } HW_TIM_channelConfig_S;

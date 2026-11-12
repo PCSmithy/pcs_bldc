@@ -47,7 +47,7 @@ bool HW_CORDIC_init(const HW_CORDIC_config_S * const config)
 }
 
 // [impl->fw~hal_cordic_002~1]
-bool HW_CORDIC_sinCos(float32_t theta_rad, theta_S * const out)
+bool HW_CORDIC_sinCos(float32_t theta_rad, lib_transforms_sinCos_S * const out)
 {
     bool ret = false;
     if ((data->initialized) && (out != NULL))
@@ -72,8 +72,8 @@ bool HW_CORDIC_sinCos(float32_t theta_rad, theta_S * const out)
         {
             // precisionCycles clocks
         }
-        out->cos_rad = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
-        out->sin_rad = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
+        out->cos = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
+        out->sin = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
         ret = true;
     }
     return ret;

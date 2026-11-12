@@ -14,6 +14,7 @@ typedef struct
     size_t  accumLen;
     bool    overflowed;
     bool    pendingValid;
+    bool    pendingOversize;
     size_t  pendingLen;
     uint8_t accum[LIB_COBS_ENCODED_MAX(IO_COBSFRAME_MAX_PAYLOAD + IO_COBSFRAME_CRC_LEN)];
     uint8_t pending[IO_COBSFRAME_MAX_PAYLOAD + IO_COBSFRAME_CRC_LEN];
@@ -30,16 +31,40 @@ static IO_COBSFrame_data_S * const data = &IO_COBSFrame_data;
 
 /* Private Function Definitions */
 
+// Whether a well-formed COBS segment decodes past maxLen bytes.
+static bool IO_COBSFrame_private_decodesPast(const uint8_t * const segment, size_t len, size_t maxLen)
+{
+    size_t decoded = 0U;
+    size_t i = 0U;
+    bool wellFormed = true;
+    while (wellFormed && (i < len))
+    {
+        const size_t code = segment[i];   // never zero: the accumulator holds no delimiter
+        wellFormed = ((i + code) <= len);
+        decoded += code - 1U;
+        i += code;
+        if ((code < 0xFFU) && (i < len))
+        {
+            decoded++;
+        }
+    }
+    return wellFormed && (decoded > maxLen);
+}
+
 static void IO_COBSFrame_private_completeSegment(IO_COBSFrame_channel_E channel)
 {
     const IO_COBSFrame_channelConfig_S * const cfg = &data->config->channels[channel];
     IO_COBSFrame_channelData_S * const chData = &data->channelData[channel];
+    const size_t decodedMax = cfg->maxFrameLen + IO_COBSFRAME_CRC_LEN;
 
     size_t decodedLen = 0U;
-    if ((lib_cobs_decode(chData->accum, chData->accumLen,
-                         chData->pending, cfg->maxFrameLen + IO_COBSFRAME_CRC_LEN,
-                         &decodedLen)) &&
-        (decodedLen >= IO_COBSFRAME_CRC_LEN))
+    if (chData->overflowed ||
+        IO_COBSFrame_private_decodesPast(chData->accum, chData->accumLen, decodedMax))
+    {
+        chData->pendingOversize = true;
+    }
+    else if ((lib_cobs_decode(chData->accum, chData->accumLen, chData->pending, decodedMax, &decodedLen)) &&
+             (decodedLen >= IO_COBSFRAME_CRC_LEN))
     {
         const size_t payloadLen = decodedLen - IO_COBSFRAME_CRC_LEN;
         const uint8_t * const trailer = &chData->pending[payloadLen];
@@ -65,14 +90,14 @@ static void IO_COBSFrame_private_pumpChannel(IO_COBSFrame_channel_E channel)
     // Byte-at-a-time so a completed frame halts consumption exactly at its
     // delimiter — bytes behind it stay queued in the serial layer.
     bool more = true;
-    while ((more) && (!chData->pendingValid))
+    while (more && (!chData->pendingValid) && (!chData->pendingOversize))
     {
         uint8_t byte = 0U;
         if (IO_serial_read(cfg->serialChannel, &byte, 1U) == 1U)
         {
             if (byte == 0x00U)
             {
-                if ((chData->accumLen > 0U) && (!chData->overflowed))
+                if (chData->accumLen > 0U)
                 {
                     IO_COBSFrame_private_completeSegment(channel);
                 }
@@ -139,6 +164,7 @@ bool IO_COBSFrame_init(const IO_COBSFrame_config_S * const config)
                 chData->accumLen = 0U;
                 chData->overflowed = false;
                 chData->pendingValid = false;
+                chData->pendingOversize = false;
                 chData->pendingLen = 0U;
             }
         }
@@ -158,18 +184,24 @@ void IO_COBSFrame_run(void)
 }
 
 // [impl->fw~conn_proto_005~1]
-bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer,
-                      size_t bufferLen, size_t * const frameLen)
+IO_COBSFrame_receive_E IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer,
+                                            size_t bufferLen, size_t * const frameLen)
 {
-    bool got = false;
+    IO_COBSFrame_receive_E got = IO_COBSFRAME_RECEIVE_NONE;
     if ((data->config != NULL) &&
         (channel < data->config->numChannels) &&
         (buffer != NULL) &&
         (frameLen != NULL))
     {
         IO_COBSFrame_channelData_S * const chData = &data->channelData[channel];
-        if (chData->pendingValid)
+        if (chData->pendingOversize)
         {
+            got = IO_COBSFRAME_RECEIVE_OVERSIZE;
+            chData->pendingOversize = false;
+        }
+        else if (chData->pendingValid)
+        {
+            got = IO_COBSFRAME_RECEIVE_OVERSIZE;
             if (bufferLen >= chData->pendingLen)
             {
                 for (size_t i = 0U; i < chData->pendingLen; i++)
@@ -177,9 +209,13 @@ bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer
                     buffer[i] = chData->pending[i];
                 }
                 *frameLen = chData->pendingLen;
-                got = true;
+                got = IO_COBSFRAME_RECEIVE_FRAME;
             }
             chData->pendingValid = false;
+        }
+        else
+        {
+            // nothing held
         }
     }
     return got;
@@ -193,6 +229,7 @@ void IO_COBSFrame_reset(IO_COBSFrame_channel_E channel)
         chData->accumLen = 0U;
         chData->overflowed = false;
         chData->pendingValid = false;
+        chData->pendingOversize = false;
         chData->pendingLen = 0U;
     }
 }

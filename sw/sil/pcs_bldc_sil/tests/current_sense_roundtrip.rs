@@ -3,7 +3,7 @@
 //! the rail, and a stuck sense line hides real current from the firmware.
 
 use pcs_bldc_sil::board::{
-    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, MOTOR, PHASE_TRIP_A,
+    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, MOTOR, phase_trip_a,
     SENSE,
 };
 use pcs_bldc_sil::{cid, vid, Board, Sil, SOURCE};
@@ -58,9 +58,9 @@ fn firmware_decodes_injected_currents() {
     // the firmware's -(U + V) to agree with what the plant was given.
     const PHASE_A: [f64; 3] = [1.0, -0.8, -0.2];
     const BUS_A: f64 = 0.5;
-    const TRIP_A: f64 = 1.5;
 
     let (mut sim, _routes) = world();
+    let phase_trip_a = phase_trip_a(&sim);
     assert!(!fault_latched(&sim), "the boot baseline is fault free");
     inject(&mut sim, PHASE_A, BUS_A);
 
@@ -84,15 +84,16 @@ fn firmware_decodes_injected_currents() {
     );
     assert!(
         !fault_latched(&sim),
-        "currents under the {PHASE_TRIP_A} A trip leave the latch clear"
+        "currents under the {phase_trip_a} A trip leave the latch clear"
     );
 
     // The firmware runs the same decode itself: pushing one phase over the trip latches
     // the overcurrent fault, so its constants match the ones read back above.
-    inject(&mut sim, [TRIP_A, 0.0, 0.0], 0.0);
+    let trip_a = 1.25 * phase_trip_a;   // a quarter past the trip
+    inject(&mut sim, [trip_a, 0.0, 0.0], 0.0);
     assert!(
         fault_latched(&sim),
-        "{TRIP_A} A injected on phase U trips the firmware's own {PHASE_TRIP_A} A decode \
+        "{trip_a} A injected on phase U trips the firmware's own {phase_trip_a} A decode \
          comparison"
     );
 }
@@ -105,6 +106,7 @@ fn firmware_sees_full_scale_on_saturation() {
     const INJECTED_A: f64 = 30.0;
 
     let (mut sim, _routes) = world();
+    let phase_trip_a = phase_trip_a(&sim);
     inject(&mut sim, [INJECTED_A, 0.0, 0.0], 0.0);
 
     let vref = cvar_f64(&sim, "HW_ADC_channelConfig[0].vref");
@@ -136,7 +138,7 @@ fn firmware_sees_full_scale_on_saturation() {
     );
     assert!(
         fault_latched(&sim),
-        "a railed phase is far over the {PHASE_TRIP_A} A trip and latches the fault"
+        "a railed phase is far over the {phase_trip_a} A trip and latches the fault"
     );
 }
 

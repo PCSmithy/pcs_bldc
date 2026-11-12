@@ -13,7 +13,7 @@ repo where possible — cite title + DOI here instead.
 
 ## In-repo
 
-- `rotor-observer-derivation.md` (+ `.pdf`) — the design-C rotor
+- `rotor-observer-derivation.md` (+ `.pdf`) — the rotor
   estimator derived end to end: plant, state-space form, Luenberger
   observer and error dynamics, pole placement for l₁..l₃, and the
   prediction and correction discretisations. Supplement to

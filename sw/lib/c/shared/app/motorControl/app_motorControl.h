@@ -31,13 +31,6 @@ typedef enum
     APP_MOTORCONTROL_MODE_COUNT,
 } app_motorControl_mode_E; // TODO - convert this to `enum class` if/when consumers are C++
 
-typedef enum
-{
-    APP_MOTORCONTROL_AXIS_D,
-    APP_MOTORCONTROL_AXIS_Q,
-    APP_MOTORCONTROL_AXIS_COUNT,
-} app_motorControl_axis_E;
-
 // Coarse bridge state for the operator display (fw~mc_009): DISABLED (bridge
 // dark), ENABLED (bridge driving), or FAULTED (a latched fault holds it off).
 typedef enum
@@ -94,6 +87,12 @@ typedef struct
 
     app_motorControl_mode_E defaultMode;   // the method selected at power-up; never OFF
     uint32_t prechargeTime_ms;   // low sides on before any enable drives: the bootstrap charge (fw~mc_021)
+    float32_t alignmentDuty01;   // phase U's duty in the alignment pattern, at most the six-step maximum (fw~mc_012)
+    uint32_t alignmentDwell_ms;  // how long the pattern holds before the offset capture
+
+    float32_t overcurrentPhaseTrip_A;   // a phase-current magnitude above it latches a fault (fw~safety_001)
+    float32_t overcurrentBusTrip_A;     // a DC-bus current above it latches a fault
+    uint16_t encoderFaultLimit;         // more consecutive invalid encoder reads latch a fault (fw~safety_002)
 } app_motorControl_channelConfig_S;
 
 typedef struct
@@ -114,7 +113,6 @@ typedef struct
     float32_t                torqueTarget_Nm;              // the torque target in effect (fw~mc_026, fw~mc_027)
     float32_t                velocityMeasured_radPerSec;   // the rotor estimator's velocity (fw~est_rotor_002)
     float32_t                positionTarget_rad;           // theta*, the position target in effect (fw~mc_031)
-    float32_t                profileVelocity_radPerSec;    // w_f, the profile velocity (fw~mc_031)
     float32_t                rotorPosition_rad;            // the multi-turn rotor position, zero at the enable (fw~mc_032)
     app_motorControl_mode_E  selectedMode;                 // the method an enable runs; OFF leaves it selected
     uint16_t                 faultLatches;                 // fault latches since init, each counted once
@@ -145,7 +143,8 @@ bool app_motorControl_getSnapshot(app_motorControl_channel_E channel, app_motorC
 bool app_motorControl_getRatings(app_motorControl_channel_E channel, app_motorControl_ratings_S * const ratings);
 
 void app_motorControl_run1ms(void);
-void app_motorControl_run50us(void);
+// The PWM-synchronous step of every channel on `bridge`, from that bridge's cycle callback.
+void app_motorControl_run50us(IO_bridge_channel_E bridge);
 
 // Write a target with its rate limit in the target's unit per second; zero
 // steps it to the value on the next 1 ms pass (fw~mc_027). A speed target
@@ -157,12 +156,13 @@ void app_motorControl_setTorque(app_motorControl_channel_E channel, float32_t to
 // profile (fw~mc_031) drives the position target to it; a disable drops it.
 void app_motorControl_setPositionSetpoint(app_motorControl_channel_E channel, float32_t position_rad, float32_t velocityLimit_radPerSec,
                                           float32_t accelLimit_radPerSec2, float32_t velocityAtPoint_radPerSec);
+// A method request selects and enables it, ignored for another method while one
+// drives; OFF disables and keeps the selection (fw~mc_033).
 void app_motorControl_setMode(app_motorControl_channel_E channel, app_motorControl_mode_E mode);
 
-// Release a latched overcurrent fault (fw~safety_001). The drive stays disabled
-// until re-enabled; a no-op for an out-of-range channel or an uninitialized
-// module. This is the fault-clear action referenced by the trip latch — driven
-// on-device by the user button's fault-clear gesture (fw~mc_007).
+// The fault-clear action (fw~safety_001..003): releases the latch; the bridge stays
+// dark until a new enable request. A no-op for an out-of-range channel or an
+// uninitialized module.
 void app_motorControl_clearFault(app_motorControl_channel_E channel);
 
 

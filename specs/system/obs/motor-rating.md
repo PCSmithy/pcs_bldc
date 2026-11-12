@@ -10,8 +10,7 @@ tags: [system, obs]
 
 The device shall report, on a host request, the ratings and limits its
 motor control is configured with — torque constant, maximum current,
-maximum torque, maximum velocity, and maximum position — so the host
-bounds its setpoints to them.
+maximum torque, maximum velocity, and maximum position.
 
 Acceptance:
 

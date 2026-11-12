@@ -75,7 +75,7 @@
     .breakInputs = { HW_TIM_CUBEMX_BRKIN_TIM1 }, \
     .configureTrgo = true, \
     .master = { HW_TIM_CUBEMX_MASTER_TIM1 }, \
-    .updateAtPeriod = true,   /* compares latch at the crest, after the current sample (fw~hal_tim_002) */
+    .updateAtPeriod = true,   /* compares latch at the crest, after the current sample (fw~hal_tim_009) */
 
 #define HW_TIM_CUBEMX_SIM_PERIPH_TIM1 \
     .nameStr          = "TIM1", \

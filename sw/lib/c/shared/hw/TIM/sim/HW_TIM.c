@@ -21,7 +21,12 @@ typedef struct
     uint64_t position;
     // Reload events still to come before the next update event.
     uint32_t repetitionRemaining;
+    // compare is the register as written (CCR reads back the preload register);
+    // activeCompare drives the output and the OC-match trigger. A preloaded unit
+    // copies compare into activeCompare at each update event, any other at once.
     uint32_t compare[HW_TIM_OC_UNITS_PER_PERIPHERAL];
+    uint32_t activeCompare[HW_TIM_OC_UNITS_PER_PERIPHERAL];
+    bool     preload[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     bool     outputEnabled[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     // MOE latch gating every enabled output. Commanded OFF at init; a break
     // clears it via a table write to this static and it stays clear until
@@ -78,6 +83,7 @@ static uint64_t HW_TIM_private_reloadEvents(const HW_TIM_peripheralConfig_S * co
 static uint64_t HW_TIM_private_consumeRepetition(HW_TIM_peripheral_E peripheral, uint64_t reloads);
 static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts,
                                     uint64_t updates);
+static void HW_TIM_private_latchCompares(HW_TIM_peripheral_E peripheral);
 
 /* Private Function Definitions */
 
@@ -132,7 +138,7 @@ static void HW_TIM_private_publishDuty(HW_TIM_channels_E channel)
     const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
     const HW_TIM_peripheral_E peripheral = channelConfig->peripheral;
     const uint32_t period  = data->config->peripherals[peripheral].period;
-    const uint32_t compare = data->peripheralData[peripheral].compare[channelConfig->ocUnit];
+    const uint32_t compare = data->peripheralData[peripheral].activeCompare[channelConfig->ocUnit];
     const double duty = (period > 0U) ? ((double)compare / (double)period) : 0.0;
     SIL_ports_write(data->dutyHandle[channel], duty);
 }
@@ -261,9 +267,9 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
         else if ((peripheralConfig->trgoSource == HW_TIM_TRGO_OC_MATCH) &&
                  (peripheralConfig->trgoOcUnit < HW_TIM_OC_UNITS_PER_PERIPHERAL))
         {
-            // No CCR shadow modelled: a compare written between advances applies
-            // to the whole of the next one.
-            const uint64_t compare = data->peripheralData[peripheral].compare[peripheralConfig->trgoOcUnit];
+            // The active compare rules the whole advance; a preloaded write latched
+            // by this advance's update event applies from the next one.
+            const uint64_t compare = data->peripheralData[peripheral].activeCompare[peripheralConfig->trgoOcUnit];
             const uint64_t match = (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
                 ? (period - compare)
                 : compare;
@@ -316,6 +322,25 @@ static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t fro
     }
 }
 
+// [impl->fw~hal_tim_009~1] the update event loads each preloaded unit's written
+// compare into the active register and publishes the new duty.
+static void HW_TIM_private_latchCompares(HW_TIM_peripheral_E peripheral)
+{
+    HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[peripheral];
+    for (size_t ch = 0U; ch < data->config->numChannels; ch++)
+    {
+        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[ch];
+        const uint8_t unit = channelConfig->ocUnit;
+        if ((channelConfig->peripheral == peripheral) &&
+            (peripheralData->preload[unit]) &&
+            (peripheralData->activeCompare[unit] != peripheralData->compare[unit]))
+        {
+            peripheralData->activeCompare[unit] = peripheralData->compare[unit];
+            HW_TIM_private_publishDuty((HW_TIM_channels_E)ch);
+        }
+    }
+}
+
 /* Public Function Definitions */
 
 // [impl->fw~hal_tim_001~1]
@@ -357,11 +382,9 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             for (size_t p = 0U; p < config->numPeripherals; p++)
             {
                 const HW_TIM_peripheralConfig_S * const peripheralConfig = &config->peripherals[p];
-                // Every direction starts its cycle at position zero — the
-                // counter reads zero, or the period on a down-counter — with a
-                // full repetition countdown ahead of the first update event, or
-                // a spent one so the first reload (a center-aligned counter's
-                // crest) raises it (fw~hal_tim_002).
+                // Every cycle starts at position zero with a full repetition
+                // countdown, or a spent one so the first reload (a center-aligned
+                // counter's crest) raises the update event (fw~hal_tim_009).
                 data->peripheralData[p].position = 0U;
                 data->peripheralData[p].repetitionRemaining =
                     peripheralConfig->updateAtPeriod ? 0U : peripheralConfig->rcr;
@@ -382,8 +405,10 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             for (size_t ch = 0U; ch < config->numChannels; ch++)
             {
                 const HW_TIM_channelConfig_S * const channelConfig = &config->channels[ch];
-                data->peripheralData[channelConfig->peripheral].compare[channelConfig->ocUnit] =
-                    channelConfig->compare;
+                HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[channelConfig->peripheral];
+                peripheralData->compare[channelConfig->ocUnit]       = channelConfig->compare;
+                peripheralData->activeCompare[channelConfig->ocUnit] = channelConfig->compare;
+                peripheralData->preload[channelConfig->ocUnit]       = channelConfig->preload;
 
                 if (channelConfig->channelNameStr != NULL)
                 {
@@ -431,6 +456,10 @@ void HW_TIM_advanceTime(uint32_t elapsed_us)
                 const uint64_t reloads = HW_TIM_private_reloadEvents(peripheralConfig, from, counts);
                 const uint64_t updates = HW_TIM_private_consumeRepetition((HW_TIM_peripheral_E)p, reloads);
                 HW_TIM_private_emitTrgo((HW_TIM_peripheral_E)p, from, counts, updates);
+                if (updates > 0U)
+                {
+                    HW_TIM_private_latchCompares((HW_TIM_peripheral_E)p);
+                }
             }
         }
     }
@@ -508,8 +537,13 @@ bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts)
         const HW_TIM_peripheral_E peripheral = channelConfig->peripheral;
         if (counts <= data->config->peripherals[peripheral].period)
         {
-            data->peripheralData[peripheral].compare[channelConfig->ocUnit] = counts;
-            HW_TIM_private_publishDuty(channel);
+            HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[peripheral];
+            peripheralData->compare[channelConfig->ocUnit] = counts;
+            if (!peripheralData->preload[channelConfig->ocUnit])
+            {
+                peripheralData->activeCompare[channelConfig->ocUnit] = counts;
+                HW_TIM_private_publishDuty(channel);
+            }
             ret = true;
         }
     }
@@ -543,21 +577,6 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
         const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
         data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit] = enabled;
         HW_TIM_private_publishEnabled(channel);
-        ret = true;
-    }
-    return ret;
-}
-
-bool HW_TIM_getOutputEnabled(HW_TIM_channels_E channel, bool * const isEnabled)
-{
-    bool ret = false;
-    if ((isEnabled != NULL) &&
-        (data->initialized) &&
-        (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
-    {
-        const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
-        *isEnabled = data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit];
         ret = true;
     }
     return ret;

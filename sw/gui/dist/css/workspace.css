@@ -413,19 +413,22 @@
 .cmd-field { display: flex; flex-direction: column; gap: 4px; }
 .cmd-field[hidden] { display: none; }
 .cmd-input { display: inline-flex; align-items: center; gap: 6px; }
-.cmd-input input {
-  width: 92px;
+/* One pill input for both command-plane widgets; sites size it below. */
+.cmd-input input,
+.seq-library input,
+.seq-library select,
+.seq-tip input {
   background: var(--ink-raised);
   border: 1px solid rgba(var(--hair-rgb), 0.16);
   border-radius: var(--r-pill);
   color: var(--color-neutral-200);
-  font-size: 12px;
-  padding: 4px 10px;
-  text-align: right;
+  font-size: 11.5px;
+  padding: 3px 9px;
 }
-.cmd-input input:focus { border-color: rgba(var(--lit-rgb), 0.55); outline: none; }
-.cmd-input input:disabled { opacity: 0.45; }
-.cmd-input input::placeholder { color: var(--color-neutral-600); }
+:is(.cmd-input, .seq-library, .seq-tip) :is(input, select):focus { border-color: rgba(var(--lit-rgb), 0.55); outline: none; }
+:is(.cmd-input, .seq-library, .seq-tip) :is(input, select):disabled { opacity: 0.45; }
+:is(.cmd-input, .seq-tip) input::placeholder { color: var(--color-neutral-600); }
+.cmd-input input { width: 92px; font-size: 12px; padding: 4px 10px; text-align: right; }
 .cmd-unit { font-size: 11px; color: var(--color-neutral-500); min-width: 44px; }
 .cmd-hint { font-size: 10px; color: var(--color-neutral-600); }
 .cmd-send { margin-top: auto; }
@@ -445,20 +448,11 @@
 }
 .seq-toolbar { gap: 14px; }
 .seq-toolbar .cmd-input input { width: 64px; }
+.seq-confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-accent-400); }
+.seq-confirm[hidden] { display: none; }
 .seq-library { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
-.seq-library input,
-.seq-library select,
-.seq-tip input {
-  background: var(--ink-raised);
-  border: 1px solid rgba(var(--hair-rgb), 0.16);
-  border-radius: var(--r-pill);
-  color: var(--color-neutral-200);
-  font-size: 11.5px;
-  padding: 3px 9px;
-}
 .seq-library input { width: 100px; }
 .seq-library select option { background: var(--ink-raised); color: var(--color-neutral-200); }
-.seq-library select:disabled { opacity: 0.45; }
 .seq-chart {
   flex: 1;
   min-height: 120px;
@@ -470,6 +464,9 @@
 }
 .seq-canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; cursor: crosshair; }
 .seq-canvas:focus-visible { box-shadow: inset 0 0 0 1px rgba(var(--lit-rgb), 0.35); }
+.seq-marker { position: absolute; width: 1px; background: var(--color-neutral-500); pointer-events: none; }
+.seq-marker--running { background: var(--color-accent-400); }
+.seq-marker[hidden] { display: none; }
 .seq-tip {
   position: absolute;
   display: flex;

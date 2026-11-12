@@ -13,7 +13,7 @@ Sub-folders are created when a topic gets its first spec.
   device and firmware state live in the native core;
   [[session-restore]]: the saved port/ELF/watch-list context)
 - `conn/` — device session and protocol client ([[session]]), framing
-  + envelope codec ([[wire]]), the board command plane ([[command]])
+  + envelope codec ([[wire]]), the board command plane ([[conn/command]])
 - `obs/` — the acquisition model: ELF/DWARF signal selection
   ([[signal-picker]]), the build-identity gate ([[access-gate]]), the
   trace client and Samples demultiplexer ([[trace-client]])
@@ -22,7 +22,7 @@ Sub-folders are created when a topic gets its first spec.
   [[cursor]] (cursor, pointed trace, comparison anchor + deltas),
   [[table]], [[timeline]], [[watch-panel]], [[cpu-load]], [[render-budget]]
   (rendering performance floor), [[value-rendering]] (the surfaces'
-  shared value formatting), [[command]] and [[sequence]] (the board
+  shared value formatting), [[views/command]] and [[sequence]] (the board
   command plane's widgets), and [[export]] (capture export)
 
 Convention: `obs/` holds acquisition and access — what bytes mean and

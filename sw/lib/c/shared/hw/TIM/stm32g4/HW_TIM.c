@@ -14,12 +14,6 @@ typedef struct
     // mutates these (state, lock), so they cannot live in the const config.
     TIM_HandleTypeDef htim[HW_TIM_PERIPHERAL_COUNT];
 
-    // Last-commanded MOE per peripheral. HAL_TIM_PWM_Start force-sets the BDTR
-    // MOE bit, so setOutputEnabled re-applies this to keep enabling a CCx unit
-    // from energizing outputs while the bridge is commanded off. Distinct from
-    // the hardware MOE bit, which a break event can clear behind our back.
-    bool moeCommanded[HW_TIM_PERIPHERAL_COUNT];
-
     // Last-applied CCx enable per channel. The bridge re-asserts every PWM
     // cycle; only a change pays the HAL start path or the register stop.
     bool outputEnabled[HW_TIM_CHANNEL_COUNT];
@@ -190,11 +184,9 @@ static bool HW_TIM_private_initPeripheral(const HW_TIM_config_S * const config,
         }
     }
 
-    // [impl->fw~hal_tim_002~1] HAL init's UG loads the repetition counter
-    // full, so a center-aligned counter's update events expire on the zero
-    // reload. A second UG with a zero reload value leaves the countdown spent:
-    // the first period reload raises the update, and the configured value,
-    // restored before the start, rules every later one.
+    // [impl->fw~hal_tim_009~1] a second UG with RCR zero leaves the countdown
+    // spent, so update events land on the period reload instead of the zero
+    // one; the configured RCR, restored before the start, rules the rest.
     if (ret && peripheralConfig->updateAtPeriod)
     {
         htim->Instance->RCR = 0U;
@@ -219,6 +211,7 @@ static bool HW_TIM_private_initPeripheral(const HW_TIM_config_S * const config,
 
 // [impl->fw~hal_tim_001~1]
 // [impl->fw~hal_tim_002~1]
+// [impl->fw~hal_tim_009~1]
 // [impl->fw~hal_tim_005~1]
 // [impl->fw~hal_tim_006~1]
 // [impl->fw~hal_tim_007~1]
@@ -248,10 +241,6 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             for (size_t p = 0U; (p < config->numPeripherals) && initOk; p++)
             {
                 data->htim[p] = config->peripherals[p].htim;
-                // MOE commanded OFF at init: outputs stay dead (matching
-                // fw~hal_tim_001's inactive-at-start contract) until a consumer
-                // calls HW_TIM_setMainOutputEnabled.
-                data->moeCommanded[p] = false;
                 initOk = HW_TIM_private_initPeripheral(config, (HW_TIM_peripheral_E)p, &data->htim[p]);
             }
             for (size_t ch = 0U; (ch < config->numChannels) && initOk; ch++)
@@ -368,18 +357,16 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
         }
         else if (enabled)
         {
+            const bool moeWasSet = ((htim->Instance->BDTR & TIM_BDTR_MOE) != 0U);
             ok = (HAL_TIM_PWM_Start(htim, channelConfig->channel) == HAL_OK);
             if (ok && channelConfig->complementary)
             {
                 ok = (HAL_TIMEx_PWMN_Start(htim, channelConfig->channel) == HAL_OK);
             }
-            // HAL_TIM_PWM_Start / _PWMN_Start unconditionally set MOE on
-            // advanced timers. MOE is owned by setMainOutputEnabled, so
-            // clear it back when the bridge is commanded off — otherwise
-            // enabling a CCx unit would energize outputs. The unconditional
-            // clear is required because the CCx channel is now enabled, so
-            // the guarded __HAL_TIM_MOE_DISABLE would decline to act.
-            if (ok && !data->moeCommanded[channelConfig->peripheral])
+            // HAL_TIM_PWM_Start / _PWMN_Start force MOE set. A clear MOE,
+            // commanded or left by a break, is put back: unconditionally,
+            // since the guarded disable declines once a CCx unit is enabled.
+            if (ok && (!moeWasSet))
             {
                 __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(htim);
             }
@@ -413,20 +400,6 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
     return ret;
 }
 
-bool HW_TIM_getOutputEnabled(HW_TIM_channels_E channel, bool * const isEnabled)
-{
-    bool ret = false;
-    if ((isEnabled != NULL) &&
-        (data->initialized) &&
-        (channel < HW_TIM_CHANNEL_COUNT) &&
-        ((size_t)channel < data->config->numChannels))
-    {
-        *isEnabled = data->outputEnabled[channel];
-        ret = true;
-    }
-    return ret;
-}
-
 // [impl->fw~hal_tim_008~1]
 bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
 {
@@ -446,7 +419,6 @@ bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
             // units stay enabled (the guarded disable would decline).
             __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(htim);
         }
-        data->moeCommanded[peripheral] = enabled;
         ret = true;
     }
     return ret;
@@ -461,7 +433,7 @@ bool HW_TIM_getMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool * const en
         (peripheral < HW_TIM_PERIPHERAL_COUNT) &&
         ((size_t)peripheral < data->config->numPeripherals))
     {
-        // Read the live BDTR bit, not moeCommanded: a break event clears MOE in
+        // The live BDTR bit, not the last command: a break event clears MOE in
         // hardware (AutomaticOutput is disabled, so it stays clear after the
         // break releases) and that must be visible to the caller.
         *enabled = ((data->htim[peripheral].Instance->BDTR & TIM_BDTR_MOE) != 0U);

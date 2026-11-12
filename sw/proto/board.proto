@@ -32,30 +32,23 @@ message Request {
   }
 }
 
-// A mode and the timed setpoint sequence the board plays under it
-// (fw~conn_server_007, fw~ops_001). One setpoint at t_us = 0 is the manual
-// command; MODE_OFF with no setpoints stops; a stop setpoint ends a sequence
-// under its mode. The list decodes through a
-// nanopb callback into the sequencer's table (board.options), so its
-// length is bounded by the sequencer's capacity, not by this message.
+// A mode and the timed setpoint sequence played under it (fw~conn_server_007,
+// fw~ops_001): MODE_OFF takes only stops; a method speeds, stops, and its own kind.
+// Up to the player's capacity (board.options), the envelope within one 448-byte frame.
 message Command {
   Mode              mode      = 1;
   repeated Setpoint setpoints = 2;
 }
 
-// One target to apply at t_us from the sequence's start. The target oneof
-// grows one arm per setpoint kind; the rate limit is in the kind's unit per
-// second (rad/s^2, Nm/s, and a position's velocity limit in rad/s), zero for
-// a step (the maximum velocity for a position); a stop takes none. A position
-// also carries its acceleration limit and the velocity held through the point
-// (fw~mc_030). A timing alternative to t_us ("after the previous move") joins
-// later.
+// One target at t_us from the sequence's start. The rate limit is per second in
+// the kind's unit (a position's is its velocity limit), zero a step; a position
+// also carries its acceleration limit and the velocity held through the point.
 message Setpoint {
   uint32 t_us = 1;
   oneof target {
     float velocity_radps = 2;
     float torque_nm      = 3;
-    Stop  stop           = 5;   // the bridge disabled at t_us, as MODE_OFF does
+    Stop  stop           = 5;   // MODE_OFF at t_us; the sequence ends, later setpoints dropped
     float position_rad   = 6;
   }
   float rate_limit              = 4;
@@ -63,7 +56,7 @@ message Setpoint {
   float velocity_at_point_radps = 8;   // position only
 }
 
-// The empty target: MODE_OFF at its t_us.
+// The empty target: MODE_OFF at its t_us, ending the sequence.
 message Stop {
 }
 
@@ -103,7 +96,7 @@ message Telemetry {
   float      velocity_measured_radps = 6;
   float      velocity_setpoint_radps = 7;
   float      torque_target_nm        = 8;   // in effect (fw~mc_027)
-  bool       sequence_running        = 9;   // fw~ops_001
+  bool       sequence_running        = 9;   // fw~ops_001; set from its acceptance
   uint32     sequence_elapsed_ms     = 10;  // since the running sequence's start
   float      position_target_rad     = 11;  // in effect (fw~mc_031)
   float      rotor_position_rad      = 12;  // fw~mc_032

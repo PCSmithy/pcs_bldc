@@ -180,12 +180,16 @@ export const mock = {
       case "trace_status":
         return traceStatusInfo();
       case "send_command":
-        return runCommand(args.command);
+        return sendCommand(args.command);
       case "get_motor_info":
         return { ...MOTOR_INFO };
-      case "write_text_file":
-        window.__devmockWritten = { path: args.path, text: args.text };
-        return null;
+      case "save_capture_csv": {
+        // Test surface: __devmockCancelSave stands in for a cancelled dialog.
+        if (window.__devmockCancelSave) return null;
+        const path = "C:/captures/capture.csv";
+        window.__devmockWritten = { path, text: args.text };
+        return path;
+      }
       default:
         throw new Error(`devmock: unknown command ${cmd}`);
     }
@@ -195,10 +199,6 @@ export const mock = {
     if (!listeners.has(event)) listeners.set(event, []);
     listeners.get(event).push(handler);
     return () => {};
-  },
-
-  async saveFile(defaultPath) {
-    return `C:/captures/${defaultPath}`;
   },
 
   async pickFile() {
@@ -340,35 +340,76 @@ setInterval(() => {
   streamDiag.emits++;
 }, BATCH_CYCLES / CYCLES_PER_MS);
 
-// ── the board command plane: the ratings, and a Command's verdict by the
-// setpoint rows of the firmware's rejection table (fw~conn_server_007; the
-// mode gates and the busy row are not modelled). A malformed spec throws, as
-// the core's build step does. An accepted Command runs for its last
-// setpoint's time in the telemetry below.
-const MOTOR_INFO = { kt_nm_per_a: 0.825, i_max_a: 1.0, max_torque_nm: 0.825, max_velocity_radps: 20.944, max_position_rad: 62.83 };
+// ── the board command plane: the ratings, and a Command's verdict — the
+// core's build step (a malformed spec or a frame over the board's 448 B
+// throws, unsent) then the firmware's rejection table (fw~conn_server_007:
+// capacity, the setpoint rows, then the setpoint kind against the mode; the
+// busy, fault and bridge rows are not modelled). An accepted Command reports
+// running from its commit until its first stop, the setpoints after it
+// dropped; one with no setpoints reports not running.
+const MOTOR_INFO = { kt_nm_per_a: 0.825, i_max_a: 1.0, max_torque_nm: 0.825, max_velocity_radps: 18.0, max_position_rad: 62.83 };
 const MODES = ["MODE_OFF", "MODE_SIX_STEP_TRAP", "MODE_SINUSOIDAL", "MODE_FOC_TORQUE", "MODE_FOC_VELOCITY", "MODE_FOC_POSITION"];
+// The modes each value setpoint kind runs under: speed under any driving method.
+const KIND_MODES = { velocity_radps: MODES.slice(1), torque_nm: ["MODE_FOC_TORQUE"], position_rad: ["MODE_FOC_POSITION"] };
 const SEQUENCE_CAPACITY = 24;
+const MAX_FRAME_PAYLOAD = 448;
 let sequence = null;   // { startMs, durationMs, mode, setpoints } while a Command plays
 window.__devmockLastCommand = null;
+// Test surfaces: every Command in send order, a reply latency, and a one-shot
+// rejection cause for the next Command.
+window.__devmockCommands = [];
+window.__devmockCommandDelayMs = 0;
+window.__devmockRejectNext = null;
+
+/** The Command's envelope length as prost encodes it, at the widest request id. */
+function frameLen(command) {
+  const varint = (v) => (v < 2 ** 7 ? 1 : v < 2 ** 14 ? 2 : v < 2 ** 21 ? 3 : v < 2 ** 28 ? 4 : 5);
+  const field = (len) => 1 + varint(len) + len;
+  const f32 = (v) => (v ? 5 : 0); // proto3 omits a zero
+  let body = command.mode === "MODE_OFF" ? 0 : 2;
+  for (const sp of command.setpoints || []) {
+    const target = sp.stop != null ? 2 : 5; // a oneof arm is always written
+    body += field((sp.t_us ? 1 + varint(sp.t_us) : 0) + target
+      + f32(sp.rate_limit) + f32(sp.accel_limit_radps2) + f32(sp.velocity_at_point_radps));
+  }
+  const request = field(body);
+  return 6 + 2 + varint(request) + request; // request_id, then the two-byte board_request key
+}
+
+async function sendCommand(command) {
+  if (!connected) throw "not connected";
+  const verdict = runCommand(command);
+  if (window.__devmockCommandDelayMs) await new Promise((r) => setTimeout(r, window.__devmockCommandDelayMs));
+  return verdict;
+}
 
 function runCommand(command) {
   window.__devmockLastCommand = command;
+  window.__devmockCommands.push(command);
   const reject = (cause) => ({ accepted: false, cause });
   if (!MODES.includes(command.mode)) throw `unknown mode ${command.mode}`;
   const setpoints = command.setpoints || [];
+  for (const [i, sp] of setpoints.entries()) {
+    const targets = ["torque_nm", "velocity_radps", "stop", "position_rad"].filter((k) => sp[k] != null);
+    if (targets.length !== 1) throw `setpoint ${i}: exactly one target`;
+    if (!Number.isInteger(sp.t_us) || sp.t_us < 0) throw `setpoint ${i}: missing field t_us`;
+  }
+  const len = frameLen(command);
+  if (len > MAX_FRAME_PAYLOAD) throw `frame too large: ${len} B, the board takes ${MAX_FRAME_PAYLOAD} B`;
+  if (window.__devmockRejectNext) {
+    const cause = window.__devmockRejectNext;
+    window.__devmockRejectNext = null;
+    return reject(cause);
+  }
   if (setpoints.length > SEQUENCE_CAPACITY) return reject("sequence exceeds the player's capacity");
   let lastT = 0;
-  for (const [i, sp] of setpoints.entries()) {
-    const hasTorque = sp.torque_nm != null;
-    const hasSpeed = sp.velocity_radps != null;
-    const hasStop = sp.stop != null;
-    const hasPosition = sp.position_rad != null;
-    if (Number(hasTorque) + Number(hasSpeed) + Number(hasStop) + Number(hasPosition) !== 1) throw `setpoint ${i}: exactly one target`;
-    if (!Number.isInteger(sp.t_us) || sp.t_us < 0) throw `setpoint ${i}: missing field t_us`;
+  for (const sp of setpoints) {
+    const kind = Object.keys(KIND_MODES).find((k) => sp[k] != null);
+    const hasPosition = kind === "position_rad";
     // A stop stages as a zero within a zero bound, as the firmware does.
-    const value = hasTorque ? sp.torque_nm : hasSpeed ? sp.velocity_radps : hasPosition ? sp.position_rad : 0;
-    const bound = hasTorque ? MOTOR_INFO.max_torque_nm : hasSpeed ? MOTOR_INFO.max_velocity_radps
-      : hasPosition ? MOTOR_INFO.max_position_rad : 0;
+    const value = kind ? sp[kind] : 0;
+    const bound = { torque_nm: MOTOR_INFO.max_torque_nm, velocity_radps: MOTOR_INFO.max_velocity_radps,
+      position_rad: MOTOR_INFO.max_position_rad }[kind] ?? 0;
     const limit = sp.rate_limit ?? 0;
     const accel = sp.accel_limit_radps2 ?? 0;
     const atPoint = sp.velocity_at_point_radps ?? 0;
@@ -383,8 +424,16 @@ function runCommand(command) {
     if (sp.t_us < lastT) return reject("setpoint times not in order");
     lastT = sp.t_us;
   }
-  const durationMs = setpoints.length ? Math.ceil(lastT / 1000) + 1 : 0;
-  sequence = { startMs: t, durationMs, mode: command.mode, setpoints };
+  // The kind against the mode, after every per-setpoint cause.
+  const misfit = setpoints.some((sp) => {
+    const kind = Object.keys(KIND_MODES).find((k) => sp[k] != null);
+    return kind && !KIND_MODES[kind].includes(command.mode);
+  });
+  if (misfit) return reject("setpoint kind not for this mode");
+  const stopAt = setpoints.findIndex((sp) => sp.stop != null);
+  const played = stopAt < 0 ? setpoints : setpoints.slice(0, stopAt + 1);
+  const durationMs = stopAt >= 0 ? played[stopAt].t_us / 1000 : setpoints.length ? Math.ceil(lastT / 1000) + 1 : 0;
+  sequence = { startMs: t, durationMs, mode: command.mode, setpoints: played };
   return { accepted: true, cause: "" };
 }
 

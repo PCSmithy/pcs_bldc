@@ -2,17 +2,10 @@
 
 /* Includes */
 #include "lib_types.h"
-#include "lib_utils.h"
 
-
-/* Defines */
 
 /* Typedefs */
 
-// Discrete PI regulator, fw~mc_023's form: v = kp * e + ki * S, then
-// S <- S + period * e. backCalculate() is fw~mc_024's anti-windup: after the
-// caller limits v, S is set so kp * e + ki * S equals the limited v. hold()
-// is the other kind: the step's accumulation undone, S as it was before it.
 struct PiConfig
 {
     float32_t kp;
@@ -20,10 +13,12 @@ struct PiConfig
     float32_t period_s;
 };
 
+// Discrete PI regulator v = kp * e + ki * S, then S <- S + period * e; after the
+// caller limits v, backCalculate() sets S to match it and hold() undoes the step.
 class PiRegulator
 {
     public:
-        bool init(const PiConfig & config)
+        [[nodiscard]] bool init(const PiConfig & config)
         {
             const bool isValid = ((config.ki != 0.0f) &&
                                   (config.period_s > 0.0f));
@@ -45,7 +40,7 @@ class PiRegulator
             }
         }
 
-        // v = kp * e + ki * S, then S <- S + period * e. Zero before init.
+        // [impl->fw~mc_023~1] v = kp * e + ki * S, then S <- S + period * e. Zero before init.
         [[nodiscard]] float32_t step(float32_t error)
         {
             float32_t v = 0.0f;
@@ -57,8 +52,8 @@ class PiRegulator
             return v;
         }
 
-        // S <- (vLimited - kp * e) / ki, so the next step at the same error
-        // returns vLimited.
+        // [impl->fw~mc_024~1] S <- (vLimited - kp * e) / ki, so the next step at the
+        // same error returns vLimited.
         void backCalculate(float32_t error, float32_t vLimited)
         {
             if (this->initialized)
@@ -67,8 +62,8 @@ class PiRegulator
             }
         }
 
-        // S <- S - period * e: the step just taken at this error left out of
-        // the integral, which holds through a clamp.
+        // [impl->fw~mc_029~1] S <- S - period * e: the step just taken at this error
+        // left out of the integral, which holds through a clamp.
         void hold(float32_t error)
         {
             if (this->initialized)
@@ -82,5 +77,5 @@ class PiRegulator
         // constinit holder needs no constructor. Value-initialize locals: `PiRegulator r = {};`
         PiConfig  config;
         bool      initialized;
-        float32_t integral;   // S
+        float32_t integral;   // the integral of the error, S
 };

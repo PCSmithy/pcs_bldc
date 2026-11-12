@@ -32,9 +32,9 @@ static void ref_inverse_park(double d, double q, double theta, double * alpha, d
 }
 
 // The frame angle as the sine/cosine pair the rotations take.
-static theta_S frameAt(double theta)
+static lib_transforms_sinCos_S frameAt(double theta)
 {
-    const theta_S frame = { .sin_rad = sinf((float32_t)theta), .cos_rad = cosf((float32_t)theta) };
+    const lib_transforms_sinCos_S frame = { .sin = sinf((float32_t)theta), .cos = cosf((float32_t)theta) };
     return frame;
 }
 
@@ -163,7 +163,7 @@ static void test_park_then_inverse_park_returns_input(void)
         const double A = AMPLITUDES[i];
         for (uint32_t k = 0U; k < N_ANGLES; k++)
         {
-            const theta_S frame = frameAt((2.0 * PI_D * k) / N_ANGLES);
+            const lib_transforms_sinCos_S frame = frameAt((2.0 * PI_D * k) / N_ANGLES);
             const float32_t alphaIn = (float32_t)(A * 0.3);
             const float32_t betaIn  = (float32_t)(A * -0.95);
 
@@ -222,12 +222,12 @@ static void test_park_spot_values(void)
     float32_t d = 0.0f, q = 0.0f;
 
     // Frame at 0: identity.
-    lib_transforms_park(0.25f, -0.75f, (theta_S){ .sin_rad = 0.0f, .cos_rad = 1.0f }, &d, &q);
+    lib_transforms_park(0.25f, -0.75f, (lib_transforms_sinCos_S){ .sin = 0.0f, .cos = 1.0f }, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.25f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, q);
 
     // Frame at 90 degrees: (d, q) = (beta, -alpha).
-    lib_transforms_park(0.25f, -0.75f, (theta_S){ .sin_rad = 1.0f, .cos_rad = 0.0f }, &d, &q);
+    lib_transforms_park(0.25f, -0.75f, (lib_transforms_sinCos_S){ .sin = 1.0f, .cos = 0.0f }, &d, &q);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.75f, d);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.25f, q);
 }
@@ -257,7 +257,7 @@ static void test_wrap_angle_lands_in_one_turn(void)
 static void test_null_output_leaves_both_outputs_untouched(void)
 {
     float32_t x = 42.0f;
-    const theta_S frame = frameAt(0.5);
+    const lib_transforms_sinCos_S frame = frameAt(0.5);
 
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, &x, NULL);
     lib_transforms_clarke(1.0f, 2.0f, 3.0f, NULL, &x);

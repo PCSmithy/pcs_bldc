@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use pcs_proto::board;
 use pcs_proto::shared::envelope::Payload;
+use prost::Message;
 use tauri::{AppHandle, Manager};
 
 use crate::protocol::{payload_kind, Client};
 use crate::session::{session_handles, SessionState};
 
-/// One setpoint as the UI states it: a time from the sequence's start, one
-/// target (a speed, a torque, a position, or a stop), and a rate limit (zero
-/// steps); a position's rate limit is its velocity limit, with an
-/// acceleration limit and a velocity at the point beside it.
+/// One setpoint as the UI states it: a time from the start, one target (speed,
+/// torque, position, or stop), and a rate limit (zero steps); a position's is
+/// its velocity limit, beside its acceleration limit and velocity at the point.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SetpointSpec {
     pub t_us: u32,
@@ -67,6 +67,10 @@ const BUSY_CAUSE: &str = "sequence player busy";
 const BUSY_SENDS: u32 = 3;
 const BUSY_RETRY_DELAY: Duration = Duration::from_millis(2);
 
+/// The board's largest frame payload (IO_COBSFRAME_MAX_PAYLOAD); it answers a
+/// larger frame `frame too large`, so the core refuses one unsent.
+pub const MAX_FRAME_PAYLOAD: usize = 448;
+
 // [impl->app~conn_004~1]
 pub fn build_command(spec: &CommandSpec) -> Result<board::Command, String> {
     let mode = board::Mode::from_str_name(&spec.mode)
@@ -88,10 +92,20 @@ pub fn build_command(spec: &CommandSpec) -> Result<board::Command, String> {
             target: Some(target),
         });
     }
-    Ok(board::Command {
+    let command = board::Command {
         mode: mode as i32,
         setpoints,
-    })
+    };
+    // Sized at the widest request id, so the frame fits whatever id it gets.
+    let envelope = pcs_proto::shared::Envelope {
+        request_id: u32::MAX,
+        payload: Some(board_request(board::request::Command::Run(command.clone()))),
+    };
+    let len = envelope.encoded_len();
+    if len > MAX_FRAME_PAYLOAD {
+        return Err(format!("frame too large: {len} B, the board takes {MAX_FRAME_PAYLOAD} B"));
+    }
+    Ok(command)
 }
 
 fn board_request(command: board::request::Command) -> Payload {
@@ -165,7 +179,6 @@ pub async fn get_motor_info(app: AppHandle) -> Result<MotorInfo, String> {
 mod tests {
     use super::*;
     use crate::testutil::{wait_for_requests, SharedBuf};
-    use prost::Message;
     use std::sync::Arc;
 
     fn reply_frame(request_id: u32, payload: Payload) -> Vec<u8> {
@@ -288,7 +301,6 @@ mod tests {
             worker.join().unwrap(),
             Ok(Verdict { accepted: false, cause: BUSY_CAUSE.into() })
         );
-        std::thread::sleep(Duration::from_millis(10));
         assert_eq!(written_requests(&buf).len(), 3, "no fourth send");
     }
 
@@ -376,7 +388,6 @@ mod tests {
         };
         let cmd = build_command(&spec).expect("a position is one target");
         assert_eq!(cmd.mode, board::Mode::FocPosition as i32);
-        assert_eq!(cmd.mode, 5);
         assert_eq!(cmd.setpoints[0].target, Some(board::setpoint::Target::PositionRad(0.0)));
         assert_eq!(cmd.setpoints[0].accel_limit_radps2, 0.0);
         assert_eq!(cmd.setpoints[0].velocity_at_point_radps, 0.0);
@@ -386,6 +397,30 @@ mod tests {
         assert_eq!(sp.rate_limit, 10.0);
         assert_eq!(sp.accel_limit_radps2, 50.0);
         assert_eq!(sp.velocity_at_point_radps, 5.0);
+    }
+
+    // [test->app~conn_004~1]
+    #[test]
+    fn a_command_over_the_boards_frame_is_refused_unsent() {
+        let point = |i: u32| SetpointSpec {
+            t_us: 100_000 * (i + 1),
+            position_rad: Some(1.5),
+            rate_limit: 10.0,
+            accel_limit_radps2: 50.0,
+            velocity_at_point_radps: 5.0,
+            ..Default::default()
+        };
+        let spec = CommandSpec { mode: "MODE_FOC_POSITION".into(), setpoints: (0..20).map(point).collect() };
+        let err = build_command(&spec).expect_err("20 positions with their limits exceed 448 B");
+        assert!(err.starts_with("frame too large: "), "{err}");
+
+        let buf = SharedBuf::default();
+        let client = Client::new(Box::new(buf.clone()));
+        assert_eq!(send_command_blocking(&client, &spec), Err(err));
+        assert!(buf.0.lock().unwrap().is_empty(), "nothing written");
+
+        let fits = CommandSpec { mode: "MODE_FOC_POSITION".into(), setpoints: (0..10).map(point).collect() };
+        assert!(build_command(&fits).is_ok());
     }
 
     // [test->app~conn_004~1]

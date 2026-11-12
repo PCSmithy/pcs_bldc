@@ -59,7 +59,6 @@ static inline void floatToFixed(float32_t value, uint32_t scale,
 
 #define SATURATE(x, lo, hi) MAX_OF((lo), MIN_OF((hi), (x)))
 
-#define SIGN(a) ((a) > 0U ? (1) : (-1))
 // Float sign with sgn(0) = 0; `a` is evaluated twice.
 #define SGN(a) (((a) > 0.0f) ? (1.0f) : (((a) < 0.0f) ? (-1.0f) : (0.0f)))
 

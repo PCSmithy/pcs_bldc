@@ -467,6 +467,44 @@ static void test_undecodable_frame_rejected_with_cause(void)
     TEST_ASSERT_NOT_NULL(strstr(replies[0].payload.response.cause, "decode"));
 }
 
+// [test->fw~conn_server_001~1] a frame past the 448-byte bound is answered
+// "frame too large" with request_id 0, and the ping behind it is answered after.
+static void test_oversize_frame_rejected_and_the_next_request_answered(void)
+{
+    uint8_t plain[IO_COBSFRAME_MAX_PAYLOAD + 1U + 4U];
+    for (size_t i = 0U; i < (IO_COBSFRAME_MAX_PAYLOAD + 1U); i++)
+    {
+        plain[i] = 0x08U;   // field 1 varint 8, repeated: an envelope, were it in bounds
+    }
+    const uint32_t crc = lib_crc32_compute(plain, IO_COBSFRAME_MAX_PAYLOAD + 1U);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 1U] = (uint8_t) (crc & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 2U] = (uint8_t) ((crc >> 8U) & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 3U] = (uint8_t) ((crc >> 16U) & 0xFFU);
+    plain[IO_COBSFRAME_MAX_PAYLOAD + 4U] = (uint8_t) ((crc >> 24U) & 0xFFU);
+    uint8_t wire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD + 1U)];
+    wire[0] = 0x00U;
+    size_t cobsLen = 0U;
+    TEST_ASSERT_TRUE(lib_cobs_encode(plain, sizeof(plain), &wire[1], sizeof(wire) - 2U, &cobsLen));
+    wire[cobsLen + 1U] = 0x00U;
+    HW_USB_sim_injectRx(wire, (uint32_t) (cobsLen + 2U));
+
+    shared_Envelope ping = shared_Envelope_init_zero;
+    ping.request_id = 21U;
+    ping.which_payload = shared_Envelope_ping_tag;
+    injectEnvelope(&ping);
+
+    app_server_run1ms();
+
+    shared_Envelope replies[4];
+    TEST_ASSERT_EQUAL_UINT32(2U, collectReplies(replies, 4U));
+    TEST_ASSERT_EQUAL(shared_Envelope_response_tag, replies[0].which_payload);
+    TEST_ASSERT_EQUAL_UINT32(0U, replies[0].request_id);
+    TEST_ASSERT_FALSE(replies[0].payload.response.accepted);
+    TEST_ASSERT_EQUAL_STRING("frame too large", replies[0].payload.response.cause);
+    TEST_ASSERT_EQUAL_UINT32(21U, replies[1].request_id);
+    TEST_ASSERT_TRUE(replies[1].payload.response.accepted);
+}
+
 /* ---- fw~obs_identity_002: identity query ---- */
 
 // [test->fw~obs_identity_002~1]
@@ -568,8 +606,8 @@ static void test_log_overflow_retains_newest(void)
     for (uint32_t pass = 0U; pass < 8U; pass++)
     {
         app_server_run1ms();
-        const uint32_t n = collectReplies(replies, 2U);
-        for (uint32_t r = 0U; r < n; r++)
+        const uint32_t n = collectReplies(replies, COUNTOF(replies));
+        for (uint32_t r = 0U; (r < n) && (r < COUNTOF(replies)); r++)
         {
             TEST_ASSERT_EQUAL(shared_Envelope_log_tag, replies[r].which_payload);
             const size_t chunk = strlen(replies[r].payload.log.text);
@@ -2228,6 +2266,7 @@ int main(void)
     RUN_TEST(test_ping_accepted_with_request_id);
     RUN_TEST(test_unrecognized_payload_rejected_with_cause);
     RUN_TEST(test_undecodable_frame_rejected_with_cause);
+    RUN_TEST(test_oversize_frame_rejected_and_the_next_request_answered);
     RUN_TEST(test_board_request_forwarded_to_hook);
     RUN_TEST(test_board_request_without_hook_rejected);
     RUN_TEST(test_board_request_result_replies_with_board_reply);

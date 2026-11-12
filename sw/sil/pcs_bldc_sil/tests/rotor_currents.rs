@@ -9,16 +9,18 @@
 
 mod common;
 
-use common::{f64_at, plant, select_method, spin_up, tap_button, GRID_US, MODE_SINUSOIDAL, MODE_SIX_STEP_TRAP};
-use pcs_bldc_sil::board::{board, board_with, fault_latched, ALIGN_DWELL_MS, DIAL, GATE_BRINGUP_MS, SENSE};
+use common::{f64_at, mc_config, plant, select_method, spin_up, tap_button, GRID_US, MODE_SINUSOIDAL, MODE_SIX_STEP_TRAP};
+use pcs_bldc_sil::board::{board, board_with, fault_latched, align_dwell_ms, DIAL, GATE_BRINGUP_MS, SENSE};
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil};
 use std::f64::consts::TAU;
 
-/// `motorPolePairs` in `app_motorControl_channels.c`.
-const POLE_PAIRS: f64 = 14.0;
+/// The plant's pole pairs: its electrical angle per mechanical radian.
+fn pole_pairs() -> f64 {
+    f64::from(MotorParams::default().pole_pairs)
+}
 
-/// Injected magnitude: well under the 2 A phase trip, with the derived W at half.
-const I_A: f64 = 1.0;   // under the 1.2 A phase trip
+/// Injected magnitude: under the 1.2 A phase trip, with the derived W at half.
+const I_A: f64 = 1.0;
 
 /// Decode slack: 12-bit quantization (~8 mA/phase) plus the encoder-noise frame
 /// jitter (~1.5 LSB mechanical x 14 pole pairs, ~0.01 A at this magnitude).
@@ -41,7 +43,7 @@ fn aligned_world() -> Sil {
     sim.run_for_ms(GATE_BRINGUP_MS);
     select_method(&mut sim, MODE_SIX_STEP_TRAP);
     tap_button(&mut sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    sim.run_for_ms(align_dwell_ms(&sim) + 100);
     assert!(
         sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned")),
         "aligned at rest before injecting currents"
@@ -141,7 +143,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
     for _ in 0..1000 {
         sim.run_for_ms(1);
         let theta_fw = f64_at(&sim, "app_motorControl_data.channels[0].magneticAngle_rad");
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         c += (theta_fw - theta_e).cos();
         s += (theta_fw - theta_e).sin();
         torque.push(plant(&sim, "torque"));
@@ -188,7 +190,7 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
         sim.run_for_ms(20);
     }
     sim.run_for_ms(500);
-    let omega_e = plant(&sim, "velocity") * POLE_PAIRS;
+    let omega_e = plant(&sim, "velocity") * pole_pairs();
     assert!(omega_e > 250.0, "spinning past 250 rad/s electrical: {omega_e:.0}");
 
     let mut worst_deg = 0.0_f64;
@@ -196,7 +198,7 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
     for _ in 0..2000 {
         sim.step().expect("engine step");
         let theta_fw = f64_at(&sim, "app_motorControl_data.channels[0].magneticAngle_rad");
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         let err = (theta_fw - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
         worst_deg = worst_deg.max(err.abs().to_degrees());
         c += err.cos();
@@ -233,12 +235,12 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     // 90 deg ahead of the plant's rotor at |V| = 0.5 V_max, the line-to-line duty
     // differences are sinusoids at the electrical frequency (within 2% of their
     // amplitude), and the current rides on q.
-    const V_MAX: f64 = 11.5;   // maxVoltage_V in app_motorControl_channels.c
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
+    let v_max = mc_config(&sim, "maxVoltage_V");
     sim.run_for_ms(GATE_BRINGUP_MS);
     select_method(&mut sim, MODE_SINUSOIDAL);
     tap_button(&mut sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    sim.run_for_ms(align_dwell_ms(&sim) + 100);
     let mut deg = 0.0;
     while deg < 90.0 {
         deg += 10.0;
@@ -258,7 +260,7 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     for _ in 0..2000 {
         sim.step().expect("engine step");
         let (va, vb) = commanded_vector(&sim);
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         let lead = (vb.atan2(va) - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
         c += lead.cos();
         s_ += lead.sin();
@@ -301,10 +303,10 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     println!(
         "rotor_currents: sinusoidal at {velocity:.1} rad/s: vector lead {lead_deg:+.2} deg, |V| {mag:.3} V \
          (0.5 V_max = {:.3}); U-V duty sinusoid amplitude {amplitude:.4}, residual {:.2}%; I_d {:+.3} A, I_q {:+.3} A",
-        0.5 * V_MAX, 100.0 * residual_rms / amplitude, mean(&i_d), mean(&i_q)
+        0.5 * v_max, 100.0 * residual_rms / amplitude, mean(&i_d), mean(&i_q)
     );
     assert!((lead_deg - 90.0).abs() < 3.0, "the vector leads the rotor by 90 deg: {lead_deg:.2}");
-    assert!((mag - 0.5 * V_MAX).abs() < 0.05 * V_MAX, "|V| at half scale: {mag:.3} V");
+    assert!((mag - 0.5 * v_max).abs() < 0.05 * v_max, "|V| at half scale: {mag:.3} V");
     assert!(residual_rms < 0.02 * amplitude, "line-to-line duties are sinusoids: residual {:.2}%", 100.0 * residual_rms / amplitude);
     assert!(mean(&i_q) > 0.0, "a forward spin carries positive I_q");
     assert!(!fault_latched(&sim), "no fault through the spin");

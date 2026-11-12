@@ -52,6 +52,7 @@ class Bridge
         uint32_t  sampleTime_us[IO_BRIDGE_PHASE_COUNT];
         uint32_t  updateCount[IO_BRIDGE_PHASE_COUNT];
         bool      phaseEnabled[IO_BRIDGE_PHASE_COUNT];   // as commanded, for the offset tracker
+        bool      outputEnabled;                         // as commanded, for the offset tracker
         uint8_t   phaseByAdc[HW_ADC_CHANNEL_COUNT];      // injected ADC channel -> phase, else IO_BRIDGE_PHASE_COUNT
 
         // The idle-phase current filter and the idle run it spans, saturating
@@ -64,8 +65,8 @@ class Bridge
         void * volatile                    cycleContext;
 
         void recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversionStatus_E status);
-        void trackZeroOffset(IO_bridge_phase_E phase, bool bridgeOn);
-        void completeInjectedPair(uint32_t now, bool bridgeOn);
+        void trackZeroOffset(IO_bridge_phase_E phase);
+        void completeInjectedPair(uint32_t now);
 };
 
 
@@ -195,17 +196,15 @@ static bool IO_bridge_private_registerInjected(const IO_bridge_config_S * const 
 
 /* Private Class Function Definitions */
 
-// EMA the idle phase's reading (output disabled or bridge dark); latch it as the offset when it next drives.
-// [impl->fw~io_bridge_009~1]
-// bridgeOn is the live MOE the caller read once for the sample event (a break
-// clears it in hardware); the phase enable is the one commanded through here.
-void Bridge::trackZeroOffset(IO_bridge_phase_E phase, bool bridgeOn)
+// [impl->fw~io_bridge_009~1] EMA the idle phase's reading (phase or bridge
+// commanded off); latch it as the offset when the phase next drives.
+void Bridge::trackZeroOffset(IO_bridge_phase_E phase)
 {
     if (this->config != NULL)
     {
         lib_filterIIR_channel_S * const filter = &this->zeroOffsetFilter[phase];
         const uint32_t minSamples = this->config->zeroOffset.minSamples;
-        if (bridgeOn && this->phaseEnabled[phase])
+        if (this->outputEnabled && this->phaseEnabled[phase])
         {
             if (this->idleSamples[phase] >= minSamples)
             {
@@ -234,13 +233,13 @@ void Bridge::trackZeroOffset(IO_bridge_phase_E phase, bool bridgeOn)
 
 // U and V are sampled simultaneously - derive W from them by KCL
 // [impl->fw~io_bridge_006~1]
-void Bridge::completeInjectedPair(uint32_t now_us, bool bridgeOn)
+void Bridge::completeInjectedPair(uint32_t now_us)
 {
     this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_W] = -(this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_U] +
                                                 this->measuredPhaseCurrent_amps[IO_BRIDGE_PHASE_V]);
     this->updateCount[IO_BRIDGE_PHASE_W] += 1U;
     this->sampleTime_us[IO_BRIDGE_PHASE_W] = now_us;
-    this->trackZeroOffset(IO_BRIDGE_PHASE_W, bridgeOn);
+    this->trackZeroOffset(IO_BRIDGE_PHASE_W);
 
     // Last, so the whole triple is readable to the callback. One load each, so
     // a concurrent deregistration cannot null the pointer between test and call.
@@ -264,13 +263,11 @@ void Bridge::recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversio
         float32_t amps = 0.0f;
         if (IO_bridge_private_readInjectedCurrent(sense, this->phaseAmpsPerVolt[phase], &amps))
         {
-            bool bridgeOn = false;
-            (void) HW_TIM_getMainOutputEnabled(this->moePeripheral, &bridgeOn);   // live: a break clears it
             this->measuredPhaseCurrent_amps[phase] = amps;
             this->updateCount[phase] += 1U;
             this->sampleTime_us[phase] = now_us;
             // Before the pair completes, so the callback reads the latched offset.
-            this->trackZeroOffset(static_cast<IO_bridge_phase_E>(phase), bridgeOn);
+            this->trackZeroOffset(static_cast<IO_bridge_phase_E>(phase));
 
             // [impl->fw~io_bridge_006~1]
             // check if the complement phase has already been updated - if so
@@ -283,7 +280,7 @@ void Bridge::recordInjectedSample(HW_ADC_channels_E adcChannel, HW_ADC_conversio
                 if ((this->updateCount[partner] != 0U) &&
                     (timeSincePartner_us <= this->config->injectedPairWindow_us))
                 {
-                    this->completeInjectedPair(now_us, bridgeOn);
+                    this->completeInjectedPair(now_us);
                 }
             }
         }
@@ -303,6 +300,7 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
     if (channelConfig != NULL)
     {
         HW_TIM_peripheral_E periph[IO_BRIDGE_PHASE_COUNT] = {};
+        bool adcClaimed[HW_ADC_CHANNEL_COUNT] = {};
         bool phasesOk = true;
         for (uint8_t p = 0U; (p < IO_BRIDGE_PHASE_COUNT) && phasesOk; p++)
         {
@@ -318,51 +316,53 @@ bool Bridge::init(IO_bridge_channel_E channel, const IO_bridge_channelConfig_S *
                            (c != p) &&
                            (channelConfig->phase[c].complementPhase == p);
             }
+            // One injected phase per ADC: each completion records one phase.
+            const IO_bridge_senseConfig_S * const sense = &phase->currentSense;
+            if ((sense->injectedIndex != IO_BRIDGE_INJECTED_NONE) && (sense->adcChannel < HW_ADC_CHANNEL_COUNT))
+            {
+                phasesOk = phasesOk && !adcClaimed[sense->adcChannel];
+                adcClaimed[sense->adcChannel] = true;
+            }
         }
-        if (phasesOk &&
+        const float32_t filterAlpha = channelConfig->zeroOffset.filterAlpha;
+        const bool offsetOk = ((channelConfig->zeroOffset.minSamples != 0U) &&
+                               (filterAlpha > 0.0f) &&
+                               (filterAlpha <= 1.0f));
+        if (phasesOk && offsetOk &&
             (periph[IO_BRIDGE_PHASE_U] == periph[IO_BRIDGE_PHASE_V]) &&
             (periph[IO_BRIDGE_PHASE_V] == periph[IO_BRIDGE_PHASE_W]))
         {
-            // Offsets start at zero; the filters reject an alpha outside (0, 1].
-            bool offsetOk = (channelConfig->zeroOffset.minSamples != 0U);
+            this->channelIndex  = channel;
+            this->config        = channelConfig;
+            this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
+            for (uint8_t a = 0U; a < HW_ADC_CHANNEL_COUNT; a++)
+            {
+                this->phaseByAdc[a] = IO_BRIDGE_PHASE_COUNT;
+            }
             for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
             {
+                const IO_bridge_senseConfig_S * const sense = &channelConfig->phase[p].currentSense;
+                this->phaseAmpsPerVolt[p] = IO_bridge_private_unitsPerVolt(sense);
+                if ((sense->injectedIndex != IO_BRIDGE_INJECTED_NONE) && (sense->adcChannel < HW_ADC_CHANNEL_COUNT))
+                {
+                    this->phaseByAdc[sense->adcChannel] = p;
+                }
+                this->phaseEnabled[p] = true;   // every phase output is enabled below
+                this->outputEnabled = false;    // the master enable stays clear until commanded
+                // Offsets start at zero; alpha was validated above.
                 this->phaseCurrentZeroOffset_amps[p] = 0.0f;
                 this->idleSamples[p] = 0U;
                 this->zeroOffsetFilter[p] = {};
                 this->zeroOffsetFilter[p].type = LIB_FILTERIIR_TYPE_EMA;
-                this->zeroOffsetFilter[p].ema.alpha = channelConfig->zeroOffset.filterAlpha;
-                if (offsetOk)
-                {
-                    offsetOk = lib_filterIIR_init(&this->zeroOffsetFilter[p]);
-                }
+                this->zeroOffsetFilter[p].ema.alpha = filterAlpha;
+                (void)lib_filterIIR_init(&this->zeroOffsetFilter[p]);
             }
-            if (offsetOk)
-            {
-                this->channelIndex  = channel;
-                this->config        = channelConfig;
-                this->moePeripheral = periph[IO_BRIDGE_PHASE_U];
-                for (uint8_t a = 0U; a < HW_ADC_CHANNEL_COUNT; a++)
-                {
-                    this->phaseByAdc[a] = IO_BRIDGE_PHASE_COUNT;
-                }
-                for (uint8_t p = 0U; p < IO_BRIDGE_PHASE_COUNT; p++)
-                {
-                    const IO_bridge_senseConfig_S * const sense = &channelConfig->phase[p].currentSense;
-                    this->phaseAmpsPerVolt[p] = IO_bridge_private_unitsPerVolt(sense);
-                    if ((sense->injectedIndex != IO_BRIDGE_INJECTED_NONE) && (sense->adcChannel < HW_ADC_CHANNEL_COUNT))
-                    {
-                        this->phaseByAdc[sense->adcChannel] = p;
-                    }
-                    this->phaseEnabled[p] = true;   // every phase output is enabled below
-                }
-                this->busAmpsPerVolt  = IO_bridge_private_unitsPerVolt(&channelConfig->busCurrent);
-                this->busVoltsPerVolt = IO_bridge_private_unitsPerVolt(&channelConfig->busVoltage);
-                ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
-                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
-                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
-                       HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
-            }
+            this->busAmpsPerVolt  = IO_bridge_private_unitsPerVolt(&channelConfig->busCurrent);
+            this->busVoltsPerVolt = IO_bridge_private_unitsPerVolt(&channelConfig->busVoltage);
+            ret = (HW_TIM_getPeriod(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, &this->period_counts) &&
+                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_U].tim, true) &&
+                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_V].tim, true) &&
+                   HW_TIM_setOutputEnabled(channelConfig->phase[IO_BRIDGE_PHASE_W].tim, true));
         }
     }
     return ret;
@@ -401,7 +401,12 @@ bool Bridge::setPhaseOutputEnabled(IO_bridge_phase_E phase, bool enabled)
 
 bool Bridge::setOutputEnabled(bool enabled)
 {
-    return (this->config != NULL) && HW_TIM_setMainOutputEnabled(this->moePeripheral, enabled);
+    const bool ret = (this->config != NULL) && HW_TIM_setMainOutputEnabled(this->moePeripheral, enabled);
+    if (ret)
+    {
+        this->outputEnabled = enabled;
+    }
+    return ret;
 }
 
 bool Bridge::getOutputEnabled(bool * const enabled)

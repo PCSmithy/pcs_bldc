@@ -32,6 +32,7 @@ configured bridge, returning false on any of:
 | Phase   | A phase's HW_TIM channel is out of range. |
 | Bridge  | The three phases do not resolve to one shared HW_TIM peripheral. |
 | Bridges | An ADC channel carries injected phase senses of more than one bridge. |
+| Bridge  | An ADC channel carries injected senses of two of the bridge's phases. |
 | Phase   | A phase's complement is itself, or names a phase whose own complement is not it (the derived phase carries none). |
 | Bridge  | The zero-current offset weight is outside (0, 1], or its minimum run length is zero samples (`fw~io_bridge_009~1`). |
 
@@ -208,8 +209,8 @@ sense readout (`fw~io_bridge_005~1`) subtracts, set per:
 | A driving phase's first injected sample after an idle run of at least the configured minimum run length | y |
 | Any other sample | Unchanged |
 
-A phase is idle while its output is disabled or the bridge's master output
-enable is off. An idle run is the phase's consecutive injected samples
+A phase is idle while its output or the bridge's output enable is commanded
+off. An idle run is the phase's consecutive injected samples
 while idle. y is the exponential average of the phase's decoded current i
 over the run: seeded to i on the run's first sample and advanced
 y ← y + α (i − y) on each later one. The weight α and the minimum run
@@ -234,6 +235,8 @@ Acceptance:
 - After an idle run of N samples with a decoded current of I on the first
   and zero on the rest, the phase's reported current once driving with its
   decoded current at zero is −I (1 − α)^(N−1), within 1 %.
+- A break that clears the master output enable while the bridge is commanded
+  enabled starts no idle run: the offsets stay as held.
 
 Covers:
 - `sys~mc_001~1`

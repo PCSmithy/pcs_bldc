@@ -217,15 +217,17 @@ should be, not what it used to be. No "changed from", "previously",
 
 ### 14. Mechanics that affect wording
 
-(Full detail in `spec-system.md`; repeated here because they're easy to get
-wrong while writing.)
+(The spec layout is defined in `spec-system.md`; these are the parts easy
+to get wrong while writing.)
 
 - The `` `<id>~1` `` line sits **directly under** its `###` heading, no
   blank line between.
 - Never let a spec ID — backticked or bare — **start a body line**: OFT
   parses any line-leading `<id>~1` as a new spec-definition line,
-  creating a phantom duplicate and truncating the enclosing spec. Wrap
-  prose so ID references sit mid-line.
+  creating a phantom duplicate and truncating the enclosing spec, whose
+  `Needs:` detaches (the trace reports `unwanted coverage`). Wrap prose so
+  ID references sit mid-line, or start the line with a word or an opening
+  parenthesis.
 - Language-hint every code fence (` ```c `, ` ```text `); a bare fence
   breaks OFT's parser for the rest of the file.
 - No `---` thematic breaks in spec body text — they read as frontmatter

@@ -21,13 +21,13 @@ capacity of setpoints — each a time in microseconds from the sequence's
 start and one of the kinds below — and, taking the start as the 1 ms
 pass following the sequence's acceptance, write each setpoint at the
 first pass whose time from the start is at or past the setpoint's, in
-list order, as its row says:
+list order, as its row says, with the host connected or not:
 
 | Setpoint | Written as |
 |----------|------------|
 | A speed in rad/s or a torque in Nm, with its rate limit | The speed or torque target with its rate limit (`fw~mc_027~1`) |
 | A position in rad, with its velocity and acceleration limits and its velocity at the point | The position setpoint (`fw~mc_030~1`) |
-| A stop | The `MODE_OFF` request (`fw~mc_006~1`) |
+| A stop | The `MODE_OFF` request (`fw~mc_006~1`), ending the sequence: the setpoints after it are discarded |
 
 Acceptance:
 - Speed setpoints at 0, 250 000, and 500 000 µs are written at passes 0,
@@ -40,7 +40,10 @@ Acceptance:
   velocity at the point at pass 100 from the start, within one pass.
 - After the last setpoint is written, no further write occurs.
 - A stop at 300 000 µs requests `MODE_OFF` at pass 300 from the start,
-  within one pass, writing no target.
+  within one pass, writing no target; a speed setpoint after it is never
+  written and the sequence reports not running.
+- A sequence started with the host connected plays its setpoints through
+  a host disconnect at their times.
 
 Covers:
 - sys~ops_003~1

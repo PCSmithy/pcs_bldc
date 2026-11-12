@@ -34,8 +34,8 @@ Sub-folders are created when a topic gets its first spec.
   setpoint, the move profile, the rotor position); also trajectory
   tracking
 - `est/` — estimation. Per-area sub-topic IDs, e.g. `fw~est_encoder_001~1`
-  (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (encoder
-  phase-locked rotor tracking, [[est/rotor]]); also the Kalman observer,
+  (AS5048 magnetic encoder driver), `fw~est_rotor_001~1` (the rotor
+  observer: angle, velocity, unmodelled torque, [[est/rotor]]); also the Kalman observer,
   sensorless observer, and parameter identification
 - `obs/` — observability and on-device status indication. Per-area sub-topic
   IDs, e.g. `fw~obs_led_001~1` (SK6805 RGB LED string driver),

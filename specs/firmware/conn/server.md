@@ -23,10 +23,14 @@ The firmware shall answer every received envelope
 | A request producing a result | The result payload (e.g. `Identity` for `IdentityRequest`) |
 | A request succeeding without a result | `Response` with `accepted` set |
 | A rejected request, or a payload that is not a recognized request | `Response` with `accepted` clear and `cause` naming the reason |
+| A frame over the channel's maximum frame length (`fw~conn_proto_005~1`) | `Response` with `accepted` clear, `request_id` 0, and `cause` `frame too large` |
 
 Acceptance:
 - A `PingRequest` receives a `Response` with `accepted` set, carrying
   the request's `request_id`.
+- A frame whose payload exceeds the 448-byte maximum receives a rejected
+  `Response` with `cause` `frame too large`, and a `PingRequest` behind
+  it is answered.
 - A request received while the sample stream (`fw~conn_trace_009~1`)
   holds the transmit capacity is answered within 2 ms.
 - An envelope bearing no recognized request payload receives a
@@ -42,7 +46,8 @@ Needs: impl, test
 `board.Request` commands act on the request state shared with the
 on-device controls (`sys~ops_002~1`): `Command` carries a `board.Mode`
 and a setpoint sequence — each setpoint a speed target, a torque target,
-or a stop (`fw~ops_001~1`) — `ClearFault` the fault-clear action, and
+a position move, or a stop (`fw~ops_001~1`) — `ClearFault` the
+fault-clear action, and
 `GetMotorInfo` a query. A `board.Mode` value is either
 `MODE_OFF` — the bridge-disable request of `fw~mc_006~1` — or names a
 commutation method (`sys~mc_005~1`).
@@ -78,24 +83,38 @@ command, the requested state and the running sequence unchanged, when:
 | A method other than the active one is named while the bridge is enabled (`sys~mc_005~1`) |
 | A method is named while a fault is latched (`fw~safety_001~1`, `fw~safety_002~1`) |
 | A setpoint names no target |
+| A setpoint's kind is not one the mode takes, per the table below (cause `setpoint kind not for this mode`) |
 | A setpoint's value or a limit is not finite, or a limit is negative |
 | A speed setpoint's magnitude exceeds the configured maximum velocity (`fw~mc_008~1`) |
 | A torque setpoint's magnitude exceeds K_t · I_max (`fw~mc_026~1`) |
 | A position setpoint's magnitude exceeds the configured maximum position (`fw~mc_031~1`), its velocity limit exceeds the configured maximum velocity (`fw~mc_008~1`), or its velocity at the point exceeds its velocity limit (the maximum velocity for a limit of zero) |
 | A setpoint's time precedes the setpoint before it |
 | The list exceeds the player's capacity (`fw~ops_001~1`) |
-| A `Command` accepted in the same 1 ms pass has not started (`fw~ops_001~1`); the host resends |
+| A `Command` accepted in the same 1 ms pass has not started (`fw~ops_001~1`) |
+
+| Mode | Setpoint kinds taken |
+|------|----------------------|
+| `MODE_OFF` | Stop |
+| `MODE_SIX_STEP_TRAP`, `MODE_SINUSOIDAL`, `MODE_FOC_VELOCITY` | Speed, stop |
+| `MODE_FOC_TORQUE` | Speed, torque, stop |
+| `MODE_FOC_POSITION` | Speed, position, stop |
+
+A `Command` travels in one frame, its envelope at most 448 bytes
+(`fw~conn_proto_005~1`): 15 position setpoints with every field set fit
+in it.
 
 Acceptance:
 - With the bridge disabled and no fault latched, a method value with one
   speed setpoint at time zero is accepted; the bridge enable is requested
   with that method and the list reaches the player. `MODE_OFF` with an
   empty list is accepted in every state. A stop setpoint is accepted
-  under a method value. A method value with one position setpoint at
-  time zero within its bounds is accepted.
+  under `MODE_OFF` and under a method value. A method value with one
+  position setpoint at time zero within its bounds is accepted.
 - A list at the player's capacity is accepted; one setpoint more is
   rejected.
-- Each rejection condition rejects the command.
+- Each rejection condition rejects the command; a torque setpoint under
+  `MODE_FOC_VELOCITY` and a speed setpoint under `MODE_OFF` are rejected
+  with the cause `setpoint kind not for this mode`.
 
 Covers:
 - sys~ops_002~1

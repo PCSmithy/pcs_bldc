@@ -17,7 +17,7 @@ pub mod wire;
 pub mod wiring;
 
 pub use as5048::{decode_frame, As5048Model};
-pub use board::{board, board_with, board_with_motor, Board};
+pub use board::{board, board_from, board_with, board_with_motor, Board};
 pub use current_sense::{CurrentSenseModel, CurrentSenseParams};
 pub use models::CountsRampModel;
 pub use motor::{CogHarmonic, MotorModel, MotorParams};

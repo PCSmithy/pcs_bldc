@@ -13,7 +13,8 @@ import { setCursorTick, clearCursor, cursor } from "./cursor.js";
 import { appearanceOf, setAppearance, resolvedColor } from "./appearance.js";
 import { evalMonotoneRun, monotoneTangents } from "./interp.js";
 import { cpuShares, cpuLoadPreset } from "./cpuloadwidget.js";
-import { trajectory, positionTrajectory, namedSequences } from "./sequencewidget.js";
+import { namedSequences } from "./sequencewidget.js";
+import { rateTrajectory, positionTrajectory } from "./setpoints.js";
 import { buildCsv, exportCapture } from "./export.js";
 import {
   initTimeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow,
@@ -122,8 +123,8 @@ export function initWorkspace() {
     store, api, notify, addWatch, setPeriod, removeWatch, commit, periodLabel,
     addWidget, forEachWidget, setCursorTick, clearCursor, cursor, histories,
     timeline: { get: () => store.timeline, setSpan, pause, resume, zoomAt, panBy, selectRange, currentWindow, displayWindow, runMarks, globalNewest },
-    sequence: { trajectory, positionTrajectory, namedSequences },
-    capture: { buildCsv },
+    sequence: { rateTrajectory, positionTrajectory, namedSequences },
+    capture: { buildCsv, exportCapture },
     appearance: { of: appearanceOf, set: setAppearance, resolvedColor },
     interp: { evalMonotoneRun, monotoneTangents },
     cpuLoad: { shares: cpuShares, preset: cpuLoadPreset },

@@ -53,7 +53,7 @@ typedef struct
 
     // Center-aligned counters: spend the first repetition countdown before the
     // start, so update events (the compare preload latch) land on the period
-    // reload, the crest, instead of the zero reload (fw~hal_tim_002).
+    // reload, the crest, instead of the zero reload (fw~hal_tim_009).
     bool updateAtPeriod;
 } HW_TIM_peripheralConfig_S;
 

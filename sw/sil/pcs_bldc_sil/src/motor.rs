@@ -27,8 +27,10 @@ const DIODE_ENGAGE_MARGIN_V: f64 = 0.005;
 pub const DEFAULT_POLE_PAIRS: u8 = 14;
 
 /// Electrical + mechanical motor parameters. Defaults are the bench-measured
-/// iPower GM6208-150T values (`tools/trace_analysis/*`); `l_h` is a class-typical
-/// estimate (its time constant sits below the capture bandwidth).
+/// iPower GM6208-150T values (`tools/trace_analysis/*`): the mechanics are the
+/// bench fit the firmware's estimator and cogging model are configured with
+/// (`tools/trace_analysis/estimator_order`); `l_h` is a class-typical estimate
+/// (its time constant sits below the capture bandwidth).
 #[derive(Clone, Copy, Debug)]
 pub struct MotorParams {
     /// Per-phase winding resistance (Ω).
@@ -72,12 +74,15 @@ impl Default for MotorParams {
             l_h: 5.0e-3,
             ke_v_per_mech_rad_s: 0.55,
             pole_pairs: DEFAULT_POLE_PAIRS,
-            j_kg_m2: 3.0e-4,
-            b_nm_per_rad_s: 7.2e-4,
-            t_c_nm: 4.4e-3,
+            j_kg_m2: 1.45e-4,
+            b_nm_per_rad_s: 1.0e-4,
+            t_c_nm: 15.0e-3,
             v_d: 0.8,
             rotor_locked: false,
-            cogging: [CogHarmonic::default(); 2],
+            cogging: [
+                CogHarmonic { amp_nm: 9.0e-3, per_rev: 28, phase_rad: 1.1 },
+                CogHarmonic { amp_nm: 0.9e-3, per_rev: 56, phase_rad: -1.75 },
+            ],
         }
     }
 }

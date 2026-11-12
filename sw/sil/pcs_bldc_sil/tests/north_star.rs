@@ -3,10 +3,11 @@
 //! captured from that physics, then a dial turn spins the shaft under closed-loop commutation.
 
 use pcs_bldc_sil::board::{
-    board, decoded_bus_a, decoded_phase_a, fault_latched, gate_operational, port, ALIGN_DUTY,
-    ALIGN_DWELL_MS, BUS_TRIP_A, DIAL, GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW,
-    INPUT_LEVEL_PB10, MOTOR, PHASE_TRIP_A, VBUS_V,
+    board, decoded_bus_a, decoded_phase_a, fault_latched, gate_operational, port, align_duty,
+    align_dwell_ms, bus_trip_a, DIAL, GATE_BRINGUP_MS, GPIO_LEVEL_HIGH, GPIO_LEVEL_LOW,
+    INPUT_LEVEL_PB10, MOTOR, phase_trip_a, VBUS_V,
 };
+use pcs_bldc_sil::motor::DEFAULT_POLE_PAIRS;
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil, BRIDGE_PORTS};
 
 mod common;
@@ -20,10 +21,8 @@ const INITIAL_ANGLE_RAD: f64 = 0.8;
 /// The master output enable, named off the wiring table.
 const MOE: &str = BRIDGE_PORTS[6].0;
 
-/// `APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC` (18 rad/s) and the pole pairs both the
-/// firmware channel config and the plant carry.
-const MAX_VELOCITY_RAD_S: f64 = 18.0;
-const POLE_PAIRS: f64 = 14.0;
+/// The plant's pole pairs, which the firmware channel config's matches.
+const POLE_PAIRS: f64 = DEFAULT_POLE_PAIRS as f64;
 
 /// `APP_USERCONTROLS_DIAL_ACCUM_RANGE_DEG`: dial travel that maps to full-scale command.
 const DIAL_FULL_SCALE_DEG: f64 = 180.0;
@@ -171,17 +170,19 @@ fn alignment_equilibrium_rad(start_rad: f64) -> f64 {
 // [test->fw~hal_gpio_004~1]
 #[test]
 fn alignment_pulls_rotor_and_captures_offset() {
-    // Alignment is a torsional spring: 0.1 duty on U against V and W returning drives
-    // 0.1*Vbus/(1.5R) through U and the rotor flux is pulled onto the U axis.
+    // Alignment is a torsional spring: the alignment duty on U against V and W returning
+    // drives duty*Vbus/(1.5R) through U and the rotor flux is pulled onto the U axis.
     const CURRENT_BAND_A: f64 = 0.015;
     const VELOCITY_FLOOR_RAD_S: f64 = 0.05;
     const OFFSET_MATCH_RAD: f64 = 0.01;
 
     let params = MotorParams::default();
-    let expected_current_a = (ALIGN_DUTY * VBUS_V) / (1.5 * params.r_ohm);
     let equilibrium = alignment_equilibrium_rad(INITIAL_ANGLE_RAD);
 
     let Board { mut sim, .. } = board(INITIAL_ANGLE_RAD);
+    let (align_duty, align_dwell_ms) = (align_duty(&sim), align_dwell_ms(&sim));
+    let (phase_trip_a, bus_trip_a) = (phase_trip_a(&sim), bus_trip_a(&sim));
+    let expected_current_a = (align_duty * VBUS_V) / (1.5 * params.r_ohm);
     boot_and_arm(&mut sim);
 
     // --- The dwell drives the documented alignment pattern -----------------------------
@@ -189,8 +190,8 @@ fn alignment_pulls_rotor_and_captures_offset() {
     assert!(!is_aligned(&sim), "still aligning at the top of the dwell");
     let duty_u = port(&sim, "PWM_U_duty");
     assert!(
-        (duty_u - ALIGN_DUTY).abs() < 0.02,
-        "alignment holds U at ~{ALIGN_DUTY} duty, got {duty_u}"
+        (duty_u - align_duty).abs() < 0.02,
+        "alignment holds U at ~{align_duty} duty, got {duty_u}"
     );
     assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "U enabled");
     assert_eq!(port(&sim, "PWM_V_enabled"), 1.0, "V enabled");
@@ -202,9 +203,9 @@ fn alignment_pulls_rotor_and_captures_offset() {
     let mut peak_velocity = 0.0_f64;
     let mut peak_current = 0.0_f64;
     let mut peak_bus = 0.0_f64;
-    let mut angle = Vec::with_capacity(ALIGN_DWELL_MS as usize + 20);
-    let mut decoded_u = Vec::with_capacity(ALIGN_DWELL_MS as usize + 20);
-    for ms in 1..=(ALIGN_DWELL_MS + 20) {
+    let mut angle = Vec::with_capacity(align_dwell_ms as usize + 20);
+    let mut decoded_u = Vec::with_capacity(align_dwell_ms as usize + 20);
+    for ms in 1..=(align_dwell_ms + 20) {
         sim.run_for_ms(1);
         peak_velocity = peak_velocity.max(plant(&sim, "velocity").abs());
         peak_current = peak_current.max(peak_decoded_a(&sim));
@@ -232,8 +233,8 @@ fn alignment_pulls_rotor_and_captures_offset() {
     println!(
         "alignment: i_u expected {expected_current_a:.6} A, decoded mean over the dwell \
          {settled_current:.6} A (band +/-{CURRENT_BAND_A} A); peak |decoded phase| \
-         {peak_current:.6} A of a {PHASE_TRIP_A} A trip, peak |decoded bus| {peak_bus:.6} A \
-         of {BUS_TRIP_A} A"
+         {peak_current:.6} A of a {phase_trip_a} A trip, peak |decoded bus| {peak_bus:.6} A \
+         of {bus_trip_a} A"
     );
     println!(
         "alignment: start {INITIAL_ANGLE_RAD:.6} rad, expected equilibrium \
@@ -268,33 +269,34 @@ fn alignment_pulls_rotor_and_captures_offset() {
         "the alignment current is positive on U: {settled_current:.6} A"
     );
     assert!(
-        peak_current < PHASE_TRIP_A,
-        "phase currents stay under the {PHASE_TRIP_A} A trip: {peak_current:.4} A"
+        peak_current < phase_trip_a,
+        "phase currents stay under the {phase_trip_a} A trip: {peak_current:.4} A"
     );
     assert!(
-        peak_bus < BUS_TRIP_A,
-        "bus current stays under the {BUS_TRIP_A} A trip: {peak_bus:.4} A"
+        peak_bus < bus_trip_a,
+        "bus current stays under the {bus_trip_a} A trip: {peak_bus:.4} A"
     );
 
     // --- The rotor physically swings to the alignment vector ---------------------------
-    // The plant is very underdamped at the placeholder parameters (zeta ~ 0.05 for
-    // J = 1e-4, B = 1e-4 against the ~1e-2 Nm/rad alignment spring), so the 500 ms dwell
-    // buys most of one swing, not a settle: assert the traverse and the basin, not rest.
+    // Assert the traverse and the basin: the swing's damping is the plant's friction.
     assert!(
         peak_velocity > VELOCITY_FLOOR_RAD_S,
         "the alignment vector swings the rotor: peak |velocity| {peak_velocity:.6} rad/s"
     );
-    // The alignment spring is 1.5*ke*I*pp (~1.3 Nm/rad) against t_c = 4.4e-3 Nm of
-    // stiction, so the shaft parks within t_c/K (~0.0035 rad) of the equilibrium.
-    const STICK_BAND_RAD: f64 = 0.005;
+    // The alignment spring is 1.5*ke*I*pp (~3.1 Nm/rad) against the plant's Coulomb
+    // stiction and, at worst, its whole cogging amplitude, so the shaft parks within
+    // (t_c + cogging) / K (~0.008 rad) of the equilibrium.
+    let spring_nm_per_rad = 1.5 * params.ke_v_per_mech_rad_s * expected_current_a * f64::from(params.pole_pairs);
+    let cogging_nm: f64 = params.cogging.iter().map(|h| h.amp_nm).sum();
+    let stick_band_rad = (params.t_c_nm + cogging_nm) / spring_nm_per_rad;
     assert!(
         (angle_at_latch - equilibrium).abs() < (angle[0] - equilibrium).abs(),
         "the shaft moves toward the equilibrium {equilibrium:.6} rad: {:.6} -> {angle_at_latch:.6}",
         angle[0]
     );
     assert!(
-        offset_err_rad.abs() < STICK_BAND_RAD,
-        "the shaft parks within the stick band of the equilibrium: {offset_err_rad:+.6} rad"
+        offset_err_rad.abs() < stick_band_rad,
+        "the shaft parks within the {stick_band_rad:.4} rad stick band of the equilibrium: {offset_err_rad:+.6} rad"
     );
     assert!(
         offset_err_rad.abs() < (PI / POLE_PAIRS),
@@ -321,7 +323,8 @@ fn alignment_pulls_rotor_and_captures_offset() {
         "no fault latched across the whole alignment"
     );
     assert!(
-        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount")) < 5,
+        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount"))
+            <= sim.fw().read_cvar("app_motorControl_channelConfig[0].encoderFaultLimit").as_u64().expect("the limit"),
         "encoder fault count stays under the trip limit"
     );
 }
@@ -337,8 +340,8 @@ fn alignment_pulls_rotor_and_captures_offset() {
 // [test->fw~est_encoder_002~1]
 #[test]
 fn dial_demand_spins_rotor_closed_loop() {
-    // Full-scale dial: duty clamps at APP_MOTORCONTROL_MAX_DUTY_01 = 0.9, so the winding
-    // carries 0.9*Vbus/2R = 0.34 A — an order under the 2.0 A phase trip.
+    // Full-scale dial: duty clamps at APP_MOTORCONTROL_MAX_DUTY_01 = 0.9, so the stalled
+    // winding would carry 0.9*Vbus/2R = 0.61 A, half the 1.2 A phase trip.
     const DIAL_TARGET_DEG: f64 = 180.0;
     const RAMP_STEP_DEG: f64 = 10.0;
     const RAMP_DWELL_MS: u64 = 20;
@@ -349,15 +352,16 @@ fn dial_demand_spins_rotor_closed_loop() {
     /// Zero-demand band: the dial encoder's quantization jitter is all that separates the
     /// re-baselined accumulator from a hard zero.
     const ZERO_DEMAND_BAND_RAD_S: f64 = 0.02;
-    /// Friction-limited terminal speed if commutation delivered the full flat-top torque
-    /// (ke * 2 * i / B); the floors below are fractions of it.
-    const IDEAL_TERMINAL_RAD_S: f64 = MAX_DUTY_01 * VBUS_V / (2.0 * 32.0) * 2.0 * 0.01 / 1.0e-4;
-    const VELOCITY_FLOOR_RAD_S: f64 = 0.2 * IDEAL_TERMINAL_RAD_S;
+    // No-load terminal speed at the duty clamp: the line-to-line drive against the
+    // line-to-line back-EMF peak, sqrt(3) ke omega; the floor is half of it.
+    let ideal_terminal_rad_s = MAX_DUTY_01 * VBUS_V / (3.0_f64.sqrt() * MotorParams::default().ke_v_per_mech_rad_s);
+    let velocity_floor_rad_s = 0.5 * ideal_terminal_rad_s;
     const REVOLUTION_FLOOR: f64 = 3.0;
 
     let Board { mut sim, .. } = board(INITIAL_ANGLE_RAD);
+    let (phase_trip_a, bus_trip_a) = (phase_trip_a(&sim), bus_trip_a(&sim));
     boot_and_arm(&mut sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 20);
+    sim.run_for_ms(align_dwell_ms(&sim) + 20);
     assert!(is_aligned(&sim), "alignment completed before the dial turn");
     let offset_err_rad = sim.read_f64(&cid(
         "app_motorControl_data.channels[0].alignmentOffset_rad",
@@ -442,11 +446,12 @@ fn dial_demand_spins_rotor_closed_loop() {
     println!(
         "spin: alignment offset error {offset_err_rad:+.6} rad ({:+.1} deg electrical); dial \
          {DIAL_TARGET_DEG} deg -> command {command:.3} -> setpoint {:.4} rad/s (of \
-         {MAX_VELOCITY_RAD_S:.4} max), duty {:.3}",
+         {:.4} max), duty {:.3}",
         (offset_err_rad * POLE_PAIRS).to_degrees(),
         sim.read_f64(&cid(
             "app_motorControl_data.channels[0].velocitySetpoint_radPerSec"
         )),
+        config_max_velocity_rad_s(&sim),
         max_phase_duty(&sim)
     );
     println!("spin:    t_ms  velocity   travel  sector   lead  duty   peak|i|    i_bus");
@@ -498,7 +503,7 @@ fn dial_demand_spins_rotor_closed_loop() {
     let revolutions = travel / TAU;
     println!(
         "spin: final velocity {final_velocity:+.3} rad/s (peak {peak_velocity:.3}, floor \
-         {VELOCITY_FLOOR_RAD_S:.3}, ideal terminal {IDEAL_TERMINAL_RAD_S:.3}), travel \
+         {velocity_floor_rad_s:.3}, ideal terminal {ideal_terminal_rad_s:.3}), travel \
          {travel:+.3} rad = {revolutions:+.2} mech rev ({:.1} electrical rev), sectors \
          {visited:?}, lead {lead_min:.0}..{lead_max:.0} deg mean {:.1} (design band \
          60..120), peak |i| {peak_current:.4} A, peak |i_bus| {peak_bus:.4} A",
@@ -511,24 +516,25 @@ fn dial_demand_spins_rotor_closed_loop() {
         "the commutation walks all six sectors: {visited:?}"
     );
     assert!(
-        final_velocity > VELOCITY_FLOOR_RAD_S,
+        final_velocity > velocity_floor_rad_s,
         "the rotor spins forward under a forward demand: {final_velocity:.3} rad/s against \
-         a {VELOCITY_FLOOR_RAD_S:.3} rad/s floor"
+         a {velocity_floor_rad_s:.3} rad/s floor"
     );
     assert!(
         revolutions > REVOLUTION_FLOOR,
         "the shaft turns through multiple revolutions: {revolutions:.2}"
     );
     assert!(
-        peak_current < PHASE_TRIP_A,
-        "phase currents stay under the {PHASE_TRIP_A} A trip: {peak_current:.4} A"
+        peak_current < phase_trip_a,
+        "phase currents stay under the {phase_trip_a} A trip: {peak_current:.4} A"
     );
     assert!(
-        peak_bus < BUS_TRIP_A,
-        "bus current stays under the {BUS_TRIP_A} A trip: {peak_bus:.4} A"
+        peak_bus < bus_trip_a,
+        "bus current stays under the {bus_trip_a} A trip: {peak_bus:.4} A"
     );
     assert!(
-        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount")) < 5,
+        sim.read_u64(&cid("app_motorControl_data.channels[0].encoderFaultCount"))
+            <= sim.fw().read_cvar("app_motorControl_channelConfig[0].encoderFaultLimit").as_u64().expect("the limit"),
         "encoder fault count stays under the trip limit"
     );
 

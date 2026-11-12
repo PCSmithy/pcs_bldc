@@ -34,7 +34,7 @@ zero from init, from the encoder channel's read as
 
 | Read                                                   | Update |
 |--------------------------------------------------------|--------|
-| The first valid one since init                         | $\hat{x} = [\theta_m,\ 0,\ 0]^\mathsf{T}$ |
+| The first valid one since init, or after more than $N_r$ consecutive failed or invalid ones | $\hat{x} = [\theta_m,\ 0,\ 0]^\mathsf{T}$ |
 | Every later valid one                                  | $e = \operatorname{wrap}(\theta_m - H\hat{x})$ to $(-\pi, \pi]$; $\hat{x} \leftarrow \hat{x} + K e$, $\hat\theta$ wrapped to $[0, 2\pi)$ |
 | A failed one, or one the driver flags invalid (fw~est_encoder_006~1) | none |
 
@@ -56,7 +56,7 @@ configured natural frequency in rad/s and ζ the configured damping ratio
 of the error dynamics' pole pair, p_d the configured disturbance pole in
 rad/s, the error dynamics' third pole, and J and b the configured rotor
 inertia in kg·m² and viscous friction in Nm per rad/s
-(fw~est_rotor_002~1).
+(fw~est_rotor_002~1), and N_r the configured re-seed count.
 
 Acceptance:
 - At ω_n = 2π · 50 rad/s, ζ = 1, and p_d = 157 rad/s, with b and T_c
@@ -75,6 +75,9 @@ Acceptance:
 - With b and T_c configured zero, a zero torque input, and T̂_d zero, a
   tick with an invalid read leaves ω̂ and T̂_d unchanged and θ̂ to the
   cycle advance alone.
+- At N_r = 5, a valid read after 6 consecutive invalid ones sets
+  $\hat{x} = [\theta_m,\ 0,\ 0]^\mathsf{T}$ by the next cycle, at an angle
+  error of 3 rad; a valid read after 5 applies K e.
 - A configuration with ω_n at or below zero, ζ below 0.5, p_d at or below
   zero, or (2 · ζ · ω_n + p_d) · T_s above 1 is rejected at init.
 

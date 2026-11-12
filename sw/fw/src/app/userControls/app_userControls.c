@@ -59,14 +59,13 @@ typedef struct
     bool tapPending;
 
     float32_t velocityRequest_radPerSec;
+    float32_t positionRequest_rad;
 
-    // Last mode/velocity actually written to motorControl. Outputs are written
-    // only on change, so an app command (the other writer of the same request
-    // state) is not re-overwritten every cycle — later writer prevails.
-    app_motorControl_mode_E modeSent;
+    // The dial's targets as last written, and the method they were written
+    // under: only dial movement writes, so a host's targets stand (sys~ops_002).
     float32_t velocitySent_radPerSec;
     float32_t positionSent_rad;
-    bool outputsSeeded;   // first cycle always writes
+    app_motorControl_mode_E selectedModeSeen;
 } app_userControls_data_S;
 
 /* Private Function Declarations */
@@ -137,11 +136,12 @@ bool app_userControls_init(const app_userControls_config_S * const config)
 
         if (success)
         {
+            *data = (app_userControls_data_S){ 0 };
             data->config = config;
+            data->mode = APP_USERCONTROLS_MODE_OFF;
             lib_timer_init(&data->holdTimer, LIB_TIMER_PRECISION_MS, APP_USERCONTROLS_FAULT_CLEAR_HOLD_MS);
             lib_timer_init(&data->tapWindow, LIB_TIMER_PRECISION_MS, APP_USERCONTROLS_DOUBLE_TAP_WINDOW_MS);
-            data->gestureConsumed = false;
-            data->tapPending = false;
+            data->selectedModeSeen = APP_MOTORCONTROL_MODE_COUNT;   // the first pass seeds, writing nothing
         }
     }
     return success;
@@ -153,6 +153,8 @@ void app_userControls_run1ms(void)
     {
         // fetch inputs
         data->dialAngleRaw_deg = app_userControls_private_readAngleDeg(data->config->dial);
+        app_motorControl_snapshot_S motor = { 0 };
+        (void)app_motorControl_getSnapshot(data->config->motor, &motor);
 
         // button gesture recognition
         const bool isButtonPressed = dev_switch_isActive(data->config->button);
@@ -172,9 +174,7 @@ void app_userControls_run1ms(void)
         const lib_timer_state_E holdState = lib_timer_runTimerWithEnable(&data->holdTimer, isButtonPressed);
         if ((holdState == LIB_TIMER_STATE_EXPIRED) && (!data->gestureConsumed))
         {
-            app_motorControl_snapshot_S snapshot = { 0 };
-            if ((app_motorControl_getSnapshot(data->config->motor, &snapshot)) &&
-                (snapshot.state == APP_MOTORCONTROL_STATE_FAULTED))
+            if (motor.state == APP_MOTORCONTROL_STATE_FAULTED)
             {
                 app_motorControl_clearFault(data->config->motor);
             }
@@ -210,77 +210,64 @@ void app_userControls_run1ms(void)
             lib_timer_stopTimer(&data->tapWindow);
         }
 
-        switch (data->mode)
+        // A tap stops a drive that is enabled or requested, whoever started it
+        // (sys~ops_002), and otherwise starts the selected method.
+        if (isToggle)
         {
-            default:
-            case APP_USERCONTROLS_MODE_OFF:
-                if (isToggle)
-                {
-                    // entry to VELOCITY mode: command always starts at zero
-                    // [impl->fw~mc_008~1]
-                    data->mode = APP_USERCONTROLS_MODE_VELOCITY;
-
-                    // TODO - trigger rgb ring animation
-
-                    data->dialPrevRaw_deg = data->dialAngleRaw_deg;
-                    data->dialAccum_deg   = 0.0f;
-                    data->dialCommand     = 0.0f;
-                }
-                data->velocityRequest_radPerSec = 0.0f;
-                break;
-
-            case APP_USERCONTROLS_MODE_VELOCITY:
-                if (isToggle)
-                {
-                    data->mode = APP_USERCONTROLS_MODE_OFF;
-
-                    // TODO - trigger rgb ring animation
-                }
-
-                // compute velocity command from dial encoder angle: sticky
-                // signed accumulator, normalized to [-1, +1]
-                data->dialCommand = app_userControls_private_dialAccumulate(&data->dialAccum_deg,
-                                                                            &data->dialPrevRaw_deg,
-                                                                            data->dialAngleRaw_deg);
-
-                // scale the [-1, 1] dial command to the range of motor speed
-                data->velocityRequest_radPerSec = data->dialCommand * APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC;
-                break;
-        }
-
-        // set outputs — only on change, so the controls and app commands
-        // share the request state by order of arrival (sys~ops_002). An
-        // enable runs whichever method is selected (the board default, or
-        // the host's last Command).
-        app_motorControl_snapshot_S motorSnapshot = { 0 };
-        (void)app_motorControl_getSnapshot(data->config->motor, &motorSnapshot);
-        const app_motorControl_mode_E modeOut =
-            ((data->mode == APP_USERCONTROLS_MODE_VELOCITY)) ? motorSnapshot.selectedMode
-                                                             : APP_MOTORCONTROL_MODE_OFF;
-        if ((!data->outputsSeeded) || (modeOut != data->modeSent))
-        {
-            app_motorControl_setMode(data->config->motor, modeOut);
-            data->modeSent = modeOut;
-        }
-        if (motorSnapshot.selectedMode == APP_MOTORCONTROL_MODE_FOC_POSITION)
-        {
-            // the dial's accumulated travel is the position target: half a turn each way
-            const float32_t positionRequest_rad = DEG_TO_RAD(data->dialAccum_deg);
-            if ((!data->outputsSeeded) ||
-                (fabsf(positionRequest_rad - data->positionSent_rad) > APP_USERCONTROLS_POSITION_SEND_DEADBAND_RAD))
+            const bool isRunning = (motor.state != APP_MOTORCONTROL_STATE_DISABLED) ||
+                                   (motor.mode != APP_MOTORCONTROL_MODE_OFF);
+            if (isRunning)
             {
-                app_motorControl_setPositionSetpoint(data->config->motor, positionRequest_rad, 0.0f, 0.0f, 0.0f);   // at the maximum velocity, stepping (fw~mc_031)
-                data->positionSent_rad = positionRequest_rad;
+                data->mode = APP_USERCONTROLS_MODE_OFF;
+                app_motorControl_setMode(data->config->motor, APP_MOTORCONTROL_MODE_OFF);
+            }
+            else
+            {
+                // [impl->fw~mc_008~1] the dial command starts at zero
+                data->mode = APP_USERCONTROLS_MODE_VELOCITY;
+                data->dialPrevRaw_deg = data->dialAngleRaw_deg;
+                data->dialAccum_deg   = 0.0f;
+                app_motorControl_setMode(data->config->motor, motor.selectedMode);
             }
         }
-        else if ((!data->outputsSeeded) ||
-                 (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
-                  APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC))
+
+        // The dial moves its targets only while the controls run the motor: a
+        // stop leaves them where they stand.
+        if (data->mode == APP_USERCONTROLS_MODE_VELOCITY)
+        {
+            data->dialCommand = app_userControls_private_dialAccumulate(&data->dialAccum_deg,
+                                                                        &data->dialPrevRaw_deg,
+                                                                        data->dialAngleRaw_deg);
+            data->velocityRequest_radPerSec = data->dialCommand * APP_MOTORCONTROL_MAX_VELOCITY_RAD_PER_SEC;
+            data->positionRequest_rad = DEG_TO_RAD(data->dialAccum_deg);   // half a turn each way
+        }
+
+        // Write a target only when the dial moved past its deadband under an
+        // unchanged method; a method change re-seeds without writing.
+        if (motor.selectedMode != data->selectedModeSeen)
+        {
+            data->selectedModeSeen = motor.selectedMode;
+            data->velocitySent_radPerSec = data->velocityRequest_radPerSec;
+            data->positionSent_rad = data->positionRequest_rad;
+        }
+        else if (motor.selectedMode == APP_MOTORCONTROL_MODE_FOC_POSITION)
+        {
+            if (fabsf(data->positionRequest_rad - data->positionSent_rad) > APP_USERCONTROLS_POSITION_SEND_DEADBAND_RAD)
+            {
+                app_motorControl_setPositionSetpoint(data->config->motor, data->positionRequest_rad, 0.0f, 0.0f, 0.0f);   // at the maximum velocity, stepping (fw~mc_031)
+                data->positionSent_rad = data->positionRequest_rad;
+            }
+        }
+        else if (fabsf(data->velocityRequest_radPerSec - data->velocitySent_radPerSec) >
+                 APP_USERCONTROLS_VELOCITY_SEND_DEADBAND_RAD_PER_SEC)
         {
             app_motorControl_setVelocity(data->config->motor, data->velocityRequest_radPerSec, 0.0f);   // the dial steps (fw~mc_027)
             data->velocitySent_radPerSec = data->velocityRequest_radPerSec;
         }
-        data->outputsSeeded = true;
+        else
+        {
+            // the dial holds: the target in effect stands
+        }
     }
 }
 

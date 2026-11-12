@@ -2,7 +2,7 @@
 """Render a Markdown note with $...$ / $$...$$ math to PDF (and optionally HTML).
 
 Uses the venv's Playwright Chromium with marked + MathJax (SVG output) from
-cdnjs, so it needs network on first run. Usage:
+cdnjs, loaded on every run, so it needs network. Usage:
 
     .venv/Scripts/python tools/md_to_pdf.py docs/references/note.md [--html out.html] [--eyebrow "text"]
 

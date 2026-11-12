@@ -32,6 +32,10 @@ GEN_DIR = REPO / "tools" / "pcs_client_gen"
 # stalled USB transfer isn't mistaken for the end of the stream.
 LINK_TEST_QUIET_S = 2.0
 
+# The board's frame bound on an encoded envelope (IO_COBSFRAME_MAX_PAYLOAD,
+# fw~conn_proto_005): a larger one is answered "frame too large".
+MAX_FRAME_PAYLOAD = 448
+
 
 def grow_rx_buffer(ser):
     """Windows usbser keeps a 4 KB driver buffer by default; at hundreds of kB/s
@@ -350,21 +354,8 @@ def session(ser, pb2, board_pb2, next_id, commands, watches=None, print_every=10
         if kind == "clear_fault":
             env.board_request.clear_fault.SetInParent()
         elif kind == "run":
-            mode, default_unit, points = value
-            env.board_request.run.mode = mode
-            for t_us, target, limits, unit in points:
-                sp = env.board_request.run.setpoints.add(t_us=t_us, rate_limit=limits[0])
-                unit = unit or default_unit
-                if unit == "nm":
-                    sp.torque_nm = target
-                elif unit == "rad":
-                    # a position: the rate limit is its velocity limit, then the
-                    # acceleration limit and the velocity at the point (fw~mc_030)
-                    sp.position_rad = target
-                    sp.accel_limit_radps2 = limits[1]
-                    sp.velocity_at_point_radps = limits[2]
-                else:
-                    sp.velocity_radps = target
+            env.board_request.CopyFrom(value)
+            value = str(value.run).replace("\n", " ")
         elif kind == "get_motor_info":
             env.board_request.get_motor_info.SetInParent()
         elif kind == "read":
@@ -401,10 +392,9 @@ def run(port: str, baud: int, args):
     import board_pb2
     import shared_pb2 as pb2
 
-    modes = {"off": board_pb2.MODE_OFF, "six_step": board_pb2.MODE_SIX_STEP_TRAP,
-             "sinusoidal": board_pb2.MODE_SINUSOIDAL, "foc_torque": board_pb2.MODE_FOC_TORQUE,
-             "foc_velocity": board_pb2.MODE_FOC_VELOCITY, "foc_position": board_pb2.MODE_FOC_POSITION}
+    modes = {name[len("MODE_"):].lower(): value for name, value in board_pb2.Mode.items()}
     default_units = {"foc_torque": "nm", "foc_position": "rad"}
+    target_fields = {"nm": "torque_nm", "rad": "position_rad", "rad/s": "velocity_radps"}
     commands = []
     if args.motor_info:
         commands.append(("get_motor_info", None))
@@ -412,30 +402,41 @@ def run(port: str, baud: int, args):
         commands.append(("clear_fault", None))   # ahead of a run, so a cleared fault does not block it
     if args.run is not None:
         # MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],... -- the whole sequence in
-        # one Command. The mode picks the unit (Nm under foc_torque, rad under
-        # foc_position, rad/s otherwise) unless a value says: 0.3Nm, 10rad/s, 6.28rad.
-        # A position's limits are its velocity limit, acceleration limit and the
-        # velocity held at the point, each 0 for the board's default.
+        # one Command; T_MS=stop is a stop. The mode picks the unit (Nm under
+        # foc_torque, rad under foc_position, rad/s otherwise) unless a value says.
         try:
             mode_s, spec = args.run.split(":", 1)
-            points = []
+            request = board_pb2.Request()
+            request.run.mode = modes[mode_s]
             for item in filter(None, spec.split(",")):
                 t_s, rest = item.split("=")
+                t_ms = float(t_s)
+                if not (0 <= t_ms <= 4_294_967):
+                    raise ValueError("time out of range")
+                sp = request.run.setpoints.add(t_us=int(t_ms * 1000))
+                if rest.lower() == "stop":
+                    sp.stop.SetInParent()
+                    continue
                 # the unit before the limits, so rad/s is not read as a limit of "s"
                 m = re.fullmatch(r"([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)(nm|rad/s|rad)?(?:/(.*))?", rest, re.IGNORECASE)
                 if m is None:
                     raise ValueError("bad setpoint")
-                value_s, unit = m.group(1), (m.group(2).lower() if m.group(2) else None)
-                limit_parts = m.group(3).split("/") if m.group(3) is not None else []
-                limits = tuple(float(s or 0) for s in (limit_parts + ["", "", ""])[:3])
-                t_ms = float(t_s)
-                if not (0 <= t_ms <= 4_294_967):
-                    raise ValueError("time out of range")
-                points.append((int(t_ms * 1000), float(value_s), limits, unit))
-            commands.append(("run", (modes[mode_s], default_units.get(mode_s), points)))
+                unit = (m.group(2) or default_units.get(mode_s, "rad/s")).lower()
+                limits = [float(x or 0) for x in ((m.group(3) or "").split("/") + ["", "", ""])[:3]]
+                setattr(sp, target_fields[unit], float(m.group(1)))
+                sp.rate_limit = limits[0]
+                if unit == "rad":
+                    # a position's limits: velocity, acceleration, velocity at the point (fw~mc_030)
+                    sp.accel_limit_radps2, sp.velocity_at_point_radps = limits[1], limits[2]
         except (ValueError, KeyError):
-            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],..., "
-                     f"e.g. foc_velocity:0=0,200=10/50, foc_torque:0=0.3Nm or foc_position:0=6.28/10/50/0)")
+            sys.exit(f"bad --run '{args.run}' (expected MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]] or "
+                     f"T_MS=stop,..., MODE one of {', '.join(modes)}; e.g. foc_velocity:0=0,200=10/50,700=stop, "
+                     f"foc_torque:0=0.3Nm or foc_position:0=6.28/10/50/0)")
+        size = len(pb2.Envelope(request_id=0xFFFFFFFF, board_request=request).SerializeToString())
+        if size > MAX_FRAME_PAYLOAD:
+            sys.exit(f"--run encodes to {size} bytes, past the board's {MAX_FRAME_PAYLOAD}-byte frame; "
+                     f"send fewer setpoints")
+        commands.append(("run", request))
     # Writes before reads, so a write -> read round trip works in one invocation.
     for spec in (args.write or []):
         try:
@@ -573,6 +574,20 @@ def selftest() -> int:
     assert round_trip.link_test_frame.seq == 4321
     assert round_trip.link_test_frame.payload == bytes(range(256))
 
+    # A Command with a stop round-trips; 15 full position setpoints fit the frame.
+    import board_pb2
+    request = board_pb2.Request()
+    request.run.mode = board_pb2.MODE_FOC_POSITION
+    for i in range(15):
+        request.run.setpoints.add(t_us=4_000_000_000 + i, position_rad=6.28, rate_limit=10.0,
+                                  accel_limit_radps2=50.0, velocity_at_point_radps=1.0)
+    request.run.setpoints.add(t_us=4_100_000_000).stop.SetInParent()
+    env = pb2.Envelope(request_id=0xFFFFFFFF, board_request=request)
+    assert len(env.SerializeToString()) <= MAX_FRAME_PAYLOAD
+    round_trip = pb2.Envelope()
+    round_trip.ParseFromString(deframe(frame(env.SerializeToString())[1:-1]))
+    assert round_trip.board_request.run.setpoints[-1].WhichOneof("target") == "stop"
+
     print("selftest ok")
     return 0
 
@@ -585,8 +600,8 @@ def main():
     ap.add_argument("--run", metavar="MODE:T_MS=VALUE[UNIT][/LIMIT[/ACCEL/AT_POINT]],...",
                     help="send a Command on connect: a mode and timed setpoints, rad/s (Nm under foc_torque, rad under "
                          "foc_position, or as the value's unit says), LIMIT per second with 0 a step; a position adds its "
-                         "acceleration limit and velocity at the point, e.g. foc_velocity:0=0,200=10/50,700=0 or "
-                         "foc_position:0=6.28/10/50/0")
+                         "acceleration limit and velocity at the point; T_MS=stop disables and ends the sequence, e.g. "
+                         "foc_velocity:0=0,200=10/50,700=stop or foc_position:0=6.28/10/50/0")
     ap.add_argument("--motor-info", action="store_true", help="request the motor ratings on connect")
     ap.add_argument("--watch", action="append", metavar="ADDR:SIZE:PERIOD_CYCLES",
                     help="install a trace watch (repeatable, e.g. 0x20000000:4:20); "

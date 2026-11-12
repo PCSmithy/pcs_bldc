@@ -33,6 +33,7 @@ configuration is rejected by any of:
 | Config         | The config pointer or its channel array is NULL, or the channel count exceeds the available ADC channels.                                            |
 | Regular input  | A channel's enabled regular inputs' conversion ranks do not form the contiguous sequence 1..N, where N is the channel's enabled regular-input count. |
 | Injected input | A channel's enabled injected inputs are not contiguous from the first sequence position, or the channel names an unknown injected trigger source.    |
+| Injected oversampling | A channel's injected oversampling of ratio N and shift S sums a full-scale conversion past the 16-bit data field: N · (2^n − 1) / 2^S above 65535, for n the resolution in bits. |
 
 Acceptance:
 - A valid config initializes and calibrates every channel and returns true.

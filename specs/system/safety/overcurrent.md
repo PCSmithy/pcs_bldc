@@ -19,7 +19,8 @@ Acceptance:
 - A VBUS current exceeding 1.5 A disables the bridge and latches the fault
   within 2 ms.
 - With currents back below both thresholds, the bridge stays disabled
-  until the user clear action.
+  until the user clear action, and after it until the user enables the
+  bridge.
 
 Covers:
 - (project goal: README.md, "Field-oriented motor control" — protection

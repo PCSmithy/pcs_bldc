@@ -6,7 +6,7 @@
 // [impl->app~views_028~1]
 
 import { store } from "../state.js";
-import { saveFile, invoke } from "../bridge.js";
+import { invoke } from "../bridge.js";
 import { histories } from "./history.js";
 import { meta } from "./watchflow.js";
 import { displayWindow } from "./timeline.js";
@@ -40,17 +40,16 @@ export function buildCsv(paths, [t0, t1]) {
 
 let exporting = false;
 
-/** Export: the save dialog names the file; a cancelled dialog writes nothing. */
+/** Export: the core's save dialog names the file and the core writes it; a
+ *  cancelled dialog writes nothing. Resolves { path, range } or null. */
 export async function exportCapture() {
   const paths = [...store.watched.keys()];
   if (!paths.length || exporting) return null;
   exporting = true;
   try {
     const range = displayWindow();
-    const path = await saveFile("capture.csv", [{ name: "CSV", extensions: ["csv"] }]);
-    if (!path) return null;
-    await invoke("write_text_file", { path, text: buildCsv(paths, range) });
-    return path;
+    const path = await invoke("save_capture_csv", { text: buildCsv(paths, range) });
+    return path ? { path, range } : null;
   } finally {
     exporting = false;
   }

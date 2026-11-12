@@ -5,6 +5,8 @@ tags: [system, ops]
 
 # Setpoint sequence
 
+See also: [[command-authority]]
+
 ### Setpoint sequence
 `sys~ops_003~1`
 
@@ -14,7 +16,8 @@ sequence's start and either a speed or torque target with its rate limit
 or a position with its velocity and acceleration limits and its velocity
 at the point, a newly
 accepted sequence replacing the running one — and apply each setpoint on
-the device's clock at its time.
+the device's clock at its time, the sequence playing on when the host
+detaches.
 
 Acceptance:
 
@@ -23,10 +26,10 @@ Acceptance:
   with the host silent after acceptance.
 - A sequence accepted while another runs replaces it from the new
   sequence's first setpoint.
+- A sequence whose host detaches after acceptance applies its remaining
+  setpoints at their times.
 - The host shows the device's verdict on a sent sequence and, while the
   device reports it running, its elapsed time.
-
-See also: [[command-authority]]
 
 Covers:
 

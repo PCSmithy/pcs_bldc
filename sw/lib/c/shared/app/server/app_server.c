@@ -397,35 +397,51 @@ static bool app_server_private_envelopeCallback(pb_istream_t * stream, const pb_
     return ret;
 }
 
+// [impl->fw~conn_server_001~1] a frame with no readable request_id is answered
+// with that id 0.
+static void app_server_private_rejectUnread(const char * const cause)
+{
+    shared_Envelope * const reply = &data->txEnvelope;
+    app_server_private_zeroEnvelope(reply);
+    reply->which_payload = shared_Envelope_response_tag;
+    reply->payload.response.accepted = false;
+    (void) strcpy(reply->payload.response.cause, cause);
+    app_server_private_sendReply(reply);
+}
+
 static void app_server_private_pumpRequests(void)
 {
     IO_COBSFrame_run();
     size_t frameLen = 0U;
     // A held reply stops the pump: the next request stays framed until the
     // reply ahead of it has left, so no request loses its answer.
-    while ((data->pendingReplyLen == 0U) &&
-           IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen))
+    while (data->pendingReplyLen == 0U)
     {
-        shared_Envelope * const request = &data->rxEnvelope;
-        app_server_private_zeroEnvelope(request);
-        // The payload oneof is memset by nanopb before the chosen arm
-        // decodes, so callback fields inside it are armed through the
-        // envelope-level hook, not pre-set.
-        request->cb_payload.funcs.decode = app_server_private_envelopeCallback;
-        if (lib_protobuf_decode(shared_Envelope_fields, data->rxFrame, frameLen, request))
+        const IO_COBSFrame_receive_E received =
+            IO_COBSFrame_receive(data->config->frame, data->rxFrame, sizeof(data->rxFrame), &frameLen);
+        if (received == IO_COBSFRAME_RECEIVE_NONE)
         {
-            app_server_private_handleEnvelope(request);
+            break;
+        }
+        if (received == IO_COBSFRAME_RECEIVE_OVERSIZE)
+        {
+            app_server_private_rejectUnread("frame too large");
         }
         else
         {
-            // [impl->fw~conn_server_001~1] a CRC-valid but undecodable
-            // envelope is still answered (request_id unknowable: 0).
-            shared_Envelope * const reply = &data->txEnvelope;
-            app_server_private_zeroEnvelope(reply);
-            reply->which_payload = shared_Envelope_response_tag;
-            reply->payload.response.accepted = false;
-            (void) strcpy(reply->payload.response.cause, "decode error");
-            app_server_private_sendReply(reply);
+            shared_Envelope * const request = &data->rxEnvelope;
+            app_server_private_zeroEnvelope(request);
+            // nanopb memsets the payload oneof before its arm decodes, so the
+            // callbacks inside it are armed through the envelope-level hook.
+            request->cb_payload.funcs.decode = app_server_private_envelopeCallback;
+            if (lib_protobuf_decode(shared_Envelope_fields, data->rxFrame, frameLen, request))
+            {
+                app_server_private_handleEnvelope(request);
+            }
+            else
+            {
+                app_server_private_rejectUnread("decode error");
+            }
         }
         IO_COBSFrame_run();
     }

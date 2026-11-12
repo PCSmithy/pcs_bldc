@@ -17,7 +17,8 @@ like end-to-end.
   op-amps, encoder, LED ring, button, serial) with all board sensing
   bench-verified in engineering units; six-step, sensored sinusoidal and
   field-oriented torque, velocity and position drive through the
-  STSPIN32G4 gate driver on an encoder tracking estimator, with cogging
+  STSPIN32G4 gate driver on a three-state encoder observer with a
+  disturbance estimate (position bench verification pending), with cogging
   compensation, a host command plane playing timed setpoint sequences
   (speeds, torques, and position moves profiled on the board) on the
   1 ms tick, USB-PD sink monitoring, and overcurrent / encoder-fault

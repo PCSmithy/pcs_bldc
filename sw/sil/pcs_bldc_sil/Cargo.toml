@@ -9,6 +9,10 @@ voyant = { path = "../voyant" }
 pcs_wire = { path = "../../lib/rust/pcs_wire" }
 prng = { path = "../../lib/rust/prng" }
 
+[dev-dependencies]
+pcs_proto = { path = "../../lib/rust/pcs_proto" }
+prost = "0.13"
+
 [lib]
 name = "pcs_bldc_sil"
 path = "src/lib.rs"

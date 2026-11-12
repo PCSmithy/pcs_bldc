@@ -372,13 +372,12 @@ int __io_putchar(int ch)
 // [impl->fw~mc_018~1]
 static void main_private_bridgeCycle(IO_bridge_channel_E channel, void * context)
 {
-    (void)channel;
     (void)context;
     const uint32_t entry_us = lib_timer_getHWCount_us();
 
     // --- rotor estimate advance (fw~est_rotor_002), then the commutation step (fw~mc_015) ---
     app_rotorEstimation_run50us();
-    app_motorControl_run50us();
+    app_motorControl_run50us(channel);
     const uint32_t stepDuration_us = lib_timer_getHWCount_us() - entry_us;
     main_cycleProbe_step_us = stepDuration_us;
     if (stepDuration_us > main_cycleProbe_stepMax_us)

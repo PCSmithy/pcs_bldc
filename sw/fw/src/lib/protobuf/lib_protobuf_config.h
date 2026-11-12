@@ -2,12 +2,8 @@
 
 /* Includes */
 #include "lib_types.h"
-// The board only DECODES trace.WatchRequest and board.Request (their repeated
-// lists — the watches, a Command's setpoints — stream through nanopb
-// callbacks into the server's and the sequencer's own tables), so they
-// contribute nothing to the envelope's ENCODE bound; defining their sizes as
-// zero keeps nanopb's shared_Envelope_size defined for everything the board
-// transmits.
+// Decode-only messages whose lists stream through callbacks: zero sizes keep
+// nanopb's shared_Envelope_size defined as the bound of what the board encodes.
 #define trace_WatchRequest_size 0
 #define board_Request_size 0
 

@@ -83,6 +83,8 @@ Acceptance:
   K_t · I_max / 2 over 1 s.
 - A torque setpoint of 0.4 Nm, then a disable or a latched fault and a
   re-enable with no further write, leaves the target at zero.
+- A torque setpoint written while the bridge is disabled is the target
+  after the following enable.
 
 Covers:
 - sys~mc_001~1
@@ -106,8 +108,10 @@ T* = K_vp · e + K_vi · S_v − k_ff · T̂_d, then S_v ← S_v + T · e, for e
 
 a T* of magnitude at or above K_t · I_max then clamped to ±K_t · I_max
 with S_v set so that K_vp · e + K_vi · S_v − k_ff · T̂_d equals the clamped
-T*, and S_v zero at the active method's first commutation step after each
-bridge enable and each method selection, for ω* the speed target, or the
+T*, an unclamped T* of the sign of e whose step the voltage limit scales
+(fw~mc_024~1) leaving S_v as it was before that step, and S_v zero at the
+active method's first commutation step after each bridge enable, for ω*
+the speed target, or the
 velocity command when run by the position method (fw~mc_029~1), and ω̂
 the per-cycle rotor velocity estimate, both in mechanical rad/s, T̂_d the
 per-cycle unmodelled-torque estimate in Nm (fw~est_rotor_002~1), T the
@@ -126,6 +130,10 @@ Acceptance:
   to Ω with K_vp · Ω between K_t · I_max and 2 · K_t · I_max, every step
   sets i_q* = I_max, and the step after ω* returns to zero sets
   i_q* = I_max − K_vp · Ω / K_t, each within 1 % of I_max.
+- With I_d, I_q and T̂_d held at zero, the cogging amplitudes zero, ω̂ at
+  zero and ω* stepped to 10 rad/s with K_p · K_vp · 10 rad/s / K_t at
+  1.6 · V_lim: after 2000 steps, with ω̂ then at ω* and V_lim raised above
+  the command, v_q changes less than 0.05 V over the next 20 steps.
 - With ω̂ and ω* zero, the cogging amplitudes zero, k_ff = 0.5 and T̂_d
   held at D with |D| below K_t · I_max, the method's first commutation step
   after a bridge enable sets i_q* = −0.5 · D / K_t within 1 %.
@@ -135,7 +143,7 @@ Acceptance:
   sets i_q* = −I_max, each within 1 % of I_max.
 - At K_vp = 0.04 Nm per rad/s, K_vi = 0.5 Nm per rad, k_ff = 0, the
   cogging amplitudes zero and K_t · I_max above 0.4 Nm, on a free rotor of
-  1.6e-4 kg·m² tracked by an estimator configured for it
+  1.45e-4 kg·m² tracked by an estimator configured for it
   (fw~est_rotor_001~1, fw~est_rotor_002~1), a step of ω* from rest to
   10 rad/s brings ω̂ to a peak under 11 rad/s and within 5 % of ω* from
   100 ms to 600 ms after the step.
@@ -168,9 +176,11 @@ command
 
 ω_c = K_pp · e + K_pi · S_p + ω_f, then S_p ← S_p + T · e, for e = θ* − θ̂_p
 
-an ω_c of magnitude at or above ω_max then clamped to ±ω_max with S_p
-left as it was before that step, and S_p zero at the method's first
-commutation step after each bridge enable and each method selection, for θ* the position target and ω_f the profile
+an ω_c of magnitude at or above ω_max then clamped to ±ω_max, and an
+unclamped ω_c of the sign of e whose step the voltage limit scales
+(fw~mc_024~1), each leaving S_p as it was before that step, and S_p zero
+at the method's first commutation step after each bridge enable, for θ*
+the cycle's position target θ*_c and ω_f the profile
 velocity (fw~mc_031~1), θ̂_p the rotor position (fw~mc_032~1), T the PWM
 period, ω_max the channel's configured maximum velocity, and K_pp and
 K_pi its configured position gains in 1/s and 1/s², above zero.
@@ -190,11 +200,16 @@ Acceptance:
 - With the estimator's angle held, a position setpoint of 4 rad with
   v = F, a = 0 and ω_s = 0 written at rest (fw~mc_031~1), for 0 < F below
   ω_max: the first commutation step after the next 1 ms cycle commands
-  F · (1 + K_pp · 1 ms) within 1 % of F.
+  F · (1 + K_pp · T) within 1 % of F.
+- With ω̂ and T̂_d held at zero, the cogging amplitudes zero and the
+  estimator's angle stepped by −0.2 rad, K_p · K_vp · K_pp · 0.2 rad / K_t
+  at 1.92 · V_lim: after 2000 steps, with the angle stepped back and V_lim
+  raised above the command, v_q changes less than 0.05 V over the next 40
+  steps.
 - At K_pp = 30 1/s, K_pi = 90 1/s², K_vp = 0.04 Nm per rad/s,
   K_vi = 0.5 Nm per rad, k_ff = 1, the cogging amplitudes zero,
   K_t · I_max above 0.4 Nm, ω_max above 10 rad/s and θ_max above 2π
-  (fw~mc_031~1), on a free rotor of 1.6e-4 kg·m² tracked by an estimator
+  (fw~mc_031~1), on a free rotor of 1.45e-4 kg·m² tracked by an estimator
   configured for it (fw~est_rotor_001~1, fw~est_rotor_002~1), a position
   setpoint of 2π rad with v = 10 rad/s, a = 50 rad/s² and ω_s = 0 from
   rest leaves the rotor's angle within 0.02 rad of 2π from 100 ms after
@@ -247,7 +262,7 @@ Acceptance:
   rotor angle, the first step commands v_q = K_p · I_max within 1 % of
   K_p · I_max.
 - At K_vp = 0.04 Nm per rad/s, K_vi = 0.5 Nm per rad, k_ff = 0 and
-  K_t · I_max above 0.4 Nm, on a free rotor of 1.6e-4 kg·m² tracked by an
+  K_t · I_max above 0.4 Nm, on a free rotor of 1.45e-4 kg·m² tracked by an
   estimator configured for it (fw~est_rotor_001~1, fw~est_rotor_002~1)
   and carrying a cogging torque of 10 mNm · sin(28 · θ), with A_1 = 10 mNm,
   n_1 = 28, φ_1 = 0 and A_2 = 0 configured, under the velocity method
@@ -276,7 +291,7 @@ as
 v_x = K_p · e_x + K_i · S_x, then S_x ← S_x + T · e_x
 
 with S_d and S_q zero at the method's first commutation step after each
-bridge enable and each method selection, where
+bridge enable, where
 
 | Symbol | Value |
 |--------|-------|

@@ -1,7 +1,7 @@
 # Rotor observer derivation
 
 Supplement to `fw~est_rotor_001~1` and `fw~est_rotor_002~1`
-(`specs/firmware/est/rotor.md`). The design-C rotor estimator is a
+(`specs/firmware/est/rotor.md`). The rotor estimator is a
 third-order Luenberger observer on $[\theta,\ \omega,\ T_d]^\mathsf{T}$
 with the encoder angle as its one measurement. This note derives it end
 to end: the plant model, the observer and its error dynamics, the pole
@@ -16,8 +16,9 @@ everything else lumped into one unknown torque $T_d$:
 $$J\,\dot\omega = \tau - b\,\omega - T_c\,\operatorname{sgn}(\omega) + T_d,
 \qquad \dot\theta = \omega$$
 
-$\tau$ is the torque the motor-control application commands ($K_t\,i_q$),
-$b$ the viscous friction, $T_c$ the Coulomb friction, $J$ the rotor
+$\tau$ is the motor torque the motor-control application reports: the
+measured $K_t\,i_q$ plus the share $T_k$ of the cogging torque its
+compensation cancels (`fw~mc_016~1`). $b$ is the viscous friction, $T_c$ the Coulomb friction, $J$ the rotor
 inertia. $T_d$ is whatever acts on the rotor that the model does not
 name: a hand on the shaft, a load, a friction error.
 
@@ -87,7 +88,7 @@ Subtract it from the plant with $e = x - \hat x$ and $y = C x$:
 $$\dot e = A x + B v - A \hat x - B v - L C (x - \hat x) = (A - L C)\, e$$
 
 The $B v$ terms cancel because both sides see the same input. That is
-the whole reason the observer is fed the commanded torque: the
+the whole reason the observer is fed the motor torque: the
 estimation error does not depend on what the motor is doing. The Coulomb
 term does not cancel exactly, since the plant has $\operatorname{sgn}(\omega)$
 and the observer \operatorname{sat}(\hat\omega/\omega_{db}); the leftover
@@ -165,16 +166,15 @@ l_3 = J\,\omega_n^2\, p_d$$
 These are the gains in `fw~est_rotor_001~1`. The $J$ on $l_3$ is what
 makes $\hat T_d$ a torque in newton-metres; without it the third state
 would be an acceleration. The $b/J$ terms are the friction correction:
-on this board $b/J$ is 4.5 rad/s against $2\zeta\omega_n + p_d$ of
-785 rad/s, so leaving them out would put the poles 0.6 % off, and they
+on this board $b/J$ is 0.69 rad/s against $2\zeta\omega_n + p_d$ of
+785 rad/s, so leaving them out would put the poles 0.1 % off, and they
 cost two terms at init.
 
-Check against the two-state observer that preceded design C. Drop $T_d$
-and $p_d$: $A$ is 2×2, the desired polynomial is
+As a check, drop $T_d$ and $p_d$: $A$ is 2×2, the desired polynomial is
 $s^2 + 2\zeta\omega_n s + \omega_n^2$, the determinant is
 $s^2 + (l_1 + b/J)\,s + (l_1 b/J + l_2)$, and matching gives
-$l_1 = 2\zeta\omega_n - b/J$, $l_2 = \omega_n^2 - l_1 b/J$. Every
-design-C gain reduces to its design-B value as $p_d \to 0$.
+$l_1 = 2\zeta\omega_n - b/J$, $l_2 = \omega_n^2 - l_1 b/J$, the
+two-state tracking observer. Every gain reduces to it as $p_d \to 0$.
 
 ## 5. Prediction step at the PWM rate
 
@@ -261,7 +261,7 @@ $F$ picks up factors of $e^{-\beta T}$ with $\beta = b/J$:
 $F_{22} = e^{-\beta T}$, $F_{12} = (1 - e^{-\beta T})/\beta$, and so on.
 Writing $-b\,\hat\omega\,T/J$ inside $u$ is their first-order
 truncation, with a neglected term of order $(\beta T)^2/2$. At
-$\beta = 4.5$ rad/s and $T = 50\ \mu s$ that is $2.5 \times 10^{-8}$
+$\beta = 0.69$ rad/s and $T = 50\ \mu s$ that is $6 \times 10^{-10}$
 relative. The Coulomb term has to be handled this way regardless, since
 the saturation cannot sit in a linear $A$.
 
@@ -311,43 +311,43 @@ requires
 
 $$(2\zeta\omega_n + p_d)\, T_s \le 1$$
 
-which is 0.785 at the acceptance configuration. The exact discrete poles
-of the full two-rate scheme differ slightly from both the Euler and the
-$e^{-p T_s}$ values because the prediction and the correction are not
-applied at the same instant, but with all three poles well under $1/T_s$
-nothing in the acceptance depends on the difference.
-
-What has not changed from design B: drop $p_d$ and the third state and
-the correction is the two-state one with the small friction correction
-on the gains. The only new line is the $\hat T_d$ update.
+which is 0.785 at the acceptance configuration. The proxy bounds the
+step; it does not place the poles. The gains are placed in continuous
+time and applied once per $N = T_s/T$ prediction steps, so the realised
+error dynamics over one tick are $F^N (I - K C)$, and its eigenvalues are
+the discrete poles. At the board configuration (section 7) they are
+$z \approx 0.290$ and $0.86 \pm 0.047j$, about $-1240$ rad/s and
+$-149 \pm 55j$ rad/s, against the designed $-314$, $-314$ and $-157$
+rad/s: one fast real pole and a slower, lightly oscillatory pair. The
+observer converges, but not at the designed rates; placing the poles in
+the discrete domain is an open design item (`docs/motor-sprint.md`).
 
 ## 7. Numbers at the board's configuration
 
-At the configuration the specs' acceptance bullets use,
-$\omega_n = 2\pi \cdot 50$ rad/s, $\zeta = 1$, $p_d = 157$ rad/s, with
-the bench-fit inertia $J = 1.6 \times 10^{-4}$ kg·m² and viscous
-friction $b = 7.2 \times 10^{-4}$ Nm·s/rad ($b/J = 4.5$ rad/s). The
+At the board's configuration (`app_rotorEstimation_channels.c`),
+$\omega_n = 2\pi \cdot 50$ rad/s, $\zeta = 1$, $p_d = 157$ rad/s, the
+bench-fit inertia $J = 1.45 \times 10^{-4}$ kg·m², viscous friction
+$b = 1 \times 10^{-4}$ Nm·s/rad ($b/J = 0.69$ rad/s), and Coulomb
+friction $T_c = 15$ mNm ramped over $\omega_{db} = 1$ rad/s. The
 $b = 0$ column is what the acceptance tests see.
 
-| Quantity | Symbol | $b = 0$ | $b = 7.2 \times 10^{-4}$ | Unit |
+| Quantity | Symbol | $b = 0$ | $b = 1 \times 10^{-4}$ | Unit |
 | --- | --- | ---: | ---: | --- |
-| Error pole pair | $-\omega_n$ (double) | −314 | −314 | rad/s |
-| Disturbance pole | $-p_d$ | −157 | −157 | rad/s |
-| Angle gain | $l_1$ | 785 | 781 | rad/s |
-| Velocity gain | $l_2$ | 197 000 | 193 800 | rad/s² |
-| Torque gain | $l_3$ | 2 479 | 2 479 | Nm/rad |
-| Angle correction per tick | $l_1 T_s$ | 0.785 | 0.781 | rad per rad |
-| Velocity correction per tick | $l_2 T_s$ | 197 | 194 | rad/s per rad |
-| Torque correction per tick | $l_3 T_s$ | 2.48 | 2.48 | Nm per rad |
+| Designed error pole pair | $-\omega_n$ (double) | −314 | −314 | rad/s |
+| Designed disturbance pole | $-p_d$ | −157 | −157 | rad/s |
+| Angle gain | $l_1$ | 785 | 785 | rad/s |
+| Velocity gain | $l_2$ | 197 300 | 196 800 | rad/s² |
+| Torque gain | $l_3$ | 2 247 | 2 247 | Nm/rad |
+| Angle correction per tick | $l_1 T_s$ | 0.785 | 0.785 | rad per rad |
+| Velocity correction per tick | $l_2 T_s$ | 197 | 197 | rad/s per rad |
+| Torque correction per tick | $l_3 T_s$ | 2.25 | 2.25 | Nm per rad |
 | Stability proxy | $(2\zeta\omega_n + p_d)\,T_s$ | 0.785 | 0.785 | |
-| Euler discrete pole, $\omega_n$ | $1 - \omega_n T_s$ | 0.686 | | |
-| Exact discrete pole, $\omega_n$ | $e^{-\omega_n T_s}$ | 0.730 | | |
-| Euler discrete pole, $p_d$ | $1 - p_d T_s$ | 0.843 | | |
-| Exact discrete pole, $p_d$ | $e^{-p_d T_s}$ | 0.855 | | |
+| Realised discrete poles | eig $F^N (I - K C)$ | | 0.290, 0.86 ± 0.047j | |
+| The same as rates | $\ln z / T_s$ | | −1240, −149 ± 55j | rad/s |
 
-A 1° angle error moves $\hat T_d$ by 0.043 Nm in one tick. The
+A 1° angle error moves $\hat T_d$ by 0.039 Nm in one tick. The
 acceptance ramp of 50 rad/s² corresponds to a $T_d$ of
-$J \cdot 50 = 0.008$ Nm, so $\hat T_d$ settles on it from a few
+$J \cdot 50 = 0.007$ Nm, so $\hat T_d$ settles on it from a few
 hundredths of a degree of sustained error, which is why that bullet asks
 for $e$ within 0.01° once settled.
 
@@ -357,7 +357,7 @@ for $e$ within 0.01° once settled.
 | --- | --- | --- | --- |
 | $\theta,\ \omega$ | Rotor mechanical angle and velocity | rad, rad/s | plant |
 | $T_d$ | Unmodelled torque on the rotor, positive in the sense of positive $\omega$ | Nm | plant, estimated |
-| $\tau$ | Commanded torque, $K_t\,i_q$ | Nm | motor-control application, `fw~mc_016~1` |
+| $\tau$ | Motor torque, measured $K_t\,i_q$ plus the cogging share $T_k$ | Nm | motor-control application, `fw~mc_016~1` |
 | $J$ | Rotor inertia | kg·m² | config, `fw~est_rotor_002~1` |
 | $b$ | Viscous friction | Nm per rad/s | config, `fw~est_rotor_002~1` |
 | $T_c$ | Coulomb friction, applied as $T_c\,\operatorname{sat}(\hat\omega/\omega_{db})$ | Nm | config, `fw~est_rotor_002~1` |

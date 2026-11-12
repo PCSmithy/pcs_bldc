@@ -2,6 +2,7 @@
 #include "app_server.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "FreeRTOS.h"
@@ -36,18 +37,49 @@
 #define APP_SERVER_VBUS_I_INPUT    (11U)
 #define APP_SERVER_VBUS_I_V_PER_A  (0.6f)
 
+#define APP_SERVER_MODE_BIT(mode) (1UL << (uint32_t) (mode))
+#define APP_SERVER_KIND_BIT(kind) (1UL << (uint32_t) (kind))
+#define APP_SERVER_DRIVING_MODES  (APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_SIX_STEP_TRAP) | \
+                                   APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_SINUSOIDAL) | \
+                                   APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_FOC_TORQUE) | \
+                                   APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_FOC_VELOCITY) | \
+                                   APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_FOC_POSITION))
+#define APP_SERVER_ALL_MODES      (APP_SERVER_DRIVING_MODES | APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_OFF))
+
 /* Typedefs */
 
 // A Command's setpoints stream into the sequencer as they decode
 // (board.options); the first fault found rides here to the verdict.
 typedef struct
 {
-    bool     open;          // the sequencer took begin for this Command
-    uint32_t count;
-    uint32_t lastTime_us;
+    uint32_t kinds;   // APP_SERVER_KIND_BIT of each kind staged
     bool     rejected;
     char     cause[sizeof(((shared_Response *) 0)->cause)];
 } app_server_config_staging_S;
+
+// One row per Setpoint target arm (fw~conn_server_007): the modes that take it,
+// and the rating bounding its value (none for the stop).
+typedef struct
+{
+    pb_size_t            tag;
+    app_sequencer_kind_E kind;
+    uint32_t             modes;        // APP_SERVER_MODE_BIT per accepting mode
+    bool                 bounded;      // |value| <= the rating at valueBound
+    size_t               valueBound;   // offsetof in app_motorControl_ratings_S
+    bool                 isMove;       // its limit a velocity limit, bounding the velocity at the point (fw~mc_030)
+} app_server_config_setpointKind_S;
+
+/* Static Assertions */
+
+// The wire mode and the motor-control mode share their values (mapMode casts).
+_Static_assert((int) _board_Mode_ARRAYSIZE == (int) APP_MOTORCONTROL_MODE_COUNT, "board.Mode and the motor modes differ in count");
+_Static_assert((board_Mode_MODE_OFF == (board_Mode) APP_MOTORCONTROL_MODE_OFF) &&
+               (board_Mode_MODE_SIX_STEP_TRAP == (board_Mode) APP_MOTORCONTROL_MODE_SIX_STEP_TRAP) &&
+               (board_Mode_MODE_SINUSOIDAL == (board_Mode) APP_MOTORCONTROL_MODE_SINUSOIDAL) &&
+               (board_Mode_MODE_FOC_TORQUE == (board_Mode) APP_MOTORCONTROL_MODE_FOC_TORQUE) &&
+               (board_Mode_MODE_FOC_VELOCITY == (board_Mode) APP_MOTORCONTROL_MODE_FOC_VELOCITY) &&
+               (board_Mode_MODE_FOC_POSITION == (board_Mode) APP_MOTORCONTROL_MODE_FOC_POSITION),
+               "board.Mode and app_motorControl_mode_E differ in value");
 
 /* Private Function Declarations */
 
@@ -61,6 +93,23 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
 
 static app_server_watch_S app_server_config_watchStorage[2U * APP_SERVER_WATCH_CAPACITY];
 static app_server_config_staging_S app_server_config_staging;
+
+static const app_server_config_setpointKind_S app_server_config_setpointKinds[] =
+{
+    { .tag = board_Setpoint_velocity_radps_tag, .kind = APP_SEQUENCER_KIND_VELOCITY,
+      .modes = APP_SERVER_DRIVING_MODES,
+      .bounded = true, .valueBound = offsetof(app_motorControl_ratings_S, maxVelocity_radPerSec), .isMove = false },
+    { .tag = board_Setpoint_torque_nm_tag, .kind = APP_SEQUENCER_KIND_TORQUE,
+      .modes = APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_FOC_TORQUE),
+      .bounded = true, .valueBound = offsetof(app_motorControl_ratings_S, maxTorque_Nm), .isMove = false },
+    { .tag = board_Setpoint_stop_tag, .kind = APP_SEQUENCER_KIND_STOP,
+      .modes = APP_SERVER_ALL_MODES,
+      .bounded = false, .valueBound = 0U, .isMove = false },
+    { .tag = board_Setpoint_position_rad_tag, .kind = APP_SEQUENCER_KIND_POSITION,
+      .modes = APP_SERVER_MODE_BIT(APP_MOTORCONTROL_MODE_FOC_POSITION),
+      .bounded = true, .valueBound = offsetof(app_motorControl_ratings_S, maxPosition_rad), .isMove = true },
+};
+
 static uint8_t app_server_config_sampleStorage[APP_SERVER_TRACE_STORAGE_BYTES(APP_SERVER_SAMPLE_RAM_BYTES)];
 
 #if (BUILD_TARGET == BUILD_TARGET_STM32G4)
@@ -127,114 +176,97 @@ const app_server_config_S app_server_config =
 
 /* Private Function Definitions */
 
-static void app_server_config_private_stageReject(const char * const cause)
+// The rating a setpoint-kind row bounds its value by.
+static float32_t app_server_config_private_rating(const app_motorControl_ratings_S * const ratings, size_t offset)
 {
-    app_server_config_staging_S * const staging = &app_server_config_staging;
-    if (!staging->rejected)
-    {
-        staging->rejected = true;
-        (void) strcpy(staging->cause, cause);
-    }
+    float32_t rating = 0.0f;
+    (void) memcpy(&rating, &((const uint8_t *) ratings)[offset], sizeof(rating));
+    return rating;
 }
 
-// One Command.setpoints element, checked against the rejection table of
-// fw~conn_server_007 and appended to the staged sequence. The first fault
-// stands while the rest still decode, so the verdict names it.
+static const char * app_server_config_private_appendCause(app_sequencer_append_E result)
+{
+    const char * cause = NULL;
+    switch (result)
+    {
+        case APP_SEQUENCER_APPEND_OK:           break;
+        case APP_SEQUENCER_APPEND_FULL:         cause = "sequence exceeds the player's capacity"; break;
+        case APP_SEQUENCER_APPEND_OUT_OF_ORDER: cause = "setpoint times not in order"; break;
+        case APP_SEQUENCER_APPEND_NOT_STAGING:  cause = "sequence player busy"; break;
+        default:                                cause = "setpoint has no target"; break;
+    }
+    return cause;
+}
+
+// One Command.setpoints element, checked against fw~conn_server_007's table and
+// appended to the staged sequence; the first fault stands for the verdict.
 static void app_server_config_private_stageSetpoint(const board_Setpoint * const setpoint)
 {
     app_server_config_staging_S * const staging = &app_server_config_staging;
+    const app_server_config_setpointKind_S * row = NULL;
+    for (size_t i = 0U; i < COUNTOF(app_server_config_setpointKinds); i++)
+    {
+        if (app_server_config_setpointKinds[i].tag == setpoint->which_target)
+        {
+            row = &app_server_config_setpointKinds[i];
+        }
+    }
     app_motorControl_ratings_S ratings = { 0 };
     (void) app_motorControl_getRatings(APP_MOTORCONTROL_CHANNEL_MAIN, &ratings);
 
-    app_sequencer_setpoint_S entry = {
-        .t_us = setpoint->t_us,
-        .kind = APP_SEQUENCER_KIND_COUNT,   // until the target arm names one
-        .value = 0.0f,
-        .rateLimit = setpoint->rate_limit,
-        .accelLimit = 0.0f,
-        .velocityAtPoint = 0.0f,
-    };
-    float32_t bound = 0.0f;
-    // a position's rate limit is its velocity limit, itself bounded, and bounds
-    // its velocity at the point (the maximum velocity for a limit of zero)
-    float32_t limitBound = INFINITY;
-    float32_t velocityAtPointBound = INFINITY;
-    switch (setpoint->which_target)
-    {
-        case board_Setpoint_velocity_radps_tag:
-            entry.kind = APP_SEQUENCER_KIND_VELOCITY;
-            entry.value = setpoint->target.velocity_radps;
-            bound = ratings.maxVelocity_radPerSec;
-            break;
+    // The float target arms share the union's first word; the stop carries none.
+    const bool hasValue = (row != NULL) && row->bounded;
+    const bool isMove = (row != NULL) && row->isMove;
+    const float32_t value = hasValue ? setpoint->target.velocity_radps : 0.0f;
+    const float32_t limit = setpoint->rate_limit;
+    const float32_t accel = isMove ? setpoint->accel_limit_radps2 : 0.0f;
+    const float32_t atPoint = isMove ? setpoint->velocity_at_point_radps : 0.0f;
+    const float32_t atPointBound = (limit > 0.0f) ? limit : ratings.maxVelocity_radPerSec;
 
-        case board_Setpoint_torque_nm_tag:
-            entry.kind = APP_SEQUENCER_KIND_TORQUE;
-            entry.value = setpoint->target.torque_nm;
-            bound = ratings.maxTorque_Nm;
-            break;
-
-        case board_Setpoint_stop_tag:
-            entry.kind = APP_SEQUENCER_KIND_STOP;   // a zero value within a zero bound
-            break;
-
-        case board_Setpoint_position_rad_tag:
-            entry.kind = APP_SEQUENCER_KIND_POSITION;
-            entry.value = setpoint->target.position_rad;
-            entry.accelLimit = setpoint->accel_limit_radps2;
-            entry.velocityAtPoint = setpoint->velocity_at_point_radps;
-            bound = ratings.maxPosition_rad;
-            limitBound = ratings.maxVelocity_radPerSec;
-            velocityAtPointBound = (entry.rateLimit > 0.0f) ? entry.rateLimit : ratings.maxVelocity_radPerSec;
-            break;
-
-        default:
-            break;
-    }
-
-    if (entry.kind == APP_SEQUENCER_KIND_COUNT)
+    const char * cause = NULL;
+    if (row == NULL)
     {
-        app_server_config_private_stageReject("setpoint has no target");
+        cause = "setpoint has no target";
     }
-    else if ((!isfinite(entry.value)) || (!isfinite(entry.rateLimit)) ||
-             (!isfinite(entry.accelLimit)) || (!isfinite(entry.velocityAtPoint)))
+    else if ((!isfinite(value)) || (!isfinite(limit)) || (!isfinite(accel)) || (!isfinite(atPoint)))
     {
-        app_server_config_private_stageReject("setpoint not finite");
+        cause = "setpoint not finite";
     }
-    else if ((entry.rateLimit < 0.0f) || (entry.accelLimit < 0.0f))
+    else if ((limit < 0.0f) || (accel < 0.0f))
     {
-        app_server_config_private_stageReject("rate limit negative");
+        cause = "rate limit negative";
     }
-    else if (fabsf(entry.value) > bound)
+    else if (hasValue && (fabsf(value) > app_server_config_private_rating(&ratings, row->valueBound)))
     {
-        app_server_config_private_stageReject("setpoint exceeds the motor rating");
+        cause = "setpoint exceeds the motor rating";
     }
-    else if (entry.rateLimit > limitBound)
+    else if (isMove && (limit > ratings.maxVelocity_radPerSec))
     {
-        app_server_config_private_stageReject("velocity limit exceeds the motor rating");
+        cause = "velocity limit exceeds the motor rating";
     }
-    else if (fabsf(entry.velocityAtPoint) > velocityAtPointBound)
+    else if (isMove && (fabsf(atPoint) > atPointBound))
     {
-        app_server_config_private_stageReject("velocity at the point exceeds the velocity limit");
-    }
-    else if ((staging->count > 0U) && (entry.t_us < staging->lastTime_us))
-    {
-        app_server_config_private_stageReject("setpoint times not in order");
-    }
-    else if (staging->open)
-    {
-        if (app_sequencer_append(APP_SEQUENCER_CHANNEL_MAIN, &entry))
-        {
-            staging->count++;
-            staging->lastTime_us = entry.t_us;
-        }
-        else
-        {
-            app_server_config_private_stageReject("sequence exceeds the player's capacity");
-        }
+        cause = "velocity at the point exceeds the velocity limit";
     }
     else
     {
-        // Not open: the busy rejection already stands.
+        app_sequencer_setpoint_S entry = { .t_us = setpoint->t_us, .kind = row->kind };
+        if (isMove)
+        {
+            entry.move = (app_sequencer_move_S){ value, limit, accel, atPoint };
+        }
+        else
+        {
+            entry.target = (app_sequencer_target_S){ value, limit };
+        }
+        cause = app_server_config_private_appendCause(app_sequencer_append(APP_SEQUENCER_CHANNEL_MAIN, &entry));
+        staging->kinds |= APP_SERVER_KIND_BIT(row->kind);
+    }
+
+    if ((cause != NULL) && (!staging->rejected))
+    {
+        staging->rejected = true;
+        (void) strcpy(staging->cause, cause);
     }
 }
 
@@ -264,10 +296,10 @@ static bool app_server_config_private_prepareCommand(pb_istream_t * stream, cons
         board_Command * const command = (board_Command *) field->pData;
         app_server_config_staging_S * const staging = &app_server_config_staging;
         *staging = (app_server_config_staging_S){ 0 };
-        staging->open = app_sequencer_begin(APP_SEQUENCER_CHANNEL_MAIN);
-        if (!staging->open)
+        if (!app_sequencer_begin(APP_SEQUENCER_CHANNEL_MAIN))
         {
-            app_server_config_private_stageReject("sequence player busy");   // a commit awaits its pass: retry
+            staging->rejected = true;
+            (void) strcpy(staging->cause, "sequence player busy");   // a commit awaits its pass
         }
         command->setpoints.funcs.decode = app_server_config_private_setpointCallback;
         command->setpoints.arg = NULL;
@@ -275,30 +307,35 @@ static bool app_server_config_private_prepareCommand(pb_istream_t * stream, cons
     return true;
 }
 
-// The board.Mode value as the motor control's mode; false for a value that
-// names no member.
+// The board.Mode value as the motor control's mode, which shares its values;
+// false for a value that names no member.
 static bool app_server_config_private_mapMode(board_Mode wire, app_motorControl_mode_E * const mode)
 {
-    bool known = true;
-    switch (wire)
+    const bool known = ((uint32_t) wire < (uint32_t) APP_MOTORCONTROL_MODE_COUNT);
+    if (known)
     {
-        case board_Mode_MODE_OFF:           *mode = APP_MOTORCONTROL_MODE_OFF;           break;
-        case board_Mode_MODE_SIX_STEP_TRAP: *mode = APP_MOTORCONTROL_MODE_SIX_STEP_TRAP; break;
-        case board_Mode_MODE_SINUSOIDAL:    *mode = APP_MOTORCONTROL_MODE_SINUSOIDAL;    break;
-        case board_Mode_MODE_FOC_TORQUE:    *mode = APP_MOTORCONTROL_MODE_FOC_TORQUE;    break;
-        case board_Mode_MODE_FOC_VELOCITY:  *mode = APP_MOTORCONTROL_MODE_FOC_VELOCITY;  break;
-        case board_Mode_MODE_FOC_POSITION:  *mode = APP_MOTORCONTROL_MODE_FOC_POSITION;  break;
-        default:                            known = false;                               break;
+        *mode = (app_motorControl_mode_E) wire;
     }
     return known;
 }
 
-// Why a mode request is blocked, or NULL. MODE_OFF is the disable request
-// (fw~mc_006) and always passes; a method selects only while the bridge is
-// disabled or already running it (sys~mc_005), never while a fault is latched
-// (button-path parity, fw~mc_007). Called inside the critical section that
-// also acts, so the 1 ms task cannot enable the bridge or latch a fault
-// between check and act (bounded: compares + the stores).
+// The APP_SERVER_KIND_BIT set of the setpoint kinds a mode takes.
+static uint32_t app_server_config_private_kindsTaken(app_motorControl_mode_E mode)
+{
+    uint32_t kinds = 0U;
+    for (size_t i = 0U; i < COUNTOF(app_server_config_setpointKinds); i++)
+    {
+        if ((app_server_config_setpointKinds[i].modes & APP_SERVER_MODE_BIT(mode)) != 0U)
+        {
+            kinds |= APP_SERVER_KIND_BIT(app_server_config_setpointKinds[i].kind);
+        }
+    }
+    return kinds;
+}
+
+// Why a mode request is blocked, or NULL: a method never while a fault is
+// latched (fw~mc_007), and while enabled only the running one (sys~mc_005).
+// Called inside the critical section that acts, so the check cannot go stale.
 static const char * app_server_config_private_modeBlocked(app_motorControl_mode_E mode)
 {
     const char * cause = NULL;
@@ -349,6 +386,10 @@ static bool app_server_config_private_handleRequest(const board_Request * const 
             else if (app_server_config_staging.rejected)
             {
                 cause = app_server_config_staging.cause;
+            }
+            else if ((app_server_config_staging.kinds & ~app_server_config_private_kindsTaken(mode)) != 0U)
+            {
+                cause = "setpoint kind not for this mode";
             }
             else
             {
@@ -423,27 +464,7 @@ static bool app_server_config_private_buildTelemetry(board_Telemetry * const tel
     (void) HW_ADC_getVolts(APP_SERVER_VBUS_I_CHANNEL, APP_SERVER_VBUS_I_INPUT, &vbusI_v);
 
     telemetry->timestamp_ms = (uint32_t) (xTaskGetTickCount() * portTICK_PERIOD_MS);
-    switch (snapshot.mode)
-    {
-        case APP_MOTORCONTROL_MODE_SIX_STEP_TRAP:
-            telemetry->mode = board_Mode_MODE_SIX_STEP_TRAP;
-            break;
-        case APP_MOTORCONTROL_MODE_SINUSOIDAL:
-            telemetry->mode = board_Mode_MODE_SINUSOIDAL;
-            break;
-        case APP_MOTORCONTROL_MODE_FOC_TORQUE:
-            telemetry->mode = board_Mode_MODE_FOC_TORQUE;
-            break;
-        case APP_MOTORCONTROL_MODE_FOC_VELOCITY:
-            telemetry->mode = board_Mode_MODE_FOC_VELOCITY;
-            break;
-        case APP_MOTORCONTROL_MODE_FOC_POSITION:
-            telemetry->mode = board_Mode_MODE_FOC_POSITION;
-            break;
-        default:
-            telemetry->mode = board_Mode_MODE_OFF;
-            break;
-    }
+    telemetry->mode = (snapshot.mode < APP_MOTORCONTROL_MODE_COUNT) ? (board_Mode) snapshot.mode : board_Mode_MODE_OFF;
     switch (snapshot.state)
     {
         case APP_MOTORCONTROL_STATE_ENABLED:

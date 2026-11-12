@@ -7,9 +7,10 @@
 
 use crate::{
     cid, vid, wire_bridge, wire_current_sense, wiring::BridgeRoutes, wiring::CurrentSenseRoutes,
-    As5048Model, CurrentSenseModel, MotorModel, MotorParams, Sil, SilOptions, SOURCE,
+    As5048Model, CurrentSenseModel, CurrentSenseParams, MotorModel, MotorParams, Sil, SilOptions,
+    BRIDGE_PORTS, SOURCE,
 };
-use voyant::vsig_id;
+use voyant::{vsig_id, Firmware};
 
 /// Member names: the plant, its commutation encoder, the user dial, the sense front end.
 pub const MOTOR: &str = "motor";
@@ -36,13 +37,35 @@ pub const GATE_BRINGUP_MS: u64 = 300;
 /// scenario sends.
 pub const USB_RX_REG: usize = 128;
 
-/// `ALIGNMENT_DUTY_CYCLE` / `ALIGNMENT_DWELL_TIMER_MS` in `app_motorControl.cpp`.
-pub const ALIGN_DUTY: f64 = 0.3;
-pub const ALIGN_DWELL_MS: u64 = 500;
+/// One field of channel 0's motor-control configuration, read out of the image.
+fn mc_config(sim: &Sil, field: &str) -> f64 {
+    sim.fw()
+        .read_cvar(&format!("app_motorControl_channelConfig[0].{field}"))
+        .as_f64()
+        .unwrap_or_else(|| panic!("app_motorControl_channelConfig[0].{field} reads as a number"))
+}
 
-/// `OVERCURRENT_PHASE_TRIP_A` / `OVERCURRENT_BUS_TRIP_A` in `app_motorControl.cpp`.
-pub const PHASE_TRIP_A: f64 = 1.2;
-pub const BUS_TRIP_A: f64 = 1.5;
+/// The alignment pattern's phase-U duty.
+pub fn align_duty(sim: &Sil) -> f64 {
+    mc_config(sim, "alignmentDuty01")
+}
+
+/// How long the alignment pattern holds before the offset capture.
+pub fn align_dwell_ms(sim: &Sil) -> u64 {
+    sim.fw()
+        .read_cvar("app_motorControl_channelConfig[0].alignmentDwell_ms")
+        .as_u64()
+        .expect("alignmentDwell_ms reads as a count")
+}
+
+/// The phase-current and bus-current overcurrent trips.
+pub fn phase_trip_a(sim: &Sil) -> f64 {
+    mc_config(sim, "overcurrentPhaseTrip_A")
+}
+
+pub fn bus_trip_a(sim: &Sil) -> f64 {
+    mc_config(sim, "overcurrentBusTrip_A")
+}
 
 /// Button PB10, active LOW (idle HIGH via pull-up). Port B is enum index 1, bit 10.
 pub const INPUT_LEVEL_PB10: &str = "HW_GPIO_data.inputLevel[1][10]";
@@ -79,18 +102,39 @@ pub fn board_with(options: SilOptions, initial_angle_rad: f64) -> Board {
 
 /// [`board_with`] on a motor built from `motor` — a held shaft, other windings.
 pub fn board_with_motor(options: SilOptions, initial_angle_rad: f64, motor: MotorParams) -> Board {
+    board_from(options, initial_angle_rad, |_| motor, CurrentSenseParams::default())
+}
+
+/// The board world with the plant chosen once the firmware image is loaded, so a
+/// plant can take a constant out of the firmware's configuration (`plant` reads it
+/// by DWARF), and the sense front end built from `sense`.
+pub fn board_from(
+    options: SilOptions,
+    initial_angle_rad: f64,
+    plant: impl FnOnce(&Firmware) -> MotorParams,
+    sense: CurrentSenseParams,
+) -> Board {
+    // A duty count is 1/3600 of the period, finer than the table's default deadband:
+    // the bridge's duties reach the plant exact.
+    let mut options = options;
+    for (port, input) in &BRIDGE_PORTS[..3] {
+        options = options
+            .signal_epsilon(vsig_id(SOURCE, port).expect("valid vsig id"), 0.0)
+            .signal_epsilon(vsig_id(MOTOR, input).expect("valid vsig id"), 0.0);
+    }
     let mut sim = options.build();
+    let mut fwm = sim.load_firmware(SOURCE);
+    let motor = plant(&sim.fw());
 
     // Producer → sensor → firmware, so the zero-latency routes land the same tick.
     sim.add_member(MotorModel::new(MOTOR, initial_angle_rad).with_params(motor));
     let encoder =
         sim.add_member(As5048Model::new(ENCODER, 0.0).with_noise(ENCODER_NOISE_LSB, ENCODER_SEED));
     let dial = sim.add_member(As5048Model::new(DIAL, 0.0).with_noise(DIAL_NOISE_LSB, DIAL_SEED));
-    sim.add_member(CurrentSenseModel::new(SENSE));
+    sim.add_member(CurrentSenseModel::new(SENSE).with_params(sense));
 
     // Force-registered before the member enumerates its mirror: a multi-dim array
     // element and an over-threshold one, both written by the checks.
-    let mut fwm = sim.load_firmware(SOURCE);
     fwm.register_cvar_in_state_table(INPUT_LEVEL_PB10);
     fwm.register_cvar_in_state_table(I2C_STATUS_REG);
     // The sim USB rx ring, so a scenario can hand the firmware a protocol

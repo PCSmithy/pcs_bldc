@@ -17,10 +17,13 @@ See also: [[workspace]] (widgets and their persisted configuration),
 A Command widget shall offer a mode selector over the board's modes, a
 setpoint field and the mode's limit fields in the units and bounds per
 the table — the bounds the reported `MotorInfo` values
-(`app~conn_004~1`), a zero limit shown as the table's zero meaning — a
-Send control that sends
-a `Command` of that mode and one setpoint at time zero, and a Stop
-control that sends `MODE_OFF` with no setpoints, the selection kept, the
+(`app~conn_004~1`), the velocity, rate and acceleration limits held at
+zero or above, a zero limit shown as the table's zero meaning, a mode of
+another setpoint kind starting the setpoint and limits from zero and a
+mode of the same kind keeping them within its bound — a Send
+control that sends a `Command` of that mode and one setpoint at time
+zero, and a Stop control that sends `MODE_OFF` with no setpoints, the
+selection kept, available while a Send is in flight, the latest send's
 verdict shown beside the controls until the next send; the fields, Send,
 and Stop unavailable while no session is connected (`app~conn_001~1`),
 and the widget's mode, setpoint, and limits held as workspace
@@ -37,6 +40,8 @@ Acceptance:
 - Selecting the torque method relabels the setpoint field to Nm and
   bounds it at the motor's maximum torque; selecting a velocity method
   relabels it to rad/s and bounds it at the maximum velocity.
+- From field-oriented velocity at 18 rad/s, sinusoidal keeps 18 rad/s
+  and its limit; the torque method starts from zero.
 - Selecting the position method relabels the setpoint field to rad and
   shows the velocity-limit, acceleration-limit and velocity-at-the-point
   fields.
@@ -45,7 +50,9 @@ Acceptance:
 - A rejected command shows its `cause` beside Send; an accepted one
   shows accepted.
 - Stop sends `MODE_OFF` with no setpoints; the selected mode and
-  setpoint stay.
+  setpoint stay; pressed while a Send is in flight, it goes out and its
+  verdict stands.
+- A typed limit of -1 holds at zero.
 - Disconnected, the fields, Send, and Stop are unavailable; reconnected,
   the widget's last mode, setpoint, and limits are shown.
 

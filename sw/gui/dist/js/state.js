@@ -205,7 +205,8 @@ export const api = {
     return status;
   },
   // The board command plane (app~conn_004): a Command { mode, setpoints:
-  // [{ t_us, velocity_radps | torque_nm, rate_limit }] } resolves to the
+  // [{ t_us, velocity_radps | torque_nm | position_rad | stop, rate_limit,
+  // accel_limit_radps2?, velocity_at_point_radps? }] } resolves to the
   // verdict { accepted, cause }; the ratings land in the store.
   async sendCommand(command) {
     return invoke("send_command", { command });

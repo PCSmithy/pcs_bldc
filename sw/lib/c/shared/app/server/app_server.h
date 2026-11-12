@@ -62,10 +62,8 @@ typedef struct
     uint32_t sampleRamBudgetBytes;
     uint32_t linkBudgetBytesPerS;
 
-    // Board hooks behind the envelope's extension payloads; each may be NULL
-    // on a board without it.
-    // Answer a command: true with the Reply filled (a result), false with the
-    // Response filled (the verdict: accepted, or rejected with a cause).
+    // Board hooks, each NULL on a board without it. handleRequest answers a
+    // command: true with the Reply filled, false with the Response verdict.
     bool (*handleRequest)(const board_Request * const request, board_Reply * const reply,
                           shared_Response * const response);
     // nanopb submsg callback for the Request's command arm, run before the arm

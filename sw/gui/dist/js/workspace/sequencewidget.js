@@ -2,35 +2,36 @@
 // points on a chart (time from start × setpoint, bounded by the mode's
 // rating), run on the board as one Command ending in a stop at the
 // duration, its progress marked from the board's reported elapsed time.
-// The chart draws the written targets as a zero-order hold and the target
-// in effect as the rate-limited slew the firmware applies (fw~mc_027), or
-// under the position method each point's move profile (fw~mc_031).
-// Named sequences live in the workspace.
+// The chart draws the written targets as a zero-order hold and the kind's
+// target in effect (setpoints.js); a mode of another setpoint kind clears
+// the points. Named sequences live in the workspace.
 // [impl->app~views_025~1] [impl->app~views_026~1] [impl->app~views_027~1]
 
 import { icon } from "../icons.js";
-import { store, subscribe, api, notify } from "../state.js";
+import { store, subscribe, notify } from "../state.js";
 import { toggleAxesConfig, closeAxesConfigFor } from "./axesconfig.js";
 import { wireTitleEditor } from "./titlebar.js";
 import {
-  COMMAND_MODES, SETPOINT_KINDS, kindOf, clampToBound, stopCommand, boundPositionLimits, positionLimitFields,
-} from "./commandwidget.js";
+  COMMAND_MODES, EXTRA_FIELDS, kindOf, kindFor, clampToBound, stopCommand, boundLimits, boundOf,
+} from "./setpoints.js";
+import { fmt, isLive, sendRowHtml, sendWithVerdict, renderSendRow } from "./cmdplane.js";
 import { globalNewest, addRunMark } from "./timeline.js";
 import { esc } from "../dom.js";
 import { REMOVE_KEYS } from "../platform.js";
 
 /** The modes a sequence runs under: every mode with a setpoint kind. */
-export const SEQUENCE_MODES = COMMAND_MODES.filter((m) => m.kind !== null);
+export const SEQUENCE_MODES = COMMAND_MODES.filter((m) => kindOf(m.mode));
 
 const MARGIN = { l: 48, r: 12, t: 10, b: 20 };
 const HIT_PX = 8;
 const DEFAULT_DURATION_MS = 2000;
-// The vertical bound with no rating reported: fixed, so a drag cannot feed it.
-const FALLBACK_BOUND = { velocity: 50, torque: 1, position: 62.83 };
 const MIN_DURATION_MS = 10;
 const MAX_DURATION_MS = 600_000;
+const EXTRA_KEYS = EXTRA_FIELDS.map((e) => e.key);
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const isSequenceMode = (mode) => SEQUENCE_MODES.some((m) => m.mode === mode);
+const capitalized = (s) => s[0].toUpperCase() + s.slice(1);
 
 // ── named sequences: one library per workspace, persisted with the layout ──
 
@@ -54,157 +55,70 @@ export function namedEntries() {
   return Object.fromEntries(named);
 }
 
+/** Restored as stored; a Load holds each to the editor's bounds. */
 export function restoreNamed(entries) {
   named.clear();
-  for (const [name, seq] of Object.entries(entries || {})) named.set(name, seq);
+  for (const [name, seq] of Object.entries(entries || {})) if (seq && typeof seq === "object") named.set(name, seq);
 }
 
 // ── the sequence model ────────────────────────────────────────────────────
 
-/** A position's acceleration limit and velocity at the point, kept only when nonzero. */
-const POSITION_LIMITS = ["accel", "at_point"];
+/** A point's extra limit fields kept only when finite and nonzero. */
 function tidy(p) {
-  for (const key of POSITION_LIMITS) if (!Number.isFinite(p[key]) || p[key] === 0) delete p[key];
+  for (const key of EXTRA_KEYS) if (!Number.isFinite(p[key]) || p[key] === 0) delete p[key];
   return p;
 }
 
+/** Points with a finite time and value, time-ordered, their fields copied. */
 const clean = (points) =>
-  points
-    .filter((p) => Number.isFinite(p.t_ms) && Number.isFinite(p.value))
+  (Array.isArray(points) ? points : [])
+    .filter((p) => Number.isFinite(p?.t_ms) && Number.isFinite(p.value))
     .map((p) => tidy({
-      t_ms: Math.max(0, Math.round(p.t_ms)), value: p.value, limit: Number.isFinite(p.limit) ? p.limit : 0,
-      accel: p.accel, at_point: p.at_point,
+      t_ms: Math.max(0, Math.round(p.t_ms)), value: p.value, limit: p.limit,
+      ...Object.fromEntries(EXTRA_KEYS.map((key) => [key, p[key]])),
     }))
     .sort((a, b) => a.t_ms - b.t_ms);
 
-/** The target in effect over [0, duration]: each pass slews toward the
- *  last written target at its rate limit, a zero limit stepping; from zero
- *  before the first point. Returns [times_ms, values]. */
-export function trajectory(points, duration_ms, step_ms = Math.max(1, duration_ms / 2000)) {
-  const ts = [], vs = [];
-  let effective = 0;
-  let i = 0;
-  let target = null;
-  for (let t = 0; t <= duration_ms + 1e-9; t += step_ms) {
-    // The pass slews toward the target written before it; a write at t
-    // takes effect from the next pass (a step lands at once).
-    if (target && target.limit > 0) {
-      const maxStep = (target.limit * step_ms) / 1000;
-      effective += Math.max(-maxStep, Math.min(maxStep, target.value - effective));
-    }
-    while (i < points.length && points[i].t_ms <= t) {
-      target = points[i++];
-      if (target.limit <= 0) effective = target.value;
-    }
-    ts.push(t);
-    vs.push(effective);
-  }
-  return [ts, vs];
-}
-
-/** The position target under the position method over [0, duration],
- *  replayed in the board's 1 ms passes (fw~mc_031): from each point's time,
- *  from the previous move's value and velocity, velocity slews at a toward
- *  ±v (v zero: the maximum velocity; a zero: a step), braking to arrive at
- *  the point at |ω_s|, then holds ω_s; from 0 at rest before the first
- *  point. Returns [times_ms, values, velocities]. */
-export function positionTrajectory(points, duration_ms, motorInfo, step_ms = Math.max(1, duration_ms / 2000)) {
-  const T = 1e-3;
-  const maxVelocity = motorInfo?.max_velocity_radps ?? FALLBACK_BOUND.velocity;
-  const maxPosition = motorInfo?.max_position_rad ?? FALLBACK_BOUND.position;
-  let theta = 0, omega = 0, sp = null, arrived = false, held = 0, i = 0, pass = 0;
-  const runPass = () => {
-    while (i < points.length && points[i].t_ms <= pass) {
-      const p = points[i++];
-      const v = p.limit > 0 ? Math.min(p.limit, maxVelocity) : maxVelocity;
-      sp = {
-        position: clampToBound(p.value, maxPosition), v, a: Math.max(0, p.accel ?? 0),
-        ws: Math.abs(clampToBound(p.at_point ?? 0, v)),
-      };
-      arrived = false;
-    }
-    let w = 0;
-    if (sp && arrived) {
-      w = held;
-    } else if (sp) {
-      const distance = sp.position - theta;
-      const dir = distance < 0 ? -1 : 1;
-      const remaining = Math.abs(distance);
-      if (sp.a > 0) {
-        // The speed from which braking at a reaches ω_s exactly on the point.
-        const aT = sp.a * T, h = aT / 2;
-        const speed = Math.min(sp.v, Math.sqrt(Math.max(0, h * h + sp.ws * sp.ws - aT * sp.ws + 2 * sp.a * remaining)) - h);
-        w = omega + Math.max(-aT, Math.min(aT, dir * speed - omega));
-      } else {
-        w = dir * sp.v;
-      }
-      if (w * dir >= 0 && remaining <= Math.abs(w) * T) {
-        arrived = true;
-        held = w = dir * sp.ws;
-        if (sp.ws === 0) theta = sp.position;
-      }
-    }
-    let next = theta + w * T;
-    if (Math.abs(next) > maxPosition) {
-      next = Math.sign(next) * maxPosition;
-      w = 0;
-    }
-    theta = next;
-    omega = w;
-    pass += 1;
-  };
-  const ts = [], vs = [], ws = [];
-  for (let t = 0; t <= duration_ms + 1e-9; t += step_ms) {
-    while (pass < t - 1e-9) runPass();
-    ts.push(t);
-    vs.push(theta);
-    ws.push(omega);
-  }
-  return [ts, vs, ws];
-}
+const heldDuration = (ms) => Math.round(Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, ms)));
 
 /** The Command a sequence runs as: every point in time order, then a stop
  *  at the duration, so the board ends the run itself. */
 export function buildSequenceCommand(cfg) {
-  const kind = kindOf(cfg.mode);
-  const k = SETPOINT_KINDS[kind];
-  const setpoints = clean(cfg.points).map((p) => {
-    const sp = { t_us: p.t_ms * 1000, rate_limit: p.limit };
-    sp[k.field] = p.value;
-    if (kind === "position") Object.assign(sp, positionLimitFields(p));
-    return sp;
-  });
+  const k = kindFor(cfg.mode);
+  const setpoints = cfg.points.map((p) => ({ t_us: p.t_ms * 1000, ...k.wireFields(p) }));
   setpoints.push({ t_us: cfg.duration_ms * 1000, stop: {} });
   return { mode: cfg.mode, setpoints };
 }
 
-const fmt = (v) => (Number.isFinite(v) ? String(+v.toFixed(3)) : "");
-
 export class SequenceWidget {
-  /** cfg: { id, mode, duration_ms, points: [{ t_ms, value, limit, accel?, at_point? }] } */
+  /** cfg: { id, mode, duration_ms, points: [{ t_ms, value, limit, ...extra limit fields }] } */
   constructor(cfg, hooks) {
     this.cfg = cfg;
-    this.cfg.mode = SEQUENCE_MODES.some((m) => m.mode === cfg.mode) ? cfg.mode : "MODE_FOC_VELOCITY";
-    this.cfg.duration_ms = Number.isFinite(cfg.duration_ms)
-      ? Math.round(Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, cfg.duration_ms)))
-      : DEFAULT_DURATION_MS;
-    this.cfg.points = clean(cfg.points || []);
+    this.cfg.mode = isSequenceMode(cfg.mode) ? cfg.mode : "MODE_FOC_VELOCITY";
+    this.cfg.duration_ms = Number.isFinite(cfg.duration_ms) ? heldDuration(cfg.duration_ms) : DEFAULT_DURATION_MS;
+    this.cfg.points = this.held(cfg.points);
     Object.defineProperty(this.cfg, "signals", { get: () => [], configurable: true, enumerable: false });
     this.hooks = hooks;
-    this.selected = null;   // index into cfg.points
+    this.selected = null;    // index into cfg.points
     this.drag = null;
-    this.verdict = null;    // { text, rejected } | null
+    this.verdict = null;     // the latest send's outcome (cmdplane.js)
     this.sending = false;
-    this.run = null;        // { marker_ms, running, seen } after an accepted run
+    this.run = null;         // { marker_ms, running, seen, duration_ms, started } after an accepted run
+    this.pendingMode = null; // a mode of another kind, awaiting Clear or Keep
+    this.series = null;      // the drawn target in effect (trajectorySeries)
     this.el = document.createElement("div");
     this.el.className = "sequence-widget widget";
     this.el.dataset.widgetId = cfg.id;
     this.render();
     this.unsubs = [
-      subscribe("connection", () => this.refresh()),
+      subscribe("connection", () => {
+        if (!isLive()) this.holdRun();
+        this.refresh();
+      }),
       subscribe("motorInfo", () => this.rebound()),
       subscribe("sequences", () => this.renderLibrary()),
       subscribe("telemetry", (t) => this.onTelemetry(t)),
+      subscribe("command-accepted", () => this.holdRun()),
     ];
   }
 
@@ -214,23 +128,23 @@ export class SequenceWidget {
   }
 
   kind() {
-    return SETPOINT_KINDS[kindOf(this.cfg.mode)];
+    return kindFor(this.cfg.mode);
   }
 
   /** The vertical bound: the mode's rating, else the kind's fixed fallback. */
   yBound() {
-    const rated = this.kind().bound(store.motorInfo);
-    return Number.isFinite(rated) ? rated : FALLBACK_BOUND[kindOf(this.cfg.mode)];
-  }
-
-  connected() {
-    return store.connection.state === "connected";
+    return boundOf(this.kind(), store.motorInfo);
   }
 
   render() {
     const modes = SEQUENCE_MODES.map(
       (m) => `<button data-mode="${m.mode}" class="${m.mode === this.cfg.mode ? "is-selected" : ""}">${esc(m.label)}</button>`,
     ).join("");
+    const extras = EXTRA_FIELDS.map((e) => `
+            <label class="seq-tip-field" data-extra="${e.key}" hidden>${esc(e.short)}
+              <input class="mono" data-tip-${e.attr} inputmode="decimal" placeholder="${e.zero}" aria-label="${e.aria}">
+              <span>${e.unit}</span>
+            </label>`).join("");
     this.el.innerHTML = `
       <div class="widget-head" data-drag-handle>
         ${icon("grip-vertical")}
@@ -242,6 +156,11 @@ export class SequenceWidget {
       <div class="seq-body">
         <div class="cmd-row seq-toolbar">
           <span class="seg cmd-modes" role="group" aria-label="Mode">${modes}</span>
+          <span class="seq-confirm" data-confirm hidden>
+            <span data-confirm-text></span>
+            <button class="btn btn-secondary" data-confirm-clear>Clear</button>
+            <button class="btn btn-secondary" data-confirm-keep>Keep</button>
+          </span>
           <span class="cmd-input">
             <span class="field-label">duration</span>
             <input class="mono" data-duration inputmode="numeric" aria-label="Duration">
@@ -256,6 +175,7 @@ export class SequenceWidget {
         </div>
         <div class="seq-chart">
           <canvas class="seq-canvas" tabindex="0" aria-label="Sequence editor"></canvas>
+          <div class="seq-marker" hidden></div>
           <div class="seq-tip" hidden>
             <label class="seq-tip-field">t
               <input class="mono" data-tip-t inputmode="numeric" aria-label="Time">
@@ -268,24 +188,11 @@ export class SequenceWidget {
             <label class="seq-tip-field">limit
               <input class="mono" data-tip-limit inputmode="decimal" placeholder="step" aria-label="Rate limit">
               <span data-tip-unit></span>
-            </label>
-            <label class="seq-tip-field" data-tip-poslimit hidden>accel
-              <input class="mono" data-tip-accel inputmode="decimal" placeholder="step" aria-label="Acceleration limit">
-              <span>rad/s²</span>
-            </label>
-            <label class="seq-tip-field" data-tip-poslimit hidden>at point
-              <input class="mono" data-tip-atpoint inputmode="decimal" placeholder="stop" aria-label="Velocity at the point">
-              <span>rad/s</span>
-            </label>
+            </label>${extras}
           </div>
           <div class="seq-hint" data-hint>click to add a point · drag to move · Delete removes</div>
         </div>
-        <div class="cmd-row cmd-send">
-          <button class="btn btn-primary" data-run>Run</button>
-          <button class="btn btn-secondary" data-stop>Stop</button>
-          <span class="cmd-verdict" data-verdict></span>
-          <span class="cmd-offline" data-offline hidden>no session</span>
-        </div>
+        ${sendRowHtml("run", "Run")}
       </div>
       <div class="resize-handle" data-resize aria-hidden="true"></div>`;
     const menu = this.el.querySelector("[data-axesconfig]");
@@ -306,6 +213,8 @@ export class SequenceWidget {
       const b = ev.target.closest("[data-mode]");
       if (b) this.setMode(b.dataset.mode);
     });
+    this.el.querySelector("[data-confirm-clear]").addEventListener("click", () => this.confirmMode(true));
+    this.el.querySelector("[data-confirm-keep]").addEventListener("click", () => this.confirmMode(false));
     const duration = this.el.querySelector("[data-duration]");
     const commitDuration = () => this.setDuration(parseFloat(duration.value));
     duration.addEventListener("change", commitDuration);
@@ -365,36 +274,37 @@ export class SequenceWidget {
     c.addEventListener("pointerup", end);
     c.addEventListener("pointercancel", end);
     c.addEventListener("keydown", (ev) => {
-      if (REMOVE_KEYS.includes(ev.key) && this.selected !== null) {
-        ev.preventDefault(); // the layout's Delete removes the widget otherwise
+      if (REMOVE_KEYS.includes(ev.key)) {
+        // Always consumed: the layout's Delete removes the widget otherwise,
+        // and a held key's repeats remove nothing more.
+        ev.preventDefault();
         ev.stopPropagation();
-        this.removePoint(this.selected);
+        if (!ev.repeat && this.selected !== null) this.removePoint(this.selected);
       } else if (ev.key === "Escape") {
         this.select(null);
       }
     });
     // The tooltip's fields: a typed time or value moves the point as a drag
     // does (clamped to the bound and its neighbours); an empty limit is zero.
+    const q = (sel) => this.el.querySelector(sel);
     const fields = {
-      t: this.el.querySelector("[data-tip-t]"),
-      value: this.el.querySelector("[data-tip-value]"),
-      limit: this.el.querySelector("[data-tip-limit]"),
-      accel: this.el.querySelector("[data-tip-accel]"),
-      at_point: this.el.querySelector("[data-tip-atpoint]"),
+      t: q("[data-tip-t]"),
+      value: q("[data-tip-value]"),
+      limit: q("[data-tip-limit]"),
+      ...Object.fromEntries(EXTRA_FIELDS.map((e) => [e.key, q(`[data-tip-${e.attr}]`)])),
     };
     const commitField = (which) => {
       const i = this.selected;
       if (i === null) return;
       const text = fields[which].value.trim();
-      const isLimit = which !== "t" && which !== "value";
-      const v = isLimit && text === "" ? 0 : parseFloat(text);
+      const v = which !== "t" && which !== "value" && text === "" ? 0 : parseFloat(text);
       if (Number.isFinite(v)) {
         const pt = this.cfg.points[i];
         if (which === "t") this.movePoint(i, v, pt.value);
         else if (which === "value") this.movePoint(i, pt.t_ms, v);
         else {
           pt[which] = v;
-          this.boundLimits(pt);
+          this.boundPoint(pt);
         }
         this.hooks.onChange();
       }
@@ -408,6 +318,7 @@ export class SequenceWidget {
         ev.stopPropagation();
       });
     }
+    this.tipFields = fields;
   }
 
   // ── geometry: chart px (css, canvas-relative) ↔ (t_ms, value) ──
@@ -464,6 +375,24 @@ export class SequenceWidget {
     return { mode, duration_ms, points };
   }
 
+  /** A point's limits held for the mode's kind: its extras only, each within bounds. */
+  boundPoint(p) {
+    const k = this.kind();
+    for (const key of EXTRA_KEYS) if (!k.extras.some((e) => e.key === key)) delete p[key];
+    boundLimits(k, p, store.motorInfo);
+    return tidy(p);
+  }
+
+  /** Points as an edit leaves them: clean, within the duration, the bound, and their limits. */
+  held(points) {
+    const b = this.yBound();
+    return clean(points).map((p) => {
+      p.t_ms = Math.min(p.t_ms, this.cfg.duration_ms);
+      p.value = clampToBound(p.value, b);
+      return this.boundPoint(p);
+    });
+  }
+
   select(i) {
     this.selected = i;
     this.refresh(true);
@@ -493,19 +422,12 @@ export class SequenceWidget {
     this.refresh(true);
   }
 
-  /** A position's limits held within their bounds; other kinds carry none. */
-  boundLimits(p) {
-    if (kindOf(this.cfg.mode) === "position") boundPositionLimits(p, store.motorInfo);
-    else for (const key of POSITION_LIMITS) delete p[key];
-    tidy(p);
-  }
-
-  /** A rating arrived: hold every value within it, the selection kept. */
+  /** A rating or a same-kind mode arrived: every point held within it, the selection kept. */
   rebound() {
     const b = this.yBound();
     for (const p of this.cfg.points) {
       p.value = clampToBound(p.value, b);
-      this.boundLimits(p);
+      this.boundPoint(p);
     }
     this.hooks.onChange();
     this.refresh();
@@ -513,65 +435,69 @@ export class SequenceWidget {
 
   /** Replace every point (a load, a test). */
   setPoints(points) {
-    const b = this.yBound();
-    this.cfg.points = clean(points).map((p) => ({ ...p, value: clampToBound(p.value, b), t_ms: Math.min(p.t_ms, this.cfg.duration_ms) }));
-    for (const p of this.cfg.points) this.boundLimits(p);
+    this.cfg.points = this.held(points);
     this.selected = null;
+    this.pendingMode = null;
     this.hooks.onChange();
     this.refresh(true);
   }
 
-  /** The points stay through a mode change, held within the new bound. */
+  /** A mode of the same setpoint kind keeps the points, held within its
+   *  bound; another kind clears them, confirmed first when there are any. */
   setMode(mode) {
-    if (!SEQUENCE_MODES.some((m) => m.mode === mode)) return;
-    this.cfg.mode = mode;
-    this.rebound();
+    if (!isSequenceMode(mode)) return;
+    const kindChanged = kindOf(mode) !== kindOf(this.cfg.mode);
+    this.pendingMode = kindChanged && this.cfg.points.length ? mode : null;
+    if (this.pendingMode) {
+      this.refresh();
+    } else {
+      this.cfg.mode = mode;
+      this.rebound();
+    }
+  }
+
+  /** The pending kind change: Clear empties the points and takes the mode. */
+  confirmMode(clear) {
+    const mode = this.pendingMode;
+    this.pendingMode = null;
+    if (clear && mode) {
+      this.cfg.points = [];
+      this.selected = null;
+      this.setMode(mode);
+    } else {
+      this.refresh();
+    }
   }
 
   setDuration(ms) {
     if (Number.isFinite(ms)) {
-      this.cfg.duration_ms = Math.round(Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, ms)));
+      this.cfg.duration_ms = heldDuration(ms);
       for (const p of this.cfg.points) p.t_ms = Math.min(p.t_ms, this.cfg.duration_ms);
       this.hooks.onChange();
     }
     this.refresh(true);
   }
 
+  /** A named sequence through the editor's own validation. */
   load(name) {
     const seq = loadNamed(name);
     if (!seq) return;
-    this.cfg.mode = SEQUENCE_MODES.some((m) => m.mode === seq.mode) ? seq.mode : this.cfg.mode;
-    this.cfg.duration_ms = Number.isFinite(seq.duration_ms) ? seq.duration_ms : this.cfg.duration_ms;
-    this.setPoints(seq.points || []);
+    if (isSequenceMode(seq.mode)) this.cfg.mode = seq.mode;
+    this.setDuration(seq.duration_ms);
+    this.setPoints(seq.points);
   }
 
   // ── run / stop [impl->app~views_026~1] ──
 
-  async send(command, onAccepted, onRejected) {
-    if (this.sending || !this.connected()) return;
-    this.sending = true;
-    this.verdict = { text: "sending…", rejected: false };
-    this.refresh();
-    try {
-      const v = await api.sendCommand(command);
-      this.verdict = v.accepted ? { text: "accepted", rejected: false } : { text: v.cause || "rejected", rejected: true };
-      if (v.accepted) onAccepted?.();
-      else onRejected?.();
-    } catch (e) {
-      this.verdict = { text: String(e), rejected: true };
-      onRejected?.();
-    }
-    this.sending = false;
-    this.refresh();
-  }
-
   runSequence() {
-    this.send(
+    const duration_ms = this.cfg.duration_ms;
+    return sendWithVerdict(
+      this,
       buildSequenceCommand(this.cfg),
       () => {
         // The run starts now on the board: mark the sample time current on
         // the shared timeline and start the chart marker at zero.
-        this.run = { marker_ms: 0, running: true, seen: false };
+        this.run = { marker_ms: 0, running: true, seen: false, duration_ms, started: performance.now() };
         const tick = globalNewest();
         if (tick > 0) addRunMark(tick, this.title());
       },
@@ -580,21 +506,30 @@ export class SequenceWidget {
   }
 
   stop() {
-    this.send(stopCommand());
+    return sendWithVerdict(this, stopCommand());
+  }
+
+  /** The marker holds: another Command accepted, or the session gone. */
+  holdRun() {
+    if (!this.run?.running) return;
+    this.run.running = false;
+    this.placeMarker();
   }
 
   /** The marker follows the reported elapsed time while the board reports
-   *  the sequence running, and holds once it does not: a later run on the
-   *  board (another widget's) never moves it again. */
+   *  the sequence running and holds once it does not; a run never seen
+   *  running (shorter than a telemetry period) ends at its duration. */
   onTelemetry(t) {
-    if (!this.run || !t || !this.run.running) return;
+    if (!this.run?.running || !t) return;
     if (t.sequence_running) {
       this.run.marker_ms = t.sequence_elapsed_ms;
       this.run.seen = true;
-      this.paint();
+      this.placeMarker();
     } else if (this.run.seen) {
-      this.run.running = false;
-      this.paint();
+      this.holdRun();
+    } else if (performance.now() - this.run.started >= this.run.duration_ms) {
+      this.run.marker_ms = this.run.duration_ms;
+      this.holdRun();
     }
   }
 
@@ -612,21 +547,18 @@ export class SequenceWidget {
   /** `resync` rewrites a focused field too (a commit or Escape). */
   refresh(resync = false) {
     const k = this.kind();
-    const live = this.connected();
     for (const b of this.el.querySelectorAll("[data-mode]")) {
       b.classList.toggle("is-selected", b.dataset.mode === this.cfg.mode);
     }
+    const n = this.cfg.points.length;
+    this.el.querySelector("[data-confirm]").hidden = !this.pendingMode;
+    this.el.querySelector("[data-confirm-text]").textContent = `a new setpoint kind clears ${n} point${n === 1 ? "" : "s"}`;
     const duration = this.el.querySelector("[data-duration]");
     if (resync || document.activeElement !== duration) duration.value = String(this.cfg.duration_ms);
-    this.el.querySelector("[data-unit]").textContent = `${k.unit} · ±${fmt(this.yBound())}`;
-    this.el.querySelector("[data-run]").disabled = !live || this.sending;
-    this.el.querySelector("[data-stop]").disabled = !live || this.sending;
-    this.el.querySelector("[data-offline]").hidden = live;
-    const verdict = this.el.querySelector("[data-verdict]");
-    verdict.textContent = this.verdict?.text ?? "";
-    verdict.classList.toggle("cmd-verdict--rejected", Boolean(this.verdict?.rejected));
-    verdict.classList.toggle("cmd-verdict--accepted", Boolean(this.verdict) && !this.verdict.rejected && !this.sending);
-    this.el.querySelector("[data-hint]").hidden = this.cfg.points.length > 0;
+    const rated = Number.isFinite(k.rating(store.motorInfo));
+    this.el.querySelector("[data-unit]").textContent = `${k.unit} · ±${fmt(this.yBound())}${rated ? "" : " · rating unknown"}`;
+    renderSendRow(this, "[data-run]");
+    this.el.querySelector("[data-hint]").hidden = n > 0;
     this.renderTip(resync);
     this.paint();
   }
@@ -637,22 +569,19 @@ export class SequenceWidget {
     tip.hidden = !pt;
     if (!pt) return;
     const k = this.kind();
-    const position = kindOf(this.cfg.mode) === "position";
     this.el.querySelector("[data-tip-valueunit]").textContent = k.unit;
     this.el.querySelector("[data-tip-unit]").textContent = k.limitUnit;
-    const limit = this.el.querySelector("[data-tip-limit]");
+    const { t, value, limit } = this.tipFields;
     limit.placeholder = k.limitZero;
-    limit.setAttribute("aria-label", position ? "Velocity limit" : "Rate limit");
-    for (const f of this.el.querySelectorAll("[data-tip-poslimit]")) f.hidden = !position;
+    limit.setAttribute("aria-label", capitalized(k.limitLabel));
     const shown = (v) => (v ? fmt(v) : "");
-    const fields = [
-      [this.el.querySelector("[data-tip-t]"), String(pt.t_ms)],
-      [this.el.querySelector("[data-tip-value]"), fmt(pt.value)],
-      [limit, shown(pt.limit)],
-      [this.el.querySelector("[data-tip-accel]"), shown(pt.accel)],
-      [this.el.querySelector("[data-tip-atpoint]"), shown(pt.at_point)],
-    ];
-    for (const [input, text] of fields) {
+    const texts = [[t, String(pt.t_ms)], [value, fmt(pt.value)], [limit, shown(pt.limit)]];
+    for (const e of EXTRA_FIELDS) {
+      const on = k.extras.includes(e);
+      this.el.querySelector(`.seq-tip [data-extra="${e.key}"]`).hidden = !on;
+      texts.push([this.tipFields[e.key], on ? shown(pt[e.key]) : ""]);
+    }
+    for (const [input, text] of texts) {
       if (resync || document.activeElement !== input) input.value = text;
     }
     const [x, y] = this.pxOf(pt.t_ms, pt.value);
@@ -662,7 +591,33 @@ export class SequenceWidget {
     tip.style.top = `${Math.max(0, y - 34)}px`;
   }
 
+  /** The kind's target in effect as drawn: recomputed only when the mode,
+   *  duration, points, or ratings it follows change. */
+  trajectorySeries() {
+    const k = this.kind();
+    const key = JSON.stringify([this.cfg.mode, this.cfg.duration_ms, this.cfg.points, store.motorInfo]);
+    if (this.series?.key !== key) {
+      const step_ms = Math.max(1, this.cfg.duration_ms / 2000);
+      const values = k.trajectory(this.cfg.points, this.cfg.duration_ms, store.motorInfo, step_ms);
+      this.series = { key, fn: k.trajectory, step_ms, values };
+    }
+    return this.series;
+  }
+
+  /** The run marker: the board's reported progress, held once not running. */
+  placeMarker() {
+    const m = this.el.querySelector(".seq-marker");
+    m.hidden = !this.run;
+    if (!this.run) return;
+    const p = this.plotRect();
+    m.style.left = `${Math.round(this.pxOf(Math.min(this.run.marker_ms, this.cfg.duration_ms), 0)[0])}px`;
+    m.style.top = `${p.y}px`;
+    m.style.height = `${p.h}px`;
+    m.classList.toggle("seq-marker--running", this.run.running);
+  }
+
   paint() {
+    this.placeMarker();
     const c = this.canvas;
     const r = c.getBoundingClientRect();
     if (r.width < 20 || r.height < 20) return;
@@ -701,55 +656,44 @@ export class SequenceWidget {
     }
 
     const pts = this.cfg.points;
-    if (pts.length) {
-      // The written targets: a zero-order hold from each point to the next.
-      g.strokeStyle = cssVar("--trace-1");
-      g.lineWidth = 1.5;
+    if (!pts.length) return;
+    // The written targets: a zero-order hold from each point to the next.
+    g.strokeStyle = cssVar("--trace-1");
+    g.lineWidth = 1.5;
+    g.beginPath();
+    pts.forEach((pt, i) => {
+      const [x, y] = this.pxOf(pt.t_ms, pt.value);
+      if (i === 0) g.moveTo(x, y);
+      else { g.lineTo(x, this.pxOf(0, pts[i - 1].value)[1]); g.lineTo(x, y); }
+    });
+    g.lineTo(p.x + p.w, this.pxOf(0, pts.at(-1).value)[1]);
+    g.stroke();
+
+    // The target in effect, over the hold.
+    const [ts, vs] = this.trajectorySeries().values;
+    g.strokeStyle = cssVar("--color-accent-2-400");
+    g.lineWidth = 1.5;
+    g.setLineDash([4, 3]);
+    g.beginPath();
+    ts.forEach((t, i) => {
+      const [x, y] = this.pxOf(t, vs[i]);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    });
+    g.stroke();
+    g.setLineDash([]);
+
+    pts.forEach((pt, i) => {
+      const [x, y] = this.pxOf(pt.t_ms, pt.value);
       g.beginPath();
-      pts.forEach((pt, i) => {
-        const [x, y] = this.pxOf(pt.t_ms, pt.value);
-        if (i === 0) g.moveTo(x, y);
-        else { g.lineTo(x, this.pxOf(0, pts[i - 1].value)[1]); g.lineTo(x, y); }
-      });
-      g.lineTo(p.x + p.w, this.pxOf(0, pts.at(-1).value)[1]);
-      g.stroke();
-
-      // The target in effect: the rate-limited slew or the move profile, over the hold.
-      const [ts, vs] = kindOf(this.cfg.mode) === "position"
-        ? positionTrajectory(pts, this.cfg.duration_ms, store.motorInfo)
-        : trajectory(pts, this.cfg.duration_ms);
-      g.strokeStyle = cssVar("--color-accent-2-400");
-      g.lineWidth = 1.5;
-      g.setLineDash([4, 3]);
-      g.beginPath();
-      ts.forEach((t, i) => {
-        const [x, y] = this.pxOf(t, vs[i]);
-        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-      });
-      g.stroke();
-      g.setLineDash([]);
-
-      pts.forEach((pt, i) => {
-        const [x, y] = this.pxOf(pt.t_ms, pt.value);
-        g.beginPath();
-        g.arc(x, y, i === this.selected ? 5.5 : 4, 0, 2 * Math.PI);
-        g.fillStyle = cssVar("--trace-1");
-        g.fill();
-        if (i === this.selected) {
-          g.strokeStyle = cssVar("--color-neutral-200");
-          g.lineWidth = 1.5;
-          g.stroke();
-        }
-      });
-    }
-
-    // The run marker: the board's reported progress, held once not running.
-    if (this.run) {
-      const x = Math.round(this.pxOf(Math.min(this.run.marker_ms, this.cfg.duration_ms), 0)[0]) + 0.5;
-      g.strokeStyle = this.run.running ? cssVar("--color-accent-400") : cssVar("--color-neutral-500");
-      g.lineWidth = 1;
-      g.beginPath(); g.moveTo(x, p.y); g.lineTo(x, p.y + p.h); g.stroke();
-    }
+      g.arc(x, y, i === this.selected ? 5.5 : 4, 0, 2 * Math.PI);
+      g.fillStyle = cssVar("--trace-1");
+      g.fill();
+      if (i === this.selected) {
+        g.strokeStyle = cssVar("--color-neutral-200");
+        g.lineWidth = 1.5;
+        g.stroke();
+      }
+    });
   }
 
   destroy() {
@@ -760,7 +704,9 @@ export class SequenceWidget {
 
   toJSON() {
     const { id, mode, duration_ms, x, y, w, h, title } = this.cfg;
-    const points = this.cfg.points.map(({ t_ms, value, limit, accel, at_point }) => tidy({ t_ms, value, limit, accel, at_point }));
+    const points = this.cfg.points.map((p) => tidy({
+      t_ms: p.t_ms, value: p.value, limit: p.limit, ...Object.fromEntries(EXTRA_KEYS.map((key) => [key, p[key]])),
+    }));
     return { type: "sequence", id, mode, duration_ms, points, x, y, w, h, ...(title ? { title } : {}) };
   }
 }

@@ -251,6 +251,18 @@ static void test_init_rejects_two_bridges_sharing_an_injected_adc_channel(void)
     TEST_ASSERT_FALSE(IO_bridge_init(&config));
 }
 
+// [test->fw~io_bridge_001~1] each injected completion records one phase, so
+// two of a bridge's phases on one ADC channel are rejected
+static void test_init_rejects_two_phases_on_one_injected_adc_channel(void)
+{
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_V].currentSense.adcChannel = HW_ADC_CHANNEL_1;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+
+    buildGoodConfig();
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].phase[IO_BRIDGE_PHASE_W].currentSense.injectedIndex = 1U;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));   // W injected on U's ADC
+}
+
 // [test->fw~io_bridge_001~1] a second bridge with no injected senses claims
 // no ADC channel, so both bridges initialize and the first keeps its callbacks
 static void test_init_accepts_a_second_bridge_without_injected_senses(void)
@@ -1111,6 +1123,18 @@ static void test_zero_offset_tracks_a_phase_with_its_output_disabled(void)
     assertDrivenTriple(1.3f, 0.8f, 1.0f, 0.8f, -2.1f);
 }
 
+// A break clears MOE under a commanded-on bridge: no idle run starts, so the
+// offsets stay at zero through a held reading of the minimum length.
+// [test->fw~io_bridge_009~1]
+static void test_zero_offset_ignores_a_break_under_a_commanded_bridge(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    mock_HW_TIM_assertBreak(BRIDGE_PERIPH);
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    assertDrivenTriple(0.3f, -0.2f, 0.3f, -0.2f, -0.1f);
+}
+
 // A re-init puts the offsets back to zero.
 // [test->fw~io_bridge_009~1]
 static void test_zero_offset_resets_at_init(void)
@@ -1123,6 +1147,20 @@ static void test_zero_offset_resets_at_init(void)
     TEST_ASSERT_TRUE(IO_bridge_init(&config));
     TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
     assertDrivenTriple(0.3f, -0.2f, 0.3f, -0.2f, -0.1f);
+}
+
+// A re-init with a bad offset config fails and leaves the latched offsets.
+// [test->fw~io_bridge_001~1]
+static void test_rejected_init_keeps_the_zero_offsets(void)
+{
+    TEST_ASSERT_TRUE(IO_bridge_init(&config));
+    firePairs(TEST_OFFSET_MIN_SAMPLES, 0.3f, -0.2f);
+    TEST_ASSERT_TRUE(IO_bridge_setOutputEnabled(MOTOR, true));
+    assertDrivenTriple(0.3f, -0.2f, 0.0f, 0.0f, 0.0f);
+
+    bridgeCfg[IO_BRIDGE_CHANNEL_MOTOR].zeroOffset.filterAlpha = 0.0f;
+    TEST_ASSERT_FALSE(IO_bridge_init(&config));
+    assertDrivenTriple(0.3f, -0.2f, 0.0f, 0.0f, 0.0f);
 }
 
 /* ---- fw~io_bridge_007: per-cycle callback ---- */
@@ -1239,6 +1277,7 @@ int main(void)
     RUN_TEST(test_init_rejects_asymmetric_complement_pair);
     RUN_TEST(test_init_accepts_derived_phase_without_complement);
     RUN_TEST(test_init_rejects_two_bridges_sharing_an_injected_adc_channel);
+    RUN_TEST(test_init_rejects_two_phases_on_one_injected_adc_channel);
     RUN_TEST(test_init_accepts_a_second_bridge_without_injected_senses);
 
     RUN_TEST(test_duty_maps_zero_half_full);
@@ -1299,7 +1338,9 @@ int main(void)
     RUN_TEST(test_zero_offset_seeds_on_the_first_idle_sample);
     RUN_TEST(test_zero_offset_is_the_exponential_average_of_the_idle_run);
     RUN_TEST(test_zero_offset_tracks_a_phase_with_its_output_disabled);
+    RUN_TEST(test_zero_offset_ignores_a_break_under_a_commanded_bridge);
     RUN_TEST(test_zero_offset_resets_at_init);
+    RUN_TEST(test_rejected_init_keeps_the_zero_offsets);
 
     RUN_TEST(test_registerCycleCallback_rejects_bad_arguments);
     RUN_TEST(test_cycle_callback_fires_once_per_pair);

@@ -5,7 +5,7 @@
 #include <atomic>
 
 /* Defines */
-#define PASS_US (1000U)
+#define APP_SEQUENCER_PASS_US (1000U)
 
 /* Typedefs */
 
@@ -16,13 +16,12 @@ class Sequencer
         void run1ms();
 
         bool begin();
-        bool append(const app_sequencer_setpoint_S * const setpoint);
+        app_sequencer_append_E append(const app_sequencer_setpoint_S * const setpoint);
         bool commit();
         bool getStatus(app_sequencer_status_S * const status) const;
 
     private:
-        app_sequencer_setpoint_S * table(const uint32_t half) const;
-        void write(const app_sequencer_setpoint_S & setpoint) const;
+        app_sequencer_setpoint_S * table(uint32_t half) const;
 
         app_sequencer_channelConfig_S const * config;
 
@@ -44,43 +43,51 @@ typedef struct
     std::array<Sequencer, APP_SEQUENCER_CHANNEL_COUNT> channels;
 } app_sequencer_data_S;
 
+typedef void (*app_sequencer_writer_T)(app_motorControl_channel_E motor, const app_sequencer_setpoint_S & setpoint);
+
+/* Private Function Definitions */
+
+static void app_sequencer_private_writeVelocity(app_motorControl_channel_E motor, const app_sequencer_setpoint_S & setpoint)
+{
+    app_motorControl_setVelocity(motor, setpoint.target.value, setpoint.target.rateLimit);
+}
+
+static void app_sequencer_private_writeTorque(app_motorControl_channel_E motor, const app_sequencer_setpoint_S & setpoint)
+{
+    app_motorControl_setTorque(motor, setpoint.target.value, setpoint.target.rateLimit);
+}
+
+static void app_sequencer_private_writeStop(app_motorControl_channel_E motor, const app_sequencer_setpoint_S & setpoint)
+{
+    (void)setpoint;
+    app_motorControl_setMode(motor, APP_MOTORCONTROL_MODE_OFF);
+}
+
+static void app_sequencer_private_writePosition(app_motorControl_channel_E motor, const app_sequencer_setpoint_S & setpoint)
+{
+    app_motorControl_setPositionSetpoint(motor, setpoint.move.position_rad, setpoint.move.velocityLimit_radPerSec,
+                                         setpoint.move.accelLimit_radPerSec2, setpoint.move.velocityAtPoint_radPerSec);
+}
+
 /* Private Data Definitions */
 constinit static app_sequencer_data_S app_sequencer_data = {};
 constinit static app_sequencer_data_S * const data = &app_sequencer_data;
 
+// One write per kind, in app_sequencer_kind_E order: the speed and torque
+// targets (fw~mc_027), the stop a MODE_OFF request (fw~mc_006), the position
+// setpoint (fw~mc_030).
+static constexpr std::array<app_sequencer_writer_T, APP_SEQUENCER_KIND_COUNT> app_sequencer_writers = {
+    app_sequencer_private_writeVelocity,
+    app_sequencer_private_writeTorque,
+    app_sequencer_private_writeStop,
+    app_sequencer_private_writePosition,
+};
+
 /* Private Class Function Definitions */
 
-app_sequencer_setpoint_S * Sequencer::table(const uint32_t half) const
+app_sequencer_setpoint_S * Sequencer::table(uint32_t half) const
 {
     return &this->config->storage[half * this->config->capacity];
-}
-
-// One write per kind: the speed and torque targets (fw~mc_027), the position
-// setpoint (fw~mc_030), the stop a MODE_OFF request (fw~mc_006).
-void Sequencer::write(const app_sequencer_setpoint_S & setpoint) const
-{
-    switch (setpoint.kind)
-    {
-        case APP_SEQUENCER_KIND_VELOCITY:
-            app_motorControl_setVelocity(this->config->motor, setpoint.value, setpoint.rateLimit);
-            break;
-
-        case APP_SEQUENCER_KIND_TORQUE:
-            app_motorControl_setTorque(this->config->motor, setpoint.value, setpoint.rateLimit);
-            break;
-
-        case APP_SEQUENCER_KIND_POSITION:
-            app_motorControl_setPositionSetpoint(this->config->motor, setpoint.value, setpoint.rateLimit,
-                                                 setpoint.accelLimit, setpoint.velocityAtPoint);
-            break;
-
-        case APP_SEQUENCER_KIND_STOP:
-            app_motorControl_setMode(this->config->motor, APP_MOTORCONTROL_MODE_OFF);
-            break;
-
-        default:
-            break;
-    }
 }
 
 /* Public Class Function Definitions */
@@ -107,10 +114,8 @@ bool Sequencer::init(const app_sequencer_channelConfig_S * const channelConfig)
     return isValid;
 }
 
-// [impl->fw~ops_001~1] the start is the pass after the commit; each pass writes
-// every setpoint whose time is at or under the elapsed time, in list order.
-// [impl->fw~ops_002~1] a commit replaces the running sequence from its first
-// setpoint; a latched fault drops the unwritten rest.
+// [impl->fw~ops_001~1] from the pass after the commit, each setpoint due by the elapsed time, in list order
+// [impl->fw~ops_002~1] a commit replaces the running sequence; a latched fault, or a stop, drops the rest
 void Sequencer::run1ms()
 {
     if (this->config != NULL)
@@ -133,7 +138,7 @@ void Sequencer::run1ms()
         {
             const app_sequencer_setpoint_S * const setpoints = this->table(this->runningHalf);
             const uint32_t count = this->counts[this->runningHalf];
-            const uint64_t now_us = static_cast<uint64_t>(this->elapsed_ms) * PASS_US;
+            const uint64_t now_us = static_cast<uint64_t>(this->elapsed_ms) * APP_SEQUENCER_PASS_US;
 
             // A latch since the start drops the rest, cleared since or not.
             const bool faulted = (motor.state == APP_MOTORCONTROL_STATE_FAULTED) ||
@@ -145,8 +150,9 @@ void Sequencer::run1ms()
 
             while ((this->next < count) && (setpoints[this->next].t_us <= now_us))
             {
-                this->write(setpoints[this->next]);
-                this->next++;
+                const app_sequencer_setpoint_S & setpoint = setpoints[this->next];
+                app_sequencer_writers[setpoint.kind](this->config->motor, setpoint);
+                this->next = (setpoint.kind == APP_SEQUENCER_KIND_STOP) ? count : (this->next + 1U);
             }
 
             this->running = (this->next < count);
@@ -169,19 +175,35 @@ bool Sequencer::begin()
     return ret;
 }
 
-bool Sequencer::append(const app_sequencer_setpoint_S * const setpoint)
+app_sequencer_append_E Sequencer::append(const app_sequencer_setpoint_S * const setpoint)
 {
-    bool ret = false;
-    if ((this->config != NULL) && (setpoint != NULL) && this->staging &&
-        (setpoint->kind < APP_SEQUENCER_KIND_COUNT))
+    app_sequencer_append_E ret = APP_SEQUENCER_APPEND_INVALID;
+    if ((this->config == NULL) || (!this->staging))
     {
-        const uint32_t staged = 1U - this->runningHalf;
-        if (this->counts[staged] < this->config->capacity)
+        ret = APP_SEQUENCER_APPEND_NOT_STAGING;
+    }
+    else if ((setpoint != NULL) && (setpoint->kind < APP_SEQUENCER_KIND_COUNT))
+    {
+        app_sequencer_setpoint_S * const staged = this->table(1U - this->runningHalf);
+        uint32_t & count = this->counts[1U - this->runningHalf];
+        if (count >= this->config->capacity)
         {
-            this->table(staged)[this->counts[staged]] = *setpoint;
-            this->counts[staged]++;
-            ret = true;
+            ret = APP_SEQUENCER_APPEND_FULL;
         }
+        else if ((count > 0U) && (setpoint->t_us < staged[count - 1U].t_us))
+        {
+            ret = APP_SEQUENCER_APPEND_OUT_OF_ORDER;
+        }
+        else
+        {
+            staged[count] = *setpoint;
+            count++;
+            ret = APP_SEQUENCER_APPEND_OK;
+        }
+    }
+    else
+    {
+        // INVALID stands
     }
     return ret;
 }
@@ -199,13 +221,23 @@ bool Sequencer::commit()
     return ret;
 }
 
+// A committed sequence reports from its commit: running with nothing elapsed
+// until the pass that starts it.
 bool Sequencer::getStatus(app_sequencer_status_S * const status) const
 {
     bool ret = false;
     if ((this->config != NULL) && (status != NULL))
     {
-        status->running = this->running;
-        status->elapsed_ms = this->elapsed_ms;
+        if (this->pending)
+        {
+            status->running = (this->counts[1U - this->runningHalf] > 0U);
+            status->elapsed_ms = 0U;
+        }
+        else
+        {
+            status->running = this->running;
+            status->elapsed_ms = this->elapsed_ms;
+        }
         ret = true;
     }
     return ret;
@@ -246,9 +278,9 @@ bool app_sequencer_begin(app_sequencer_channel_E channel)
     return ret;
 }
 
-bool app_sequencer_append(app_sequencer_channel_E channel, const app_sequencer_setpoint_S * const setpoint)
+app_sequencer_append_E app_sequencer_append(app_sequencer_channel_E channel, const app_sequencer_setpoint_S * const setpoint)
 {
-    bool ret = false;
+    app_sequencer_append_E ret = APP_SEQUENCER_APPEND_NOT_STAGING;
     if (channel < APP_SEQUENCER_CHANNEL_COUNT)
     {
         ret = data->channels[channel].append(setpoint);

@@ -134,6 +134,14 @@ static void app_server_trace_private_copy(uint8_t * const dst, const uint8_t * c
     }
 }
 
+// The run from index up to the wrap, at most len: bounded by len as written, so
+// a copy into a len-byte buffer is provably in bounds.
+static uint32_t app_server_trace_private_firstRun(uint32_t index, uint32_t len, uint32_t capacity)
+{
+    const uint32_t toWrap = capacity - index;
+    return (toWrap < len) ? toWrap : len;
+}
+
 // Write len bytes at the rolling ring index, in at most two runs around the
 // wrap; returns the advanced index. The caller publishes data->head only
 // after the whole record is written.
@@ -141,7 +149,7 @@ static uint32_t app_server_trace_private_ringWrite(uint32_t index, const uint8_t
 {
     const uint32_t capacity = app_server_trace_private_capacity();
     uint8_t * const storage = data->config->sampleStorage;
-    const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
+    const uint32_t firstRun = app_server_trace_private_firstRun(index, len, capacity);
     app_server_trace_private_copy(&storage[index], bytes, firstRun);
     if (firstRun < len)
     {
@@ -161,7 +169,7 @@ static uint32_t app_server_trace_private_ringRead(uint32_t index, uint8_t * cons
 {
     const uint32_t capacity = app_server_trace_private_capacity();
     const uint8_t * const storage = data->config->sampleStorage;
-    const uint32_t firstRun = ((index + len) > capacity) ? (capacity - index) : len;
+    const uint32_t firstRun = app_server_trace_private_firstRun(index, len, capacity);
     app_server_trace_private_copy(bytes, &storage[index], firstRun);
     if (firstRun < len)
     {
