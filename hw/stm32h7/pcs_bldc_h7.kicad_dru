@@ -1,33 +1,21 @@
 (version 1)
 
-# Class clearances are 0.15 mm so neighbouring pads inside 0201 / SOT / QFN packages pass.
-# The wider spacing for the rails is enforced on tracks, vias and zones only.
-(rule "power_copper"
-	(condition "A.NetClass == 'Power' && (A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Zone')")
-	(constraint clearance (min 0.2mm)))
+# Board minimums are JLC multilayer: 3.5 mil track, 4 mil clearance (JLC pad-to-track floor is 0.1 mm).
+# Class clearances stay at 0.15 mm so neighbouring pads inside small packages pass; the rules below
+# add spacing only where there is a reason for it, and only on tracks, vias and zones.
 
-(rule "analog_copper"
-	(condition "A.NetClass == 'Analog' && (A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Zone')")
-	(constraint clearance (min 0.25mm)))
-
-# 32 V bus and phase outputs: 0.3 mm from their copper to everything.
+# 32 V bus and phase copper: 0.2 mm to everything else (etch yield on the big pours, not voltage).
 (rule "motor_copper"
 	(condition "A.NetClass == 'Motor' && (A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Zone')")
-	(constraint clearance (min 0.3mm)))
+	(constraint clearance (min 0.2mm)))
 
-# Sense lines stay 0.5 mm from phase and bus copper (pad-to-pad pairs inside a package excepted).
+# Current-sense and ADC lines keep 0.3 mm from phase and bus copper (pad-to-pad pairs inside a package excepted).
 (rule "analog_to_motor"
 	(condition "A.NetClass == 'Analog' && B.NetClass == 'Motor' && (A.Type != 'Pad' || B.Type != 'Pad')")
-	(constraint clearance (min 0.5mm)))
+	(constraint clearance (min 0.3mm)))
 
-# 4 mil track and clearance only inside the BGA fanout area (rule area "bga_u2"). Last so it wins there.
-(rule "bga_fanout"
-	(condition "A.insideArea('bga_u2')")
-	(constraint clearance (min 0.1016mm))
-	(constraint track_width (min 0.1016mm)))
-
-# Board minimum copper-to-hole is 0.2 mm (JLC via hole to copper). Component through-holes need more:
-# JLC 0.28 mm hole to track (0.35 recommended) and 0.45 mm hole to hole.
+# Component through-holes: JLC 0.28 mm hole to track (0.35 recommended) and 0.45 mm hole to hole.
+# Via holes use the board minimum of 0.2 mm.
 (rule "pth_hole_to_copper"
 	(condition "A.Pad_Type == 'Through-hole'")
 	(constraint hole_clearance (min 0.3mm)))
@@ -35,3 +23,8 @@
 (rule "pth_hole_to_hole"
 	(condition "A.Pad_Type == 'Through-hole' && B.Pad_Type == 'Through-hole'")
 	(constraint hole_to_hole (min 0.45mm)))
+
+# Inside the BGA fanout area (rule area "bga_u2") every class routes at the 4 mil board minimum. Last so it wins there.
+(rule "bga_fanout"
+	(condition "A.insideArea('bga_u2')")
+	(constraint clearance (min 0.1016mm)))

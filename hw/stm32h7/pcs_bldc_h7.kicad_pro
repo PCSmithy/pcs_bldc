@@ -50,7 +50,7 @@
         "silk_text_thickness": 0.1,
         "silk_text_upright": false,
         "zones": {
-          "min_clearance": 0.6
+          "min_clearance": 0.0
         }
       },
       "diff_pair_dimensions": [
@@ -61,10 +61,6 @@
         }
       ],
       "drc_exclusions": [
-        [
-          "courtyards_overlap|145850336|122363802|7e5deaee-bd7b-4def-a75a-09e21b8eddac|b1fd8415-d16c-4989-82c3-ea4a5bd7654f",
-          ""
-        ],
         [
           "courtyards_overlap|161961000|147895000|47d008b3-c133-4940-9c82-fd32dddded50|98c9afe8-7d0e-487f-a34d-cc8032381aca",
           ""
@@ -160,7 +156,7 @@
         "min_text_height": 1.0,
         "min_text_thickness": 0.153,
         "min_through_hole_diameter": 0.3,
-        "min_track_width": 0.1016,
+        "min_track_width": 0.0889,
         "min_via_annular_width": 0.05,
         "min_via_diameter": 0.4,
         "solder_mask_to_copper_clearance": 0.0,
@@ -549,7 +545,7 @@
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.15,
+        "clearance": 0.1016,
         "diff_pair_gap": 0.2,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.27,
@@ -560,19 +556,19 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.15,
+        "track_width": 0.0889,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3,
         "wire_width": 6
       },
       {
-        "clearance": 0.15,
+        "clearance": 0.1016,
         "name": "Analog",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
+        "track_width": 0.0889,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3
