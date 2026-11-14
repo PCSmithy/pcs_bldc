@@ -153,14 +153,27 @@ static uint32_t HW_ADC_private_voltsToCounts(double volts, const HW_ADC_channelC
     return counts;
 }
 
-// One input's sample: a driven SIL port's commanded voltage as counts, or the
-// synthetic ramp (rampOffset + tick, wrapping at full scale) when undriven.
+// One input's sample: an amplifier-fed input converts the amplifier's output
+// (0 V from one not started) and publishes it on its port; a pin converts its
+// driven SIL port's commanded voltage, or the synthetic ramp (rampOffset +
+// tick, wrapping) when undriven.
 static uint32_t HW_ADC_private_sampleInput(HW_ADC_channels_E channel, uint8_t input, uint32_t rampOffset)
 {
     const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
+    const HW_ADC_inputConfig_S * const inputConfig = &channelConfig->inputs[input];
     uint32_t counts = 0U;
     double volts = 0.0;
-    if (SIL_ports_read(data->channelData[channel].portHandles[input], &volts))
+    if (inputConfig->fromOpamp)
+    {
+        // [impl->fw~hal_opamp_002~1] the internal path from the amplifier output
+        float32_t opampVolts = 0.0f;
+        if (HW_OPAMP_getOutputVolts(inputConfig->opamp, &opampVolts))
+        {
+            counts = HW_ADC_private_voltsToCounts((double)opampVolts, channelConfig);
+        }
+        SIL_ports_write(data->channelData[channel].portHandles[input], (double)opampVolts);
+    }
+    else if (SIL_ports_read(data->channelData[channel].portHandles[input], &volts))
     {
         counts = HW_ADC_private_voltsToCounts(volts, channelConfig);
     }
@@ -287,10 +300,10 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
         channelData->multimodeApplied = channelConfig->configureMultimode;
     }
 
-    // Register one SIL input port per enabled, named input: the framework may
-    // drive its pin voltage (volts, native units); undriven inputs keep the
-    // synthetic ramp. Null-safe: with no hooks installed every handle stays
-    // invalid.
+    // Register one SIL port per enabled, named input: the framework may drive a
+    // pin's voltage (volts, native units), and undriven pins keep the synthetic
+    // ramp; an amplifier-fed input publishes the volts it converts. Null-safe:
+    // with no hooks installed every handle stays invalid.
     if (ret)
     {
         for (uint8_t input = 0U; input < HW_ADC_INPUTS_PER_CHANNEL; input++)

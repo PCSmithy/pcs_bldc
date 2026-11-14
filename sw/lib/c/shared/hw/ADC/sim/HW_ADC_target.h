@@ -5,14 +5,19 @@
 /* Includes */
 #include "lib_types.h"
 #include "HW_DMA.h"              // HW_DMA_channel_E (DMA-backed transfer mode)
+#include "HW_OPAMP.h"            // HW_OPAMP_channels_E (amplifier-fed internal inputs)
 
 /* Typedefs */
 
-// One input pin on the regular conversion sequence, indexed by physical IN#.
+// One input on the regular conversion sequence, indexed by physical IN#.
 typedef struct
 {
     bool   enabled;
     char * inputNameStr;         // human-readable; aids sim trace logs
+    // An internal input an amplifier's output drives: it converts that output
+    // (HW_OPAMP_getOutputVolts) and publishes it on its SIL port.
+    bool                fromOpamp;
+    HW_OPAMP_channels_E opamp;
 } HW_ADC_inputConfig_S;
 
 // One input on the injected conversion sequence, indexed by sequence position.

@@ -8,14 +8,14 @@
 
 typedef struct
 {
+    const HW_OPAMP_config_S * config;
+
     // Analog volts at each channel's input pin — world state, not driver
-    // state: the SIL pokes it (DWARF) before boot; init samples it, never
-    // clears it.
+    // state: the SIL pokes it (DWARF); init never clears it.
     float32_t inputVolts[HW_OPAMP_CHANNEL_COUNT];
 
     // Volts each amplifier drives onto its internal ADC input: input x
-    // configured gain, computed at init (a started amplifier is
-    // set-and-forget analog — init is the driver's only execution point).
+    // configured gain, taken at init and at each conversion of that input.
     float32_t outputVolts[HW_OPAMP_CHANNEL_COUNT];
 
     bool initialized;
@@ -37,6 +37,7 @@ bool HW_OPAMP_init(const HW_OPAMP_config_S * const config)
         (config->channels != NULL) &&
         (config->numChannels <= HW_OPAMP_CHANNEL_COUNT))
     {
+        data->config = config;
         for (size_t ch = 0U; ch < HW_OPAMP_CHANNEL_COUNT; ch++)
         {
             data->outputVolts[ch] = 0.0f;
@@ -46,6 +47,21 @@ bool HW_OPAMP_init(const HW_OPAMP_config_S * const config)
             data->outputVolts[ch] = data->inputVolts[ch] * config->channels[ch].gain;
         }
         data->initialized = true;
+        ret = true;
+    }
+    return ret;
+}
+
+// [impl->fw~hal_opamp_002~1]
+bool HW_OPAMP_getOutputVolts(HW_OPAMP_channels_E channel, float32_t * const out)
+{
+    bool ret = false;
+    if ((out != NULL) &&
+        (data->initialized) &&
+        ((size_t)channel < data->config->numChannels))
+    {
+        data->outputVolts[channel] = data->inputVolts[channel] * data->config->channels[channel].gain;
+        *out = data->outputVolts[channel];
         ret = true;
     }
     return ret;

@@ -3,10 +3,9 @@
 //! set-and-forget analog), and init computes each amplifier's output — input times the
 //! board-configured gain — into the DWARF-readable output statics.
 //!
-//! This is NOT coverage of `fw~hal_opamp_002~1`, whose acceptance is a *conversion* of
-//! the amplifier's internal ADC input: the sim ADC reads its pin voltage from a SIL
-//! port and has no route from `HW_OPAMP_data.outputVolts`, so that acceptance is
-//! unreachable until the sim models the internal OPAMP -> ADC path.
+//! This file covers the amplifier itself (`fw~hal_opamp_001~1`); the conversion of its
+//! output through the ADC's internal input (`fw~hal_opamp_002~1`) is covered in
+//! `opamp.rs`.
 
 use pcs_bldc_sil::{dll_path, lock_world};
 use voyant::{Firmware, Value};

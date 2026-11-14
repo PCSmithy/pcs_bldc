@@ -14,6 +14,24 @@
 
 /* Typedefs */
 
+// What an output line does over one counting cycle.
+typedef enum
+{
+    HW_TIM_LINE_INACTIVE,    // held at its inactive level
+    HW_TIM_LINE_ACTIVE,      // held active, no edges
+    HW_TIM_LINE_SWITCHING,   // active from onAt up to offAt
+} HW_TIM_lineState_E;
+
+// One output line of a complementary channel over a counting cycle. Edges are in
+// timer-clock ticks from the cycle start (a center-aligned counter's valley); the
+// active span wraps past the cycle end when offAt < onAt.
+typedef struct
+{
+    HW_TIM_lineState_E state;
+    uint32_t           onAt;
+    uint32_t           offAt;
+} HW_TIM_line_S;
+
 typedef struct
 {
     // Position within one counting cycle; the counter value follows from it and
@@ -28,10 +46,17 @@ typedef struct
     uint32_t activeCompare[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     bool     preload[HW_TIM_OC_UNITS_PER_PERIPHERAL];
     bool     outputEnabled[HW_TIM_OC_UNITS_PER_PERIPHERAL];
-    // MOE latch gating every enabled output. Commanded OFF at init; a break
-    // clears it via a table write to this static and it stays clear until
-    // HW_TIM_setMainOutputEnabled sets it again.
+    // MOE latch gating every enabled output. Commanded OFF at init; an asserted
+    // break input clears it, and it stays clear until
+    // HW_TIM_setMainOutputEnabled sets it again with the break released.
     bool     mainOutputEnabled;
+
+    // Each complementary channel's primary (CHx) and complementary (CHxN) line,
+    // derived from the active compare, the dead-time and the output gates.
+    HW_TIM_line_S primaryLine[HW_TIM_OC_UNITS_PER_PERIPHERAL];
+    HW_TIM_line_S complementLine[HW_TIM_OC_UNITS_PER_PERIPHERAL];
+    uint32_t      deadTimeTicks;   // decoded dead-time, timer-clock ticks
+    uint32_t      cycleTicks;      // one counting cycle, timer-clock ticks
 } HW_TIM_peripheralData_S;
 
 typedef struct
@@ -56,6 +81,10 @@ typedef struct
     int32_t dutyHandle[HW_TIM_CHANNEL_COUNT];
     int32_t enabledHandle[HW_TIM_CHANNEL_COUNT];
     int32_t moeHandle[HW_TIM_PERIPHERAL_COUNT];
+
+    // Break input level per peripheral (true = asserted): the hardware line, which
+    // SIL writes by DWARF. World state, so init leaves it alone.
+    bool breakInput[HW_TIM_PERIPHERAL_COUNT];
 
     bool initialized;
 } HW_TIM_data_S;
@@ -84,6 +113,12 @@ static uint64_t HW_TIM_private_consumeRepetition(HW_TIM_peripheral_E peripheral,
 static void HW_TIM_private_emitTrgo(HW_TIM_peripheral_E peripheral, uint64_t from, uint64_t counts,
                                     uint64_t updates);
 static void HW_TIM_private_latchCompares(HW_TIM_peripheral_E peripheral);
+static uint32_t HW_TIM_private_decodeDeadTime(uint32_t dtg);
+static void HW_TIM_private_setLine(HW_TIM_line_S * const line, uint32_t start, uint32_t length,
+                                   uint32_t deadTime, uint32_t cycle);
+static void HW_TIM_private_updateLines(HW_TIM_channels_E channel);
+static void HW_TIM_private_updatePeripheralLines(HW_TIM_peripheral_E peripheral);
+static void HW_TIM_private_applyBreak(HW_TIM_peripheral_E peripheral);
 
 /* Private Function Definitions */
 
@@ -337,7 +372,144 @@ static void HW_TIM_private_latchCompares(HW_TIM_peripheral_E peripheral)
         {
             peripheralData->activeCompare[unit] = peripheralData->compare[unit];
             HW_TIM_private_publishDuty((HW_TIM_channels_E)ch);
+            HW_TIM_private_updateLines((HW_TIM_channels_E)ch);
         }
+    }
+}
+
+// Dead-time in timer-clock ticks from the DTG byte (clock division 1, so
+// t_DTS is one tick): 0xxxxxxx -> DTG, 10xxxxxx -> (64 + DTG[5:0]) x 2,
+// 110xxxxx -> (32 + DTG[4:0]) x 8, 111xxxxx -> (32 + DTG[4:0]) x 16.
+static uint32_t HW_TIM_private_decodeDeadTime(uint32_t dtg)
+{
+    uint32_t ticks = dtg;
+    if ((dtg & 0xE0U) == 0xE0U)
+    {
+        ticks = (32U + (dtg & 0x1FU)) * 16U;
+    }
+    else if ((dtg & 0xE0U) == 0xC0U)
+    {
+        ticks = (32U + (dtg & 0x1FU)) * 8U;
+    }
+    else if ((dtg & 0xC0U) == 0x80U)
+    {
+        ticks = (64U + (dtg & 0x3FU)) * 2U;
+    }
+    else
+    {
+        // 0xxxxxxx: one tick per count.
+    }
+    return ticks;
+}
+
+// One line driven by a reference active `length` ticks from `start`: the
+// dead-time delays the activation edge, and a reference pulse no longer than
+// the dead-time never activates the line.
+static void HW_TIM_private_setLine(HW_TIM_line_S * const line, uint32_t start, uint32_t length,
+                                   uint32_t deadTime, uint32_t cycle)
+{
+    *line = (HW_TIM_line_S){ .state = HW_TIM_LINE_INACTIVE };
+    if (length >= cycle)
+    {
+        line->state = HW_TIM_LINE_ACTIVE;
+    }
+    else if (length > deadTime)
+    {
+        line->state = HW_TIM_LINE_SWITCHING;
+        line->onAt  = (uint32_t)(((uint64_t)start + deadTime) % cycle);
+        line->offAt = (uint32_t)(((uint64_t)start + length) % cycle);
+    }
+    else
+    {
+        // Swallowed by the dead-time, or no reference pulse at all.
+    }
+}
+
+// [impl->fw~hal_tim_005~1] a complementary channel's lines in PWM mode 1: the
+// reference is active while the counter reads below the active compare; CHx
+// follows it and CHxN its inverse, each activation delayed by the dead-time. A
+// gated output (channel or master enable clear) holds both lines inactive.
+static void HW_TIM_private_updateLines(HW_TIM_channels_E channel)
+{
+    const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
+    const HW_TIM_peripheral_E peripheral = channelConfig->peripheral;
+    const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[peripheral];
+    HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[peripheral];
+    const uint8_t unit = channelConfig->ocUnit;
+
+    if (channelConfig->complementary)
+    {
+        const uint64_t period  = peripheralConfig->period;
+        const uint64_t compare = peripheralData->activeCompare[unit];
+        const uint64_t cycle   = HW_TIM_private_cycleCounts(peripheralConfig);
+        const uint64_t ticksPerCount = (uint64_t)peripheralConfig->prescaler + 1U;
+
+        // Reference span in counter positions: a center-aligned counter reads
+        // below C from 2P - C + 1 through C - 1 (2C - 1 positions, wrapping the
+        // valley), an up-counter from 0, a down-counter from P - C + 1.
+        uint64_t refStart  = 0U;
+        uint64_t refLength = 0U;
+        if (compare > 0U)
+        {
+            if (peripheralConfig->countDir == HW_TIM_COUNT_CENTER)
+            {
+                refStart  = ((2U * period) - compare) + 1U;
+                refLength = (2U * compare) - 1U;
+            }
+            else if (peripheralConfig->countDir == HW_TIM_COUNT_DOWN)
+            {
+                refStart  = (period - compare) + 1U;
+                refLength = compare;
+            }
+            else
+            {
+                refLength = compare;
+            }
+        }
+
+        const bool gated = ((!peripheralData->mainOutputEnabled) || (!peripheralData->outputEnabled[unit]));
+        if (gated)
+        {
+            peripheralData->primaryLine[unit]    = (HW_TIM_line_S){ .state = HW_TIM_LINE_INACTIVE };
+            peripheralData->complementLine[unit] = (HW_TIM_line_S){ .state = HW_TIM_LINE_INACTIVE };
+        }
+        else
+        {
+            const uint32_t cycleTicks = peripheralData->cycleTicks;
+            const uint32_t start      = (uint32_t)((refStart % cycle) * ticksPerCount);
+            const uint32_t length     = (uint32_t)(refLength * ticksPerCount);
+            const uint32_t deadTime   = peripheralData->deadTimeTicks;
+            HW_TIM_private_setLine(&peripheralData->primaryLine[unit], start, length, deadTime, cycleTicks);
+            HW_TIM_private_setLine(&peripheralData->complementLine[unit],
+                                   (uint32_t)(((uint64_t)start + length) % cycleTicks),
+                                   cycleTicks - length, deadTime, cycleTicks);
+        }
+    }
+}
+
+static void HW_TIM_private_updatePeripheralLines(HW_TIM_peripheral_E peripheral)
+{
+    for (size_t ch = 0U; ch < data->config->numChannels; ch++)
+    {
+        if (data->config->channels[ch].peripheral == peripheral)
+        {
+            HW_TIM_private_updateLines((HW_TIM_channels_E)ch);
+        }
+    }
+}
+
+// [impl->fw~hal_tim_007~1] an asserted break input clears the master output
+// enable, taking every output to its inactive level; release leaves it clear.
+static void HW_TIM_private_applyBreak(HW_TIM_peripheral_E peripheral)
+{
+    HW_TIM_peripheralData_S * const peripheralData = &data->peripheralData[peripheral];
+    if ((data->config->peripherals[peripheral].hasBreakInput) &&
+        (data->breakInput[peripheral]) &&
+        (peripheralData->mainOutputEnabled))
+    {
+        peripheralData->mainOutputEnabled = false;
+        HW_TIM_private_publishMoe(peripheral);
+        HW_TIM_private_updatePeripheralLines(peripheral);
     }
 }
 
@@ -388,6 +560,12 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
                 data->peripheralData[p].position = 0U;
                 data->peripheralData[p].repetitionRemaining =
                     peripheralConfig->updateAtPeriod ? 0U : peripheralConfig->rcr;
+                data->peripheralData[p].cycleTicks = (uint32_t)(HW_TIM_private_cycleCounts(peripheralConfig) *
+                                                                ((uint64_t)peripheralConfig->prescaler + 1U));
+                if (peripheralConfig->configureBreakDeadTime)
+                {
+                    data->peripheralData[p].deadTimeTicks = HW_TIM_private_decodeDeadTime(peripheralConfig->deadTime);
+                }
 
                 // The advanced-control peripheral (the one with a break input,
                 // hence an MOE latch) publishes a master-output-enable port,
@@ -427,6 +605,7 @@ bool HW_TIM_init(const HW_TIM_config_S * const config)
             {
                 HW_TIM_private_publishDuty((HW_TIM_channels_E)ch);
                 HW_TIM_private_publishEnabled((HW_TIM_channels_E)ch);
+                HW_TIM_private_updateLines((HW_TIM_channels_E)ch);
             }
             for (size_t p = 0U; p < config->numPeripherals; p++)
             {
@@ -446,6 +625,7 @@ void HW_TIM_advanceTime(uint32_t elapsed_us)
         for (size_t p = 0U; p < data->config->numPeripherals; p++)
         {
             const HW_TIM_peripheralConfig_S * const peripheralConfig = &data->config->peripherals[p];
+            HW_TIM_private_applyBreak((HW_TIM_peripheral_E)p);
             if (peripheralConfig->countsPerUs > 0U)
             {
                 const uint64_t cycle  = HW_TIM_private_cycleCounts(peripheralConfig);
@@ -543,6 +723,7 @@ bool HW_TIM_setCompare(HW_TIM_channels_E channel, uint32_t counts)
             {
                 peripheralData->activeCompare[channelConfig->ocUnit] = counts;
                 HW_TIM_private_publishDuty(channel);
+                HW_TIM_private_updateLines(channel);
             }
             ret = true;
         }
@@ -577,12 +758,15 @@ bool HW_TIM_setOutputEnabled(HW_TIM_channels_E channel, bool enabled)
         const HW_TIM_channelConfig_S * const channelConfig = &data->config->channels[channel];
         data->peripheralData[channelConfig->peripheral].outputEnabled[channelConfig->ocUnit] = enabled;
         HW_TIM_private_publishEnabled(channel);
+        HW_TIM_private_updateLines(channel);
         ret = true;
     }
     return ret;
 }
 
 // [impl->fw~hal_tim_008~1]
+// [impl->fw~hal_tim_007~1] as on silicon, the enable does not set while the
+// break input is asserted.
 bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
 {
     bool ret = false;
@@ -590,8 +774,11 @@ bool HW_TIM_setMainOutputEnabled(HW_TIM_peripheral_E peripheral, bool enabled)
         (peripheral < HW_TIM_PERIPHERAL_COUNT) &&
         ((size_t)peripheral < data->config->numPeripherals))
     {
-        data->peripheralData[peripheral].mainOutputEnabled = enabled;
+        const bool breakHeld = ((data->config->peripherals[peripheral].hasBreakInput) &&
+                                (data->breakInput[peripheral]));
+        data->peripheralData[peripheral].mainOutputEnabled = ((enabled) && (!breakHeld));
         HW_TIM_private_publishMoe(peripheral);
+        HW_TIM_private_updatePeripheralLines(peripheral);
         ret = true;
     }
     return ret;
