@@ -14,13 +14,12 @@ hardware-triggered from TIM1's trigger output, landed in firmware statics by
 the injected-EOC interrupt — on **both targets**. Bench telemetry shows
 mid-window samples while six-step drives the motor; in SIL the interrupt table
 dispatches the ISR on the 50 µs grid and `tests/crest_sampling.rs` asserts one
-sample set per PWM period at the CCR4 instant against the plant. No control law
-consumes the samples yet — the FOC current loop is its own sprint.
+sample set per PWM period at the CCR4 instant against the plant. The FOC
+current loop (motor sprint) consumes them.
 
 **Why it was next:** the low-side shunts only see phase current during the
 1−duty window (campaign finding), so FOC needs center-of-period injected
-sampling. Closes `fw~hal_tim_006`, `fw~hal_adc_003`, `fw~hal_adc_008`; the
-OFT defect baseline lands at 28 (`CLAUDE.md` carries the composition).
+sampling. Closes `fw~hal_tim_006`, `fw~hal_adc_003`, `fw~hal_adc_008`.
 
 Stages, all ☑ (current-state detail lives in the design docs + tests):
 
@@ -97,7 +96,7 @@ Stages, all ☑ (current-state detail lives in the design docs + tests):
 
 **Deferred out of the sprint:** D8 interrupt controller (the
 interrupt-driven-control sprint that follows); `usb_cdc`/`teleplot`
-sig_type (filed near the top of `backlog.md`).
+sig_type (now "Decoded telemetry as table signals" in `backlog.md`).
 
 ---
 
@@ -138,10 +137,11 @@ synthetic ADC ramp advances under the scheduler.
   two hook installers (D2). `main.c` is a thin driver over it (embedded entry /
   SIM smoke driver); Rust drives the same calls. Pacing (fast vs realtime) is
   the driver's choice.
-- ☐ Ungate the rest of io/dev/app in `main.c` for SIM (the real tasks)
-- ☐ Cross-platform context-switch primitive (macOS ucontext / small asm)
+- ☑ Ungate the rest of io/dev/app in `main.c` for SIM (the real tasks)
+- ☑ Cross-platform context-switch primitive — `Native-Coro` (asm coroutine,
+  x86_64 + aarch64) on Linux/macOS, `Native-Fiber` on Windows
 - ☐ Realtime-paced driver (wall-clock pacing of the engine step)
-- ☐ Sim impls of the remaining bottom-layer drivers (USB CDC stub, any
+- ☑ Sim impls of the remaining bottom-layer drivers (USB CDC, any
   direct-hardware pokes); IO_AS5048 / IO_SK6805 build for SIM over `HW_SPI`
 - ☐ `HW_time` module (stm32g4 + sim) + audit drivers for direct
   `HAL_Delay`/`DWT`/timer-`CNT` use (D9)
@@ -223,7 +223,7 @@ writes a global and sees the firmware react. (proof of white-box loop) — **MET
   model vsig ids + sampled list resolved once (hot loop skips `Model::signals()`).
   7 unit tests; the sanity suite drives checks 2/3/4/5 through the engine. (The
   historian itself — the change-logged per-signal series — is the State Table,
-  already done above; end-of-run trace **dump/MDF4 export** remains, D12.)
+  already done above; the end-of-run MDF4 export is in, D12.)
 - ☐ **Perf seams from the start** (performance.md): zero-alloc hot loop +
   columnar historian buffers; gated discrete work (continuous-integration every
   tick, firmware/routes/algebraic-models/historian-scan gated); pluggable
@@ -271,6 +271,5 @@ params on a running sim.
 - ☐ Signal injection + model-parameter manipulation UI
 
 ## Ongoing
-- ☐ Periodic `git rebase main` from the `sil` worktree
+- ☑ The harness lives on `main` (`sw/sil/`) and runs in CI on all three OSes
 - ☐ Keep firmware-side changes small + individually `main`-mergeable
-- ☐ Merge `sil` → `main` once the harness is proven

@@ -37,8 +37,7 @@ plane drives them. Deferred: the V/f method `fw~mc_010`/`fw~mc_017`
 scheduled with sensorless FOC.
 
 **Read first:**
-1. `CLAUDE.md`, plus the ADC and unhandled-IRQ gotchas at the bottom of this
-   file.
+1. `CLAUDE.md`, plus the gotchas at the bottom of this file.
 2. `specs/system/mc/motor-control.md` (`sys~mc_001`, the sprint's system
    anchor) + `specs/firmware/hal/adc.md` (`fw~hal_adc_003` / `fw~hal_adc_008`,
    the timer-triggered injected conversions and their async completion).
@@ -147,9 +146,7 @@ Outer loops and the first estimator work.
   within 1 mrad, a 10 mNm load at rest moves the rotor 2 mrad. The dial
   under the position method writes a position with a 0.01 rad send
   deadband. The end-to-end path is written up in
-  `docs/position-trajectory-path.pdf`. Open: an "after the previous move
-  completes" timing alternative, and mixing setpoint kinds in one
-  sequence editor.
+  `docs/position-trajectory-path.pdf`.
 - **Rotor angle and velocity estimation** — done: the three-state observer
   `fw~est_rotor_001`/`_002` on angle, velocity and unmodelled torque T̂_d,
   corrected at 1 kHz and carried forward every PWM cycle on the known
@@ -158,9 +155,10 @@ Outer loops and the first estimator work.
   from the bench. The order decision and its captures are in
   `tools/trace_analysis/estimator_order`; the derivation is
   `docs/references/rotor-observer-derivation.md`.
-- **Motor parameter identification** — R / L / Ke, initially offline
-  (measurement + datasheet) to seed the SIL model, with auto-commissioning
-  scoped as a later phase.
+- **Motor parameter identification** — offline: R, K_e and J are measured
+  in the `tools/trace_analysis` notebooks (`stall_current_measure_r`,
+  `bemf_spin`, `alignment_ring`, `estimator_order`) and seed the board
+  config and the SIL plant. On-board auto-commissioning is not started.
 - Feeds the Kalman-family observer work (README goal 3), developed and
   characterized in SIL before the bench.
 
@@ -176,21 +174,33 @@ The control design is the owner's; these are the known gaps in it.
   section 6).
 - **Encoder-latency compensation.** θm is compared against a θ̂ read later
   in the 1 ms pass, a lag of ω·d: about 50 mrad electrical at 18 rad/s for
-  d ≈ 0.2 ms.
+  d ≈ 0.2 ms. The SIL encoder has no delay yet ("Encoder: AS5048
+  propagation delay", `docs/sil/backlog.md`).
 - **float32 θ* resolution.** Past 32 rad one float step is 3.8e-6 rad, so
   a jog under about 1.9 mrad/s stalls.
 - **Position bench verification** of `fw~mc_029`..`fw~mc_032` is pending.
+- **Move timing after completion.** A setpoint fires at its `t_us` from
+  the sequence start (`Setpoint` in `sw/proto/board.proto`); there is no
+  "after the previous move completes" timing.
+- **Mixed setpoint kinds in one sequence.** The wire takes speed and stop
+  setpoints alongside the method's own kind, but the Sequence widget edits
+  one kind per sequence (`sw/gui/dist/js/workspace/sequencewidget.js`).
 
 ## After this sprint (full roadmap, one durable home)
 
-4. **Operating modes & device UX** — `sys~ops_001` FSM, knob + mode-button
-   semantics, LED-ring feedback, fault presentation. The standalone-first
-   device experience.
-5. **Persistence** — the **NVRAM choice** (littlefs vs EEPROM emulation)
-   for calibration and config.
+4. **Operating modes & device UX** — the `sys~ops_001` mode state machine
+   has no firmware decomposition yet; knob + mode-button semantics (see the
+   `fw~mc_007` gesture mismatch in `docs/backlog.md`), LED-ring feedback,
+   fault presentation. The standalone-first device experience.
+5. **Persistence** — `sys~persist_001`: the NVRAM choice (littlefs vs
+   emulated EEPROM) for calibration and config, then its specs.
 6. **Desktop app** — configuration and diagnostics on top of the
    observability, command and sequence slice. The device stays
    standalone-first.
+7. **Motor parameter auto-commissioning** — on-board R / L / K_e / J
+   identification; the offline notebooks are its reference.
+8. **First system-level SIL test** — a closed-loop tracking run tagged
+   `[test->sys~mc_001~1]`; no SIL test carries it yet.
 
 ## Acceptance (every milestone)
 
@@ -202,11 +212,6 @@ The control design is the owner's; these are the known gaps in it.
 
 ## Known gotchas carried in from the foundation sprint
 
-- **AUTDLY is ADC-wide.** Forced on for the polled regular read, and it stays
-  on until that read is DMA-driven: `HAL_ADC_PollForConversion` clears EOC and
-  EOS together when AUTDLY is clear, so a multi-rank poll times out on ranks
-  2..N. It costs the injected group ~1 trigger in 208 meanwhile
-  (`docs/sil/backlog.md`).
 - **Encoder RX DMA is parked** — the `HW_SPI` stm32g4 DMA path is TX-only.
   Mirror `HW_SPI_private_dmaTxComplete` for RX if the ~3.5 µs polled read
   becomes a loop-timing problem.

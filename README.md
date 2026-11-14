@@ -9,36 +9,89 @@ like end-to-end.
 
 ## Status
 
-- **Hardware:** design finalized, layout complete. The board is frozen pending
-  firmware work and will only be revised if firmware exposes a project-blocking
-  issue.
-- **Firmware:** foundation platform plus first motor drive — a spec'd and
-  traced driver stack (clocks, GPIO, ADC, DMA, SPI, I2C, timers, USB CDC,
-  op-amps, encoder, LED ring, button, serial) with all board sensing
-  bench-verified in engineering units; six-step, sensored sinusoidal and
-  field-oriented torque, velocity and position drive through the
-  STSPIN32G4 gate driver on a three-state encoder observer with a
-  disturbance estimate (position bench verification pending), with cogging
-  compensation, a host command plane playing timed setpoint sequences
-  (speeds, torques, and position moves profiled on the board) on the
-  1 ms tick, USB-PD sink monitoring, and overcurrent / encoder-fault
-  protection; and a protobuf-over-USB protocol carrying telemetry, a
-  signal trace engine sampling at the 20 kHz PWM rate, a link throughput
-  test, and the log stream. The sprint plan is
-  [`docs/motor-sprint.md`](docs/motor-sprint.md).
-- **Desktop app:** observability slice working on the bench — connect with
-  a firmware-identity gate, DWARF-driven signal picker, live WebGL plots
-  with honest min/max decimation, pause/zoom timeline with a comparison
-  cursor, value table, and session restore; Command and Sequence widgets
-  for the command plane, the sequence chart drawing the board's own
-  profiles, with a capture export. Spec-driven like the firmware
-  ([`specs/desktop-app/`](specs/desktop-app/)), verified by a playwright
-  UI suite.
-- **Simulation and analysis tooling:** an SIL harness (`sw/sil`) exercises
-  the native firmware build against a motor model with cogging and load
-  torque (protocol, trace engine, server, the drive methods, the
-  estimator); the formal `notebooks/` analysis infrastructure is not yet
-  started (trace analyses live in `tools/trace_analysis/`).
+*As of 2026-11-14.* The board drives the motor under field-oriented torque,
+velocity and position control, commanded from its own knob or from the
+desktop app, and every piece of that is specified, traced and tested in
+simulation. The estimation goals beyond a fixed-gain observer, sensorless
+operation, and the comparison harness are not started.
+
+- **Hardware:** one board revision, built and frozen. It is revised only if
+  firmware exposes a blocking issue. One assembly substitution (a 24 MHz
+  crystal for the 25 MHz part) is logged in
+  [`hw/rework-log.md`](hw/rework-log.md) and not yet in the schematic.
+- **Firmware:** a spec'd and traced driver stack (clocks, GPIO, ADC, DMA,
+  SPI, I2C, timers, USB CDC, op-amps, CORDIC, encoder, LED ring, button)
+  with all board sensing bench-verified in engineering units. Motor drive
+  is six-step, sensored sinusoidal, and field-oriented torque, velocity
+  and position, with a move profile, cogging compensation and a
+  disturbance-torque feed-forward, on a three-state encoder observer
+  (angle, velocity, unmodelled torque). Protection is a phase and bus
+  overcurrent trip, an encoder-fault trip and a gate-driver break latch.
+  A protobuf-over-USB protocol carries telemetry, a signal trace sampled
+  at the 20 kHz PWM rate, a log stream, and a command plane that plays
+  timed setpoint sequences on the board. USB-PD sink monitoring reports
+  the negotiated supply. The 20 kHz control interrupt takes about 30 µs
+  of its 50 µs period under position control.
+- **Desktop app:** connects behind a firmware-identity gate, picks signals
+  from the firmware's DWARF, and plots them live (WebGL, min/max
+  decimation) with a pause/zoom timeline, comparison cursor, value table
+  and session restore. Command and Sequence widgets drive the command
+  plane, and a capture exports to CSV. Spec-driven
+  ([`specs/desktop-app/`](specs/desktop-app/)) and verified by a
+  playwright suite.
+- **Simulation:** the SIL harness (`sw/sil`) runs the real firmware, built
+  natively with the same RTOS tasks, against a motor, bridge and sensor
+  model at the bench-fitted parameters, with cogging and load torque. It
+  is the main verification surface: 302 tests, alongside 44 unit-test
+  suites.
+- **Traceability:** 232 requirements. Every firmware and app requirement
+  that is built traces to code and to a test; requirements only the
+  hardware can show are checked on the bench by scripts that write a
+  dated record ([`docs/bench/`](docs/bench/)). CI builds the firmware and runs the unit and SIL suites on
+  Windows, macOS and Linux, and the app suites on Windows and macOS.
+
+### Against the goals
+
+| Goal | In place | Not started |
+|------|----------|-------------|
+| 1. Embedded software | Layered, channelized firmware on FreeRTOS; spec system with OpenFastTrace; unit + SIL tests; three-OS CI | Static analysis, a pinned containerized toolchain, and a spec-trace gate in CI |
+| 2. Modeling and observability | SIL plant fitted to the bench motor; 20 kHz trace and telemetry; desktop app; offline trace analyses in `tools/trace_analysis/` | The `notebooks/` pipeline; the algorithm comparison harness |
+| 3. State estimation | Fixed-gain three-state observer on the encoder, characterized in SIL and on the bench | Kalman-family observer; thermal state; sensor-degradation experiments; sensorless observer; auto-commissioning |
+| 4. Motor control | FOC torque loop; velocity, torque and position loops; position moves with a trapezoidal profile | Sensorless inner loop (the V/f start-up ramp is specified, not built); the repeatable trajectory benchmark |
+
+Also specified at system level and not yet built: the operating-mode state
+machine, settings persisted in flash, and multi-device support in the app.
+Open work is tracked in [`docs/backlog.md`](docs/backlog.md),
+[`docs/sil/backlog.md`](docs/sil/backlog.md) and
+[`docs/motor-sprint.md`](docs/motor-sprint.md).
+
+### How it got here
+
+| When | Milestone |
+|------|-----------|
+| 2025-10 to 2026-03 | Schematic and layout; design checked and frozen |
+| 2026-04 to 2026-06 | Spec system and build infrastructure; the channelized driver stack, peripheral by peripheral |
+| 2026-07 | SIL harness running the real firmware natively on three operating systems, with CI; first protected six-step drive |
+| 2026-08 | Full-loop commutation in SIL on a bench-parameterized plant; USB protocol and the desktop app's observability slice |
+| 2026-09 | Timer-triggered current sampling at the PWM crest; ADC over DMA; the 20 kHz signal trace |
+| 2026-10 | C++ for the control modules; space-vector modulation; sensored sinusoidal drive; the interrupt hot path; a rotor tracking estimator |
+| 2026-11 | Field-oriented torque, velocity and position control; the host command plane; the three-state observer |
+
+Decisions made along the way:
+
+- **C++ for control code.** The firmware started as C; the bridge, motor
+  control, estimator and sequencer are now C++ classes behind C facades,
+  and new control code starts in C++
+  ([`docs/cpp-coding-conventions.md`](docs/cpp-coding-conventions.md)).
+- **A Tauri desktop app.** The app, planned only as "Rust", is a Rust
+  core with a static web frontend and no frontend build step.
+- **Protobuf on the wire.** An early text telemetry stream gave way to
+  COBS-framed protobuf with a board-specific schema.
+- **A deterministic observer first.** The estimator in use is a
+  fixed-gain Luenberger observer; the Kalman-family work the goals call
+  for comes after it.
+- **Linux in CI.** The supported development platforms are Windows and
+  macOS; the firmware and SIL also build and test on Linux.
 
 The hardware is a USB-PD-powered BLDC controller built around an STM32G431 MCU,
 an STSPIN32G4 integrated gate driver, and an AS5048 magnetic rotor encoder. It
