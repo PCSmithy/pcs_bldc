@@ -22,7 +22,8 @@ const N_PHASES: usize = 3;
 pub struct CurrentSenseParams {
     /// Phase zero-current midpoint (V): VREF/2 bias for bipolar sensing.
     pub phase_bias_v: f64,
-    /// Phase transfer slope (V/A): INA240A3 (100 V/V) across a 1 mΩ shunt.
+    /// Phase transfer slope (V/A): INA240A3 (100 V/V) across a 1 mΩ low-side shunt,
+    /// IN+ on the FET side, so current into the motor reads negative.
     pub phase_gain_v_per_a: f64,
     /// Bus zero-current level (V): ground-referenced, no bias.
     pub bus_bias_v: f64,
@@ -38,7 +39,7 @@ impl Default for CurrentSenseParams {
     fn default() -> Self {
         Self {
             phase_bias_v: 1.65,
-            phase_gain_v_per_a: 0.1,
+            phase_gain_v_per_a: -0.1,
             bus_bias_v: 0.0,
             bus_gain_v_per_a: 0.6,
             bus_v_gain_v_per_v: 0.15,

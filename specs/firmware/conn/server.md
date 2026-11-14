@@ -23,10 +23,14 @@ The firmware shall answer every received envelope
 | A request producing a result | The result payload (e.g. `Identity` for `IdentityRequest`) |
 | A request succeeding without a result | `Response` with `accepted` set |
 | A rejected request, or a payload that is not a recognized request | `Response` with `accepted` clear and `cause` naming the reason |
+| A frame over the channel's maximum frame length (`fw~conn_proto_005~1`) | `Response` with `accepted` clear, `request_id` 0, and `cause` `frame too large` |
 
 Acceptance:
 - A `PingRequest` receives a `Response` with `accepted` set, carrying
   the request's `request_id`.
+- A frame whose payload exceeds the 448-byte maximum receives a rejected
+  `Response` with `cause` `frame too large`, and a `PingRequest` behind
+  it is answered.
 - A request received while the sample stream (`fw~conn_trace_009~1`)
   holds the transmit capacity is answered within 2 ms.
 - An envelope bearing no recognized request payload receives a
@@ -40,51 +44,13 @@ Needs: impl, test
 ## Board commands
 
 `board.Request` commands act on the request state shared with the
-on-device controls (`sys~ops_002~1`). A `board.Mode` value is either
+on-device controls (`sys~ops_002~1`): `Command` carries a `board.Mode`
+and a setpoint sequence — each setpoint a speed target, a torque target,
+a position move, or a stop (`fw~ops_001~1`) — `ClearFault` the
+fault-clear action, and
+`GetMotorInfo` a query. A `board.Mode` value is either
 `MODE_OFF` — the bridge-disable request of `fw~mc_006~1` — or names a
 commutation method (`sys~mc_005~1`).
-
-### SetMode handling
-`fw~conn_server_002~1`
-
-An accepted `SetMode` shall request the commanded state of the motor
-control application — `MODE_OFF` the bridge disabled, a method value
-the bridge enabled running that method — rejecting the command when:
-
-| Rejected when |
-|---------------|
-| The value names no `board.Mode` member |
-| A method other than the active one is named while the bridge is enabled (`sys~mc_005~1`) |
-| A method is named while a fault is latched (`fw~safety_001~1`, `fw~safety_002~1`) |
-
-Acceptance:
-- With the bridge disabled and no fault latched, a method value is
-  accepted and the bridge enable is requested with that method;
-  `MODE_OFF` is accepted in every state.
-- Each rejection condition rejects the command, the requested state
-  unchanged.
-
-Covers:
-- sys~ops_002~1
-
-Needs: impl, test
-
-### SetVelocity handling
-`fw~conn_server_003~1`
-
-An accepted `SetVelocity` shall become the shared speed target
-(`sys~ops_002~1`), rejecting the command when the value is not finite
-or its magnitude exceeds the configured maximum (`fw~mc_008~1`).
-
-Acceptance:
-- A finite value within the maximum becomes the speed target.
-- A non-finite value and an over-maximum value are each rejected, the
-  target unchanged.
-
-Covers:
-- sys~ops_002~1
-
-Needs: impl, test
 
 ### ClearFault handling
 `fw~conn_server_004~1`
@@ -99,6 +65,79 @@ Acceptance:
 
 Covers:
 - sys~safety_001~1
+
+Needs: impl, test
+
+### Command handling
+`fw~conn_server_007~1`
+
+An accepted `Command` shall request the commanded state of the motor
+control application — `MODE_OFF` the bridge disabled, a method value the
+bridge enabled running that method — and hand its setpoint list to the
+sequence player as the sequence to run (`fw~ops_001~1`), rejecting the
+command, the requested state and the running sequence unchanged, when:
+
+| Rejected when |
+|---------------|
+| The mode names no `board.Mode` member |
+| A method other than the active one is named while the bridge is enabled (`sys~mc_005~1`) |
+| A method is named while a fault is latched (`fw~safety_001~1`, `fw~safety_002~1`) |
+| A setpoint names no target |
+| A setpoint's kind is not one the mode takes, per the table below (cause `setpoint kind not for this mode`) |
+| A setpoint's value or a limit is not finite, or a limit is negative |
+| A speed setpoint's magnitude exceeds the configured maximum velocity (`fw~mc_008~1`) |
+| A torque setpoint's magnitude exceeds K_t · I_max (`fw~mc_026~1`) |
+| A position setpoint's magnitude exceeds the configured maximum position (`fw~mc_031~1`), its velocity limit exceeds the configured maximum velocity (`fw~mc_008~1`), or its velocity at the point exceeds its velocity limit (the maximum velocity for a limit of zero) |
+| A setpoint's time precedes the setpoint before it |
+| The list exceeds the player's capacity (`fw~ops_001~1`) |
+| A `Command` accepted in the same 1 ms pass has not started (`fw~ops_001~1`) |
+
+| Mode | Setpoint kinds taken |
+|------|----------------------|
+| `MODE_OFF` | Stop |
+| `MODE_SIX_STEP_TRAP`, `MODE_SINUSOIDAL`, `MODE_FOC_VELOCITY` | Speed, stop |
+| `MODE_FOC_TORQUE` | Speed, torque, stop |
+| `MODE_FOC_POSITION` | Speed, position, stop |
+
+A `Command` travels in one frame, its envelope at most 448 bytes
+(`fw~conn_proto_005~1`): 15 position setpoints with every field set fit
+in it.
+
+Acceptance:
+- With the bridge disabled and no fault latched, a method value with one
+  speed setpoint at time zero is accepted; the bridge enable is requested
+  with that method and the list reaches the player. `MODE_OFF` with an
+  empty list is accepted in every state. A stop setpoint is accepted
+  under `MODE_OFF` and under a method value. A method value with one
+  position setpoint at time zero within its bounds is accepted.
+- A list at the player's capacity is accepted; one setpoint more is
+  rejected.
+- Each rejection condition rejects the command; a torque setpoint under
+  `MODE_FOC_VELOCITY` and a speed setpoint under `MODE_OFF` are rejected
+  with the cause `setpoint kind not for this mode`.
+
+Covers:
+- sys~ops_002~1
+- sys~ops_003~1
+
+Needs: impl, test
+
+### Motor rating report
+`fw~conn_server_008~1`
+
+A `GetMotorInfo` request shall be answered with a `MotorInfo` result
+(`fw~conn_server_001~1`) reporting the motor-control channel's configured
+torque constant K_t in Nm/A, maximum current I_max in A, maximum torque
+K_t · I_max in Nm, maximum velocity in rad/s (`fw~mc_008~1`), and maximum
+position in rad (`fw~mc_031~1`).
+
+Acceptance:
+- The result carries the configured values — on this board K_t = 0.825,
+  I_max = 1.0, maximum torque 0.825, maximum velocity 18.0, maximum
+  position 62.83 — each within 0.1 %.
+
+Covers:
+- sys~obs_011~1
 
 Needs: impl, test
 

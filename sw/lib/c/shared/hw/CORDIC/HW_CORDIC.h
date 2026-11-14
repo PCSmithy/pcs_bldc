@@ -7,7 +7,7 @@
 // is the commutation step in the PWM-cycle interrupt.
 
 /* Includes */
-#include "lib_types.h"
+#include "lib_transforms.h"   // lib_transforms_sinCos_S
 
 /* Target Config */
 #include "HW_CORDIC_target.h"   // HW_CORDIC_config_S
@@ -21,7 +21,7 @@ bool HW_CORDIC_init(const HW_CORDIC_config_S * const config);
 
 // Sine and cosine of theta_rad, any angle of magnitude up to 4 pi.
 // False, outputs untouched, before init or on a NULL output.
-bool HW_CORDIC_sinCos(float32_t theta_rad, float32_t * const sin_out, float32_t * const cos_out);
+bool HW_CORDIC_sinCos(float32_t theta_rad, lib_transforms_sinCos_S * const out);
 
 #ifdef __cplusplus
 }

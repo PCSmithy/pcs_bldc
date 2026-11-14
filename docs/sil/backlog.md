@@ -198,26 +198,6 @@ types, with `<target>/HW_<Module>_target.h` holding only the config shape
 (see the channelization section of `c-coding-conventions.md`). Whether the
 io-layer modules want the same treatment is unscoped.
 
-## Current sense: model the low-side-shunt duty visibility (bench-confirmed)
-
-**When:** before matching sim phase-current traces against bench captures at
-speed, or when the firmware moves to PWM-synchronized (injected) ADC sampling
-— whichever forces it first.
-
-**What (bench finding, 2026-08-09, stall-R capture):** the board's shunts are
-low-side, so a leg's shunt sees winding current only while its low-side path
-conducts. Under the current asynchronous 1 ms ADC sampling the PWM'd leg's
-*mean* reading is ≈ `(1−duty)·I` while a tied-low leg reads true `I` —
-confirmed at every duty level (`tools/trace_analysis/stall_current_measure_r`).
-Consequences: (a) the SIL `CurrentSenseModel` feeds true currents, so sim and
-bench current telemetry diverge on PWM'd legs by design — matching needs a
-duty-visibility term (inputs exist: the model can observe the bridge command
-like the motor does); (b) the firmware's overcurrent protection under-reads
-PWM'd legs by the same factor (a 0.9-duty leg reads ~10% of its current —
-six-step is covered because the tied-low partner reads true, but FOC/SVPWM
-PWMs all legs); the real fix is PWM-valley injected sampling — exactly the
-reserved `fw~hal_adc_003`/`fw~hal_adc_008` motor-sprint work.
-
 ## fw: alignment dwell captures a mid-swing offset (owner design call)
 
 **When:** after the plant params are ballparked from the real motor — the
@@ -543,3 +523,35 @@ TinyUSB patch, `docs/backlog.md`). Model the packet boundary in the sim USB:
 deliver injected bytes in 64 B packets and apply the transfer-completion
 rule the DCD uses, so a `fast_trace` scenario sending a 64 B request
 reproduces the stall.
+
+## Current sense: gate the sense model on the low-side on-state
+
+The SIL current-sense model reports phase current regardless of switch state;
+the board's low-side shunts see it only while the low side conducts
+(`tools/trace_analysis/stall_current_measure_r` shows the `(1−duty)·I` mean
+under asynchronous sampling). Gate the
+model on the low-side on-state once the shunt-window bench check is in
+(`docs/backlog.md`, low-side shunt window).
+
+## Encoder: AS5048 propagation delay
+
+`sw/sil/pcs_bldc_sil/src/as5048.rs` reports the angle with no delay; the
+AS5048 reports about 100 µs late (datasheet p. 9). Model it so the estimator's
+latency terms read in SIL as on the bench.
+
+## Inverter: dead-time distortion
+
+The SIL inverter carries no dead-time voltage error. On the bench it shows as
+a 6/12/24-per-electrical-cycle velocity ripple at crawl speeds
+(`tools/trace_analysis/estimator_order`).
+
+## Current sense: a sense-bias parameter
+
+A plant-level phase-current offset in the sense model, for a closed-loop test
+of the bridge's zero-current offset tracking (`fw~io_bridge_009`).
+
+## bench: hung-weight run for T̂_d
+
+A known static load (a weight on a string from the shaft) read against T̂_d.
+The steady-speed torque balance covers its calibration; the static-load case
+is unmeasured. The SIL load-torque port (`motor.rs`) stands in meanwhile.

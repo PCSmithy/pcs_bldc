@@ -73,7 +73,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 {
                     .InjectedChannel = ADC_CHANNEL_6, // Phase U ISENSE
                     // injected rank inferred from 'injectedInputs' array index
-                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5,   // the INA240 drives the pin hard
+                    // 4 conversions summed in hardware, no shift: a 14-bit count, one more bit
+                    // of current, done 2.1 us after the crest trigger: inside the low-side
+                    // shunt window at V_max (fw~hal_adc_006)
+                    .InjecOversamplingMode = ENABLE,
+                    .InjecOversampling = { .Ratio = ADC_OVERSAMPLING_RATIO_4, .RightBitShift = ADC_RIGHTBITSHIFT_NONE },
                     .InjectedSingleDiff = ADC_SINGLE_ENDED,
                     .InjectedOffsetNumber = ADC_OFFSET_NONE,
                     .InjectedOffset = 0,
@@ -147,7 +152,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
                 {
                     .InjectedChannel = ADC_CHANNEL_7, // Phase V ISENSE
                     // injected rank inferred from 'injectedInputs' array index
-                    .InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5,
+                    .InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5,   // the INA240 drives the pin hard
+                    // 4 conversions summed in hardware, no shift: a 14-bit count, one more bit
+                    // of current, done 2.1 us after the crest trigger: inside the low-side
+                    // shunt window at V_max (fw~hal_adc_006)
+                    .InjecOversamplingMode = ENABLE,
+                    .InjecOversampling = { .Ratio = ADC_OVERSAMPLING_RATIO_4, .RightBitShift = ADC_RIGHTBITSHIFT_NONE },
                     .InjectedSingleDiff = ADC_SINGLE_ENDED,
                     .InjectedOffsetNumber = ADC_OFFSET_NONE,
                     .InjectedOffset = 0,
@@ -180,7 +190,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         {
             // Phase U ISENSE: shares pin IN6 (and its SIL port) with the
             // regular path, as on silicon.
-            [0] = { .enabled = true, .inputNameStr = "ADC1_INJ_U", .pinInput = 6U },
+            [0] = { .enabled = true, .inputNameStr = "ADC1_INJ_U", .pinInput = 6U,
+                    .oversamplingEnabled = true, .oversamplingRatio = 4U, .oversamplingShift = 0U },   // as stm32g4
         },
         .injectedTrigger = HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO,
         .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,
@@ -205,7 +216,8 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .injectedInputs      =
         {
             // Phase V ISENSE: shares pin IN7 with the regular path.
-            [0] = { .enabled = true, .inputNameStr = "ADC2_INJ_V", .pinInput = 7U },
+            [0] = { .enabled = true, .inputNameStr = "ADC2_INJ_V", .pinInput = 7U,
+                    .oversamplingEnabled = true, .oversamplingRatio = 4U, .oversamplingShift = 0U },   // as stm32g4
         },
         .injectedTrigger = HW_ADC_INJECTED_TRIGGER_PWM_TIM_TRGO,
         .injectedTriggerEdge  = HW_ADC_TRIGGER_EDGE_RISING,

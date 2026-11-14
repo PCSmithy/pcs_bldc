@@ -6,10 +6,11 @@
 
 /* Defines */
 
-// Phase-current sense front end: INA240A3 (100 V/V) across a 1 mOhm shunt ->
-// 0.1 V/A, biased to a VREF/2 = 1.65 V zero-current midpoint (bipolar).
+// Phase-current sense front end: INA240A3 (100 V/V) across a 1 mOhm low-side
+// shunt, IN+ on the FET side, so current out of the motor reads positive:
+// -0.1 V/A for current into the motor, biased to a VREF/2 = 1.65 V midpoint.
 #define BRIDGE_PHASE_I_BIAS_V   (1.65f)
-#define BRIDGE_PHASE_I_V_PER_A  (0.1f)
+#define BRIDGE_PHASE_I_V_PER_A  (-0.1f)
 // DC-bus current sense front end: INA180A2 (50 V/V) across a 12 mOhm shunt ->
 // 0.6 V/A, ground referenced (no bias).
 #define BRIDGE_BUS_I_BIAS_V     (0.0f)
@@ -18,6 +19,10 @@
 // referenced (22 V full scale at the 3.3 V reference).
 #define BRIDGE_BUS_V_BIAS_V     (0.0f)
 #define BRIDGE_BUS_V_V_PER_V    (0.15f)
+// Zero-current offset tracking: a 10 ms EMA of each idle phase's reading,
+// latched when the phase next drives after 50 ms idle or more (5 tau).
+#define BRIDGE_ZERO_OFFSET_TAU_S        (0.010f)
+#define BRIDGE_ZERO_OFFSET_MIN_SAMPLES  (1000U)
 
 /* Private Data Definitions */
 
@@ -88,6 +93,11 @@ static const IO_bridge_channelConfig_S IO_bridge_channelConfig[] =
             .voltsPerUnit      = BRIDGE_BUS_I_V_PER_A,
         },
         .injectedPairWindow_us = 25U, // must be strictly less than 50us PWM period (20kHz)
+        .zeroOffset =
+        {
+            .filterAlpha = HW_TIM_PWM_PERIOD_S / BRIDGE_ZERO_OFFSET_TAU_S,
+            .minSamples  = BRIDGE_ZERO_OFFSET_MIN_SAMPLES,
+        },
         .busVoltage =
         {
             .adcChannel        = HW_ADC_CHANNEL_1,

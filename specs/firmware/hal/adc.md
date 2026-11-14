@@ -33,6 +33,7 @@ configuration is rejected by any of:
 | Config         | The config pointer or its channel array is NULL, or the channel count exceeds the available ADC channels.                                            |
 | Regular input  | A channel's enabled regular inputs' conversion ranks do not form the contiguous sequence 1..N, where N is the channel's enabled regular-input count. |
 | Injected input | A channel's enabled injected inputs are not contiguous from the first sequence position, or the channel names an unknown injected trigger source.    |
+| Injected oversampling | A channel's injected oversampling of ratio N and shift S sums a full-scale conversion past the 16-bit data field: N · (2^n − 1) / 2^S above 65535, for n the resolution in bits. |
 
 Acceptance:
 - A valid config initializes and calibrates every channel and returns true.
@@ -191,7 +192,9 @@ Needs: impl, test
 Each channel shall provide an injected conversion sequence whose enabled inputs
 are addressed by dense sequence position, sampled at the channel's injected
 trigger event (`fw~hal_adc_003~1`) and read back per position as a raw count and
-a voltage by the formula of `fw~hal_adc_005~1`.
+a voltage by the formula of `fw~hal_adc_005~1`, the voltage scaled for the
+group's configured hardware oversampling: a count that is the sum of N
+conversions shifted right S bits reads as volts times 2^S / N.
 
 Rationale:
 - The injected group is hardware-prioritized — an injected trigger preempts the
@@ -206,6 +209,9 @@ Acceptance:
   sampling.
 - An injected read of a disabled position, an out-of-range position, or before
   initialization returns false.
+- With injected oversampling of ratio N and shift S configured, a full-scale
+  input still reads the reference voltage; injected inputs of one channel that
+  disagree on the oversampling are rejected at init.
 
 Covers:
 - sys~arch_005~1

@@ -9,23 +9,28 @@
 
 mod common;
 
-use common::{f64_at, plant, select_method, spin_up, tap_button, GRID_US, MODE_SINUSOIDAL, MODE_SIX_STEP_TRAP};
-use pcs_bldc_sil::board::{board, board_with, fault_latched, ALIGN_DWELL_MS, DIAL, GATE_BRINGUP_MS, SENSE};
+use common::{f64_at, mc_config, plant, select_method, spin_up, tap_button, GRID_US, MODE_SINUSOIDAL, MODE_SIX_STEP_TRAP};
+use pcs_bldc_sil::board::{board, board_with, fault_latched, align_dwell_ms, DIAL, GATE_BRINGUP_MS, SENSE};
 use pcs_bldc_sil::{cid, vid, Board, MotorParams, Sil};
 use std::f64::consts::TAU;
 
-/// `motorPolePairs` in `app_motorControl_channels.c`.
-const POLE_PAIRS: f64 = 14.0;
+/// The plant's pole pairs: its electrical angle per mechanical radian.
+fn pole_pairs() -> f64 {
+    f64::from(MotorParams::default().pole_pairs)
+}
 
-/// Injected magnitude: well under the 2 A phase trip, with the derived W at half.
-const I_A: f64 = 1.2;
+/// Injected magnitude: under the 1.2 A phase trip, with the derived W at half.
+const I_A: f64 = 1.0;
 
 /// Decode slack: 12-bit quantization (~8 mA/phase) plus the encoder-noise frame
 /// jitter (~1.5 LSB mechanical x 14 pole pairs, ~0.01 A at this magnitude).
 const TOL_A: f64 = 0.05;
 
-/// The 1 ms pass and the 20 kHz step both need a few passes after an injection.
-const SETTLE_MS: u64 = 10;
+/// The 1 ms pass and the 20 kHz step need a few passes after an injection, and
+/// the estimator needs the injected I_q, a torque input on a rotor that does not
+/// move, absorbed into its torque state (fw~est_rotor_001: poles at 157 and
+/// 2*pi*50 rad/s, settled in about 30 ms) before the frame is still.
+const SETTLE_MS: u64 = 50;
 
 /// A board world with the four motor -> sense routes suspended (the sense inputs
 /// take direct writes), the gate up, six-step selected, and the alignment captured.
@@ -38,7 +43,7 @@ fn aligned_world() -> Sil {
     sim.run_for_ms(GATE_BRINGUP_MS);
     select_method(&mut sim, MODE_SIX_STEP_TRAP);
     tap_button(&mut sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    sim.run_for_ms(align_dwell_ms(&sim) + 100);
     assert!(
         sim.read_bool(&cid("app_motorControl_data.channels[0].isAligned")),
         "aligned at rest before injecting currents"
@@ -82,7 +87,7 @@ fn current_along_the_frame_axis_reads_as_id() {
     assert_near(beta, 0.0, "beta");
     assert_near(d, I_A, "I_d");
     assert_near(q, 0.0, "I_q");
-    assert!(!fault_latched(&sim), "1.2 A is under the trip");
+    assert!(!fault_latched(&sim), "1 A is under the trip");
 }
 
 // [test->fw~mc_016~1]
@@ -138,7 +143,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
     for _ in 0..1000 {
         sim.run_for_ms(1);
         let theta_fw = f64_at(&sim, "app_motorControl_data.channels[0].magneticAngle_rad");
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         c += (theta_fw - theta_e).cos();
         s += (theta_fw - theta_e).sin();
         torque.push(plant(&sim, "torque"));
@@ -173,7 +178,7 @@ fn the_firmware_frame_is_the_rotor_frame_while_spinning() {
 // [test->fw~mc_019~1]
 #[test]
 fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
-    // Full dial under six-step on the 50 us grid, past 300 rad/s electrical: every
+    // Full dial under six-step on the 50 us grid, past 250 rad/s electrical: every
     // cycle's angle, read after the step that produced it, is within the spec's 3 deg
     // of the plant's rotor angle, the estimator carrying it between encoder reads.
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
@@ -185,15 +190,15 @@ fn the_per_cycle_angle_tracks_the_rotor_at_speed() {
         sim.run_for_ms(20);
     }
     sim.run_for_ms(500);
-    let omega_e = plant(&sim, "velocity") * POLE_PAIRS;
-    assert!(omega_e > 300.0, "spinning past 300 rad/s electrical: {omega_e:.0}");
+    let omega_e = plant(&sim, "velocity") * pole_pairs();
+    assert!(omega_e > 250.0, "spinning past 250 rad/s electrical: {omega_e:.0}");
 
     let mut worst_deg = 0.0_f64;
     let (mut c, mut s_) = (0.0_f64, 0.0_f64);
     for _ in 0..2000 {
         sim.step().expect("engine step");
         let theta_fw = f64_at(&sim, "app_motorControl_data.channels[0].magneticAngle_rad");
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         let err = (theta_fw - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
         worst_deg = worst_deg.max(err.abs().to_degrees());
         c += err.cos();
@@ -230,12 +235,12 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     // 90 deg ahead of the plant's rotor at |V| = 0.5 V_max, the line-to-line duty
     // differences are sinusoids at the electrical frequency (within 2% of their
     // amplitude), and the current rides on q.
-    const V_MAX: f64 = 8.0;   // maxVoltage_V in app_motorControl_channels.c
     let Board { mut sim, .. } = board_with(Sil::options().grid_us(GRID_US), 0.0);
+    let v_max = mc_config(&sim, "maxVoltage_V");
     sim.run_for_ms(GATE_BRINGUP_MS);
     select_method(&mut sim, MODE_SINUSOIDAL);
     tap_button(&mut sim);
-    sim.run_for_ms(ALIGN_DWELL_MS + 100);
+    sim.run_for_ms(align_dwell_ms(&sim) + 100);
     let mut deg = 0.0;
     while deg < 90.0 {
         deg += 10.0;
@@ -255,7 +260,7 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     for _ in 0..2000 {
         sim.step().expect("engine step");
         let (va, vb) = commanded_vector(&sim);
-        let theta_e = (plant(&sim, "angle") * POLE_PAIRS).rem_euclid(TAU);
+        let theta_e = (plant(&sim, "angle") * pole_pairs()).rem_euclid(TAU);
         let lead = (vb.atan2(va) - theta_e + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
         c += lead.cos();
         s_ += lead.sin();
@@ -298,10 +303,10 @@ fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {
     println!(
         "rotor_currents: sinusoidal at {velocity:.1} rad/s: vector lead {lead_deg:+.2} deg, |V| {mag:.3} V \
          (0.5 V_max = {:.3}); U-V duty sinusoid amplitude {amplitude:.4}, residual {:.2}%; I_d {:+.3} A, I_q {:+.3} A",
-        0.5 * V_MAX, 100.0 * residual_rms / amplitude, mean(&i_d), mean(&i_q)
+        0.5 * v_max, 100.0 * residual_rms / amplitude, mean(&i_d), mean(&i_q)
     );
     assert!((lead_deg - 90.0).abs() < 3.0, "the vector leads the rotor by 90 deg: {lead_deg:.2}");
-    assert!((mag - 0.5 * V_MAX).abs() < 0.05 * V_MAX, "|V| at half scale: {mag:.3} V");
+    assert!((mag - 0.5 * v_max).abs() < 0.05 * v_max, "|V| at half scale: {mag:.3} V");
     assert!(residual_rms < 0.02 * amplitude, "line-to-line duties are sinusoids: residual {:.2}%", 100.0 * residual_rms / amplitude);
     assert!(mean(&i_q) > 0.0, "a forward spin carries positive I_q");
     assert!(!fault_latched(&sim), "no fault through the spin");

@@ -109,8 +109,8 @@ fn saturation_rails() {
     let v_bus = sim.read_f64(&vid(SENSE, "i_bus_vsense"));
     assert_eq!(
         (v_high, v_low),
-        (params.vref_v, 0.0),
-        "±20 A rails the phase pins at vref and ground: {v_high} V, {v_low} V"
+        (0.0, params.vref_v),
+        "±20 A rails the phase pins at ground and vref (the low-side shunt reads current into the motor negative): {v_high} V, {v_low} V"
     );
     assert_eq!(
         v_bus, params.vref_v,

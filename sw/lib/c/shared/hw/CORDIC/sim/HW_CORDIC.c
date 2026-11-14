@@ -29,13 +29,13 @@ bool HW_CORDIC_init(const HW_CORDIC_config_S * const config)
 }
 
 // [impl->fw~hal_cordic_002~1]
-bool HW_CORDIC_sinCos(float32_t theta_rad, float32_t * const sin_out, float32_t * const cos_out)
+bool HW_CORDIC_sinCos(float32_t theta_rad, lib_transforms_sinCos_S * const out)
 {
     bool ret = false;
-    if ((data->initialized) && (sin_out != NULL) && (cos_out != NULL))
+    if ((data->initialized) && (out != NULL))
     {
-        *sin_out = sinf(theta_rad);
-        *cos_out = cosf(theta_rad);
+        out->sin = sinf(theta_rad);
+        out->cos = cosf(theta_rad);
         ret = true;
     }
     return ret;

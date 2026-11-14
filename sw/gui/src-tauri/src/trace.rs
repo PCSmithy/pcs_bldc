@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager};
 use crate::emitter::{UiEmitter, UiEvent};
 use crate::firmware::{identity_matches, FirmwareState};
 use crate::protocol::Client;
-use crate::session::{SamplesConsumer, SessionState};
+use crate::session::{session_handles, SamplesConsumer, SessionState};
 
 /// Batched samples flush thresholds: whichever trips first. The point cap
 /// bounds one event's payload when a device stall's backlog arrives at once
@@ -268,16 +268,6 @@ fn expect_trace_status(reply: Payload) -> Result<TraceStatus, String> {
 
 /// The connected session's client handle, reported build id, and UI emitter
 /// (lock scope: session only; requests run unlocked).
-fn session_handles(session: &SessionState) -> Result<(Arc<Client>, String, Arc<UiEmitter>), String> {
-    let guard = session.0.lock().map_err(|_| "session state poisoned")?;
-    let session = guard.as_ref().ok_or("not connected")?;
-    Ok((
-        session.client.clone(),
-        session.device_build_id().to_string(),
-        session.ui_emitter(),
-    ))
-}
-
 /// Send the watch list and, on acceptance, commit the replacement table and
 /// build its consumer. A rejection returns the cause and leaves any prior
 /// table untouched (the prior list keeps streaming, mirroring the

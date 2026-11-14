@@ -21,6 +21,13 @@ extern "C" {
 
 /* Typedefs */
 
+typedef enum
+{
+    IO_COBSFRAME_RECEIVE_NONE,       // no frame held
+    IO_COBSFRAME_RECEIVE_FRAME,      // a frame copied out
+    IO_COBSFRAME_RECEIVE_OVERSIZE,   // a frame past the channel's bound (or the buffer) arrived, dropped
+} IO_COBSFrame_receive_E;
+
 typedef struct
 {
     IO_serial_channel_E serialChannel;
@@ -37,14 +44,13 @@ typedef struct
 
 bool IO_COBSFrame_init(const IO_COBSFrame_config_S * const config);
 
-// Pump reception on every channel, holding at most one valid frame per channel
-// until it is received; invalid or oversized segments are discarded.
+// Pump reception on every channel, holding at most one valid or oversize frame
+// per channel until it is received; other invalid segments are discarded.
 void IO_COBSFrame_run(void);
 
-// Copy the held frame into buffer and release it; false when none is held or
-// buffer is too small (which drops the frame).
-bool IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer,
-                      size_t bufferLen, size_t * const frameLen);
+// Release the held frame, copied into buffer when it is a FRAME.
+IO_COBSFrame_receive_E IO_COBSFrame_receive(IO_COBSFrame_channel_E channel, uint8_t * const buffer,
+                                            size_t bufferLen, size_t * const frameLen);
 
 // Drop a channel's accumulated and held RX state — a link-reset boundary
 // (frames from a dead session must not be served to the next one).

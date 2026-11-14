@@ -14,13 +14,16 @@ in **KiCad 10**, currently frozen pending firmware work.
 
 Both software components exist and run on the bench (README's Status
 section carries the feature inventory). The **firmware**: the spec'd +
-traced driver stack, motor drive (six-step and sensored sinusoidal on an
-encoder tracking estimator; V/f specced but not yet implemented), USB-PD
-sink monitoring, overcurrent + encoder-fault protection, and a
-protobuf-over-USB-CDC protocol
-(telemetry, signal trace engine, log stream, firmware identity). The
-**desktop app** (`sw/gui`, Tauri 2): the observability slice,
-spec-driven, verified by the playwright suite
+traced driver stack, motor drive (six-step, sensored sinusoidal, and
+field-oriented torque/velocity/position with cogging compensation, on a
+three-state encoder observer with a disturbance estimate; V/f specced,
+deferred), USB-PD sink monitoring, overcurrent + encoder-fault
+protection, and a protobuf-over-USB-CDC protocol (telemetry, signal
+trace engine, log stream, firmware identity, and the board command
+plane: timed setpoint sequences played by `app_sequencer`, the motor
+rating report). The **desktop app** (`sw/gui`, Tauri 2): the
+observability slice plus the Command and Sequence widgets and capture
+export, spec-driven, verified by the playwright suite
 (`sw/gui/tests/test_views.py`). An SIL harness (`sw/sil`) exercises the
 native firmware build. Build system is fully stood up (CMake + Ninja,
 dual-target embedded + native for SIL — see **Build System** below);
@@ -67,6 +70,10 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── lib/types/        lib_types.h (uint8_t, bool, size_t, ...)
 │   │   │       ├── lib/utils/        lib_utils.h (COUNTOF, ...)
 │   │   │       ├── lib/ringbuf/      Demo library + Unity tests
+│   │   │       ├── lib/pi/           PI regulator (C++, header-only)
+│   │   │       ├── lib/…             cobs, crc32, filterIIR, matrix, protobuf,
+│   │   │       │                     timer, transforms, CYPD3177 (decode)
+│   │   │       ├── test/mocks/       Shared test doubles as CMake targets
 │   │   │       ├── hw/               Channelized HW modules:
 │   │   │       │   ├── systemClock/  systemClock_init (single-instance)
 │   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  I2C/  TIM/  USB/  OPAMP/  CORDIC/  CRC/  (hw-layer drivers)
@@ -75,7 +82,7 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
 │   │   │       ├── dev/              Device drivers (switch, gateDriver, CYPD3177)
 │   │   │       └── app/              App-layer modules (rgbLedRing, motorControl,
-│   │   │                             rotorEstimation, server, cpuLoad)
+│   │   │                             rotorEstimation, sequencer, server, cpuLoad)
 │   │   └── rust/         Rust libraries, workspace-less path deps:
 │   │       ├── prng/         Deterministic PRNG (SIL models)
 │   │       ├── dwarf_map/    DWARF reader: variable path → address/size/type
@@ -99,14 +106,14 @@ The project uses **spec-driven development with end-to-end traceability** via
 │           │             bridge, i2c, COBSFrame)
 │           ├── dev/      pcs_bldc device configs (switch, gateDriver, CYPD3177)
 │           └── app/      pcs_bldc app-layer configs (rgbLedRing, motorControl,
-│                         rotorEstimation, server, userControls)
+│                         rotorEstimation, sequencer, server, userControls)
 │
 ├── specs/                OFT spec tree (sys / fw / app requirements)
 │   ├── README.md          Top-level MOC
 │   ├── system/            sys~ requirements (system-level)
 │   │   ├── overview.md    System overview + arch/persist anchor specs
 │   │   └── conn/ mc/ obs/ ops/ pd/ safety/   (sys~ topic folders)
-│   ├── firmware/          fw~ requirements — hal/io/est/obs/ui/conn/mc/pd/safety
+│   ├── firmware/          fw~ requirements — hal/io/est/obs/ui/conn/mc/ops/pd/safety
 │   └── desktop-app/       app~ requirements — arch/conn/obs/views
 │
 ├── docs/                 Project documentation
@@ -114,8 +121,11 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── spec-system.md     Spec convention + OFT integration (source of truth)
 │   ├── spec-style.md      Spec wording rules (companion to spec-system.md)
 │   ├── spec-template.md   Worked spec examples (fw~, app~, sys~, code tags)
-│   ├── backlog.md         Firmware/tooling backlog
-│   ├── motor-sprint.md    Motor-control sprint plan (FOC/estimation ahead)
+│   ├── backlog.md         Firmware/tooling backlog (SIL items in sil/backlog.md)
+│   ├── motor-sprint.md    Motor-control sprint plan, open design items
+│   ├── references/        Rotor-observer derivation (.md + .pdf), papers
+│   ├── position-trajectory-path.pdf  Sequence widget → 50 µs loop, end to end
+│   ├── sil/               SIL harness architecture notes + backlog
 │   ├── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
 │   └── cpp-coding-conventions.md  What C++ adds: transition policy, class per
 │                                  channel, facade, enums, toolchain gotchas
@@ -222,30 +232,40 @@ sufficient to make the tooling aware of a new topic.
 
 - `specs/system/` — `sys~` anchors in `overview.md` (`sys~arch_001..005`,
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
-  `obs`, `ops`, `pd`, `safety`). Most are test-uncovered on purpose
-  (system-level tests land with the SIL / system-test phases).
+  `obs`, `ops`, `pd`, `safety`), among them `sys~ops_003` (the host's
+  timed setpoint sequence) and `sys~obs_011` (the motor rating report).
+  Most are test-uncovered on purpose (system-level tests land with the
+  SIL / system-test phases).
 - **Firmware specs** (`specs/firmware/`), traced to code, except the V/f
   method (`fw~mc_010`, `fw~mc_017`) deferred on `docs/motor-sprint.md` as
   the sensorless start-up ramp:
   - `hal/` — `adc`, `spi`, `tim`, `gpio`, `dma`, `usb`, `opamp`, `i2c`,
     `cordic`, `crc` (one
     file per peripheral, per-peripheral sub-topic IDs).
-  - `est/encoder.md` (AS5048) + `est/rotor.md` (app_rotorEstimation),
-    `obs/cpu-load.md` (app_cpuLoad), `obs/rgb_leds.md` (SK6805) +
+  - `est/encoder.md` (AS5048) + `est/rotor.md` (app_rotorEstimation,
+    three-state observer: angle, velocity, unmodelled torque),
+    `obs/cpu-load.md` (app_cpuLoad), `obs/status.md` (status telemetry),
+    `obs/identity.md` + `obs/log.md`, `obs/rgb_leds.md` (SK6805) +
     `obs/rgb_led_ring.md` (app_rgbLedRing), `ui/switch.md` (dev_switch),
-    `conn/serial.md` (IO_serial over USB CDC) + the `conn/` trace-engine
-    set (`fw~conn_trace_*`), `io/i2c.md` (IO_i2c) +
+    `conn/serial.md` (IO_serial over USB CDC), `conn/proto.md`,
+    `conn/server.md` (request dispatch, the Command plane, the motor
+    rating report) + `conn/trace.md` (`fw~conn_trace_*`),
+    `ops/sequence-player.md` (app_sequencer), `io/i2c.md` (IO_i2c) +
     `io/bridge.md` (IO_bridge three-phase actuation + current sense),
     `pd/cypd3177.md` (lib_CYPD3177 + dev_CYPD3177 USB-PD sink monitoring),
     `mc/gate-driver.md` (dev_gateDriver), `mc/motor-control-application.md`
-    + `mc/six-step.md` + `mc/sinusoidal.md` + `mc/vf-sinusoidal.md` +
-    `mc/modulation.md` (app_motorControl and the transform/SVM math),
-    `safety/overcurrent.md` + `safety/encoder-fault.md`.
+    + `mc/six-step.md` + `mc/sinusoidal.md` + `mc/foc.md` (torque,
+    velocity and position methods, cogging compensation, move profile) +
+    `mc/vf-sinusoidal.md` + `mc/modulation.md` (app_motorControl and the
+    transform/SVM math),
+    `safety/overcurrent.md` + `safety/encoder-fault.md` +
+    `safety/bridge-break.md`.
 - **Desktop-app specs** (`specs/desktop-app/`) — `app~` specs across
   `arch`/`conn`/`obs`/`views` (core ownership, session + wire codec,
   signal picker + identity gate + trace client, plots with decimation +
   render budget, cursor + comparison anchor/deltas, table + value
-  rendering, timeline, watch panel, workspace + widget titles). All
+  rendering, timeline, watch panel, workspace + widget titles, the board
+  command plane, the Command and Sequence widgets, capture export). All
   impl-covered; test-covered except `app~arch_001` (its UI-reload test
   needs the live Tauri core). `[impl->]`/`[test->]` tags live in `.js`
   and `.py` files too, and the UI verification surface is the playwright

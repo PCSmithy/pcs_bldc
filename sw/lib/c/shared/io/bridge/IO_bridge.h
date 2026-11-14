@@ -49,12 +49,21 @@ typedef struct
     IO_bridge_senseConfig_S currentSense;
 } IO_bridge_phaseConfig_S;
 
+// Zero-current offset EMA over a phase's idle samples: alpha = T_pwm / tau;
+// minSamples is the idle run a latch needs (about 5 tau).
+typedef struct
+{
+    float32_t filterAlpha;
+    uint32_t  minSamples;
+} IO_bridge_zeroOffsetConfig_S;
+
 typedef struct
 {
     IO_bridge_phaseConfig_S phase[IO_BRIDGE_PHASE_COUNT];
     IO_bridge_senseConfig_S busCurrent;
     uint32_t injectedPairWindow_us; // max time span between U and V phase current
                                    // sample times to consider them as synchronous
+    IO_bridge_zeroOffsetConfig_S zeroOffset;
     IO_bridge_senseConfig_S busVoltage;   // regular-sequence sample, volts per volt
 } IO_bridge_channelConfig_S;
 
@@ -82,6 +91,7 @@ bool IO_bridge_setVoltageVector(IO_bridge_channel_E channel, float32_t vAlpha, f
 // upon gate drive boot
 bool IO_bridge_clearBreakFlags(IO_bridge_channel_E channel);
 
+// The phase's latest injected sample less its zero-current offset.
 bool IO_bridge_getPhaseCurrent(IO_bridge_channel_E channel, IO_bridge_phase_E phase, float32_t * const amps_out);
 
 bool IO_bridge_getBusCurrent(IO_bridge_channel_E channel, float32_t * const amps_out);

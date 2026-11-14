@@ -201,7 +201,7 @@ docs/sil/*.md            the design (see "Design docs" below)
   runs are untouched.
 - **The cvar mirror is automatic** — at enable a `FirmwareMember` enumerates
   every traceable DWARF leaf (recurse structs, expand arrays, array-size
-  threshold to drop stacks/buffers, multi-dim/pointer skip) and registers
+  threshold to drop stacks/buffers, pointer skip) and registers
   `cvar:<member>:<leaf>`. Out-sync **sweeps** them memory→table via a
   shadow-snapshot `memcmp` over 64 B chunks (cost O(changed bytes), on a
   sim-time cadence); in-sync **flush is sparse**, drained from the table's dirty

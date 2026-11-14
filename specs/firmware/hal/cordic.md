@@ -42,13 +42,13 @@ Needs: impl, test
 
 After initialization, the driver shall return the sine and cosine of an
 angle in radians of magnitude up to 4 pi, each within 1e-5 of the
-mathematical value, and shall return false with the outputs untouched
-before initialization or when an output pointer is NULL.
+mathematical value, returning false for a NULL output, and false with the
+output unwritten before initialization.
 
 Acceptance:
 - For angles 0, pi/6, pi/2, pi, -pi/6, 2 pi + pi/6, and -4 pi + pi/2, the
   returned pair is within 1e-5 of the reference values.
-- A NULL output pointer returns false and leaves the other output as it was.
+- A NULL output returns false.
 
 Covers:
 - sys~arch_005~1

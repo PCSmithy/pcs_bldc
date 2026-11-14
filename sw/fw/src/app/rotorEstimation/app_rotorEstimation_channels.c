@@ -17,6 +17,12 @@ static const app_rotorEstimation_channelConfig_S app_rotorEstimation_channelConf
         .dampingRatio = 1.0f,
         .correctionPeriod_s = 0.001f,   // IO_AS5048_run1ms
         .estimatePeriod_s = HW_TIM_PWM_PERIOD_S,
+        .inertia_kgm2 = 1.45e-4f,                  // GM6208-150T rotor inertia, bench fit (fw~est_rotor_002)
+        .viscousFriction_NmPerRadPerSec = 1.0e-4f, // rotor friction from the bench T_d reading: mostly
+        .coulombFriction_Nm = 15.0e-3f,            //   Coulomb at ~15 mNm (estimator_order/README.md)
+        .disturbancePole_radPerSec = 157.0f,       // third error pole (fw~est_rotor_001)
+        .coulombRampVelocity_radPerSec = 1.0f,     // ~9x the standstill omega_hat noise (fw~est_rotor_002)
+        .reseedAfterInvalidReads = 5U,             // the encoder-fault limit (fw~safety_002, fw~est_rotor_001)
     },
 };
 

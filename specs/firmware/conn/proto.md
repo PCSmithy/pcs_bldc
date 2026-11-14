@@ -114,14 +114,17 @@ segment per:
 |---------|----------|
 | COBS-decodes with a passing CRC, within the channel's configured maximum frame length (`fw~conn_proto_003~1`) | Delivered to the consumer, in arrival order |
 | Empty | Skipped |
-| COBS error, CRC mismatch, or over the maximum frame length | Discarded |
+| Longer than the COBS encoding of the maximum frame length plus its CRC, or COBS-decoding past that length | Reported to the consumer as an oversize frame, in arrival order, its bytes discarded |
+| Any other COBS error, or a CRC mismatch | Discarded |
 
 Acceptance:
 - Frames arriving back-to-back are delivered in order.
 - A corrupted segment is discarded and the following valid frame is
   delivered.
-- Bytes exceeding the maximum frame length with no delimiter are
-  discarded and the next valid frame is delivered.
+- A frame one byte over the maximum frame length is reported as oversize,
+  and the valid frame behind it is delivered after it.
+- 600 delimiter-free bytes followed by a delimiter are reported as one
+  oversize frame, and the next valid frame is delivered.
 
 Covers:
 - sys~conn_002~1

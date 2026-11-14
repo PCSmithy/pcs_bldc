@@ -2,15 +2,19 @@
 //! step is one PWM period, so the injected engine samples the plant's currents —
 //! through the sense chain, on the shared pins — once per period, and the
 //! completion interrupt (the SIL twin of the bench's `inj_cb`) dispatches once
-//! per period with it.
+//! per period with it. On a finer grid, the duties that interrupt writes reach
+//! the bridge at the next crest, through the compare preload.
 
 use pcs_bldc_sil::board::{
-    board_with, fault_latched, gate_operational, port, ALIGN_DUTY, GATE_BRINGUP_MS, VBUS_V,
+    board_with, fault_latched, gate_operational, port, align_duty, align_dwell_ms, DIAL, GATE_BRINGUP_MS, VBUS_V,
 };
-use pcs_bldc_sil::{Board, CurrentSenseParams, MotorParams, Sil};
+use pcs_bldc_sil::{vid, Board, CurrentSenseParams, MotorParams, Sil};
 
 mod common;
-use common::{assert_status, plant, select_method, spin_up, tap_button, u64_at, ADC_BUSY, GRID_US, MODE_SIX_STEP_TRAP};
+use common::{
+    assert_status, f64_at, plant, select_method, spin_up, tap_button, u64_at, ADC_BUSY, GRID_US, MODE_SINUSOIDAL,
+    MODE_SIX_STEP_TRAP,
+};
 
 /// The sim ADC's completion interrupt, resolved by name off the image's DWARF.
 const COMPLETION_ISR: &str = "HW_ADC_sim_completionDispatch";
@@ -21,9 +25,10 @@ fn injected_count(sim: &Sil, ch: usize) -> u64 {
 }
 
 /// Decode an injected slot the way the firmware's phase decode would: counts →
-/// pin volts → amps through the sense transfer.
+/// pin volts at the channel's oversampled scale → amps through the sense transfer.
 fn injected_amps(sim: &Sil, ch: usize, params: &CurrentSenseParams) -> f64 {
-    let volts = (injected_count(sim, ch) as f64 / 4095.0) * 3.3;
+    let volts_per_count = f64_at(sim, &format!("HW_ADC_data.channelData[{ch}].injectedVoltsPerCount"));
+    let volts = injected_count(sim, ch) as f64 * volts_per_count;
     (volts - params.phase_bias_v) / params.phase_gain_v_per_a
 }
 
@@ -69,7 +74,7 @@ fn the_board_world_samples_the_plant_once_per_period_on_the_fine_grid() {
     select_method(&mut sim, MODE_SIX_STEP_TRAP);
     tap_button(&mut sim);
     sim.run_for_ms(200); // partway into the dwell — current settled, still aligning
-    let expected_a = (ALIGN_DUTY * VBUS_V) / (1.5 * MotorParams::default().r_ohm);   // U against V and W returning
+    let expected_a = (align_duty(&sim) * VBUS_V) / (1.5 * MotorParams::default().r_ohm);   // U against V and W returning
     assert_eq!(port(&sim, "PWM_U_enabled"), 1.0, "alignment pattern is driving");
 
     // The injected slots track the plant through the sense chain: the samples
@@ -206,4 +211,122 @@ fn north_star_injected_matches_the_plant_every_period_while_spinning() {
             "regular path cycling beside the injected stream",
         );
     }
+}
+
+/// The PWM timer's state and configuration (TIM1, peripheral 0; PWM_U is OC unit 0).
+const TIM: &str = "HW_TIM_data.peripheralData[0]";
+const TIM_CONFIG: &str = "HW_TIM_peripheralConfig[0]";
+
+/// Whether an advance of `counts` from counter position `from` lands on position
+/// `target` of a `cycle`-long counting cycle.
+fn lands_on(from: u64, counts: u64, target: u64, cycle: u64) -> bool {
+    let distance = match (target + cycle - from) % cycle {
+        0 => cycle,
+        d => d,
+    };
+    distance <= counts
+}
+
+// [test->fw~hal_tim_009~1]
+#[test]
+fn the_first_update_lands_on_the_first_crest_after_the_start() {
+    // TIM1 counts center-aligned with its update on the period reload: a compare
+    // written into the preload register before the counter's first crest stays off
+    // the output through the up-count and reaches it at that crest.
+    const FINE_US: u64 = 5;
+    let mut sim = Sil::options().grid_us(FINE_US).build();
+    let fwm = sim.load_firmware(pcs_bldc_sil::SOURCE);
+    sim.add_member(fwm);
+    let period = u64_at(&sim, &format!("{TIM_CONFIG}.period"));
+    let counts = FINE_US * u64_at(&sim, &format!("{TIM_CONFIG}.countsPerUs"));
+    assert_eq!(u64_at(&sim, &format!("{TIM}.position")), 0, "the counter starts at its first cycle's start");
+    let half = period / 2;
+    sim.fw().write_cvar(&format!("{TIM}.compare[0]"), &voyant::Value::U32(half as u32));
+    let mut position = 0;
+    let mut latched_at = None;
+    for step in 0..(2 * period / counts) {
+        sim.step().expect("engine step");
+        let crest = lands_on(position, counts, period, 2 * period);
+        position = u64_at(&sim, &format!("{TIM}.position"));
+        let active = u64_at(&sim, &format!("{TIM}.activeCompare[0]"));
+        if active == half {
+            latched_at.get_or_insert((step, crest));
+        }
+    }
+    let output = (port(&sim, "PWM_U_duty") * period as f64).round() as u64;
+    println!("crest_sampling: a compare written at the start latched at step {latched_at:?} of {FINE_US} us");
+    assert_eq!(latched_at.map(|(_, crest)| crest), Some(true), "the first update is the first crest");
+    assert_eq!(latched_at.map(|(step, _)| (step + 1) * counts), Some(period), "at the first period reload, not before");
+    assert_eq!(output, half, "and the output follows it");
+}
+
+// [test->fw~hal_tim_009~1]
+#[test]
+fn a_duty_written_in_the_cycle_interrupt_drives_the_output_from_the_next_crest() {
+    // Sinusoidal drive writes new duties every cycle from the injected-completion
+    // interrupt, which follows the trigger just before the crest. On a 5 us grid
+    // the center-aligned counter's crest and valley land in different steps: a
+    // written compare reads back at once and reaches the PWM output at the first
+    // crest after the write — a period on — never at a valley.
+    const FINE_US: u64 = 5;
+    let Board { mut sim, .. } = board_with(Sil::options().grid_us(FINE_US), 0.0);
+    sim.run_for_ms(GATE_BRINGUP_MS);
+    select_method(&mut sim, MODE_SINUSOIDAL);
+    tap_button(&mut sim);
+    sim.run_for_ms(align_dwell_ms(&sim) + 100);
+    let mut deg = 0.0;
+    while deg < 90.0 {
+        deg += 10.0;
+        sim.write(&vid(DIAL, "angle[deg]"), deg).expect("turn the dial");
+        sim.run_for_ms(20);
+    }
+    sim.run_for_ms(100);
+
+    let period = u64_at(&sim, &format!("{TIM_CONFIG}.period"));
+    let cycle = 2 * period;
+    let counts = FINE_US * u64_at(&sim, &format!("{TIM_CONFIG}.countsPerUs"));
+    let read = |sim: &Sil| {
+        (
+            u64_at(sim, &format!("{TIM}.position")),
+            u64_at(sim, &format!("{TIM}.compare[0]")),
+            u64_at(sim, &format!("{TIM}.activeCompare[0]")),
+            (port(sim, "PWM_U_duty") * period as f64).round() as u64,
+        )
+    };
+
+    let (mut position, mut written, _, mut output) = read(&sim);
+    let mut pending: Option<(u64, u64)> = None;   // (step written, value)
+    let (mut writes, mut latches) = (0u32, 0u32);
+    let mut delays_us = Vec::new();
+    for step in 0..(20 * 1000 / FINE_US) {
+        sim.step().expect("engine step");
+        let (now_position, now_written, active, now_output) = read(&sim);
+        let crest = lands_on(position, counts, period, cycle);
+        let valley = lands_on(position, counts, 0, cycle);
+        if now_output != output {
+            assert!(crest, "step {step}: the output changes only at a crest (valley {valley})");
+            // The first change can latch a write from before the window.
+            if writes > 0 {
+                let (written_at, value) = pending.take().expect("an output change follows a write");
+                assert_eq!(now_output, value, "step {step}: the output takes the written compare");
+                delays_us.push((step - written_at) * FINE_US);
+                latches += 1;
+            }
+        } else if crest && (writes > 0) {
+            assert!(pending.is_none(), "step {step}: a crest after a write puts it on the output");
+        }
+        if now_written != written {
+            writes += 1;
+            assert!(pending.is_none(), "step {step}: the previous write reached the output first");
+            assert_ne!(active, now_written, "step {step}: the written compare reads back before it is active");
+            pending = Some((step, now_written));
+        }
+        (position, written, output) = (now_position, now_written, now_output);
+    }
+    let (min, max) = (delays_us.iter().min().copied(), delays_us.iter().max().copied());
+    println!("crest_sampling: {writes} compare writes, {latches} reached the output, each {min:?}..{max:?} us after its write step");
+    assert!(latches > 300, "the drive rewrites the duty every period: {latches} latches over 20 ms");
+    let pwm_period_us = cycle / u64_at(&sim, &format!("{TIM_CONFIG}.countsPerUs"));
+    assert!(delays_us.iter().all(|&d| d == pwm_period_us), "every write reaches the output one {pwm_period_us} us PWM period on: {min:?}..{max:?} us");
+    assert!(!fault_latched(&sim), "no fault through the run");
 }

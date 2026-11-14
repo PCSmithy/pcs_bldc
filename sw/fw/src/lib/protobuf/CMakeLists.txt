@@ -38,6 +38,7 @@ add_custom_command(
     ${PCS_SHARED_PROTO_DIR}/trace.proto
     ${PCS_SHARED_PROTO_DIR}/trace.options
     ${PCS_BOARD_PROTO_DIR}/board.proto
+    ${PCS_BOARD_PROTO_DIR}/board.options
   COMMENT "nanopb: regenerating lib/protobuf/generated/{shared,trace,board}.pb.{h,c}"
   VERBATIM
 )

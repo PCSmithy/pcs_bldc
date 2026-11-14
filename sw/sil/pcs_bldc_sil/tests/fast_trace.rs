@@ -6,14 +6,11 @@
 //! One engine step is one PWM period on this grid, so the sim ADC's injected
 //! completion dispatches the cycle callback once per step.
 
-use pcs_bldc_sil::{wire::Deframer, Sil};
+use pcs_bldc_sil::Sil;
 
 mod common;
-use common::proto::{
-    field_varint, parse_envelope, parse_fields, samples, watch_request, Samples, F_RESPONSE,
-    F_SAMPLES, F_TRACE_STATUS,
-};
-use common::{connected_world, drain_tx, inject, set_u32, u64_at, GRID_US};
+use common::proto::{trace::Samples, watch_request, Envelope, Payload, SamplesExt};
+use common::{accepted, cause, connected_world, inject, reply_in, set_u32, u64_at, Host, GRID_US};
 
 /// Protocol address of the sim trace window (`app_server_simTraceWindow32`):
 /// word [0] counts 1 ms task passes, word [1] bridge cycle callbacks, and
@@ -34,26 +31,13 @@ const TX_WRITES: &str = "HW_USB_sim_data.txWrites";
 const STEP_BUDGET_US: u64 = 20;
 const CALLBACK_BUDGET_US: u64 = 40;
 
-fn run(sim: &mut Sil, deframer: &mut Deframer, steps: u32) -> Vec<(u64, u32, Vec<u8>)> {
-    let mut envelopes = Vec::new();
-    for _ in 0..steps {
-        sim.step().expect("engine step");
-        let capture = drain_tx(sim);
-        for payload in deframer.push(&capture) {
-            if let Some(env) = parse_envelope(&payload) {
-                envelopes.push(env);
-            }
-        }
-    }
-    envelopes
-}
-
-fn samples_of(envelopes: &[(u64, u32, Vec<u8>)], period: u32) -> Vec<Samples> {
+fn samples_of(envelopes: &[Envelope], period: u32) -> Vec<Samples> {
     envelopes
         .iter()
-        .filter(|(_, field, _)| *field == F_SAMPLES)
-        .map(|(_, _, bytes)| samples(bytes))
-        .filter(|batch| batch.period_cycles == period)
+        .filter_map(|env| match &env.payload {
+            Some(Payload::Samples(batch)) if batch.period_cycles == period => Some(batch.clone()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -65,7 +49,7 @@ fn samples_of(envelopes: &[(u64, u32, Vec<u8>)], period: u32) -> Vec<Samples> {
 #[test]
 fn one_cycle_and_one_millisecond_groups_stream_together() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
     let writes_before = u64_at(&sim, TX_WRITES);
 
     inject(
@@ -79,7 +63,7 @@ fn one_cycle_and_one_millisecond_groups_stream_together() {
             ],
         ),
     );
-    let envelopes = run(&mut sim, &mut deframer, 600); // 30 ms of PWM periods
+    let envelopes = host.run_steps(&mut sim, 600); // 30 ms of PWM periods
 
     // The one-cycle group: a record every cycle, its counter advancing with it.
     let fast = samples_of(&envelopes, 1);
@@ -163,21 +147,19 @@ fn one_cycle_and_one_millisecond_groups_stream_together() {
 #[test]
 fn one_cycle_watches_admit_on_the_budgets_alone() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
 
     // Five 4-byte one-cycle spans: u = 20 x (4 + 20) = 480 B/ms and
     // r = 20 x 20000 + 27 x 1562 = 442174 B/s, both inside the board's budgets.
     let five: Vec<(u32, u32, u32)> = (0..5).map(|i| (WINDOW_BASE + (i * 4), 4, 1)).collect();
     inject(&mut sim, &watch_request(7, &five));
-    let envelopes = run(&mut sim, &mut deframer, 200);
+    let envelopes = host.run_steps(&mut sim, 200);
 
-    let status = envelopes
-        .iter()
-        .find(|(id, field, _)| (*id == 7) && (*field == F_TRACE_STATUS))
-        .map(|(_, _, bytes)| parse_fields(bytes))
-        .expect("TraceStatus reply: nothing caps the one-cycle group's entry count");
-    assert_eq!(field_varint(&status, 2), 480, "RAM usage per millisecond");
-    assert_eq!(field_varint(&status, 4), 442_174, "link rate");
+    let Some(Payload::TraceStatus(status)) = reply_in(&envelopes, 7) else {
+        panic!("TraceStatus reply: nothing caps the one-cycle group's entry count");
+    };
+    assert_eq!(status.ram_usage_bytes_per_ms, 480, "RAM usage per millisecond");
+    assert_eq!(status.link_rate_bytes_per_s, 442_174, "link rate");
 
     let fast = samples_of(&envelopes, 1);
     assert!(!fast.is_empty(), "the five-entry one-cycle group streams");
@@ -192,21 +174,17 @@ fn one_cycle_watches_admit_on_the_budgets_alone() {
 #[test]
 fn a_one_cycle_list_over_the_link_budget_is_rejected() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
 
     // Five 8-byte one-cycle spans: u = 880 B/ms fits, but
     // r = 40 x 20000 + 27 x 3125 = 884375 B/s is past the 480 kB/s link budget.
     let five: Vec<(u32, u32, u32)> = (0..5).map(|i| (WINDOW_BASE + (i * 8), 8, 1)).collect();
     inject(&mut sim, &watch_request(7, &five));
-    let envelopes = run(&mut sim, &mut deframer, 60);
+    let envelopes = host.run_steps(&mut sim, 60);
 
-    let verdict = envelopes
-        .iter()
-        .find(|(id, field, _)| (*id == 7) && (*field == F_RESPONSE))
-        .map(|(_, _, bytes)| parse_fields(bytes))
-        .expect("Response to the over-budget WatchRequest");
-    assert_eq!(field_varint(&verdict, 1), 0, "an over-budget list is rejected");
-    let cause = String::from_utf8_lossy(common::proto::field_bytes(&verdict, 2)).to_string();
+    let verdict = reply_in(&envelopes, 7).expect("Response to the over-budget WatchRequest");
+    assert!(!accepted(verdict), "an over-budget list is rejected");
+    let cause = cause(verdict);
     assert!(cause.contains("link"), "the cause names the link budget, got {cause:?}");
 }
 
@@ -215,7 +193,7 @@ fn a_one_cycle_list_over_the_link_budget_is_rejected() {
 #[test]
 fn a_one_cycle_group_captures_the_window_pair_coherently() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
 
     // Words [1] and [2] are written together in the cycle callback, [2] the
     // complement of [1] — so a torn capture shows up as a broken complement.
@@ -223,7 +201,7 @@ fn a_one_cycle_group_captures_the_window_pair_coherently() {
         &mut sim,
         &watch_request(1, &[(WINDOW_BASE + 4, 4, 1), (WINDOW_BASE + 8, 4, 1)]),
     );
-    let envelopes = run(&mut sim, &mut deframer, 600); // 30 ms of PWM periods
+    let envelopes = host.run_steps(&mut sim, 600); // 30 ms of PWM periods
 
     let fast = samples_of(&envelopes, 1);
     assert!(!fast.is_empty(), "the one-cycle group streams");
@@ -256,10 +234,10 @@ fn a_one_cycle_group_captures_the_window_pair_coherently() {
 #[test]
 fn a_live_list_swap_restarts_the_stream_at_the_new_width() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
 
     inject(&mut sim, &watch_request(1, &[(WINDOW_BASE + 4, 4, 1)]));
-    let first = run(&mut sim, &mut deframer, 200);
+    let first = host.run_steps(&mut sim, 200);
     let before = samples_of(&first, 1);
     assert!(!before.is_empty(), "the first list streams");
     assert!(
@@ -272,13 +250,13 @@ fn a_live_list_swap_restarts_the_stream_at_the_new_width() {
         &mut sim,
         &watch_request(2, &[(WINDOW_BASE + 4, 4, 1), (WINDOW_BASE + 8, 4, 1)]),
     );
-    let second = run(&mut sim, &mut deframer, 200);
+    let second = host.run_steps(&mut sim, 200);
 
     // The TraceStatus reply marks the install: everything after it is the new
     // list, since the install discards the prior list's buffered records.
     let swap_at = second
         .iter()
-        .position(|(id, field, _)| (*id == 2) && (*field == F_TRACE_STATUS))
+        .position(|env| (env.request_id == 2) && matches!(env.payload, Some(Payload::TraceStatus(_))))
         .expect("TraceStatus reply to the second WatchRequest");
     let after = samples_of(&second[swap_at..], 1);
     assert!(!after.is_empty(), "the second list streams");
@@ -314,10 +292,10 @@ fn a_live_list_swap_restarts_the_stream_at_the_new_width() {
 #[test]
 fn a_stalled_transport_costs_one_gap_then_streams_clean() {
     let mut sim = connected_world(Sil::options().grid_us(GRID_US));
-    let mut deframer = Deframer::new();
+    let mut host = Host::new();
 
     inject(&mut sim, &watch_request(1, &[(WINDOW_BASE + 4, 4, 1)]));
-    let mut envelopes = run(&mut sim, &mut deframer, 200);
+    let mut envelopes = host.run_steps(&mut sim, 200);
 
     // The host stops reading: transmit capacity fills, emission stops, and the
     // sample ring overflows.
@@ -326,7 +304,7 @@ fn a_stalled_transport_costs_one_gap_then_streams_clean() {
     }
 
     // Reading resumes: the backlog leaves and admission re-opens at half.
-    envelopes.extend(run(&mut sim, &mut deframer, 1200));
+    envelopes.extend(host.run_steps(&mut sim, 1200));
 
     let mut cycles: Vec<u32> = Vec::new();
     for batch in samples_of(&envelopes, 1) {

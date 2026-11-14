@@ -47,9 +47,11 @@ specs in them yet.
   firmware build identity + gate (`sys~obs_003`/`_004`), signal trace
   (`sys~obs_005`), signal write (`sys~obs_006`), text log stream
   (`sys~obs_007`), memory read (`sys~obs_008`), trace capability report
-  (`sys~obs_009`), CPU load visibility (`sys~obs_010`)
+  (`sys~obs_009`), CPU load visibility (`sys~obs_010`), motor rating
+  report (`sys~obs_011`, [[motor-rating]])
 - `ops/` — system mode state machine (idle / calibrate / run / fault),
-  command authority (`sys~ops_002`, [[command-authority]]), mode
+  command authority (`sys~ops_002`, [[command-authority]]), the host's
+  timed setpoint sequence (`sys~ops_003`, [[setpoint-sequence]]), mode
   transitions (anchor `sys~ops_001` lives in [[overview]])
 - `safety/` — protections (overcurrent, overtemp, encoder-loss,
   gate-driver fault), fault recovery

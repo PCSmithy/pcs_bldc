@@ -11,7 +11,8 @@ tags: [system, obs]
 While a host holds the device's serial port open (`sys~arch_003~1`),
 the firmware shall publish a status message over the protocol
 (`sys~conn_001~1`) reporting the motor-control mode, drive state,
-bus voltage, bus current, and rotor velocity as of publication, at 10 Hz
+bus voltage, bus current, rotor velocity and position, and the speed,
+torque and position targets as of publication, at 10 Hz
 within ± 2 % over any 10-second window.
 
 Acceptance:

@@ -23,6 +23,11 @@ typedef struct
     uint8_t pinInput;            // physical IN# this slot samples: injected and
                                  // regular share the pin (and its SIL port),
                                  // as on silicon
+    // Hardware oversampling, the stm32g4 sConfig fields' twin: the count is the
+    // sum of ratio (2..256, a power of two) conversions shifted right shift (0..8).
+    bool     oversamplingEnabled;
+    uint16_t oversamplingRatio;
+    uint8_t  oversamplingShift;
 } HW_ADC_injectedInputConfig_S;
 
 

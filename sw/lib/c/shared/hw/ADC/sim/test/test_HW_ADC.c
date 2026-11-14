@@ -319,6 +319,39 @@ static void test_injected_sampling_and_readout(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, expected, volts);
 }
 
+// [test->fw~hal_adc_001~1] [test->fw~hal_adc_006~1] the group shares one
+// oversampling; a full-scale sum must fit the 16-bit data field.
+static void test_init_rejects_bad_injected_oversampling(void)
+{
+    makeChannel1Triggered();
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].enabled  = true;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].pinInput = 7U;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].oversamplingEnabled = true;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[0].oversamplingRatio   = 4U;
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));                       // slot 1 disagrees
+
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].oversamplingEnabled = true;
+    adcChannels[HW_ADC_CHANNEL_1].injectedInputs[1].oversamplingRatio   = 4U;
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+
+    for (uint8_t i = 0U; i < 2U; i++)
+    {
+        adcChannels[HW_ADC_CHANNEL_1].injectedInputs[i].oversamplingRatio = 32U;   // 32 * 4095 > 65535
+    }
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+    for (uint8_t i = 0U; i < 2U; i++)
+    {
+        adcChannels[HW_ADC_CHANNEL_1].injectedInputs[i].oversamplingShift = 1U;
+    }
+    TEST_ASSERT_TRUE(HW_ADC_init(&adcConfig));
+
+    for (uint8_t i = 0U; i < 2U; i++)
+    {
+        adcChannels[HW_ADC_CHANNEL_1].injectedInputs[i].oversamplingRatio = 3U;    // not a hardware ratio
+    }
+    TEST_ASSERT_FALSE(HW_ADC_init(&adcConfig));
+}
+
 /* ---- fw~hal_adc_003: hardware-triggered injected — config validation ---- */
 // [test->fw~hal_adc_001~1]
 static void test_init_rejects_unknown_injected_trigger(void)
@@ -556,6 +589,7 @@ int main(void)
     RUN_TEST(test_readout_failure_modes);
 
     RUN_TEST(test_injected_sampling_and_readout);
+    RUN_TEST(test_init_rejects_bad_injected_oversampling);
 
     RUN_TEST(test_init_rejects_unknown_injected_trigger);
     RUN_TEST(test_init_rejects_out_of_range_injected_pin);

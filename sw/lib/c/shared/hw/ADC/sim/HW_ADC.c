@@ -34,6 +34,11 @@ typedef struct
 
     // Resolution (bits) for the volts conversion.
     uint8_t numBits;
+    float32_t injectedVoltsPerCount;   // vref over full scale, over the injected oversampling sum
+
+    // The injected group's oversampling: ratio conversions summed, shifted right.
+    uint32_t injectedOversamplingRatio;
+    uint8_t  injectedOversamplingShift;
 
     // Regular-sequence results, indexed by physical IN# (sparse storage,
     // matches user's inputs[] indexing). Undefined until the channel's first
@@ -97,6 +102,7 @@ typedef struct
 
 /* Private Function Declarations */
 
+static bool     HW_ADC_private_isOversamplingRatio(uint32_t ratio);
 static uint32_t HW_ADC_private_voltsToCounts(double volts, const HW_ADC_channelConfig_S * const channelConfig);
 static uint32_t HW_ADC_private_sampleInput(HW_ADC_channels_E channel, uint8_t input, uint32_t rampOffset);
 static bool     HW_ADC_private_initOneChannel(HW_ADC_channels_E channel);
@@ -126,6 +132,12 @@ static const HW_TIM_peripheral_E HW_ADC_triggerPeripheralMapping[HW_ADC_INJECTED
 static int32_t HW_ADC_completionIrqHandle = SIL_IRQ_HANDLE_INVALID;
 
 /* Private Function Definitions */
+
+// The ratios the hardware offers: a power of two from 2 to 256.
+static bool HW_ADC_private_isOversamplingRatio(uint32_t ratio)
+{
+    return ((ratio >= 2U) && (ratio <= 256U) && ((ratio & (ratio - 1U)) == 0U));
+}
 
 // Inverse of HW_ADC_getVolts: quantize a commanded pin voltage to counts the
 // way the real converter would, saturating at the rails.
@@ -243,6 +255,32 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
         }
     }
 
+    // [impl->fw~hal_adc_001~1] one ratio and shift serve the whole injected group
+    uint32_t oversamplingRatio = 1U;
+    uint8_t  oversamplingShift = 0U;
+    if (ret && (numEnabledInjected > 0U))
+    {
+        const HW_ADC_injectedInputConfig_S * const first = &channelConfig->injectedInputs[0];
+        for (uint8_t i = 1U; i < numEnabledInjected; i++)
+        {
+            const HW_ADC_injectedInputConfig_S * const slot = &channelConfig->injectedInputs[i];
+            if ((slot->oversamplingEnabled != first->oversamplingEnabled) ||
+                (slot->oversamplingRatio != first->oversamplingRatio) ||
+                (slot->oversamplingShift != first->oversamplingShift))
+            {
+                ret = false;
+            }
+        }
+        if (first->oversamplingEnabled)
+        {
+            oversamplingRatio = first->oversamplingRatio;
+            oversamplingShift = first->oversamplingShift;
+            ret = ret && HW_ADC_private_isOversamplingRatio(oversamplingRatio) && (oversamplingShift <= 8U);
+        }
+        const uint64_t fullScale = (1ULL << channelConfig->numBits) - 1ULL;
+        ret = ret && ((((uint64_t)oversamplingRatio * fullScale) >> oversamplingShift) <= (uint64_t)UINT16_MAX);
+    }
+
     // [impl->fw~hal_adc_007~1]
     if (ret)
     {
@@ -293,6 +331,14 @@ static bool HW_ADC_private_initOneChannel(HW_ADC_channels_E channel)
             channelData->rankOrder[r] = rankOrder[r];
         }
         channelData->numBits = channelConfig->numBits;
+
+        // [impl->fw~hal_adc_006~1] an oversampled injected count is the sum of
+        // ratio conversions shifted right, so its volts scale by shift over ratio
+        channelData->injectedOversamplingRatio = oversamplingRatio;
+        channelData->injectedOversamplingShift = oversamplingShift;
+        const float32_t voltsPerCount = channelConfig->vref / (float32_t)((1UL << channelConfig->numBits) - 1UL);
+        const float32_t injectedSumScale = (float32_t)oversamplingRatio / (float32_t)(1UL << oversamplingShift);
+        channelData->injectedVoltsPerCount = voltsPerCount / injectedSumScale;
     }
 
     return ret;
@@ -401,12 +447,15 @@ static void HW_ADC_private_trgoHandler(HW_TIM_peripheral_E peripheral, HW_TIM_tr
             }
 
             // Sample at the trigger instant: each slot reads its pin's port
-            // (shared with the regular path, as on silicon).
+            // (shared with the regular path, as on silicon), its oversampling
+            // the sum of that one sample, shifted.
             for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
             {
                 const uint8_t  pin        = channelConfig->injectedInputs[i].pinInput;
                 const uint32_t rampOffset = ((uint32_t)channel * 256U) + HW_ADC_INJECTED_RAMP_BASE + ((uint32_t)i * 16U);
-                channelData->injectedCounts[i] = HW_ADC_private_sampleInput((HW_ADC_channels_E)channel, pin, rampOffset);
+                const uint32_t sample     = HW_ADC_private_sampleInput((HW_ADC_channels_E)channel, pin, rampOffset);
+                channelData->injectedCounts[i] = (sample * channelData->injectedOversamplingRatio) >>
+                                                 channelData->injectedOversamplingShift;
             }
             channelData->pendingCompletions++;
             SIL_irq_pend(HW_ADC_completionIrqHandle);
@@ -661,10 +710,7 @@ bool HW_ADC_getInjectedVolts(HW_ADC_channels_E channel, uint8_t injectedIndex, f
         uint32_t counts = 0U;
         if (HW_ADC_getInjectedCount(channel, injectedIndex, &counts))
         {
-            const HW_ADC_channelConfig_S * const channelConfig = &data->config->channels[channel];
-            const uint32_t maxCounts = (1UL << data->channelData[channel].numBits) - 1UL;
-
-            *out = ((float32_t)counts / (float32_t)maxCounts) * channelConfig->vref;
+            *out = (float32_t)counts * data->channelData[channel].injectedVoltsPerCount;
             ret = true;
         }
     }

@@ -8,6 +8,7 @@ target_link_libraries(io_bridge
     lib_types               # fixed-width types + float32_t + size_t
     lib_transforms          # lib_transforms_svm
     lib_timer               # lib_timer_getHWCount_us: the injected sample stamp
+    lib_filterIIR           # the idle-phase zero-current offset EMA
     hw_TIM                  # HW_TIM.h: channel/peripheral enums, setCompare, MOE, getPeriod
     hw_ADC                  # HW_ADC.h: channel enum + getVolts (current-sense readback)
     pcs_bridge_channels     # consumer-provided IO_bridge_channels.h path

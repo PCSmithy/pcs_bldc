@@ -196,12 +196,12 @@ static void test_frames_received_in_order(void)
 
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(3U, frameLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(a, frame, 3U);
 
     IO_COBSFrame_run();
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(3U, frameLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(b, frame, 3U);
 }
@@ -218,12 +218,12 @@ static void test_roundtrip_including_zero_length(void)
 
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(5U, frameLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, frame, 5U);
 
     IO_COBSFrame_run();
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(0U, frameLen);
 }
 
@@ -246,17 +246,105 @@ static void test_corrupted_frame_discarded_next_delivered(void)
     IO_COBSFrame_run();
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(4U, frameLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(b, frame, 4U);
 }
 
-// [test->fw~conn_proto_005~1]
-static void test_overlong_garbage_discarded_next_delivered(void)
+// Frame len payload bytes past the channel's bound check (CRC + COBS by hand)
+// and present them as received.
+static void injectUncheckedFrame(const uint8_t * const payload, size_t len)
 {
-    // 300 delimiter-free bytes exceed the assembly bound for a 256-byte
-    // payload; the segment must be discarded, then the valid frame delivered.
-    uint8_t garbage[300];
+    uint8_t plain[IO_COBSFRAME_MAX_PAYLOAD + 8U];
+    for (size_t i = 0U; i < len; i++)
+    {
+        plain[i] = payload[i];
+    }
+    const uint32_t crc = HW_CRC_compute32(payload, len);
+    plain[len]      = (uint8_t) (crc & 0xFFU);
+    plain[len + 1U] = (uint8_t) ((crc >> 8U) & 0xFFU);
+    plain[len + 2U] = (uint8_t) ((crc >> 16U) & 0xFFU);
+    plain[len + 3U] = (uint8_t) ((crc >> 24U) & 0xFFU);
+    uint8_t wire[IO_COBSFRAME_WIRE_MAX(IO_COBSFRAME_MAX_PAYLOAD + 4U)];
+    size_t cobsLen = 0U;
+    wire[0] = 0x00U;
+    TEST_ASSERT_TRUE(lib_cobs_encode(plain, len + 4U, &wire[1], sizeof(wire) - 2U, &cobsLen));
+    wire[cobsLen + 1U] = 0x00U;
+    HW_USB_sim_injectRx(wire, (uint32_t) (cobsLen + 2U));
+}
+
+// The valid 3-byte frame behind an oversize one.
+static const uint8_t trailingPayload[3] = { 0x01U, 0x02U, 0x03U };
+static void injectTrailingFrame(void)
+{
+    uint8_t wire[32];
+    size_t wireLen = 0U;
+    TEST_ASSERT_TRUE(IO_COBSFrame_encode(IO_COBSFRAME_CHANNEL_CDC, trailingPayload, 3U, wire, sizeof(wire), &wireLen));
+    HW_USB_sim_injectRx(wire, (uint32_t) wireLen);
+}
+
+static void expectOversizeThenTrailingFrame(void)
+{
+    IO_COBSFrame_run();
+    uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
+    size_t frameLen = 0U;
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_OVERSIZE, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_NONE, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    IO_COBSFrame_run();
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL_size_t(3U, frameLen);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(trailingPayload, frame, 3U);
+}
+
+// [test->fw~conn_proto_005~1] a frame one byte over the bound is reported
+// oversize, ahead of the valid frame behind it, with or without zero bytes
+static void test_a_frame_one_byte_over_is_reported_oversize(void)
+{
+    uint8_t payload[IO_COBSFRAME_MAX_PAYLOAD + 1U];
+    for (size_t i = 0U; i < sizeof(payload); i++)
+    {
+        payload[i] = 0x5AU;
+    }
+    injectUncheckedFrame(payload, sizeof(payload));          // overruns the accumulator
+    injectTrailingFrame();
+    expectOversizeThenTrailingFrame();
+
+    for (size_t i = 0U; i < sizeof(payload); i += 8U)
+    {
+        payload[i] = 0x00U;
+    }
+    injectUncheckedFrame(payload, sizeof(payload));          // fits it, decodes one byte long
+    injectTrailingFrame();
+    expectOversizeThenTrailingFrame();
+
+    const uint8_t atBound[IO_COBSFRAME_MAX_PAYLOAD] = { 0U };
+    injectUncheckedFrame(atBound, sizeof(atBound));
+    IO_COBSFrame_run();
+    uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
+    size_t frameLen = 0U;
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL_size_t(IO_COBSFRAME_MAX_PAYLOAD, frameLen);
+}
+
+// A frame larger than the receiver's buffer is reported oversize, not copied.
+static void test_a_frame_past_the_buffer_is_reported_oversize(void)
+{
+    const uint8_t payload[8] = { 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U };
+    TEST_ASSERT_TRUE(sendFrame(payload, sizeof(payload)));
+    (void) loopTxToRx();
+    IO_COBSFrame_run();
+    uint8_t frame[4];
+    size_t frameLen = 0U;
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_OVERSIZE, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL_size_t(0U, frameLen);
+}
+
+// [test->fw~conn_proto_005~1]
+static void test_overlong_garbage_reported_oversize_next_delivered(void)
+{
+    // 600 delimiter-free bytes overrun the accumulator: one oversize frame at
+    // the delimiter, then the valid frame.
+    uint8_t garbage[600];
     for (size_t i = 0U; i < sizeof(garbage); i++)
     {
         garbage[i] = 0x77U;
@@ -264,19 +352,22 @@ static void test_overlong_garbage_discarded_next_delivered(void)
     HW_USB_sim_injectRx(garbage, sizeof(garbage));
     const uint8_t delimiter = 0x00U;
     HW_USB_sim_injectRx(&delimiter, 1U);
+    injectTrailingFrame();
+    expectOversizeThenTrailingFrame();
+}
 
-    const uint8_t payload[3] = { 0x01U, 0x02U, 0x03U };
-    TEST_ASSERT_TRUE(sendFrame(payload, 3U));
-    uint8_t wire[32];
-    const uint32_t wireLen = HW_USB_sim_readTx(wire, sizeof(wire));
-    HW_USB_sim_injectRx(wire, wireLen);
-
+// [test->fw~conn_proto_005~1] a short malformed segment is discarded, not
+// reported: a code byte pointing past the segment's end
+static void test_malformed_segment_discarded_next_delivered(void)
+{
+    const uint8_t malformed[4] = { 0x09U, 0x11U, 0x22U, 0x00U };
+    HW_USB_sim_injectRx(malformed, sizeof(malformed));
+    injectTrailingFrame();
     IO_COBSFrame_run();
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
-    TEST_ASSERT_EQUAL_size_t(3U, frameLen);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, frame, 3U);
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(trailingPayload, frame, 3U);
 }
 
 // [test->fw~conn_proto_005~1]
@@ -294,7 +385,7 @@ static void test_empty_segments_skipped(void)
     IO_COBSFrame_run();
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_TRUE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_FRAME, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
     TEST_ASSERT_EQUAL_size_t(2U, frameLen);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, frame, 2U);
 }
@@ -303,7 +394,7 @@ static void test_receive_without_frame_returns_false(void)
 {
     uint8_t frame[IO_COBSFRAME_MAX_PAYLOAD];
     size_t frameLen = 0U;
-    TEST_ASSERT_FALSE(IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
+    TEST_ASSERT_EQUAL(IO_COBSFRAME_RECEIVE_NONE, IO_COBSFrame_receive(IO_COBSFRAME_CHANNEL_CDC, frame, sizeof(frame), &frameLen));
 }
 
 int main(void)
@@ -325,7 +416,10 @@ int main(void)
     RUN_TEST(test_frames_received_in_order);
     RUN_TEST(test_roundtrip_including_zero_length);
     RUN_TEST(test_corrupted_frame_discarded_next_delivered);
-    RUN_TEST(test_overlong_garbage_discarded_next_delivered);
+    RUN_TEST(test_overlong_garbage_reported_oversize_next_delivered);
+    RUN_TEST(test_a_frame_one_byte_over_is_reported_oversize);
+    RUN_TEST(test_a_frame_past_the_buffer_is_reported_oversize);
+    RUN_TEST(test_malformed_segment_discarded_next_delivered);
     RUN_TEST(test_empty_segments_skipped);
     RUN_TEST(test_receive_without_frame_returns_false);
 

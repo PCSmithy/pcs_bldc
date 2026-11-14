@@ -1,0 +1,9 @@
+# nanopb static-allocation bounds for board.proto.
+#
+# Command.setpoints decodes through a callback (no static array): the server
+# streams setpoints into the sequencer's own table, so a sequence never rides
+# in the Envelope union. Request takes submsg_callback for the same reason
+# Envelope does (shared.options): the callback has to be installed after the
+# oneof union is memset, when the command arm's tag decodes.
+board.Request           submsg_callback:true
+board.Command.setpoints type:FT_CALLBACK

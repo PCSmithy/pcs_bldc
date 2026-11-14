@@ -3,7 +3,7 @@
 //! the rail, and a stuck sense line hides real current from the firmware.
 
 use pcs_bldc_sil::board::{
-    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, MOTOR, PHASE_TRIP_A,
+    board, decoded_bus_a, decoded_phase_a, fault_latched, GATE_BRINGUP_MS, MOTOR, phase_trip_a,
     SENSE,
 };
 use pcs_bldc_sil::{cid, vid, Board, Sil, SOURCE};
@@ -56,11 +56,11 @@ fn firmware_decodes_injected_currents() {
     // decode as the same amps, locking the model's front-end parameters to its constants.
     // W is derived, not sampled (fw~io_bridge_006), so the triple must satisfy KCL for
     // the firmware's -(U + V) to agree with what the plant was given.
-    const PHASE_A: [f64; 3] = [1.5, -1.2, -0.3];
+    const PHASE_A: [f64; 3] = [1.0, -0.8, -0.2];
     const BUS_A: f64 = 0.5;
-    const TRIP_A: f64 = 2.5;
 
     let (mut sim, _routes) = world();
+    let phase_trip_a = phase_trip_a(&sim);
     assert!(!fault_latched(&sim), "the boot baseline is fault free");
     inject(&mut sim, PHASE_A, BUS_A);
 
@@ -84,15 +84,16 @@ fn firmware_decodes_injected_currents() {
     );
     assert!(
         !fault_latched(&sim),
-        "currents under the {PHASE_TRIP_A} A trip leave the latch clear"
+        "currents under the {phase_trip_a} A trip leave the latch clear"
     );
 
     // The firmware runs the same decode itself: pushing one phase over the trip latches
     // the overcurrent fault, so its constants match the ones read back above.
-    inject(&mut sim, [TRIP_A, 0.0, 0.0], 0.0);
+    let trip_a = 1.25 * phase_trip_a;   // a quarter past the trip
+    inject(&mut sim, [trip_a, 0.0, 0.0], 0.0);
     assert!(
         fault_latched(&sim),
-        "{TRIP_A} A injected on phase U trips the firmware's own {PHASE_TRIP_A} A decode \
+        "{trip_a} A injected on phase U trips the firmware's own {phase_trip_a} A decode \
          comparison"
     );
 }
@@ -105,6 +106,7 @@ fn firmware_sees_full_scale_on_saturation() {
     const INJECTED_A: f64 = 30.0;
 
     let (mut sim, _routes) = world();
+    let phase_trip_a = phase_trip_a(&sim);
     inject(&mut sim, [INJECTED_A, 0.0, 0.0], 0.0);
 
     let vref = cvar_f64(&sim, "HW_ADC_channelConfig[0].vref");
@@ -118,7 +120,10 @@ fn firmware_sees_full_scale_on_saturation() {
         &sim,
         "IO_bridge_channelConfig[0].phase[0].currentSense.voltsPerUnit",
     );
-    let rail_a = (vref - bias_v) / volts_per_amp;
+    // A positive current drives the pin toward the rail the gain sign points at:
+    // vref for a positive gain, ground for the negative gain of a low-side shunt.
+    let rail_v = if volts_per_amp > 0.0 { vref } else { 0.0 };
+    let rail_a = (rail_v - bias_v) / volts_per_amp;
     let decoded = decoded_phase_a(&sim, 0);
     println!(
         "firmware_sees_full_scale_on_saturation: injected {INJECTED_A} A -> decoded \
@@ -128,12 +133,12 @@ fn firmware_sees_full_scale_on_saturation() {
 
     assert!(
         (decoded - rail_a).abs() < PHASE_TOL_A,
-        "phase U decodes the (vref - bias) / gain = {rail_a} A rail within {PHASE_TOL_A} A, \
+        "phase U decodes the (rail - bias) / gain = {rail_a} A rail within {PHASE_TOL_A} A, \
          not the {INJECTED_A} A injected: {decoded} A"
     );
     assert!(
         fault_latched(&sim),
-        "a railed phase is far over the {PHASE_TRIP_A} A trip and latches the fault"
+        "a railed phase is far over the {phase_trip_a} A trip and latches the fault"
     );
 }
 
@@ -141,7 +146,7 @@ fn firmware_sees_full_scale_on_saturation() {
 fn stuck_sensor_hides_current() {
     // A sense line stuck at the zero-current midpoint is the dangerous fault: real winding
     // current keeps flowing while the firmware decodes zero, and the model shows the divergence.
-    const INJECTED_A: f64 = 1.5;
+    const INJECTED_A: f64 = 1.0;
     const U_ADC_PORT: &str = "vsig:pcs_bldc:ADC1_IN6";
     const U_VSENSE_PORT: &str = "vsig:current_sense:i_u_vsense";
     const STUCK_V: f64 = 1.65;

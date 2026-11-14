@@ -6,7 +6,7 @@
 // tokens only, mono for machine-authored values, no animation.
 // [impl->app~views_008~1]
 
-import { store, notify, prefs } from "../state.js";
+import { store, notify, prefs, subscribe } from "../state.js";
 import { histories } from "./history.js";
 
 export const SPANS_MS = [5_000, 10_000, 30_000, 60_000];
@@ -50,6 +50,7 @@ export function noteLiveEdge() {
   const t = globalNewest();
   const now = performance.now();
   if (t > liveEdge.tick || t < liveEdge.tick - RESET_MS) {
+    if (t < liveEdge.tick - RESET_MS) marks.length = 0; // a restarted tick domain
     liveEdge.tick = t;
     liveEdge.wall = now;
     // Reality caught up past (or reset below) the estimate: snap forward
@@ -167,6 +168,20 @@ export function selectRange(a, b) {
   apply({ window: clampWindow([a, b]) });
 }
 
+// ── run marks: the sample time current when a sequence run was accepted
+//    (app~views_026); every plot draws each as a labelled line ──
+
+const marks = [];
+
+export function runMarks() {
+  return marks;
+}
+
+export function addRunMark(tick, label) {
+  marks.push({ tick, label });
+  notify("timeline", tl());
+}
+
 // ── the bar ────────────────────────────────────────────────────────────────
 
 let bar = null;
@@ -184,6 +199,12 @@ export function initTimeline() {
     if (span && !span.disabled) setSpan(+span.dataset.span);
     if (ev.target.closest("[data-pause]")) pause();
     if (ev.target.closest("[data-resume]")) resume();
+    if (ev.target.closest("[data-export]")) notify("export-capture");
+  });
+  // Export follows the watch list; a toggle, so a rebuild never steals focus.
+  subscribe("watched", () => {
+    const b = bar.querySelector("[data-export]");
+    if (b) b.disabled = store.watched.size === 0;
   });
   renderBar();
 }
@@ -209,5 +230,7 @@ function renderBar() {
     ${paused
       ? `<button class="btn btn-primary" data-resume>Resume</button>
          <span class="timeline-readout mono">paused · showing ${fmtS(t.window[0], t.window[1] - t.window[0])} – ${fmtS(t.window[1], t.window[1] - t.window[0])}</span>`
-      : `<button class="btn btn-secondary" data-pause>Pause</button>`}`;
+      : `<button class="btn btn-secondary" data-pause>Pause</button>`}
+    <button class="btn btn-secondary timeline-export" data-export ${store.watched.size ? "" : "disabled"}
+      title="Write the watched signals over the shown range to a CSV file">Export</button>`;
 }

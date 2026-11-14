@@ -133,6 +133,7 @@ target_link_libraries(pcs_bldc_fw PRIVATE
   app_rgbLedRing_channels
   app_motorControl_channels
   app_rotorEstimation_channels
+  app_sequencer_channels
   app_userControls
   io_COBSFrame_channels
   app_server_config

@@ -1,6 +1,7 @@
 // Widget configuration popover. Plots get the full surface (axis sides,
 // scale modes, appearance editor, remove); tables get rows + remove only;
-// a CPU load widget's rows edit each wedge's label and role.
+// a CPU load widget's rows edit each wedge's label and role; a widget
+// holding no signals gets remove only.
 // Removing a signal's last holder also removes its watch (watchflow path).
 // [impl->app~views_007~1] (the axes-configuration surface)
 // [impl->app~views_011~1] (the appearance editor)
@@ -128,6 +129,7 @@ function render() {
   const { el, widget } = open;
   const plot = isPlot(widget);
   const cpu = isCpuLoad(widget);
+  const bare = typeof widget.addSignal !== "function";
 
   const rows = cpu ? wedgeRows(widget) : widget.cfg.signals
     .map((path) => {
@@ -179,8 +181,8 @@ function render() {
     : "";
 
   el.innerHTML = `
-    <div class="axes-title display">${plot ? "Axes" : cpu ? "Wedges" : "Signals"}</div>
-    <div class="axes-rows">${rows || `<div class="axes-empty">no signals — drop one on the widget</div>`}</div>
+    <div class="axes-title display">${plot ? "Axes" : cpu ? "Wedges" : bare ? "Widget" : "Signals"}</div>
+    ${bare ? "" : `<div class="axes-rows">${rows || `<div class="axes-empty">no signals — drop one on the widget</div>`}</div>`}
     ${scales}
     <div class="axes-foot"><button class="btn btn-secondary" data-removewidget>Remove widget</button></div>`;
 }

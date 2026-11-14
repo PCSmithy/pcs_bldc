@@ -146,6 +146,9 @@ function buildTelemetryStrip() {
     ["vbus"],
     ["ibus"],
     ["velocity — cmd / meas"],
+    ["torque — cmd"],
+    ["position — cmd / meas"],
+    ["sequence"],
     ["tick"],
   ];
   strip.innerHTML =
@@ -185,6 +188,11 @@ function renderTelemetry() {
     t
       ? `${(t.velocity_setpoint_radps * RAD_TO_RPM).toFixed(1)} <span class="slash">/</span> <span class="meas">${(t.velocity_measured_radps * RAD_TO_RPM).toFixed(1)}</span> rpm`
       : DASH_HTML,
+    t ? `${(t.torque_target_nm ?? 0).toFixed(3)} Nm` : DASH_HTML,
+    t
+      ? `${(t.position_target_rad ?? 0).toFixed(3)} <span class="slash">/</span> <span class="meas">${(t.rotor_position_rad ?? 0).toFixed(3)}</span> rad`
+      : DASH_HTML,
+    t ? (t.sequence_running ? `${thin(t.sequence_elapsed_ms)} ms` : "idle") : DASH_HTML,
     t ? `${thin(t.timestamp_ms)} ms` : DASH_HTML,
   ];
   vals.forEach((html, i) => {
