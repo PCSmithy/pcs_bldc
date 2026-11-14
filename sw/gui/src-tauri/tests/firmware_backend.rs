@@ -93,6 +93,115 @@ fn loads_firmware_and_resolves_signals() {
     );
 }
 
+/// The firmware's module statics, from the image's linker symbol table
+/// (independent of the DWARF): `<layer>_<Module>_data` per module, plus
+/// main.c's file-local statics (`main_*`, `task1msRuns`). C++
+/// internal-linkage names arrive mangled `_ZL<len><name>`; the source name
+/// is the tail.
+fn module_statics(image: &[u8]) -> Vec<(String, u64)> {
+    use object::{Object, ObjectSymbol, SymbolKind};
+    let object = object::File::parse(image).expect("parse image");
+    let mut out: Vec<(String, u64)> = object
+        .symbols()
+        .filter(|s| s.kind() == SymbolKind::Data)
+        .filter_map(|s| {
+            let raw = s.name().ok()?;
+            let name = match raw.strip_prefix("_ZL") {
+                Some(rest) => rest.trim_start_matches(|c: char| c.is_ascii_digit()),
+                None => raw,
+            };
+            let layered = ["HW_", "IO_", "dev_", "app_", "lib_"]
+                .iter()
+                .any(|p| name.starts_with(p))
+                && name.ends_with("_data");
+            let main_local = name.starts_with("main_") || (name == "task1msRuns");
+            (layered || main_local).then(|| (name.to_string(), s.address()))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Module statics with no selectable leaf: a lone config pointer (no scalar
+/// signal), or byte buffers past the enumeration's array threshold.
+const UNLISTED_STATICS: [&str; 3] = ["IO_SK6805_data", "IO_i2c_data", "IO_serial_data"];
+
+// [test->sys~obs_002~1]
+// [test->app~obs_001~1]
+#[test]
+fn every_module_static_is_selectable_at_its_linked_address() {
+    let Some(fw) = load_or_skip() else { return };
+    let image = std::fs::read(native_dll()).expect("read image");
+    let dwarf = dwarf_map::DwarfMap::from_lib_path(&native_dll()).expect("parse DWARF");
+    let statics = module_statics(&image);
+
+    // Every layer links in: a wide set, file-local definitions among them.
+    for layer in ["HW_", "IO_", "dev_", "app_", "lib_", "main_"] {
+        assert!(
+            statics.iter().any(|(n, _)| n.starts_with(layer)),
+            "no {layer} statics in the symbol table: {statics:?}"
+        );
+    }
+
+    let mut absent = Vec::new();
+    for (name, sym_addr) in &statics {
+        // Listed under its source name, as itself or by member path.
+        let prefix = format!("{name}.");
+        let prefix_index = format!("{name}[");
+        let listed: Vec<&String> = fw
+            .signal_paths()
+            .iter()
+            .filter(|p| *p == name || p.starts_with(&prefix) || p.starts_with(&prefix_index))
+            .collect();
+        if listed.is_empty() {
+            absent.push(name.clone());
+        }
+        // The debug data places it where the linker did, and every listed
+        // leaf resolves inside it.
+        assert_eq!(dwarf.var_addr(name), Some(*sym_addr), "{name}: address");
+        for path in listed {
+            let (addr, size, _) = fw.resolve_leaf(path).expect("listed leaf resolves");
+            assert!(addr >= *sym_addr && size > 0, "{path} at {addr:#x} below {name}");
+        }
+    }
+    assert!(
+        absent.iter().map(String::as_str).eq(UNLISTED_STATICS),
+        "statics absent from the selection list: {absent:?}"
+    );
+
+    // Size and type equal the source declarations, file-local and member
+    // leaves alike.
+    let typed = |path: &str| {
+        let (_, size, leaf) = fw.resolve_leaf(path).expect(path);
+        (size, leaf)
+    };
+    let find = |owner: &str, leaf: &str| {
+        fw.signal_paths()
+            .iter()
+            .find(|p| p.starts_with(owner) && p.ends_with(leaf))
+            .unwrap_or_else(|| panic!("{owner}…{leaf} listed"))
+            .clone()
+    };
+    use dwarf_map::{Leaf, Scalar};
+    // main.c: static volatile uint32_t task1msRuns.
+    assert!(matches!(typed("task1msRuns"), (4, Leaf::Scalar(Scalar::U32))));
+    // app_cpuLoad.c: static struct { volatile uint32_t taskTime_us[]; ... }.
+    assert!(matches!(
+        typed("app_cpuLoad_data.taskTime_us[1]"),
+        (4, Leaf::Scalar(Scalar::U32))
+    ));
+    // app_rotorEstimation.cpp: float32_t angleMeasured_rad; bool isSeeded.
+    assert!(matches!(
+        typed(&find("app_rotorEstimation_data", ".angleMeasured_rad")),
+        (4, Leaf::Scalar(Scalar::F32))
+    ));
+    assert!(matches!(
+        typed(&find("app_rotorEstimation_data", ".isSeeded")),
+        (1, Leaf::Scalar(Scalar::Bool))
+    ));
+}
+
 // [test->app~obs_006~1]
 #[test]
 fn readonly_follows_section_writability() {

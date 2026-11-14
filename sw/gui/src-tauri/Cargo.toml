@@ -23,3 +23,7 @@ object = "0.36"
 pcs_wire = { path = "../../lib/rust/pcs_wire" }
 pcs_proto = { path = "../../lib/rust/pcs_proto" }
 dwarf_map = { path = "../../lib/rust/dwarf_map" }
+
+# The mock runtime: core commands driven over IPC from webviews with no window.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

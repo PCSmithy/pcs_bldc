@@ -1672,6 +1672,42 @@ def run(page):
     restart(page, load_elf=True, wait_js="() => document.querySelectorAll('.plot-widget').length > 0")
     check("views_011 explicit solid survives restart", page.evaluate(dash_state) is False)
 
+    # ── [test->app~arch_001~1] a UI reload reattaches to the core's live
+    #    session (the devmock's get_status stands in for it): no reconnect,
+    #    the watched stream renders, the ELF's signals resolve ──
+    fresh_boot(page)
+    page.evaluate("() => __cockpit.api.connect('COM8')")  # saves the port a cold boot would redial
+    page.evaluate("() => __cockpit.addWatch('task1msRuns', 200)")
+    wait_for_samples(page, "task1msRuns", min_points=1)
+    page.wait_for_timeout(600)  # prefs debounce
+    page.reload()
+    page.wait_for_function("() => window.__cockpit !== undefined")
+    page.wait_for_function(
+        "() => __cockpit.store.gate === 'matched'"
+        " && (__cockpit.histories.get('task1msRuns')?.ticks.length || 0) > 0",
+        timeout=8000,
+    )
+    reattached = page.evaluate(
+        """() => ({
+          connects: window.__devmockConnects || 0,
+          port: __cockpit.store.connection.port,
+          watched: __cockpit.store.watched.has('task1msRuns'),
+        })"""
+    )
+    check(
+        "arch_001 reload reattaches to the live session without reconnecting",
+        reattached == {"connects": 0, "port": "COM8", "watched": True},
+        reattached,
+    )
+    resolved = page.evaluate(
+        "() => __cockpit.api.listSignals('task1msRuns').then(s => s.map(x => [x.path, x.kind]))"
+    )
+    check(
+        "arch_001 reload: the watched stream renders and the ELF's signals resolve",
+        ["task1msRuns", "u32"] in resolved,
+        resolved,
+    )
+
     # ── [test->app~arch_002~1] session restore: cold boot, full return ──
     page.evaluate("() => localStorage.clear()")
     coldboot = URL.replace("state=matched", "state=coldboot")

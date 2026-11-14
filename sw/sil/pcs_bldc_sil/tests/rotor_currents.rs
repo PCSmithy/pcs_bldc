@@ -228,6 +228,7 @@ fn plant_port(sim: &Sil, name: &str) -> f64 {
     sim.read_f64(&vid(pcs_bldc_sil::SOURCE, name))
 }
 
+// [test->sys~mc_005~1]
 // [test->fw~mc_020~1]
 #[test]
 fn sinusoidal_commutation_puts_the_vector_on_q_and_spins() {

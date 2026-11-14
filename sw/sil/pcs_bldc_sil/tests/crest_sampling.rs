@@ -261,6 +261,7 @@ fn the_first_update_lands_on_the_first_crest_after_the_start() {
 }
 
 // [test->fw~hal_tim_009~1]
+// [test->sys~mc_004~1]
 #[test]
 fn a_duty_written_in_the_cycle_interrupt_drives_the_output_from_the_next_crest() {
     // Sinusoidal drive writes new duties every cycle from the injected-completion
