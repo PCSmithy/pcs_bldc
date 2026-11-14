@@ -264,18 +264,26 @@ Needs: impl, test
 The application shall map user-button gestures to control actions by
 context:
 
-| Context | Gesture | Action |
+| Gesture | Context | Action |
 |---------|---------|--------|
-| Bridge disabled, no fault | Press shorter than 1 s | Advance the active method to the next registered method |
-| Bridge disabled, no fault | Hold of 1 s or longer | Enable the bridge |
-| Bridge enabled | Any press | Disable the bridge |
-| Fault latched | Hold of 3 s or longer | Clear the fault latch |
+| Tap | Drive disabled and no method requested | Request the selected method |
+| Tap | Drive enabled, a method requested, or a fault latched | Request the method off |
+| Double tap | Any | Cycle the LED ring's display mode |
+| Hold | Fault latched | Clear the fault latch |
+| Hold | No fault latched | None |
+
+A hold is a press of 3 s or longer. A tap is a shorter press with no second
+press released within 300 ms of its release, acted on when that window
+ends; a double tap is two such presses within the window. The selected
+method is the one a host Command last named, the board's default until
+then.
 
 Acceptance:
 - Each table row's gesture in its context produces its action.
-- A gesture outside its context produces no action (a hold of 1 s or
-  longer while faulted does not enable the bridge; a short press while
-  faulted neither cycles the method nor clears the fault).
+- A double tap requests no method change, and the release of a hold is no
+  tap.
+- A tap on a drive the host enabled requests the method off and writes no
+  speed, torque or position target.
 
 Covers:
 - `sys~mc_005~1`

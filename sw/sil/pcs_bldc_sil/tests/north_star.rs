@@ -329,6 +329,7 @@ fn alignment_pulls_rotor_and_captures_offset() {
     );
 }
 
+// [test->sys~mc_005~1]
 // [test->fw~mc_006~1]
 // [test->fw~mc_008~1]
 // [test->fw~mc_011~1]

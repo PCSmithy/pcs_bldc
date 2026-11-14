@@ -72,6 +72,8 @@ fn two_pi_move(inertia_factor: f64, land_tol: f64, peak_tol: f64) {
     assert!(max <= DISTANCE_RAD + peak_tol, "never past 2 pi + {peak_tol} rad: peak {max:.4}");
 }
 
+// [test->sys~mc_001~1]
+// [test->sys~mc_005~1]
 // [test->fw~mc_029~1]
 // [test->fw~mc_031~1]
 #[test]

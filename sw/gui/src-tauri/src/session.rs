@@ -444,7 +444,7 @@ fn teardown(state: &SessionState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_shadowed_tty_twin;
+    use super::*;
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -481,5 +481,119 @@ mod tests {
         for n in &all {
             assert!(!is_shadowed_tty_twin(n, &all), "{n} must pass through");
         }
+    }
+
+    /// A connected session with no port: a reader that idles until shutdown
+    /// and a client writing to memory.
+    fn idle_session(port: &str, build_id: &str) -> Session {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_shutdown = shutdown.clone();
+        let reader = std::thread::spawn(move || {
+            while !reader_shutdown.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        Session {
+            client: Arc::new(Client::new(Box::new(
+                crate::testutil::SharedBuf::default(),
+            ))),
+            port_name: port.to_string(),
+            device_build_id: build_id.to_string(),
+            samples_consumer: Arc::default(),
+            ui: Arc::new(UiEmitter::new(Box::new(|_| {})).expect("emitter")),
+            shutdown,
+            reader: Some(reader),
+        }
+    }
+
+    /// Invoke a core command from `webview` as the frontend does.
+    fn invoke(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        tauri::test::get_ipc_response(
+            webview,
+            tauri::webview::InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("{cmd}: {e}"))
+        .deserialize()
+        .unwrap()
+    }
+
+    /// The core owns the session, its installed stream consumer, and the
+    /// loaded ELF: with the only webview destroyed and a fresh one opened (a
+    /// UI reload's new page), the new webview's reattach query finds the same session, the
+    /// ELF's signals resolve without a reload, and the installed consumer
+    /// still takes the stream's samples.
+    // [test->app~arch_001~1]
+    #[test]
+    fn a_new_webview_reattaches_to_the_live_session_and_loaded_elf() {
+        use std::sync::atomic::AtomicUsize;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let dll = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../build/native-fw/src/libpcs_bldc_fw.dll");
+        if !dll.exists() {
+            eprintln!("skipping: {} absent (run tools/build_native.sh first)", dll.display());
+            return;
+        }
+        let firmware = crate::firmware::LoadedFirmware::load(&dll).expect("load firmware");
+        let build_id = firmware.build_id.clone();
+        let session = idle_session("COM8", &build_id);
+        let delivered = Arc::new(AtomicUsize::new(0));
+        let counter = delivered.clone();
+        session.set_samples_consumer(Some(Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+
+        let app = mock_builder()
+            .manage(SessionState(Mutex::new(Some(session))))
+            .manage(crate::firmware::FirmwareState(Mutex::new(Some(firmware))))
+            .invoke_handler(tauri::generate_handler![
+                super::get_status,
+                crate::firmware::list_signals
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let open = |label: &str| {
+            tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .expect("webview")
+        };
+
+        let first = open("main");
+        let before = invoke(&first, "get_status", serde_json::json!({}));
+        first.destroy().expect("destroy webview");
+        let reloaded = open("reloaded");
+        let after = invoke(&reloaded, "get_status", serde_json::json!({}));
+        assert_eq!(
+            after,
+            serde_json::json!({ "connected": true, "port": "COM8", "device_build_id": build_id })
+        );
+        assert_eq!(before, after, "the reload finds the same session");
+
+        let signals = invoke(
+            &reloaded,
+            "list_signals",
+            serde_json::json!({ "filter": "task1msRuns", "limit": 10 }),
+        );
+        assert_eq!(signals[0]["path"], "task1msRuns");
+        assert_eq!(signals[0]["kind"], "u32");
+
+        // The session's consumer slot is where the reader hands each Samples.
+        let consumer = app.state::<SessionState>().0.lock().unwrap().as_ref().and_then(|s| {
+            s.samples_consumer.lock().unwrap().clone()
+        });
+        consumer.expect("the installed consumer survives")(pcs_proto::trace::Samples::default());
+        assert_eq!(delivered.load(Ordering::SeqCst), 1);
     }
 }

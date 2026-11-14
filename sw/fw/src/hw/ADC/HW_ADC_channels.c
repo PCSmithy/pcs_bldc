@@ -183,8 +183,10 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .inputs              =
         {
             HW_ADC_CUBEMX_SIM_INPUTS_ADC1   // macro supplies its own trailing comma
-            // Hand-authored VOPAMP internal channel (see stm32g4 branch).
-            [13] = { .enabled = true, .inputNameStr = "ADC1_VOPAMP1" },
+            // Hand-authored VOPAMP internal channel (see stm32g4 branch),
+            // driven by the sim OPAMP1 output.
+            [13] = { .enabled = true, .inputNameStr = "ADC1_VOPAMP1",
+                     .fromOpamp = true, .opamp = HW_OPAMP_CHANNEL_1 },
         },
         .injectedInputs      =
         {
@@ -209,9 +211,12 @@ const HW_ADC_channelConfig_S HW_ADC_channelConfig[HW_ADC_CHANNEL_COUNT] =
         .inputs              =
         {
             HW_ADC_CUBEMX_SIM_INPUTS_ADC2   // macro supplies its own trailing comma
-            // Hand-authored VOPAMP internal channels (see stm32g4 branch).
-            [16] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP2" },
-            [18] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP3" },
+            // Hand-authored VOPAMP internal channels (see stm32g4 branch),
+            // driven by the sim OPAMP2 / OPAMP3 outputs.
+            [16] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP2",
+                     .fromOpamp = true, .opamp = HW_OPAMP_CHANNEL_2 },
+            [18] = { .enabled = true, .inputNameStr = "ADC2_VOPAMP3",
+                     .fromOpamp = true, .opamp = HW_OPAMP_CHANNEL_3 },
         },
         .injectedInputs      =
         {

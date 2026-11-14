@@ -5,126 +5,74 @@ detail to pick up cold. SIL-specific items live in `sil/backlog.md`.
 
 ## 20 kHz interrupt hot path
 
-**When:** next — the interrupt starves the server and USB tasks under drive,
-so the trace stream stops; FOC adds a current loop to the same step.
+**When:** next — `sys~mc_006` fails on the bench and the trace loses
+samples under drive. The target is under 20 us for the whole ADC interrupt
+under drive.
 
-**What it is:** measured 2026-10-17 at `-Og` with the probes
-(`HW_ADC_data.irqDuration_us`, `main_cycleProbe_{step,callback}_us`) and a
-600-sample DWT PC profile over SWD, 50 us cycle:
+**What remains:** at the requirement's condition (18 rad/s, four one-cycle
+and 28 10 ms watches, 60 s; `docs/bench/cycle-timing.md`) the step maximum
+is 21 us against 20, the callback maximum 42 us against 40, and the whole
+interrupt reaches 50 us, the PWM period, averaging 32 us. The interrupt
+takes 64 % of the CPU and the idle task under 2 %; the server task falls
+to about 200 passes a second, the trace buffer overflows about a fifth of
+the time and the app reports lost points. The USB transmit queue is not
+full: the limit is CPU, not the link. With a 19-signal trace under
+position control the interrupt takes 29.5 us typical / 37 us worst. The
+largest costs by PC-sample profile are injected sample recording
+(`Bridge::recordInjectedSample`), the CORDIC sine/cosine,
+`lib_transforms_wrapAngle`, the cogging model's two CORDIC calls per cycle,
+and trace sampling; the trace's send path (COBS encoding, the buffer copy
+and capture, CRC) is about 13 % of samples at the four-watch load. Outside
+the interrupt, the 1 ms task's encoder read is a blocking SPI transfer:
+encoder RX over DMA is not wired.
 
-| | drive off | sinusoidal | after items 1-6, off | after items 1-6, sinusoidal |
-|---|---|---|---|---|
-| whole ADC interrupt | 36-37 us | 44 us (max 47) | 25 us | 28 us (max 33) |
-| callback | 23 us | 29-30 us (max 32) | 13-14 us | 17 us (max 21) |
-| commutation step | 19 us | 27 us (max 30) | 10 us | 13 us (max 14) |
+**How to measure:** `tools/bench/cycle_timing.py` for the requirement's
+bounds; the probes `HW_ADC_data.irqDuration_us` and `main_cycleProbe_*`
+read over SWD, plus DWT PC sampling, for a profile.
 
-Under drive 92% of samples sit on the interrupt path; the server task ran
-no pass and the USB task no wake in 2 s, and the 1 ms task lost a fifth
-of its passes. Profile shares under drive: trig with its argument
-reduction 12.5%, injected sample recording + HAL value reads 13%, HAL ADC
-dispatch 12%, voltage vector (SVM, compare writes, period reads) 12%,
-time-base reads 10%, enable writes through HAL PWM start 7%, `fmodf` 5%,
-trace sampling 3%. `-O2` gains only ~2 us: the cost is HAL and library
-calls, not arithmetic.
-
-Fixes, in payoff order, each measured on the probes before the next:
-
-1. One sine/cosine pair per cycle on the CORDIC, shared by Park and
-   inverse Park; angle held as a fraction of a turn so the wrap replaces
-   `fmodf` (~17%).
-2. One time-base read per cycle, passed down (~10%).
-3. Phase/main enables written only on change (~7%).
-4. Duty writes as direct compare-register writes with a cached period.
-5. Memoised ADC-channel-to-phase lookup; trim the HAL value reads.
-6. Flash prefetch on (`FLASH_ACR` PRFTEN is clear at 4 wait states).
-7. Last: bypass `HAL_ADC_IRQHandler` with a direct JEOS path (~12%).
-8. Trace capture: word copies into the sample ring instead of the byte
-   loop (~8% of samples with a fast watch list active).
-
-Items 1-4 and 6-8 landed on `isr_hot_path` (one commit each, readings in
-the messages): item 1 kept the angle in radians (the wrap truncates whole
-turns in float), item 2 became a direct TIM2 register read, item 5's
-lookup memoisation was not done (the ADC and sense scales are resolved at
-init instead). Then the server-path targets at -O2 (first per target,
-then the whole image) and a bulk record pop in the drain. Readings under
-sinusoidal drive with two 20 kHz watches streaming, 2026-10-17 evening:
-
-| control path | whole interrupt | server passes/s | server pass max |
-|---|---|---|---|
-| -Og (default) | 25 us | ~200 | 5.6 ms |
-| -O2 (whole image) | 24 us | ~970 | 2.0 ms |
-
-At -Og the server gets ~20% of the core and spends all of it, so the ring
-overflows in bursts whenever a higher task spikes; at -O2 the 1 ms and
-10 ms tasks and the kernel shrink enough that the server runs at its
-nominal rate and the stream is clean. The remaining interrupt cost is our
-own code (step, vector, sample recording, sampler), not the HAL.
-Decided: -O2 is the embedded default, with pcs_debug_path(<target>) as
-the per-module -Og opt-in for a debugging session.
-
-Server round (same evening): Samples hand-encoded around the bulk pop,
-CRC in place with COBS straight from the payload (lib_cobs_encode2),
-the CRC unit (HW_CRC), word copies for 4-byte entries. Five 20 kHz
-4-byte watches under sinusoidal drive: server ~946 passes/s (from ~217),
-pass max 1.4 ms, ring 8-30% full, 7% idle, no drops. That clears
-sys~mc_006's four-watch case with margin. Remaining per-byte cost is COBS
-(5.5% of samples), the FIFO/packet copies (~9%), and the sampler itself
-with five entries (~11%); the 1 ms task's blocking SPI encoder read
-(~2.5%) is the next non-trace item.
-
-Target: under 20 us for the whole interrupt under drive (now 24 us with
-five watches sampling; 16-17 us with none).
-
-**Where:** `sw/fw/src/main.c` (probes), `sw/lib/c/shared/io/bridge/`,
-`sw/lib/c/shared/app/motorControl/`, `sw/lib/c/shared/lib/transforms/`,
-`sw/lib/c/shared/hw/{ADC,TIM}/stm32g4/`, a new `hw/CORDIC`.
+**Where:** `sw/lib/c/shared/io/bridge/`, `sw/lib/c/shared/app/motorControl/`,
+`sw/lib/c/shared/lib/transforms/`, `sw/lib/c/shared/app/server/` (trace
+sampling), `sw/lib/c/shared/hw/SPI/stm32g4/HW_SPI.c` (DMA path is TX-only).
 
 ## USB link: double-buffered bulk IN
 
 **When:** when the trace needs more than ~500 kB/s sustained — e.g. more
 than four one-cycle watches, or a higher PWM rate.
 
-**What it is:** measured 2026-09-15 with `tools/pcs_client.py --link-test`
-(256 B frames, zero drops): 205 kB/s at the start of the day, CPU-bound in
-the server task on a bitwise CRC-32; 515 kB/s after the table CRC, a
-512-byte CDC endpoint transfer, and `-O2` on the link path (the list in
-`sw/lib/c/CMakeLists.txt`). Per byte the link now runs at the host's
-polling cadence, one 64-byte packet every ~80 µs (~800 kB/s asymptote):
-the STM32 fsdev bulk IN endpoint is single-buffered in TinyUSB 0.20, so
-every packet needs the completion interrupt to reload it before the
-host's retry. The peripheral supports double-buffered bulk endpoints
-(`dcd_stm32_fsdev.c` enables it for isochronous only) and the PMA has
-room for a second 64-byte IN buffer.
+**What it is:** the link runs at the host's polling cadence, one 64-byte
+packet every ~80 µs (~800 kB/s asymptote; 515 kB/s measured with
+`tools/pcs_client.py --link-test`): the STM32 fsdev bulk IN endpoint is
+single-buffered in TinyUSB 0.20, so every packet needs the completion
+interrupt to reload it before the host's retry. The peripheral supports
+double-buffered bulk endpoints (`dcd_stm32_fsdev.c` enables it for
+isochronous only) and the PMA has room for a second 64-byte IN buffer.
 
-**Link budget vs the physical path (2026-10-18):** the trace admits a
-watch list against a fixed 480 kB/s link budget, but the link measured
-241 kB/s wire through an external VIA VL817 hub (four full-speed packets
-per ms through its transaction translator) and 603 kB/s on a root port.
-Behind the hub a five-watch 20 kHz list was admitted and overflowed the
-ring continuously; nothing on the device can tell the two apart. Either
-measure the link at connect (the link test exists) and admit against the
-measurement, or document "root port only" for 20 kHz work.
+**Link budget vs the physical path:** the trace admits a watch list against
+a fixed 480 kB/s budget, but the link carries 241 kB/s through an external
+VIA VL817 hub (four full-speed packets per ms through its transaction
+translator) and 603 kB/s on a root port. Behind the hub a five-watch 20 kHz
+list is admitted and overflows the ring; nothing on the device can tell the
+two apart. Either measure the link at connect (the link test exists) and
+admit against the measurement, or document "root port only" for 20 kHz work.
+
+**Vendored patch carried:** `class/cdc/cdc_device.c` sizes the RX stream's
+OUT transfer at `BULK_PACKET_SIZE` instead of `CFG_TUD_CDC_EP_BUFSIZE`, so a
+host frame that is an exact multiple of 64 B completes without waiting for
+the next frame. Re-apply on a TinyUSB upgrade. The SIL's USB model has no
+packetization, so only the bench sees this; see "Sim USB: packetize the
+host-to-device stream" in `docs/sil/backlog.md`. After the IN change,
+re-measure with the link test and raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S`
+and its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
 
 **Where:** `sw/lib/c/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c`
 (vendored; carry the patch or upstream it), `tusb_config.h`.
 
-**Vendored patch already carried (2026-10-17):** `class/cdc/cdc_device.c`
-sizes the RX stream's OUT transfer at `BULK_PACKET_SIZE` instead of
-`CFG_TUD_CDC_EP_BUFSIZE`. With a 256-byte transfer the fsdev DCD completes
-only on a short packet, so a host frame that is an exact multiple of 64 B
-(a four-watch `WatchRequest` is 64 B on the wire) stalled until the next
-frame. The IN side keeps the 512-byte transfer. Re-apply on a TinyUSB
-upgrade; the SIL's USB model has no packetization, so only the bench sees
-it (`docs/sil/backlog.md`). Re-measure
-with the link test; then raise `APP_SERVER_LINK_BUDGET_BYTES_PER_S` and
-its mirrors (Unity, SIL `trace_stream.rs`, GUI devmock and fallbacks).
-
-## Desktop app: trace stream robustness (review 2026-09-19)
+## Desktop app: trace stream robustness
 
 **When:** before the trace client is relied on for long unattended
 captures, or when a watch-list swap ever shows a stray sample.
 
-**What it is:** four items a review of the app's stream path left open.
+**What it is:** four open items on the app's stream path.
 (1) A watch-list install swaps the host demux table only after the device
 accepts, so a message of the other list decodes onto the wrong signals
 when the two lists' per-period record sizes match; a list generation
@@ -141,12 +89,11 @@ surface as device drops. (4) An in-flight request keeps the duplicated
 port handle open for up to its 500 ms timeout after disconnect,
 delaying the DTR drop the board clears its list on.
 
-**Backlog growth when the webview lags (2026-10-18):** with five 20 kHz
-watches streaming and the link unable to carry them, the renderer process
-ran at over a core and its working set grew ~57 MB/s to 5 GB before a
-restart; a fresh instance reached 1 GB within a minute. The core's
-shedding path (`host_dropped_points`) did not keep the backlog bounded.
-Find where the points or batch events accumulate and bound it.
+**Backlog growth when the webview lags:** with five 20 kHz watches streaming
+and the link unable to carry them, the renderer runs at over a core and its
+working set grows ~57 MB/s, to gigabytes within minutes; the core's shedding
+path (`host_dropped_points`) does not keep the backlog bounded. Find where
+the points or batch events accumulate and bound it.
 
 **Where:** `sw/gui/src-tauri/src/{trace.rs,emitter.rs,session.rs,protocol.rs}`,
 `sw/lib/c/shared/proto/trace.proto` for (1), `app~conn_003`/`app~obs_003`.
@@ -154,16 +101,12 @@ Find where the points or batch events accumulate and bound it.
 ## Trace stream: time-based telemetry cadence
 
 **When:** if a watch list the budget admits ever runs the server task
-below its 1 kHz pass rate again.
+below its 1 kHz pass rate.
 
-**What it is:** telemetry is published every 100th server pass, so a
-pass rate that sags under load takes the 10 Hz telemetry down with it
-(seen 2026-09-19 before the pass-cost fixes: 1-2 Hz at two fast + one
-1 ms watch). Since then a pass costs one USB transfer
-(`fw~conn_server_006`) and the Samples path encodes the payload alone
-(`lib_protobuf_encodeEnvelope`), and every list up to four fast channels
-holds 1 kHz passes with 10 Hz telemetry on the bench. A `nowMs` hook in
-the server config would pin the cadence to time regardless.
+**What it is:** telemetry is published every 100th server pass, so a pass
+rate that sags under load takes the 10 Hz telemetry down with it. Every list
+up to four fast channels holds 1 kHz passes on the bench today. A `nowMs`
+hook in the server config would pin the cadence to time regardless.
 
 **Where:** `app_server_run1ms` telemetry divider, `app_server_config_S`.
 
@@ -172,65 +115,42 @@ the server config would pin the cadence to time regardless.
 **When:** after the 20 kHz streaming trace has been used on the bench for
 a while and one of these two limits actually bites.
 
-**What it is:** two extensions the fast-trace design deliberately left
-out. (1) *Burst capture*: a scope-style mode where the cycle callback
-fills a fixed-layout RAM buffer with many spans (more than the 4 one-cycle
-watches the stream admits) for a short window, with a manual or
-threshold trigger and pre-trigger history, frozen on completion and
-drained through the existing 128-byte memory read. Borrow the trace
-ring's arena; periodic tracing pauses while a burst is armed. (2)
-*Envelopes*: a watch flag that keeps min and max over the 20 cycles of a
-millisecond and ships both in the 1 ms record, so a 1 ms signal carries
-its sub-millisecond ripple at 1 ms bandwidth; the GUI already draws
-min/max envelopes.
+**What it is:** two extensions the streaming trace leaves out. (1) *Burst
+capture*: a scope-style mode where the cycle callback fills a fixed-layout
+RAM buffer with many spans (more than the 4 one-cycle watches the stream
+admits) for a short window, with a manual or threshold trigger and
+pre-trigger history, frozen on completion and drained through the existing
+128-byte memory read. Borrow the trace ring's arena; periodic tracing pauses
+while a burst is armed. (2) *Envelopes*: a watch flag that keeps min and max
+over the 20 cycles of a millisecond and ships both in the 1 ms record, so a
+1 ms signal carries its sub-millisecond ripple at 1 ms bandwidth; the GUI
+already draws min/max envelopes.
 
 **Where:** `sw/lib/c/shared/app/server/app_server_trace.c` (capture),
 `sw/lib/c/shared/proto/trace.proto` (a burst request and status), the
 GUI trace client and history for the envelope record shape.
 
-**Origin:** fast-trace design discussion (2026-09-14); both judged
-unnecessary for the first 20 kHz slice.
+## SVM: sector-based alternative against the min/max form
 
-## SVM formulation comparison
-
-**When:** after the sinusoidal branch lands with the sector-based modulator
-(`fw~mc_014~1`) and its reference test.
-
-**What it is:** `fw~mc_014~1` pins the duty triple, not the algorithm, so a
-min/max zero-sequence-injection modulator (and any other formulation with
-symmetric zero-vector placement) satisfies the same spec and the same
-reference test. Implement the alternative behind the same signature and
-compare on code size, worst-case execution time in the 20 kHz step, and
-test complexity; keep whichever wins, or keep both behind a build option
-if the difference is instructive.
-
-**Where:** the modulator module under `sw/lib/c/shared/lib/` and its
-Unity reference test.
-
-**Origin:** V/f + SVM spec interview (2026-09-14) — owner curiosity about
-whether the classic sector-based form earns its extra code.
+`lib_transforms_svm` (`sw/lib/c/shared/lib/transforms/lib_transforms.h`) is
+the min/max zero-sequence form; `fw~mc_014` pins the duty triple, not the
+algorithm. An open study: implement the classic sector-based modulator
+behind the same signature against the same reference test, and compare code
+size, worst-case time in the 20 kHz step, and test complexity.
 
 ## HW_I2C stuck-bus recovery
 
 **When:** when a bus that dies mid-operation must recover without a reboot —
 at the latest, before motor operation depends on live CYPD3177 or gate-driver
-status. No urgency while the buses either work (I2C3) or are down for
-hardware reasons no software can fix (I2C1 until the C28 rework).
+status.
 
 **What it is:** the HW_I2C driver handles per-transfer failure (NACK, error
 IRQ, timeout + abort) but has no recovery for a bus whose wires are stuck: a
-slave holding SDA low mid-bit, or SCL crippled so transfers can't clock. In
-that state `HAL_I2C_Master_Abort_IT` can't complete (the abort itself needs a
-working SCL), the HAL handle latches in ABORT/BUSY, and every subsequent
-transfer on that bus returns `HAL_BUSY` immediately — the bus is dead until
-reset.
-
-**Observed on the bench (2026-07-05):** with C28 loading I2C1's SCL, the
-first CYPD3177 fetch after boot burns its timeout + abort drain, the handle
-wedges, and all later fetches fail instantly (`task200ms_us` ~300 µs steady
-state instead of 7 × ~2 ms timeouts). Harmless today — the bus is physically
-unusable anyway and the state clears on reset — but it demonstrates the
-failure mode end to end.
+slave holding SDA low mid-bit, or SCL loaded so transfers can't clock (C28 on
+I2C1 does this until its rework). In that state `HAL_I2C_Master_Abort_IT`
+can't complete (the abort itself needs a working SCL), the HAL handle latches
+in ABORT/BUSY, and every later transfer on that bus returns `HAL_BUSY`
+immediately — the bus is dead until reset.
 
 **The fix, when picked up:**
 
@@ -248,20 +168,16 @@ failure mode end to end.
 
 **Where:** `sw/lib/c/shared/hw/I2C/stm32g4/HW_I2C.c` (detection + reinit) —
 the pin bit-bang needs the bus's GPIO port/pin, which the driver doesn't
-currently know; either extend `HW_I2C_busConfig_S` with the SCL/SDA pin
-identities or route the recovery through HW_GPIO. Sim side: model a stuck bus
-(`sim/HW_I2C.c` stall is per-transfer today, not sticky-with-recovery) so the
-recovery path is unit-testable. Spec: extend `specs/firmware/hal/i2c.md`
-(likely a new `fw~hal_i2c_005`) before implementing.
-
-**Origin:** cypd3177-i2c branch review finding (2026-07-04), confirmed by the
-C28 bench behavior above.
+know; either extend `HW_I2C_busConfig_S` with the SCL/SDA pin identities or
+route the recovery through HW_GPIO. Sim side: model a stuck bus (`sim/HW_I2C.c`
+stall is per-transfer, not sticky-with-recovery) so the recovery path is
+testable. Spec: extend `specs/firmware/hal/i2c.md` (likely a new
+`fw~hal_i2c_005`) before implementing.
 
 ## App-initiated DFU firmware update over USB
 
-**When:** after the basic desktop app is up (it owns the orchestration and
-the UX). No firmware groundwork blocks on it — the protocol seams it needs
-already exist.
+**When:** when the desktop app takes on firmware updates. No firmware
+groundwork blocks on it — the protocol seams it needs exist.
 
 **What it is:** update the firmware from the desktop app with no debugger
 attached. The G431's ROM system bootloader (AN2606) already speaks standard
@@ -274,10 +190,9 @@ single-bank part can't do A/B anyway.
 **The design, when picked up:**
 
 1. Schema: `EnterBootloaderRequest` in shared.proto's framework range
-   (field 7, an action — answered with `Response` per the reply
-   convention).
+   (an action — answered with `Response` per the reply convention).
 2. Server core: on accept, arm a ~100 ms countdown so the `Response`
-   drains out the USB FIFO before the reset, then invoke a new third board
+   drains out the USB FIFO before the reset, then invoke a new board
    hook `bool (*enterBootloader)(void)` in `app_server_config_S` (NULL →
    rejected "unsupported").
 3. Board hook (the G4 mechanism): write a magic word to a `.noinit` RAM
@@ -289,8 +204,8 @@ single-bank part can't do A/B anyway.
    disappear + DFU `0483:DF11` appear → DfuSe erase/download (dfu-core
    crate or dfu-util/CubeProgrammer) → DFU "leave" → CDC re-enumerates →
    reconnect → `IdentityRequest` and assert the reported build identity
-   matches the flashed image (the existing identity service is the
-   verification step; the DWARF gate re-arms automatically).
+   matches the flashed image (the identity service is the verification
+   step; the DWARF gate re-arms automatically).
 5. Specs first: a `sys~` update spec (`Needs: fw, app, test`), fw~ specs
    for the service + reset path, app~ specs for the orchestration state
    machine.
@@ -302,121 +217,87 @@ empty-check reboots into the ROM bootloader when bank start is erased, so
 retry usually just works; confirm BOOT0 is physically reachable on the
 board as the unconditional escape hatch before shipping the feature.
 
-**Origin:** serial-protocol branch design discussion (2026-08-15), as a
-thought experiment validating the app_server board-hook extension pattern.
+## IO_voltageMonitor: telemetry bus and rail scaling
 
-## IO_voltageMonitor: logical measurement channels over HW_ADC
+**When:** before another consumer needs bus or rail values in engineering
+units.
 
-**When:** before more consumers need engineering-unit measurements — the
-signal-trace and control work will want the same bus/rail/phase values the
-telemetry hook reads today.
-
-**What it is:** analog measurements have no owning module. The
-app_server telemetry hook reads raw pin volts (`HW_ADC_getVolts`) and
-applies the sense-front-end scaling inline (`APP_SERVER_VBUS_*` defines),
-and the retired Teleplot scaffolding did the same for phase
-currents/voltages and rails. An io-layer `IO_voltageMonitor` would map
-logical channels (VBUS_V, VBUS_I, RAIL_5V0, phase senses, ...) to
-`(ADC channel, input, offset, scale, unit)` channel config, returning
-engineering units (volts and non-volt units like amps) from one place.
+**What remains:** `IO_bridge`'s phase and bus current scaling is
+config-driven; the telemetry hook in `sw/fw/src/app/server/app_server_config.c`
+still reads raw pin volts (`HW_ADC_getVolts`) and scales bus voltage and bus
+current inline (`APP_SERVER_VBUS_*`, marked by a TODO). An io-layer module
+mapping logical channels (bus voltage, bus current, the rails) to
+`(ADC channel, input, offset, scale, unit)` config would own that scaling.
 
 **Where:** `sw/lib/c/shared/io/voltageMonitor/` + `sw/fw/src/io/` channel
-config carrying the board's divider/shunt/gain constants; spec under
-`specs/firmware/io/`. The app_server hook and IO_bridge's current-sense
-scaling become consumers.
-
-**Origin:** TODO in `app_server_config.c` (2026-08-16), serial-protocol
-branch.
+config; spec under `specs/firmware/io/`.
 
 ## Sim USB: model the unconfigured (pre-enumeration) state
 
 **When:** with the SIL transport work, or the next time USB lifecycle
 behavior matters in a test.
 
-**What it is:** the sim `HW_USB` (loopback) has no notion of the device
-being unconfigured: reads/writes touch its buffers from tick 0. Real
-TinyUSB is unsafe there — its CDC FIFO paths claim endpoints unguarded,
-and before the host configures the device the CDC endpoints are address
-0, so a read during enumeration queues transfers on the control endpoint
-and trips `TU_ASSERT(ep_status.busy == 0)` in `usbd_edpt_xfer`. This
-exact failure shipped on the serial-protocol branch (server task pumping
-`tud_cdc_read` every 1 ms from boot → "Device Descriptor Request Failed"
-on the bench) and no native test could see it.
+**What it is:** the sim `HW_USB` has no notion of the device being
+unconfigured: reads/writes touch its buffers from tick 0. Real TinyUSB is
+unsafe there — before the host configures the device the CDC endpoints are
+address 0, so a read during enumeration queues transfers on the control
+endpoint and trips `TU_ASSERT(ep_status.busy == 0)` in `usbd_edpt_xfer`
+(on the bench: "Device Descriptor Request Failed"). No native test can see
+this class of bug.
 
-**The fix, when picked up:** give the sim a `configured` flag distinct
-from `connected` (mounted vs port-open, mirroring `tud_ready()` vs
+**The fix, when picked up:** give the sim a `configured` flag distinct from
+`connected` (mounted vs port-open, mirroring `tud_ready()` vs
 `tud_cdc_connected()`): FIFO paths return 0 / accept nothing while
-unconfigured, a `HW_USB_sim_setConfigured()` hook drives it, and reset
-starts unconfigured. Then a unit test asserting "no FIFO traffic before
-configuration" turns this class of bench bug into a red test. Keep the
-guard in `stm32g4/HW_USB.c` regardless — defense in depth at the layer
-that owns the constraint.
+unconfigured, a DWARF-written data field drives it, and reset starts
+unconfigured. Then a test asserting "no FIFO traffic before configuration"
+turns this bench bug into a red test. Keep the guard in `stm32g4/HW_USB.c`
+regardless.
 
-**Origin:** bench enumeration failure on the serial-protocol branch
-(2026-08-16), root-caused to the unguarded TinyUSB CDC read path.
+## Own USB identity (VID/PID)
 
-## OFT trace scan time (build output under sw/)
+**When:** required before any public/field use (the placeholder VID squats
+on TinyUSB's test space).
 
-**When:** when the ~9 s `oft trace` round trip starts to chafe (it runs
-after every spec edit); it will grow with the app's dependency tree.
-
-**What it is:** the canonical invocation `tools/oft/oft.sh trace specs/
-sw/ README.md` crawls everything under `sw/`, which now includes Rust
-build output (`sw/gui/src-tauri/target/` ~200 MB after the Tauri
-scaffold, `sw/sil/target/`, `sw/lib/rust/*/target/`). OFT skips binary
-content but still visits every file; measured 2026-08-18: ~9 s wall vs
-~5 s before the app scaffold. No correctness impact — the 42-defect
-baseline is unchanged, no false tags.
-
-**The fix, when picked up:** either (a) have `oft.sh` (or a thin
-wrapper) enumerate source roots instead of `sw/` wholesale — `sw/fw
-sw/lib/c sw/proto sw/sil/voyant sw/sil/pcs_bldc_sil sw/lib/rust/*/src
-sw/gui/src-tauri/src sw/gui/dist` — accepting the list needs upkeep as
-the tree grows, or (b) stage a filtered copy/file-list excluding any
-`target/`, `build/`, `gen/` dir before invoking OFT. Update CLAUDE.md's
-verification command and CI in the same change so the scanned set stays
-identical everywhere.
-
-## Own USB identity (VID/PID + device name in the app's port list)
-
-**When:** cosmetic until the port picker matters to someone other than
-us; required before any public/field use (the placeholder VID squats on
-TinyUSB's test space).
-
-**What it is:** the board enumerates as TinyUSB's placeholder
-`cafe:4001` (`sw/lib/c/shared/hw/USB/stm32g4/HW_USB_descriptors.c:7`,
-which already carries the TODO). The descriptor strings are already
-"pcs_bldc"/"pcs_bldc CDC", but Windows shows "USB Serial Device"
-regardless — the in-box usbser driver's INF supplies the friendly
-name, not the device's iProduct — so a string change alone won't fix
-the port list.
-
-**The fix, when picked up:**
-
-1. Firmware: request a free PID under the pid.codes VID (0x1209) via
-   their GitHub PR process; drop it into USB_VID/USB_PID. The new
-   identity re-enumerates fresh (no stale friendly-name cache).
-2. App: map the known VID:PID to the board's display name in
-   `list_ports` (`sw/gui/src-tauri/src/session.rs`) — e.g.
-   "pcs_bldc [1209:xxxx]" — and sort/badge matching ports first. This
-   is also the discovery seam the multi-device stretch goal
-   (sys~arch_004) wants: enumerate = filter by our VID:PID.
-3. `tools/pcs_client.py` can reuse the same mapping for port hints.
+**What remains:** the board enumerates as `cafe:4001`
+(`sw/lib/c/shared/hw/USB/stm32g4/HW_USB_descriptors.c`, with a TODO). The app
+already shows `[vid:pid]` in its port list (`sw/gui/src-tauri/src/session.rs`).
+Remaining: a free PID under the pid.codes VID (0x1209) dropped into
+`USB_VID`/`USB_PID`, then the app filtering or badging ports by it — the
+discovery seam the multi-device goal (sys~arch_004) wants;
+`tools/pcs_client.py` can reuse the mapping. Windows names the port from the
+usbser INF, not iProduct, so the identity, not a string, is what tells ports
+apart.
 
 ## Low-side shunt window at the voltage ceiling
 
 At 11.5 V on the 20 V bus the max SVM duty is ≈ 0.998, leaving ≈ 0.05 µs of
 low-side on-time around the crest sample; the injected sample (trigger 0.5 µs
 before the crest, last S/H ≈ 1.26 µs after) plus 0.3 µs dead time needs duty
-≲ 0.93 (≈ 9.9 V). Scope the INA240 output at rated speed first, then choose
+≲ 0.93 (≈ 9.9 V). Order: scope the INA240 output at rated speed, then choose
 between a duty cap and reconstructing from the two lowest-duty phases (W is
-wired to ADC1 IN8).
+wired to ADC1 IN8), then gate the SIL sense model to match ("Current sense:
+gate the sense model on the low-side on-state", `docs/sil/backlog.md`).
 
 ## ADC injected ISR: overrun loses a cycle silently
 
 JEOC/JEOS are cleared after the control-step callback, so a callback that
 overruns 50 µs swallows the next trigger's flags and that cycle is lost with
 no count or fault.
+
+## Break input under six-step: bench check
+
+A real break (nFAULT / VDS trip) while six-step commutates should leave the
+bridge dark and latch a fault (`fw~safety_003`). The path that restores a
+clear master output enable after a channel start (`fw~hal_tim_008`) lives
+only in the stm32g4 timer driver (`HW_TIM_setOutputEnabled`,
+`sw/lib/c/shared/hw/TIM/stm32g4/HW_TIM.c`), which SIL and Unity do not
+exercise. Trip a break on the bench mid-commutation and confirm.
+
+## Capture export in the live Tauri app
+
+The core command that opens the save dialog and writes the CSV
+(`save_capture_csv`, `sw/gui/src-tauri/src/main.rs`) has run only through
+the devmock. Exercise it once in the live app on Windows and macOS.
 
 ## App: named-sequence library has no delete
 
@@ -427,3 +308,28 @@ The Sequence widget saves sequences by name but offers no way to remove one.
 `HW_TIM_channels.cubemx.h` carries `updateAtPeriod` by hand; regenerating the
 header with `tools/cubemx_to_channels.py` drops it. Teach the generator the
 field (the sim-only `preload` flag lives in `HW_TIM_channels.c` and is safe).
+
+## Bus overcurrent trip: one regular-ADC pass of lag
+
+In SIL the bus-current trip latches 1100 to 2000 µs after the current
+crosses 1.5 A, against 100 to 1000 µs for a phase trip: the bus current
+comes from the regular ADC pass, so the 1 ms task reads the previous
+pass's sample. `sys~safety_001`'s 2 ms bound holds with no margin;
+`fw~safety_001`'s "within one control cycle" does not hold for the bus
+current. Check on the bench whether the DMA pass completes before the
+1 ms task reads it, then either reorder the read or restate the bound
+(`sw/sil/pcs_bldc_sil/tests/faults.rs` measures it).
+
+## dev_CYPD3177 reads TYPE_C_STATUS four bytes wide
+
+`dev_CYPD3177.c` reads four bytes at 0x100C, which overlaps `BUS_VOLTAGE`
+at 0x100D, so the exposed `typeCStatus` carries the bus-voltage byte in
+bits 15:8. Read the register at its own width and check what consumes
+the word.
+
+## UI suite: the views_017 plot-probe check is timing-dependent
+
+"views_017 probe found an on-trace spot inside the release strip" fails
+occasionally when the machine is loaded and passes on the next run
+(`sw/gui/tests/test_views.py`). Make the probe wait on the rendered trace
+rather than on time.

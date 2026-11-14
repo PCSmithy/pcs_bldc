@@ -96,6 +96,14 @@ Concretely:
   code without a spec to point at is a spec gap, not a license to skip the
   spec.
 
+- **A requirement only the hardware can show is covered by a bench check.**
+  A script under `tools/bench/` reads the running board, asserts the
+  acceptance, and carries the `[test->...]` tag; each run writes a dated
+  record, with the firmware's build identity, under `docs/bench/`. The
+  script refuses a board whose identity differs from the ELF it resolves
+  addresses from. Bench checks do not run in CI: the record is the
+  evidence, and it is re-run when the code it measures changes.
+
 CI fails the build on any uncovered spec, any broken link, or any tag
 pointing at a stale or version-bumped ID.
 

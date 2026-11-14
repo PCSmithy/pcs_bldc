@@ -80,6 +80,7 @@ fn v_lim(sim: &Sil) -> f64 {
     mc_config(sim, "maxVoltage_V").min(mc(sim, "busVoltage") / 3.0_f64.sqrt())
 }
 
+// [test->sys~mc_005~1]
 // [test->fw~mc_025~1]
 #[test]
 fn a_velocity_step_settles_with_the_current_back_off_its_peak() {

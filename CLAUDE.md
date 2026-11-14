@@ -266,28 +266,36 @@ sufficient to make the tooling aware of a new topic.
   render budget, cursor + comparison anchor/deltas, table + value
   rendering, timeline, watch panel, workspace + widget titles, the board
   command plane, the Command and Sequence widgets, capture export). All
-  impl-covered; test-covered except `app~arch_001` (its UI-reload test
-  needs the live Tauri core). `[impl->]`/`[test->]` tags live in `.js`
+  impl- and test-covered. `[impl->]`/`[test->]` tags live in `.js`
   and `.py` files too, and the UI verification surface is the playwright
   suite `sw/gui/tests/test_views.py` (over the devmock).
 - `tools/validate-specs.py` must be clean. Trace with
-  `tools/oft/oft.sh trace specs/ sw/ README.md` (code tags are not
+  `tools/oft/oft.sh trace specs/ sw/ tools/bench/ README.md` (code tags are not
   scanned without the source dirs); the report is not expected to be
   defect-free, but every `not ok` line must fall in one of these classes:
-  - a `sys~` anchor whose component decomposition or system-level test
-    is still deferred;
-  - a `fw~`/`app~` spec written ahead of its code (`-impl, -test`) on
-    the branch that will implement it, or named in
-    `docs/motor-sprint.md`;
-  - a known test gap with a written home: `fw~mc_007` (gesture map, not
-    built), `fw~hal_tim_005`/`_007` (dead-time, break input — sim
-    modeling pending), `app~arch_001` (its test needs the live Tauri
-    core), `fw~hal_opamp_002` (needs a sim OPAMP→ADC path; see
-    `docs/sil/backlog.md`), `fw~mc_018` (its duration bounds are
-    bench-only, verified from the traced maxima — the sim clock cannot
-    resolve intra-callback durations; the probe mechanics are SIL-tested),
-    `fw~hal_adc_011` (the ADC interrupt duration probe lives in the
-    stm32g4 driver; the sim has no ADC interrupt, so it is bench-only).
+  - a `sys~` anchor with no component decomposition yet, the feature
+    not being built: `sys~ops_001` (operating-mode state machine),
+    `sys~persist_001` (flash persistence), `sys~arch_004` (multi-device),
+    `sys~mc_007` (sensorless control);
+  - a `sys~` anchor whose acceptance no automated test can show as
+    written: `sys~arch_001`/`_002`/`_003` (standalone operation, the app
+    as auxiliary, the USB transport), `sys~arch_005` (a build property),
+    `sys~obs_003` (needs two firmware images), `sys~obs_004` (needs the
+    real firmware's identity in the app's loop), `sys~obs_010` (its
+    interrupt-share bullet is bench-only);
+  - a `fw~`/`app~` spec written ahead of its code (`-impl, -test`) and
+    named in `docs/motor-sprint.md`: the V/f method (`fw~mc_010`,
+    `fw~mc_017`), which also leaves `sys~mc_005` covered shallow.
+
+  - a requirement whose bench check fails: `sys~mc_006` (control-loop
+    timing; the record in `docs/bench/cycle-timing.md` reads a 21 µs
+    step and a 42 µs callback against 20 and 40; see the hot-path entry
+    in `docs/backlog.md`). Its tag goes on the check when it passes.
+
+  Requirements only the hardware can show are covered by the bench
+  checks under `tools/bench/`, each with a dated record under
+  `docs/bench/` (`docs/spec-system.md`, Coverage rule): `fw~hal_adc_011`
+  by `cycle_timing.py`.
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and

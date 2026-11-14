@@ -312,6 +312,7 @@ fn get_motor_info_reports_the_board_ratings() {
 const MODE_SELECTED: &str = "app_motorControl_data.channels[0].modeSelected";
 const SIX_STEP: Status = Status { name: "APP_MOTORCONTROL_MODE_SIX_STEP_TRAP", ordinal: 1 };
 
+// [test->sys~mc_005~1]
 // [test->fw~mc_033~1]
 // [test->fw~conn_server_007~1]
 #[test]

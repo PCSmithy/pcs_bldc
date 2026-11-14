@@ -167,6 +167,7 @@ void app_userControls_run1ms(void)
             data->gestureConsumed = false;
         }
 
+        // [impl->fw~mc_007~1]
         // Long hold -> fault-clear (only when a fault is latched). The hold timer
         // runs while the button is down; on expiry the gesture is consumed so the
         // release below cannot also toggle. A hold with no fault to clear still

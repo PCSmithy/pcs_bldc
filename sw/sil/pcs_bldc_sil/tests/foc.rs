@@ -48,6 +48,7 @@ fn applied_vector_v(sim: &Sil) -> (f64, f64) {
     (v_bus * ((2.0 * du) - dv - dw) / 3.0, v_bus * (dv - dw) / 3.0_f64.sqrt())
 }
 
+// [test->sys~mc_005~1]
 // [test->fw~mc_023~1]
 #[test]
 fn a_current_step_into_the_held_rotor_rises_at_the_designed_bandwidth() {

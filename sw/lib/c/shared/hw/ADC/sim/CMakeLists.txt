@@ -8,6 +8,7 @@ target_link_libraries(hw_ADC
     hw_SIL_irq         # deferred injected-completion dispatch (null-safe)
     hw_DMA             # regular-sequence DMA transfers, as on silicon
     hw_TIM             # TRGO sink: the sim's injected trigger sources are TIM events
+    hw_OPAMP           # internal inputs an amplifier's output drives
 )
 
 # Unit tests run only on the native target.
