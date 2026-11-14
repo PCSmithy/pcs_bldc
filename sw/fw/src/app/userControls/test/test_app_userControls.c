@@ -93,6 +93,64 @@ void setUp(void)
 
 void tearDown(void) {}
 
+/* ---- gestures ---- */
+
+// [test->fw~mc_007~1]
+// Two presses inside the window cycle the ring once and request no method.
+static void test_a_double_tap_cycles_the_ring_and_requests_nothing(void)
+{
+    buttonDown = true;
+    passes(50U);
+    buttonDown = false;
+    passes(100U);
+    buttonDown = true;
+    passes(50U);
+    buttonDown = false;
+    passes(400U);
+    TEST_ASSERT_EQUAL_UINT32(1U, cycleModeCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_setModeCalls);
+}
+
+// [test->fw~mc_007~1]
+// A 3 s hold clears a latched fault once; its release is no tap.
+static void test_a_hold_clears_a_latched_fault_and_its_release_is_no_tap(void)
+{
+    setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_FAULTED, APP_MOTORCONTROL_MODE_FOC_VELOCITY);
+    buttonDown = true;
+    passes(2900U);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_clearFaultCalls);
+    passes(200U);
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_clearFaultCalls);
+    buttonDown = false;
+    passes(400U);
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_clearFaultCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_setModeCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, cycleModeCalls);
+}
+
+// [test->fw~mc_007~1]
+// A hold with no fault latched does nothing, on expiry and on release.
+static void test_a_hold_with_no_fault_does_nothing(void)
+{
+    buttonDown = true;
+    passes(3100U);
+    buttonDown = false;
+    passes(400U);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_clearFaultCalls);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_setModeCalls);
+}
+
+// [test->fw~mc_007~1]
+// A tap while a fault is latched requests the method off and clears nothing.
+static void test_a_tap_while_faulted_requests_off(void)
+{
+    setMotor(APP_MOTORCONTROL_MODE_OFF, APP_MOTORCONTROL_STATE_FAULTED, APP_MOTORCONTROL_MODE_FOC_VELOCITY);
+    tap();
+    TEST_ASSERT_EQUAL_UINT32(1U, mock_app_motorControl_setModeCalls);
+    TEST_ASSERT_EQUAL(APP_MOTORCONTROL_MODE_OFF, mock_app_motorControl_lastMode);
+    TEST_ASSERT_EQUAL_UINT32(0U, mock_app_motorControl_clearFaultCalls);
+}
+
 /* ---- taps ---- */
 
 // Idle passes write nothing to the motor control.
@@ -105,6 +163,7 @@ static void test_idle_passes_write_nothing(void)
     TEST_ASSERT_EQUAL_UINT32(0U, targetWrites());
 }
 
+// [test->fw~mc_007~1]
 // The first tap on a host-started drive stops it, writing no target.
 static void test_the_first_tap_stops_a_host_started_drive(void)
 {
@@ -116,6 +175,7 @@ static void test_the_first_tap_stops_a_host_started_drive(void)
     TEST_ASSERT_EQUAL_UINT32(0U, targetWrites());
 }
 
+// [test->fw~mc_007~1]
 // A drive requested but not yet enabled (precharging) also stops on a tap.
 static void test_a_tap_stops_a_requested_drive_before_its_enable(void)
 {
@@ -125,6 +185,7 @@ static void test_a_tap_stops_a_requested_drive_before_its_enable(void)
     TEST_ASSERT_EQUAL_UINT32(0U, targetWrites());
 }
 
+// [test->fw~mc_007~1]
 // [test->fw~mc_008~1] a tap on a disabled drive enables the selected method with
 // the dial at zero; dial travel then writes the speed target, and the next tap stops
 static void test_a_tap_starts_the_selected_method_and_the_next_stops(void)
@@ -188,6 +249,10 @@ static void test_dial_jitter_inside_the_deadband_writes_nothing(void)
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_a_double_tap_cycles_the_ring_and_requests_nothing);
+    RUN_TEST(test_a_hold_clears_a_latched_fault_and_its_release_is_no_tap);
+    RUN_TEST(test_a_hold_with_no_fault_does_nothing);
+    RUN_TEST(test_a_tap_while_faulted_requests_off);
     RUN_TEST(test_idle_passes_write_nothing);
     RUN_TEST(test_the_first_tap_stops_a_host_started_drive);
     RUN_TEST(test_a_tap_stops_a_requested_drive_before_its_enable);

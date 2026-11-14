@@ -13,18 +13,20 @@ namespace and narrowing it for selection.
 ### Signal selection from firmware debug data
 `app~obs_001~1`
 
-The app shall enumerate the static variables of the loaded firmware
-ELF from its DWARF debug data — file-local definitions from every
-linked module, and aggregate members by path (`a.b[2].c`) —
+The app shall enumerate the scalar values of the static variables of
+the loaded firmware ELF from its DWARF debug data — file-local
+definitions from every linked module, and aggregate members by path
+(`a.b[2].c`), pointers and arrays of more than 64 elements left out —
 presenting them for selection by source name and resolving each
 selected signal to its link-time address, byte size, and scalar type,
 an enumeration's scalar type carrying its enumerator names by value.
 
 Acceptance:
 
-- Statics from every linked firmware module, including file-local
-  definitions and aggregate members by path, appear under their
-  source names.
+- Every static of a linked firmware module that holds a scalar value
+  outside an array of more than 64 elements, file-local definitions
+  and aggregate members by path included, appears under its source
+  name.
 - A selection's resolved address, size, and type — an enumeration's
   enumerator names by value included — equal the ELF's debug entries
   for that variable.
