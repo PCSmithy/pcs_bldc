@@ -1121,16 +1121,6 @@
 	)
 	(wire
 		(pts
-			(xy 220.98 160.02) (xy 232.41 160.02)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4d82d633-fb1c-4213-99e2-2c4329f898c4")
-	)
-	(wire
-		(pts
 			(xy 166.37 123.19) (xy 175.26 123.19)
 		)
 		(stroke
@@ -1141,13 +1131,13 @@
 	)
 	(wire
 		(pts
-			(xy 193.04 160.02) (xy 205.74 160.02)
+			(xy 220.98 160.02) (xy 232.41 160.02)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "52ebb01b-2fa9-40e5-affb-7f13da90201b")
+		(uuid "4f5da774-3dbc-46f7-8417-2dee213fcff3")
 	)
 	(wire
 		(pts
@@ -1258,6 +1248,16 @@
 			(type default)
 		)
 		(uuid "731c0ab9-18cb-4569-ab56-70c25a80166d")
+	)
+	(wire
+		(pts
+			(xy 193.04 160.02) (xy 205.74 160.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "7cc18802-71b0-4420-aa7a-8464913ba501")
 	)
 	(wire
 		(pts
@@ -2573,7 +2573,6 @@
 	(symbol
 		(lib_id "pcs_bldc_sym_lib:WS2812B-2020")
 		(at 213.36 160.02 0)
-		(mirror y)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2583,7 +2582,7 @@
 		(dnp no)
 		(uuid "4b985a49-bba3-4dbd-963c-968a13d2cf5c")
 		(property "Reference" "D8"
-			(at 217.424 153.67 0)
+			(at 209.296 153.67 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2593,7 +2592,7 @@
 			)
 		)
 		(property "Value" "WS2812B-2020"
-			(at 204.978 166.878 0)
+			(at 221.742 166.878 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2603,7 +2602,7 @@
 			)
 		)
 		(property "Footprint" "pcs_lib:LED_WS2812B-2020_PLCC4_2.0x2.0mm"
-			(at 212.09 167.64 0)
+			(at 214.63 167.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2615,7 +2614,7 @@
 			)
 		)
 		(property "Datasheet" "${KIPRJMOD}/../../datasheets/WS2812B-2020-V6_Addressable_RGB_LED_2.0x2.0mm_Worldsemi.pdf"
-			(at 210.82 169.545 0)
+			(at 215.9 169.545 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
