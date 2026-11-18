@@ -14,6 +14,7 @@ extern "C" {
 
 #define LIB_TRANSFORMS_SQRT3 (1.7320508f)
 #define LIB_TRANSFORMS_1_DIV_SQRT3 (0.5773502f)
+#define LIB_TRANSFORMS_1_DIV_3 (0.33333334f)
 #define LIB_TRANSFORMS_2PI (6.2831853f)
 #define LIB_TRANSFORMS_1_DIV_2PI (0.15915494f)
 
@@ -41,8 +42,8 @@ static inline void lib_transforms_clarke(
 {
     if ((alpha != NULL) && (beta != NULL))
     {
-        *alpha = (2.0f * a - b - c) / 3.0f;
-        *beta = (b - c) / LIB_TRANSFORMS_SQRT3;
+        *alpha = (2.0f * a - b - c) * LIB_TRANSFORMS_1_DIV_3;
+        *beta = (b - c) * LIB_TRANSFORMS_1_DIV_SQRT3;
     }
 }
 
@@ -124,7 +125,7 @@ static inline void lib_transforms_svm(
         }
         else // vBus > 0
         {
-            const float32_t limit_sq = (vBus*vBus) / 3.0f;
+            const float32_t limit_sq = (vBus*vBus) * LIB_TRANSFORMS_1_DIV_3;
             const float32_t vVectorMag_sq = (vAlpha*vAlpha) + (vBeta*vBeta);
 
             // if current vector magnitude > V bus

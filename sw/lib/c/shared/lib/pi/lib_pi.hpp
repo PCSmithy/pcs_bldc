@@ -25,6 +25,7 @@ class PiRegulator
             if (isValid)
             {
                 this->config = config;
+                this->inverseKi = 1.0f / config.ki;
                 this->integral = 0.0f;
                 this->initialized = true;
             }
@@ -58,7 +59,7 @@ class PiRegulator
         {
             if (this->initialized)
             {
-                this->integral = (vLimited - this->config.kp * error) / this->config.ki;
+                this->integral = (vLimited - this->config.kp * error) * this->inverseKi;
             }
         }
 
@@ -76,6 +77,7 @@ class PiRegulator
         // Trivial on purpose: a zero object is an uninitialized regulator, so a
         // constinit holder needs no constructor. Value-initialize locals: `PiRegulator r = {};`
         PiConfig  config;
+        float32_t inverseKi;
         bool      initialized;
         float32_t integral;   // the integral of the error, S
 };

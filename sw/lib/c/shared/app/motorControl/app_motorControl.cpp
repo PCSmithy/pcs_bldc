@@ -113,6 +113,7 @@ class Motor
         app_motorControl_channelConfig_S const * config;
         float32_t torqueLimit_Nm;                 // K_t I_max
         float32_t inverseTorqueConstant_APerNm;   // 1 / K_t
+        float32_t inverseMaxVelocity_secPerRad;   // 1 / w_max
 
         app_motorControl_mode_E modeCurrent;
         app_motorControl_mode_E modeRequested;
@@ -305,7 +306,8 @@ void Motor::updateCoggingTorque()
         if (harmonic->amplitude_Nm > ZERO)
         {
             lib_transforms_sinCos_S arg = { .sin = ZERO, .cos = 1.0f };
-            const float32_t angle_rad = lib_transforms_wrapAngle(((float32_t)harmonic->order_perRev * this->rotorAngle_rad) + harmonic->phase_rad);
+            // unwrapped: the sine/cosine wraps its own argument
+            const float32_t angle_rad = ((float32_t)harmonic->order_perRev * this->rotorAngle_rad) + harmonic->phase_rad;
             (void) HW_CORDIC_sinCos(angle_rad, &arg);
             torque_Nm += harmonic->amplitude_Nm * arg.sin;
         }
@@ -392,7 +394,7 @@ void Motor::stepSixStep(const lib_transforms_sinCos_S * rotorAngle)
     this->magneticAngleTarget_rad = target;
 
     // TODO - compute duty cycle from velocity error
-    const float32_t duty01 = MIN_OF(fabsf(this->velocitySetpoint_radPerSec) / this->config->maxVelocity_radPerSec, APP_MOTORCONTROL_MAX_DUTY_01);
+    const float32_t duty01 = MIN_OF(fabsf(this->velocitySetpoint_radPerSec) * this->inverseMaxVelocity_secPerRad, APP_MOTORCONTROL_MAX_DUTY_01);
 
     // A two-phase pattern's field lies mid-sector (30, 90, .. 330 deg): the sector
     // holding the target applies the nearest field, within 30 deg of the lead.
@@ -425,7 +427,7 @@ void Motor::stepSixStep(const lib_transforms_sinCos_S * rotorAngle)
 // [impl->fw~mc_020~1] (0, V) in the rotor frame, V the speed target's share of V_max
 void Motor::stepSinusoidal(const lib_transforms_sinCos_S * rotorAngle)
 {
-    const float32_t velocityShare = MIN_OF(fabsf(this->velocitySetpoint_radPerSec) / this->config->maxVelocity_radPerSec, 1.0f);
+    const float32_t velocityShare = MIN_OF(fabsf(this->velocitySetpoint_radPerSec) * this->inverseMaxVelocity_secPerRad, 1.0f);
     const float32_t vQ = SGN(this->velocitySetpoint_radPerSec) * velocityShare * this->config->maxVoltage_V;
     lib_transforms_inversePark(ZERO, vQ, *rotorAngle, &this->vAlpha_v, &this->vBeta_v);
     this->setEnables(true, true, true);
@@ -951,6 +953,7 @@ bool Motor::init(const app_motorControl_channelConfig_S * channelConfig)
         this->config = channelConfig;
         this->torqueLimit_Nm = channelConfig->foc.torqueConstant_NmPerA * channelConfig->foc.maxCurrent_A;
         this->inverseTorqueConstant_APerNm = 1.0f / channelConfig->foc.torqueConstant_NmPerA;
+        this->inverseMaxVelocity_secPerRad = 1.0f / channelConfig->maxVelocity_radPerSec;
 
         this->modeCurrent = APP_MOTORCONTROL_MODE_OFF;
         this->modeRequested = APP_MOTORCONTROL_MODE_OFF;

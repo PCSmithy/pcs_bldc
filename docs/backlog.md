@@ -26,16 +26,20 @@ and capture, CRC) is about 13 % of samples at the four-watch load. Outside
 the interrupt, the 1 ms task's encoder read is a blocking SPI transfer:
 encoder RX over DMA is not wired.
 
-**Done so far:** link-time optimization of the project's own code (idle
-interrupt 21.1 -> 18.9 us; not yet measured under drive) and a count of
-missed PWM cycles (`HW_ADC_data.irqMissedCycles`, `fw~hal_adc_012`).
+**Done so far:** link-time optimization of the project's own code (under
+drive at 17 rad/s: step 21 -> 19 us, callback 42 -> 39 us, interrupt
+maximum 50 -> 47 us); a count of missed PWM cycles
+(`HW_ADC_data.irqMissedCycles`, `fw~hal_adc_012`); and trims of the compiled
+path: the cogging angle goes unwrapped to `HW_CORDIC_sinCos`, the offset
+tracker rests while every phase drives, reciprocals replace the divisions
+in Clarke, the modulator's limit, the PI back-calculation and the speed
+share, the injected data registers are read directly, and the CORDIC
+result is read with no ready poll.
 
-**Candidates, from the compiled path:** `lib_transforms_wrapAngle` ahead of
-`HW_CORDIC_sinCos`, which wraps again; the offset tracker's three passes a
-cycle while driving; the divisions in Clarke, the modulator and the FOC
-loops (reciprocals, or held from the 1 ms pass); the bus-voltage re-read in
-`setVoltageVector`; `HAL_ADCEx_InjectedGetValue`'s rank switch; the
-CORDIC's 24 iterations.
+**Candidates left:** the modulator's `1 / vBus` and the bus-voltage read
+behind it, each cycle (`fw~io_bridge_008` specifies the voltage read at the
+call; a value held from the 1 ms pass changes that); the square root in the
+FOC voltage limit, needed only when the limit is reached.
 
 **How to measure:** `tools/bench/cycle_timing.py` for the requirement's
 bounds; the probes `HW_ADC_data.irqDuration_us` and `main_cycleProbe_*`

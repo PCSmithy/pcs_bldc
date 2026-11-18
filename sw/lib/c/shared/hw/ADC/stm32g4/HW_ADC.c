@@ -700,9 +700,11 @@ static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel)
 {
     HW_ADC_channelData_S * const channelData = &data->channelData[channel];
 
+    // JDR1..JDR4 are consecutive registers, one per injected rank.
+    const volatile uint32_t * const jdr = &channelData->hadc.Instance->JDR1;
     for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
     {
-        channelData->injectedCounts[i] = HAL_ADCEx_InjectedGetValue(&channelData->hadc, HW_ADC_injectedRankConstants[i]);
+        channelData->injectedCounts[i] = jdr[i];
     }
     channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_OK;
 
