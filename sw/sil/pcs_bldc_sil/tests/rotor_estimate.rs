@@ -211,18 +211,18 @@ fn mean_over_ms(sim: &mut Sil, path: &str, ms: u32) -> f64 {
 
 /// The velocity loop holds 10 rad/s on a plant at `inertia_factor` times the
 /// configured inertia; a 10 mNm load stepped onto the shaft is a torque the
-/// model does not carry, so T_d moves by minus the load within `tol` of it (the
-/// plant's cogging and any friction mismatch are constant in the mean at steady
-/// speed, which the difference removes).
+/// model does not carry, so T_d moves by minus the load within `tol` of it. Each
+/// mean spans one revolution (628 ms at 10 rad/s), over which the plant's cogging
+/// averages out; a constant friction mismatch falls out of the difference.
 fn step_load_lands_in_the_torque_state(inertia_factor: f64, tol: f64) {
     const LOAD_NM: f64 = 0.010;
     let mut sim = velocity_hold_world(inertia_factor, 10.0);
     let td_path = format!("{EST}.x_hat.e[2][0]");
-    let before = mean_over_ms(&mut sim, &td_path, 500);
+    let before = mean_over_ms(&mut sim, &td_path, 628);
     let speed_before = plant(&sim, "velocity");
     sim.write(&vid(MOTOR, "load_torque"), LOAD_NM).expect("apply the load");
     sim.run_for_ms(300);
-    let after = mean_over_ms(&mut sim, &td_path, 500);
+    let after = mean_over_ms(&mut sim, &td_path, 628);
     let speed_after = plant(&sim, "velocity");
     println!("rotor_estimate: J x{inertia_factor}: T_d {:+.2} -> {:+.2} mNm under a {:.0} mNm load; plant {speed_before:.2} -> {speed_after:.2} rad/s",
              1e3 * before, 1e3 * after, 1e3 * LOAD_NM);
