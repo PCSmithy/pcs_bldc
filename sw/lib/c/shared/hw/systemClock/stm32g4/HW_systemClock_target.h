@@ -15,4 +15,6 @@ typedef struct
     uint32_t PWREx_ControlVoltageScaling;
     uint32_t FLASH_latency;
     bool     FLASH_prefetch;   // prefetch buffer, off at reset; worth it at any wait state above zero
+    bool     configureCRS;     // trim HSI48 against the sync source below
+    RCC_CRSInitTypeDef RCC_CRSInitStruct;
 } HW_systemClock_config_S;

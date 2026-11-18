@@ -28,7 +28,7 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         {
             .Instance = SPI1,
             // AS5048 encoder: 16-bit frames as 8-bit byte pairs, SPI mode 1
-            // (CPOL=0/CPHA=1, datasheet p.10), /32 of PCLK2 (144 MHz) = 4.5 MHz
+            // (CPOL=0/CPHA=1, datasheet p.10), /32 of PCLK2 (170 MHz) = 5.3 MHz
             // (< the 10 MHz TCLK limit). Set in the .ioc; pulled in from there
             // via the cubemx-generated macro.
             .Init = { HW_SPI_CUBEMX_INIT_SPI1 },
@@ -53,9 +53,9 @@ const HW_SPI_busConfig_S HW_SPI_busConfig[] =
         {
             .Instance = SPI3,
             // SK6805 LED string: MOSI (PB5) is bit-banged as the 1-wire LED
-            // data line. Each color bit -> 6 SPI bits at /32 (4.5 MHz, bit =
-            // 0.222us): '0' = 0b110000 (T0H 0.44 / T0L 0.89us), '1' = 0b111000
-            // (T1H 0.67 / T1L 0.67us) — all in spec. 8-bit frames; SCK/MISO
+            // data line. Each color bit -> 6 SPI bits at /32 (5.3 MHz, bit =
+            // 0.188us): '0' = 0b110000 (T0H 0.38 / T0L 0.75us), '1' = 0b111000
+            // (T1H 0.56 / T1L 0.56us) — in spec, T0L at its floor. 8-bit frames; SCK/MISO
             // unused. Blocking (SW) transfer; no HW_DMA yet.
             //
             // Intentionally hand-written, NOT HW_SPI_CUBEMX_INIT_SPI3: CubeMX

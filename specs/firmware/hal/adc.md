@@ -278,3 +278,21 @@ Covers:
 - sys~obs_010~1
 
 Needs: impl, test
+
+### Missed-cycle count
+`fw~hal_adc_012~1`
+
+The driver shall hold, as a readable static, the count modulo 2^32 of
+interrupt handler runs during which an injected sequence it was serving
+completed again, and shall discard that completion without a callback.
+
+Acceptance:
+- A handler run shorter than the interval between injected sequence
+  completions leaves the count unchanged.
+- A handler run during which a served ADC's injected sequence completes
+  again raises the count by one and makes no second callback for it.
+
+Covers:
+- sys~mc_006~1
+
+Needs: impl, test

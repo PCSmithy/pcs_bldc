@@ -68,10 +68,7 @@ bool HW_CORDIC_sinCos(float32_t theta_rad, lib_transforms_sinCos_S * const out)
         }
         CORDIC->WDATA = (uint32_t) (turns * HW_CORDIC_TURN_TO_WORD);
 
-        while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U)
-        {
-            // precisionCycles clocks
-        }
+        // No ready poll: a read of RDATA stalls the bus until the result is in.
         out->cos = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
         out->sin = (float32_t) (int32_t) CORDIC->RDATA * HW_CORDIC_Q31_TO_FLOAT;
         ret = true;

@@ -34,6 +34,7 @@ PWM_PERIOD_US = 50.0
 STEP_BOUND_US = 20      # sys~mc_006
 CALLBACK_BOUND_US = 40  # sys~mc_006
 WATCHES_REQUIRED = 32   # sys~mc_006: four one-cycle + 28 at 10 ms
+MISS_FLOOR_US = 40      # a run this short cannot span two injected completions
 ICSR = 0xE000ED04       # SCB interrupt control and state: VECTACTIVE in bits 8:0
 ADC_EXCEPTION = 16 + 18  # ADC1_2_IRQn
 DRIVING = 3             # Motor::DriveState::Driving
@@ -47,6 +48,7 @@ SYMBOLS = {
     "irq": "HW_ADC_data.irqDuration_us",
     "irqMax": "HW_ADC_data.irqDurationMax_us",
     "irqTime": "HW_ADC_data.irqTime_us",
+    "missed": "HW_ADC_data.irqMissedCycles",
     "driveState": f"{MOTOR}.driveState",
     "velocity": f"{MOTOR}.velocityMeasured_radPerSec",
     "fault": f"{MOTOR}.faultLatched",
@@ -63,18 +65,49 @@ def find_tool(pattern, what):
     return hits[-1]
 
 
-def resolve(gdb, elf):
-    """Symbol addresses and the image's build identity, from the ELF's DWARF."""
+def gdb_values(gdb, elf, commands):
     cmd = [gdb, "-batch", str(elf)]
-    for expr in SYMBOLS.values():
-        cmd += ["-ex", f"print/x (unsigned)&({expr})"]
-    cmd += ["-ex", "print lib_build_identityString"]
+    for command in commands:
+        cmd += ["-ex", command]
     out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    values = re.findall(r"^\$\d+ = (.*)$", out, re.M)
-    if len(values) != len(SYMBOLS) + 1:
-        sys.exit(f"gdb resolved {len(values)} of {len(SYMBOLS) + 1} expressions:\n{out}")
-    addrs = {name: int(v, 16) for name, v in zip(SYMBOLS, values)}
-    return addrs, re.search(r'"(.*)"', values[-1]).group(1)
+    values = re.findall(r"^(?:\$\d+|type) = (.*)$", out, re.M)
+    if len(values) != len(commands):
+        sys.exit(f"gdb answered {len(values)} of {len(commands)} queries:\n{out}")
+    return values
+
+
+def resolve(gdb, elf):
+    """Symbol addresses and the image's build identity.
+
+    Each address is the root static's, from the symbol table, plus the member's
+    offset in the root's type, from the debug data: gdb cannot place a static of
+    a link-time-optimized image by expression.
+    """
+    nm = Path(gdb).with_name(Path(gdb).name.replace("gdb", "nm"))
+    table = subprocess.run([str(nm), "-C", str(elf)], capture_output=True, text=True, check=True).stdout
+    static_addr = {}
+    for line in table.splitlines():
+        m = re.match(r"^([0-9a-f]+) [bBdDrR] (\S+?)(?:\.lto_priv\.\d+)?$", line)
+        if m:
+            static_addr[m.group(2)] = int(m.group(1), 16)
+
+    split = {name: re.match(r"^(\w+)(.*)$", expr).groups() for name, expr in SYMBOLS.items()}
+    roots = sorted({root for root, _ in split.values()})
+    types = dict(zip(roots, gdb_values(gdb, elf, [f"whatis {root}" for root in roots])))
+
+    queries = []
+    for root, rest in split.values():
+        m = re.match(r"^(?:const |volatile )*(.*?)( \[\d+\])?$", types[root])
+        element = "" if m.group(2) else "[0]"   # an array root's path starts at its index
+        queries.append(f"print/x (unsigned)&((({m.group(1)} *)0){element}{rest})" if rest else "print/x 0")
+    offsets = gdb_values(gdb, elf, queries + ["print lib_build_identityString"])
+
+    addrs = {}
+    for (name, (root, _)), offset in zip(split.items(), offsets):
+        if root not in static_addr:
+            sys.exit(f"{root} is not in the image's symbol table")
+        addrs[name] = static_addr[root] + int(offset, 16)
+    return addrs, re.search(r'"(.*)"', offsets[-1]).group(1)
 
 
 def tcl_script(a, seconds):
@@ -88,7 +121,7 @@ mww {a['stepMax']:#x} 0
 mww {a['callbackMax']:#x} 0
 mww {a['irqMax']:#x} 0
 set t0 [clock milliseconds]
-echo "START $t0 {rd(a['irqTime'])} {rd(a['irqMax'])}"
+echo "START $t0 {rd(a['irqTime'])} {rd(a['irqMax'])} {rd(a['missed'])}"
 set n 0; set inIrq 0; set notDriving 0; set seenIrq 0; set seenStep 0; set seenCb 0
 while {{[clock milliseconds] - $t0 < {int(seconds * 1000)}}} {{
     if {{([read_memory {ICSR:#x} 32 1] & 0x1ff) == {ADC_EXCEPTION}}} {{ incr inIrq }}
@@ -101,7 +134,7 @@ while {{[clock milliseconds] - $t0 < {int(seconds * 1000)}}} {{
     }}
     if {{$n % 2000 == 0}} {{ echo "V {rd(a['velocity'])}" }}
 }}
-echo "END [clock milliseconds] {rd(a['irqTime'])} $n $inIrq $notDriving $seenIrq $seenStep $seenCb"
+echo "END [clock milliseconds] {rd(a['irqTime'])} $n $inIrq $notDriving $seenIrq $seenStep $seenCb {rd(a['missed'])}"
 echo "MAX {rd(a['stepMax'])} {rd(a['callbackMax'])} {rd(a['irqMax'])}"
 echo "STATE [read_memory {a['fault']:#x} 8 1] {rd(a['watches'])}"
 shutdown
@@ -149,8 +182,9 @@ def main():
         sys.exit(f"the board runs '{board_identity}', the ELF is '{image_identity}': flash this build or pass --elf")
 
     max_velocity = to_float(lines["CFG"][0])
-    t0, irq_time0, _ = (int(x, 0) for x in lines["START"])
-    t1, irq_time1, n, in_irq, not_driving, seen_irq, seen_step, seen_cb = (int(x, 0) for x in lines["END"])
+    t0, irq_time0, _, missed0 = (int(x, 0) for x in lines["START"])
+    t1, irq_time1, n, in_irq, not_driving, seen_irq, seen_step, seen_cb, missed1 = (int(x, 0) for x in lines["END"])
+    missed = (missed1 - missed0) % 2**32
     step_max, callback_max, irq_max = (int(x, 0) for x in lines["MAX"])
     fault, watches = (int(x, 0) for x in lines["STATE"])
     elapsed_us = (t1 - t0) * 1000.0
@@ -171,9 +205,13 @@ def main():
         (f"speed at the {max_velocity:.1f} rad/s maximum target (within 5 %)", speed >= 0.95 * max_velocity,
          f"mean |velocity| {speed:.2f} rad/s"),
         (f"{WATCHES_REQUIRED} trace watches active", watches == WATCHES_REQUIRED, f"{watches} active"),
-        # sys~mc_006's bounds: its coverage tag goes on these two once the record passes.
+        # [test->sys~mc_006~1] the exposed maxima against the requirement's bounds
         (f"commutation step maximum within {STEP_BOUND_US} us", step_max <= STEP_BOUND_US, f"{step_max} us"),
         (f"callback maximum within {CALLBACK_BOUND_US} us", callback_max <= CALLBACK_BOUND_US, f"{callback_max} us"),
+        ("no PWM cycle missed", missed == 0, f"{missed} missed"),
+        # [test->fw~hal_adc_012~1] a cycle is counted missed only by a run long enough to span one
+        (f"cycles missed only when the interrupt maximum nears the {PWM_PERIOD_US:.0f} us period",
+         (missed == 0) or (irq_max >= MISS_FLOOR_US), f"{missed} missed, interrupt max {irq_max} us"),
         # [test->fw~hal_adc_011~1] a cleared maximum restarts, and holds the largest run seen since
         ("interrupt maximum restarted at the clear and bounds every latest duration seen",
          (irq_max >= seen_irq) and (step_max >= seen_step) and (callback_max >= seen_cb),

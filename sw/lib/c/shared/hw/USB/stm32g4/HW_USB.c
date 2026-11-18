@@ -10,10 +10,11 @@
 // [impl->fw~hal_usb_001~1]
 bool HW_USB_init(void)
 {
-    // Route the USB clock: PLL-Q = 48 MHz (matches ST usbd_conf.c MspInit).
+    // The USB clock is HSI48, which HW_systemClock turns on and trims against
+    // the bus's start-of-frame; the PLL is left to the core clock.
     RCC_PeriphCLKInitTypeDef p = {0};
     p.PeriphClockSelection = RCC_PERIPHCLK_USB;
-    p.UsbClockSelection = RCC_USBCLKSOURCE_PLL;
+    p.UsbClockSelection = RCC_USBCLKSOURCE_HSI48;
     (void) HAL_RCCEx_PeriphCLKConfig(&p);
     __HAL_RCC_USB_CLK_ENABLE();
 

@@ -88,6 +88,10 @@ typedef struct
     volatile uint32_t irqDurationMax_us;
     volatile uint32_t irqTime_us;
 
+    // Handler runs that ended with a served ADC's next injected sequence
+    // already complete (fw~hal_adc_012): each is a PWM cycle that got no callback.
+    volatile uint32_t irqMissedCycles;
+
     bool initialized;
 } HW_ADC_data_S;
 
@@ -696,9 +700,11 @@ static void HW_ADC_private_injectedSequenceComplete(HW_ADC_channels_E channel)
 {
     HW_ADC_channelData_S * const channelData = &data->channelData[channel];
 
+    // JDR1..JDR4 are consecutive registers, one per injected rank.
+    const volatile uint32_t * const jdr = &channelData->hadc.Instance->JDR1;
     for (uint8_t i = 0U; i < channelData->numEnabledInjectedInputs; i++)
     {
-        channelData->injectedCounts[i] = HAL_ADCEx_InjectedGetValue(&channelData->hadc, HW_ADC_injectedRankConstants[i]);
+        channelData->injectedCounts[i] = jdr[i];
     }
     channelData->injectedConversionStatus = HW_ADC_CONVERSION_STATUS_OK;
 
@@ -762,11 +768,13 @@ void HW_ADC_private_errorCallback(ADC_HandleTypeDef * hadc)
 }
 
 // [impl->fw~hal_adc_011~1]
+// [impl->fw~hal_adc_012~1]
 void HW_ADC_irqHandler(void)
 {
     if (data->initialized)
     {
         const uint32_t entry_us = lib_timer_getHWCount_us();
+        bool served[HW_ADC_CHANNEL_COUNT] = { false };
         for (size_t channel = 0U; channel < data->config->numChannels; channel++)
         {
             // Only handles HAL_ADC_Init ran on (a channel with no enabled
@@ -776,13 +784,14 @@ void HW_ADC_irqHandler(void)
             {
                 // The per-cycle case, an injected sequence complete and
                 // nothing else pending, skips the HAL's generic dispatch and
-                // does what it would: the callback, then the flags cleared.
+                // does what it would: the flags cleared, then the callback.
                 // Anything else pending goes to the HAL.
                 const uint32_t pending = hadc->Instance->ISR & hadc->Instance->IER;
                 if (pending == ADC_FLAG_JEOS)
                 {
-                    HW_ADC_private_injectedSequenceComplete((HW_ADC_channels_E) channel);
                     __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+                    served[channel] = true;
+                    HW_ADC_private_injectedSequenceComplete((HW_ADC_channels_E) channel);
                 }
                 else if (pending != 0U)
                 {
@@ -794,6 +803,23 @@ void HW_ADC_irqHandler(void)
                 }
             }
         }
+        // A sequence that completed while its ADC was being served is dropped,
+        // counted once per run: serving it now would be a cycle late.
+        bool missed = false;
+        for (size_t channel = 0U; channel < data->config->numChannels; channel++)
+        {
+            ADC_HandleTypeDef * const hadc = &data->channelData[channel].hadc;
+            if (served[channel] && ((hadc->Instance->ISR & ADC_FLAG_JEOS) != 0U))
+            {
+                __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+                missed = true;
+            }
+        }
+        if (missed)
+        {
+            data->irqMissedCycles++;
+        }
+
         const uint32_t duration_us = lib_timer_getHWCount_us() - entry_us;
         data->irqDuration_us = duration_us;
         data->irqTime_us += duration_us;

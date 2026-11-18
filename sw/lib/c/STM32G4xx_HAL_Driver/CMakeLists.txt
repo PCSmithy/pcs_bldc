@@ -28,7 +28,7 @@ target_compile_definitions(stm32g4_hal PUBLIC
 # Vendor code: suppress our project-wide -Wall/-Wextra/-Wpedantic so
 # upstream warnings (e.g. empty translation units in conditional LL
 # sources) don't pollute the build log.
-target_compile_options(stm32g4_hal PRIVATE -w)
+target_compile_options(stm32g4_hal PRIVATE -w -fno-lto)
 
 # `cmsis` provides Cortex-M Core + STM32G4 device headers.
 # `pcs_stm32g4_hal_conf` (provided by the consumer) provides the

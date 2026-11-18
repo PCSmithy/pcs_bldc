@@ -287,15 +287,10 @@ sufficient to make the tooling aware of a new topic.
     named in `docs/motor-sprint.md`: the V/f method (`fw~mc_010`,
     `fw~mc_017`), which also leaves `sys~mc_005` covered shallow.
 
-  - a requirement whose bench check fails: `sys~mc_006` (control-loop
-    timing; the record in `docs/bench/cycle-timing.md` reads a 21 µs
-    step and a 42 µs callback against 20 and 40; see the hot-path entry
-    in `docs/backlog.md`). Its tag goes on the check when it passes.
-
   Requirements only the hardware can show are covered by the bench
   checks under `tools/bench/`, each with a dated record under
-  `docs/bench/` (`docs/spec-system.md`, Coverage rule): `fw~hal_adc_011`
-  by `cycle_timing.py`.
+  `docs/bench/` (`docs/spec-system.md`, Coverage rule): `sys~mc_006`,
+  `fw~hal_adc_011` and `fw~hal_adc_012` by `cycle_timing.py`.
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and
@@ -332,7 +327,12 @@ the two targets. Build dirs are under `build/` (gitignored).
   applies Cortex-M4F MCU flags. Default `-O2` (`-g3` kept); opt one
   module into `-Og` for a debugging session with `pcs_debug_path(<target>)`
   in its CMakeLists (`sw/cmake/pcs_debug_path.cmake`), or configure with
-  `-DPCS_OPT_LEVEL=-Og` after a `--clean`.
+  `-DPCS_OPT_LEVEL=-Og` after a `--clean`. The project's own code is
+  link-time optimized (`-DPCS_LTO=OFF` to turn it off; vendored libraries
+  opt out with `-fno-lto`). In an LTO image a static's located debug entry
+  names it through a cross-unit reference: `dwarf_map` follows it, gdb
+  does not (`print &HW_ADC_data` fails; `tools/bench/cycle_timing.py`
+  resolves addresses from the symbol table plus the type's offsets).
 
 ### Build invocations
 
@@ -672,7 +672,7 @@ sites.
 
 | Component   | Role                                                    | Datasheet in repo |
 |-------------|---------------------------------------------------------|-------------------|
-| STM32G431VB | MCU (Cortex-M4F @144 MHz, 170 MHz max; 128 KB flash / 32 KB RAM) | Yes     |
+| STM32G431VB | MCU (Cortex-M4F @170 MHz; 128 KB flash / 32 KB RAM) | Yes     |
 | STSPIN32G4  | 3-phase gate driver (integrated)                        | Yes               |
 | CYPD3177    | USB-PD sink controller                                  | Yes               |
 | LMR50410    | 5V buck converter                                       | Yes               |

@@ -22,15 +22,15 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
         {
             .Instance = I2C1,
             // CYPD3177 USB-PD sink HPI bus (external, 5.1k pull-ups): 400 kHz
-            // fast mode at the 144 MHz kernel clock. Unverified until the C28
+            // fast mode at the 170 MHz kernel clock. Unverified until the C28
             // rework frees the bus — drop to 100 kHz if the rise time proves
             // marginal. TIMINGR is opaque, so the SCL rate is carried
             // separately for the transfer-timeout formula.
             .Init =
             {
-                // .Timing           = 0x60715075, // 100kHz
-                .Timing           = 0x10E32674, // 400kHz
-                // .Timing           = 0x10A30E20, // 1MHz
+                // .Timing           = 0x60915F8A, // 100kHz
+                .Timing           = 0x10F42D89, // 400kHz
+                // .Timing           = 0x4052060F, // 1MHz
                 .OwnAddress1      = 0,
                 .AddressingMode   = I2C_ADDRESSINGMODE_7BIT,
                 .DualAddressMode  = I2C_DUALADDRESS_DISABLE,
@@ -58,13 +58,13 @@ static const HW_I2C_busConfig_S HW_I2C_busConfig[] =
         {
             .Instance = I2C3,
             // STSPIN32G4 gate-driver bus, bonded in-package to PC8/PC9 (short,
-            // internal pull-ups): 1 MHz Fast-mode Plus at the 144 MHz PCLK1
-            // kernel clock, bench-verified.
+            // internal pull-ups): 1 MHz Fast-mode Plus at the 170 MHz PCLK1
+            // kernel clock.
             .Init =
             {
-                // .Timing           = 0x60715075, // 100kHz
-                // .Timing           = 0x10E32674, // 400kHz
-                .Timing           = 0x10A30E20, // 1MHz
+                // .Timing           = 0x60915F8A, // 100kHz
+                // .Timing           = 0x10F42D89, // 400kHz
+                .Timing           = 0x4052060F, // 1MHz
                 .OwnAddress1      = 0,
                 .AddressingMode   = I2C_ADDRESSINGMODE_7BIT,
                 .DualAddressMode  = I2C_DUALADDRESS_DISABLE,

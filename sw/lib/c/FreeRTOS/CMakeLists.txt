@@ -64,7 +64,7 @@ target_include_directories(freertos PUBLIC
 )
 
 # Vendor code: suppress our project-wide -Wall/-Wextra/-Wpedantic.
-target_compile_options(freertos PRIVATE -w)
+target_compile_options(freertos PRIVATE -w -fno-lto)
 
 # `pcs_freertos_config` (consumer-provided) supplies FreeRTOSConfig.h.
 # Embedded additionally needs `cmsis` (Cortex-M core headers + device header).

@@ -12,11 +12,11 @@ extern "C" {
 /* Defines */
 
 // SK6805 wire encoding: one LED string driven from SPI MOSI, each color bit
-// expanded to 6 SPI bits at 4.5 MHz (see HW_SPI BUS_3 config). 24 bits/pixel
+// expanded to 6 SPI bits at 5.3 MHz (see HW_SPI BUS_3 config). 24 bits/pixel
 // in GRB order; a trailing low gap latches the frame (>=80us reset).
 #define SK6805_COLORS_PER_PIXEL    3U   // G, R, B
 #define SK6805_SPI_BYTES_PER_COLOR 6U   // 8 color bits * 6 SPI bits / 8
-#define SK6805_RESET_BYTES         50U  // >=80us low; 1 SPI byte ~= 1.78us @ 4.5 MHz
+#define SK6805_RESET_BYTES         60U  // >=80us low; 1 SPI byte ~= 1.51us @ 5.3 MHz
 
 #define IO_SK6805_TXBUF_BYTES \
     (((IO_SK6805_PIXEL_COUNT) * SK6805_COLORS_PER_PIXEL * SK6805_SPI_BYTES_PER_COLOR) \

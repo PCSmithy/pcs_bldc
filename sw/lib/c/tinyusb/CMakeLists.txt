@@ -26,7 +26,7 @@ target_include_directories(tinyusb PUBLIC .)
 target_compile_definitions(tinyusb PUBLIC STM32G431xx)
 
 # Vendor code: suppress our project-wide -Wall/-Wextra/-Wpedantic.
-target_compile_options(tinyusb PRIVATE -w)
+target_compile_options(tinyusb PRIVATE -w -fno-lto)
 
 # TinyUSB relies on GNU C extensions (asm(), statement expressions, ...). Our
 # project default is strict -std=c11 (C_EXTENSIONS OFF); compile this vendor

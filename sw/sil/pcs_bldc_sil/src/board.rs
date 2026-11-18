@@ -114,7 +114,7 @@ pub fn board_from(
     plant: impl FnOnce(&Firmware) -> MotorParams,
     sense: CurrentSenseParams,
 ) -> Board {
-    // A duty count is 1/3600 of the period, finer than the table's default deadband:
+    // A duty count is 1/4250 of the period, finer than the table's default deadband:
     // the bridge's duties reach the plant exact.
     let mut options = options;
     for (port, input) in &BRIDGE_PORTS[..3] {

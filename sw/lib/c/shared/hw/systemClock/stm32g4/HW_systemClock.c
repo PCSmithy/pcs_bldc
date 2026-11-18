@@ -41,5 +41,11 @@ bool HW_systemClock_init(const HW_systemClock_config_S * const config)
     {
         __HAL_FLASH_PREFETCH_BUFFER_ENABLE();
     }
+
+    if (success && config->configureCRS)
+    {
+        __HAL_RCC_CRS_CLK_ENABLE();
+        HAL_RCCEx_CRSConfig(&config->RCC_CRSInitStruct);
+    }
     return success;
 }
