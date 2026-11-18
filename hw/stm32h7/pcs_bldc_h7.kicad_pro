@@ -640,6 +640,12 @@
       "Net-(J6-D--PadA7)": [
         "USB_diff"
       ],
+      "Net-(J7-D+-PadA6)": [
+        "USB_diff"
+      ],
+      "Net-(J7-D--PadA7)": [
+        "USB_diff"
+      ],
       "Net-(U6-SW)": [
         "Power"
       ],
@@ -850,7 +856,7 @@
         "uuid": "5fd46c36-5bf8-4b01-84ef-7a32553f026d"
       }
     ],
-    "used_designators": "",
+    "used_designators": "J1-9,R1-77,#FLG1-6,D1-11,#PWR1-146,C1-102,F1,FID1-5,H1-2,L1,Q1,SW1-3,TP1-9,U1-14,Y1",
     "variants": []
   },
   "sheets": [
