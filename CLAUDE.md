@@ -677,7 +677,7 @@ sites.
 
 | Component   | Role                                                    | Datasheet in repo |
 |-------------|---------------------------------------------------------|-------------------|
-| STM32G431VB | MCU (Cortex-M4F @144 MHz, 170 MHz max; 128 KB flash / 32 KB RAM) | Yes     |
+| STM32G431VB | MCU (Cortex-M4F @170 MHz; 128 KB flash / 32 KB RAM) | Yes     |
 | STSPIN32G4  | 3-phase gate driver (integrated)                        | Yes               |
 | CYPD3177    | USB-PD sink controller                                  | Yes               |
 | LMR50410    | 5V buck converter                                       | Yes               |

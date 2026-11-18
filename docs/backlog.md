@@ -34,7 +34,9 @@ path: the cogging angle goes unwrapped to `HW_CORDIC_sinCos`, the offset
 tracker rests while every phase drives, reciprocals replace the divisions
 in Clarke, the modulator's limit, the PI back-calculation and the speed
 share, the injected data registers are read directly, and the CORDIC
-result is read with no ready poll.
+result is read with no ready poll. The core clock then went from 144 to
+170 MHz, USB moving to HSI48: step 15 us, callback 32 us, interrupt
+maximum 37 us.
 
 **Candidates left:** the modulator's `1 / vBus` and the bus-voltage read
 behind it, each cycle (`fw~io_bridge_008` specifies the voltage read at the

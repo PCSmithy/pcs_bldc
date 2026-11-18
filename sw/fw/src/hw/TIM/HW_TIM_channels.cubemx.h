@@ -26,7 +26,7 @@
 #define HW_TIM_CUBEMX_INIT_TIM1 \
     .Prescaler         = 0, \
     .CounterMode       = TIM_COUNTERMODE_CENTERALIGNED1, \
-    .Period            = 3600, \
+    .Period            = 4250, \
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
     .RepetitionCounter = 1, \
     .AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE,
@@ -35,7 +35,7 @@
     .OffStateRunMode  = TIM_OSSR_ENABLE, \
     .OffStateIDLEMode = TIM_OSSI_ENABLE, \
     .LockLevel        = TIM_LOCKLEVEL_OFF, \
-    .DeadTime         = 43, \
+    .DeadTime         = 51, \
     .BreakState       = TIM_BREAK_ENABLE, \
     .BreakPolarity    = TIM_BREAKPOLARITY_HIGH, \
     .BreakFilter      = 0, \
@@ -74,24 +74,22 @@
     .breakDeadTime = { HW_TIM_CUBEMX_BDT_TIM1 }, \
     .breakInputs = { HW_TIM_CUBEMX_BRKIN_TIM1 }, \
     .configureTrgo = true, \
-    .master = { HW_TIM_CUBEMX_MASTER_TIM1 }, \
-    .updateAtPeriod = true,   /* compares latch at the crest, after the current sample (fw~hal_tim_009) */
+    .master = { HW_TIM_CUBEMX_MASTER_TIM1 },
 
 #define HW_TIM_CUBEMX_SIM_PERIPH_TIM1 \
     .nameStr          = "TIM1", \
     .prescaler        = 0U, \
-    .period           = 3600U, \
+    .period           = 4250U, \
     .counterWidthBits = 16U, \
     .countDir         = HW_TIM_COUNT_CENTER, \
-    .countsPerUs      = 144U, \
+    .countsPerUs      = 170U, \
     .rcr              = 1U, \
     .configureBreakDeadTime = true, \
-    .deadTime               = 43U, \
+    .deadTime               = 51U, \
     .hasBreakInput          = true, \
     .configureTrgo          = true, \
     .trgoSource             = HW_TIM_TRGO_OC_MATCH, \
-    .trgoOcUnit             = 3U, \
-    .updateAtPeriod         = true,
+    .trgoOcUnit             = 3U,
 
 #define HW_TIM_CUBEMX_G4_OC_TIM1_CH1 \
     .complementary = true, \
@@ -141,7 +139,7 @@
     .oc = \
     { \
         .OCMode       = TIM_OCMODE_PWM2, \
-        .Pulse        = 3528, \
+        .Pulse        = 4165, \
         .OCPolarity   = TIM_OCPOLARITY_HIGH, \
         .OCNPolarity  = TIM_OCNPOLARITY_HIGH, \
         .OCFastMode   = TIM_OCFAST_DISABLE, \
@@ -159,12 +157,12 @@
     .complementary = true, .compare = 0U, .inactiveLevel = 0U,
 
 #define HW_TIM_CUBEMX_SIM_OC_TIM1_CH4 \
-    .complementary = false, .compare = 3528U, .inactiveLevel = 0U,
+    .complementary = false, .compare = 4165U, .inactiveLevel = 0U,
 
 // ----- TIM2 -----
 
 #define HW_TIM_CUBEMX_INIT_TIM2 \
-    .Prescaler         = 143, \
+    .Prescaler         = 169, \
     .CounterMode       = TIM_COUNTERMODE_UP, \
     .Period            = 4294967295, \
     .ClockDivision     = TIM_CLOCKDIVISION_DIV1, \
@@ -181,7 +179,7 @@
 
 #define HW_TIM_CUBEMX_SIM_PERIPH_TIM2 \
     .nameStr          = "TIM2", \
-    .prescaler        = 143U, \
+    .prescaler        = 169U, \
     .period           = 4294967295U, \
     .counterWidthBits = 32U, \
     .countDir         = HW_TIM_COUNT_UP, \

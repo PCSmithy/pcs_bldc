@@ -11,7 +11,11 @@
 
 const HW_TIM_peripheralConfig_S HW_TIM_peripheralConfig[HW_TIM_PERIPHERAL_COUNT] =
 {
-    [HW_TIM_PERIPHERAL_1] = { HW_TIM_CUBEMX_PERIPH_TIM1 },   // 3-phase motor PWM
+    [HW_TIM_PERIPHERAL_1] =   // 3-phase motor PWM
+    {
+        HW_TIM_CUBEMX_PERIPH_TIM1
+        .updateAtPeriod = true,   // compares latch at the crest, after the current sample (fw~hal_tim_009)
+    },
     [HW_TIM_PERIPHERAL_2] = { HW_TIM_CUBEMX_PERIPH_TIM2 },   // 1 us time base
 };
 

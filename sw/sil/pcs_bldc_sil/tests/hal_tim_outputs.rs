@@ -22,9 +22,9 @@ const BREAK_INPUT: &str = "HW_TIM_data.breakInput[0]";
 
 /// The board's TIM1 dead-time: BDTR.DTG = 43 at clock division 1, 43 timer-clock
 /// ticks. Stated here rather than read back, so a wrong board value fails.
-const DEAD_TIME_TICKS: u64 = 43;
-/// The board's TIM1 period (center-aligned, ARR = 3600): 7200 ticks a cycle.
-const PERIOD: u64 = 3600;
+const DEAD_TIME_TICKS: u64 = 51;
+/// The board's TIM1 period (center-aligned, ARR = 4250): 8500 ticks a cycle.
+const PERIOD: u64 = 4250;
 
 fn u64_at(sim: &Sil, path: &str) -> u64 {
     sim.fw().read_cvar(path).as_u64().unwrap_or_else(|| panic!("{path} reads as a count"))

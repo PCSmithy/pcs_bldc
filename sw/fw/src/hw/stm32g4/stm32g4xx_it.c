@@ -270,7 +270,6 @@ void DMA1_Channel4_IRQHandler(void)
 {
   HW_DMA_irqHandler(HW_DMA_CHANNEL_ADC2_REG_CONVERSIONS);
 }
-
 /**
   * @brief I2C1 event and error interrupts (CYPD3177 HPI bus). Each forwards to
   * HW_I2C, which drives the HAL interrupt state machine and, at completion,

@@ -150,6 +150,17 @@ if [ -f "${SRC}/Core/Src/stm32g4xx_hal_timebase_tim.c" ]; then
   cp "${SRC}/Core/Src/stm32g4xx_hal_timebase_tim.c" "${FW_HW}/"
 fi
 
+# The ADC (PWM-cycle) interrupt runs above FreeRTOS's syscall mask so a kernel
+# critical section never delays it. CubeMX clamps every interrupt to the mask
+# priority (5) on regeneration, so the copied MSP is rewritten here.
+ADC_IRQ_PRIORITY=4
+MSP="${FW_HW}/stm32g4xx_hal_msp.c"
+sed -i -E "s/(HAL_NVIC_SetPriority\(ADC1_2_IRQn, )[0-9]+(, 0\);)/\1${ADC_IRQ_PRIORITY}\2/" "${MSP}"
+if [ "$(grep -c "HAL_NVIC_SetPriority(ADC1_2_IRQn, ${ADC_IRQ_PRIORITY}, 0);" "${MSP}")" -ne 2 ]; then
+  echo "Error: expected two ADC1_2_IRQn priority lines in ${MSP} (one per ADC)." >&2
+  exit 1
+fi
+
 # Note: the CubeMX-generated main.c is intentionally NOT copied — it would
 # add visual noise next to our real main.c at sw/fw/src/main.c. Read it
 # in the reference tree at sw/fw/stm32cube/g4/Core/Src/main.c when you
