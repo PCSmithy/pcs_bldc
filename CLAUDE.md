@@ -332,7 +332,12 @@ the two targets. Build dirs are under `build/` (gitignored).
   applies Cortex-M4F MCU flags. Default `-O2` (`-g3` kept); opt one
   module into `-Og` for a debugging session with `pcs_debug_path(<target>)`
   in its CMakeLists (`sw/cmake/pcs_debug_path.cmake`), or configure with
-  `-DPCS_OPT_LEVEL=-Og` after a `--clean`.
+  `-DPCS_OPT_LEVEL=-Og` after a `--clean`. The project's own code is
+  link-time optimized (`-DPCS_LTO=OFF` to turn it off; vendored libraries
+  opt out with `-fno-lto`). In an LTO image a static's located debug entry
+  names it through a cross-unit reference: `dwarf_map` follows it, gdb
+  does not (`print &HW_ADC_data` fails; `tools/bench/cycle_timing.py`
+  resolves addresses from the symbol table plus the type's offsets).
 
 ### Build invocations
 

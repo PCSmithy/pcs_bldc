@@ -180,6 +180,14 @@ struct Maps {
     base: HashMap<usize, (u8, u64)>,
     /// enumeration type offset -> its size + value→name map
     enums: HashMap<usize, EnumInfo>,
+    /// storage-less variable DIE offset -> (name, type offset, the DIE it refers
+    /// back to). An LTO image splits a static in two: this declaration in the
+    /// source's unit, and a located DIE in the link unit that names it only by
+    /// a cross-unit `DW_AT_abstract_origin`.
+    var_decls: HashMap<usize, (Option<String>, Option<usize>, Option<usize>)>,
+    /// located variables whose name or type lies in another unit: (origin DIE
+    /// offset, location), resolved against `var_decls` once every unit is read.
+    var_pending: Vec<(usize, VarLoc)>,
 }
 
 pub struct DwarfMap(Maps);
@@ -220,6 +228,7 @@ impl DwarfMap {
             let unit = dwarf.unit(header)?;
             collect_unit(&dwarf, &unit, &mut maps)?;
         }
+        resolve_cross_unit_vars(&mut maps);
         // C++ post-passes, once every unit's types are known: both need a member
         // map that collection may fill in either order.
         flatten_std_arrays(&mut maps);
@@ -676,7 +685,18 @@ fn collect_unit(
                         .or_else(|| from_origin(unit, entry, |u, d| type_goff(u, d)));
                     if let (Some(name), Some(ty)) = (name, ty) {
                         maps.vars.insert(name, (loc, ty));
+                    } else if let Some(origin) = origin_goff(unit, entry) {
+                        maps.var_pending.push((origin, loc));
                     }
+                } else if let Some(goff) = goff {
+                    maps.var_decls.insert(
+                        goff,
+                        (
+                            die_name(dwarf, unit, entry),
+                            type_goff(unit, entry),
+                            origin_goff(unit, entry),
+                        ),
+                    );
                 }
             }
             gimli::DW_TAG_subprogram => {
@@ -826,6 +846,44 @@ fn origin_offset(entry: &gimli::DebuggingInformationEntry<Slice>) -> Option<giml
         }
     }
     None
+}
+
+/// The DIE `entry` refers back to, as a global offset: in its own unit or,
+/// in an LTO image, another one.
+fn origin_goff(
+    unit: &gimli::Unit<Slice>,
+    entry: &gimli::DebuggingInformationEntry<Slice>,
+) -> Option<usize> {
+    for at in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
+        match entry.attr_value(at).ok().flatten() {
+            Some(gimli::AttributeValue::UnitRef(off)) => {
+                return off.to_debug_info_offset(&unit.header).map(|d| d.0)
+            }
+            Some(gimli::AttributeValue::DebugInfoRef(d)) => return Some(d.0),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Name and type each pending located variable from the declaration chain it
+/// refers back to. A name already mapped stays: a DIE complete in its own unit wins.
+fn resolve_cross_unit_vars(maps: &mut Maps) {
+    for (origin, loc) in std::mem::take(&mut maps.var_pending) {
+        let (mut name, mut ty, mut next) = (None, None, Some(origin));
+        for _ in 0..8 {
+            let Some((n, t, o)) = next.and_then(|off| maps.var_decls.get(&off)) else {
+                break;
+            };
+            name = name.or_else(|| n.clone());
+            ty = ty.or(*t);
+            next = *o;
+        }
+        if let (Some(name), Some(ty)) = (name, ty) {
+            maps.vars.entry(name).or_insert((loc, ty));
+        }
+    }
+    maps.var_decls.clear();
 }
 
 /// Walk the `DW_AT_abstract_origin` / `DW_AT_specification` chain from `entry`,
@@ -1288,6 +1346,25 @@ mod tests {
         );
         assert_eq!(dw.enum_name(off, 2), Some("FAULT"));
         assert_eq!(dw.enumerators(10), None); // not an enum type
+    }
+
+    /// The LTO fixture (`tests/fixtures/lto_origin.c`, build command in its
+    /// header): each static's located DIE sits in the link-time unit and reaches
+    /// its name and type only through a cross-unit `DW_AT_abstract_origin`.
+    // [test->app~obs_001~1]
+    #[test]
+    fn lto_statics_resolve_through_cross_unit_origin() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lto_origin.elf");
+        let dw = DwarfMap::parse(&std::fs::read(&path).expect("read LTO fixture"))
+            .expect("parse LTO fixture");
+        let at = |p: &str| dw.resolve(p).map(|(a, _)| a);
+
+        assert_eq!(dw.var_addr("lto_module_data"), Some(0x9014));
+        assert_eq!(at("lto_module_data.count"), Some(0x9014));
+        assert_eq!(at("lto_module_data.gain"), Some(0x9018));
+        assert_eq!(at("lto_module_data.raw[2]"), Some(0x9020));
+        assert_eq!(at("lto_probe_us"), Some(0x9024));
     }
 
     /// The C++ fixture: `tests/fixtures/cxx_layout.cpp`, built for Cortex-M4 by

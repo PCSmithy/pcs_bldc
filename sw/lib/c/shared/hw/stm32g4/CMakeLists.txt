@@ -17,7 +17,7 @@ add_library(hw_stm32g4 STATIC
 )
 
 # Vendor support files — same warning-suppression as the HAL driver.
-target_compile_options(hw_stm32g4 PRIVATE -w)
+target_compile_options(hw_stm32g4 PRIVATE -w -fno-lto)
 
 # Pull in the HAL driver (and transitively cmsis +
 # pcs_stm32g4_hal_conf) so that consumers of hw_stm32g4 don't have to

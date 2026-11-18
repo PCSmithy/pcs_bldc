@@ -94,3 +94,16 @@ add_link_options(
   ${_mcu_flags}
   -Wl,--gc-sections
 )
+
+# Link-time optimization of the project's own code: the 20 kHz path crosses six
+# modules, and inlining across them is most of its cost. Vendored libraries
+# opt out with -fno-lto (their port assembly does not survive it).
+#   -DPCS_LTO=OFF   one object per source, e.g. to read a module's own disassembly
+option(PCS_LTO "Link-time optimization for the embedded build" ON)
+if(PCS_LTO)
+  # The plugin-aware archiver: plain ar indexes no symbol of an LTO object.
+  set(CMAKE_AR     "${_arm_bin}/arm-none-eabi-gcc-ar${_arm_ext}"     CACHE FILEPATH "" FORCE)
+  set(CMAKE_RANLIB "${_arm_bin}/arm-none-eabi-gcc-ranlib${_arm_ext}" CACHE FILEPATH "" FORCE)
+  add_compile_options(-flto)
+  add_link_options(-flto=auto ${PCS_OPT_LEVEL})
+endif()
