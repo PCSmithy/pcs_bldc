@@ -5,20 +5,18 @@ detail to pick up cold. SIL-specific items live in `sil/backlog.md`.
 
 ## 20 kHz interrupt hot path
 
-**When:** next — `sys~mc_006` fails on the bench and the trace loses
-samples under drive. The target is under 20 us for the whole ADC interrupt
-under drive.
+**When:** when the trace loses samples under drive, or more work goes into
+the cycle. `sys~mc_006` passes on the bench; the target is under 20 us for
+the whole ADC interrupt under drive.
 
 **What remains:** at the requirement's condition (18 rad/s, four one-cycle
 and 28 10 ms watches, 60 s; `docs/bench/cycle-timing.md`) the step maximum
-is 21 us against 20, the callback maximum 42 us against 40, and the whole
-interrupt reaches 50 us, the PWM period, averaging 32 us. The interrupt
-takes 64 % of the CPU and the idle task under 2 %; the server task falls
-to about 200 passes a second, the trace buffer overflows about a fifth of
-the time and the app reports lost points. The USB transmit queue is not
-full: the limit is CPU, not the link. With a 19-signal trace under
-position control the interrupt takes 29.5 us typical / 37 us worst. The
-largest costs by PC-sample profile are injected sample recording
+is 15 us against 20, the callback maximum 32 us against 40, and the whole
+interrupt reaches 38 us of the 50 us period, averaging 23 us: 47 % of the
+CPU. Before this work the interrupt took 64 % and the server task fell to
+about 200 passes a second, the trace buffer overflowing about a fifth of
+the time; neither is re-measured. The profile below predates the work: the
+largest costs by PC-sample profile were injected sample recording
 (`Bridge::recordInjectedSample`), the CORDIC sine/cosine,
 `lib_transforms_wrapAngle`, the cogging model's two CORDIC calls per cycle,
 and trace sampling; the trace's send path (COBS encoding, the buffer copy

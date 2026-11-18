@@ -205,7 +205,7 @@ def main():
         (f"speed at the {max_velocity:.1f} rad/s maximum target (within 5 %)", speed >= 0.95 * max_velocity,
          f"mean |velocity| {speed:.2f} rad/s"),
         (f"{WATCHES_REQUIRED} trace watches active", watches == WATCHES_REQUIRED, f"{watches} active"),
-        # sys~mc_006's bounds: its coverage tag goes on these two once the record passes.
+        # [test->sys~mc_006~1] the exposed maxima against the requirement's bounds
         (f"commutation step maximum within {STEP_BOUND_US} us", step_max <= STEP_BOUND_US, f"{step_max} us"),
         (f"callback maximum within {CALLBACK_BOUND_US} us", callback_max <= CALLBACK_BOUND_US, f"{callback_max} us"),
         ("no PWM cycle missed", missed == 0, f"{missed} missed"),

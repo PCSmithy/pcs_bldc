@@ -287,15 +287,10 @@ sufficient to make the tooling aware of a new topic.
     named in `docs/motor-sprint.md`: the V/f method (`fw~mc_010`,
     `fw~mc_017`), which also leaves `sys~mc_005` covered shallow.
 
-  - a requirement whose bench check fails: `sys~mc_006` (control-loop
-    timing; the record in `docs/bench/cycle-timing.md` reads a 21 µs
-    step and a 42 µs callback against 20 and 40; see the hot-path entry
-    in `docs/backlog.md`). Its tag goes on the check when it passes.
-
   Requirements only the hardware can show are covered by the bench
   checks under `tools/bench/`, each with a dated record under
-  `docs/bench/` (`docs/spec-system.md`, Coverage rule): `fw~hal_adc_011`
-  by `cycle_timing.py`.
+  `docs/bench/` (`docs/spec-system.md`, Coverage rule): `sys~mc_006`,
+  `fw~hal_adc_011` and `fw~hal_adc_012` by `cycle_timing.py`.
 
   Anything else — a dangling tag, a stale ID, an implemented spec that
   lost its coverage — is a regression to investigate. Both `[test->]` and
