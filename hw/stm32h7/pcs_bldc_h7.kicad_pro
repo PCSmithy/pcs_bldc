@@ -62,7 +62,11 @@
       ],
       "drc_exclusions": [
         [
-          "courtyards_overlap|161961000|147895000|47d008b3-c133-4940-9c82-fd32dddded50|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          "courtyards_overlap|166571000|131035000|21b55ae4-fe9e-406e-a7da-de02d996a6e8|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          ""
+        ],
+        [
+          "courtyards_overlap|167895000|146852820|0cec364d-5b68-4365-9b8b-133e42ae9762|7ad23778-679e-46ab-90e0-be39be3ee946",
           ""
         ],
         [
@@ -139,7 +143,7 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.1016,
+        "min_clearance": 0.0889,
         "min_connection": 0.0,
         "min_copper_edge_clearance": 0.4,
         "min_groove_width": 0.0,
@@ -552,7 +556,7 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.0889,
+        "track_width": 0.1016,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3,
@@ -564,7 +568,7 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.0889,
+        "track_width": 0.1016,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3
@@ -856,7 +860,7 @@
         "uuid": "5fd46c36-5bf8-4b01-84ef-7a32553f026d"
       }
     ],
-    "used_designators": "J1-9,R1-77,#FLG1-6,D1-11,#PWR1-146,C1-102,F1,FID1-5,H1-2,L1,Q1,SW1-3,TP1-9,U1-14,Y1",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
