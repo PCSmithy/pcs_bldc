@@ -62,7 +62,23 @@
       ],
       "drc_exclusions": [
         [
-          "courtyards_overlap|166571000|131035000|21b55ae4-fe9e-406e-a7da-de02d996a6e8|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          "courtyards_overlap|143830303|125730000|b1fd8415-d16c-4989-82c3-ea4a5bd7654f|d8ade6b6-b4f7-4d89-8309-a1a0aa0f2d5b",
+          ""
+        ],
+        [
+          "courtyards_overlap|151867000|119638705|2e429fb7-694f-4d12-a5e8-afec0519284e|d8ade6b6-b4f7-4d89-8309-a1a0aa0f2d5b",
+          ""
+        ],
+        [
+          "courtyards_overlap|164793000|131035000|37568a7f-379b-4b2f-a5fa-ef9752f3ef05|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          ""
+        ],
+        [
+          "courtyards_overlap|165809000|131035000|21b55ae4-fe9e-406e-a7da-de02d996a6e8|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          ""
+        ],
+        [
+          "courtyards_overlap|166825000|131035000|63057caa-16cc-46c4-83b0-c0b470fbac60|98c9afe8-7d0e-487f-a34d-cc8032381aca",
           ""
         ],
         [
@@ -71,6 +87,14 @@
         ],
         [
           "pth_inside_courtyard|164500000|103080000|ef6fc365-6f3e-41db-9508-70df12e8a56e|c9139391-9237-4e2f-916d-39fd36a6c32e",
+          ""
+        ],
+        [
+          "silk_over_copper|141870000|109245129|409fe322-5f30-4e18-a9c8-88c2c9dc10f4|fbbdd00d-7e82-4702-8419-107023dba18e",
+          ""
+        ],
+        [
+          "silk_over_copper|142123000|109149000|d0b32375-0c6f-419b-96e8-65fea05a446e|fbbdd00d-7e82-4702-8419-107023dba18e",
           ""
         ]
       ],
@@ -143,7 +167,7 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.0889,
+        "min_clearance": 0.1016,
         "min_connection": 0.0,
         "min_copper_edge_clearance": 0.4,
         "min_groove_width": 0.0,
@@ -209,6 +233,7 @@
       "track_widths": [
         0.0,
         0.0889,
+        0.1016,
         0.15,
         0.2,
         0.3,
@@ -556,7 +581,7 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1016,
+        "track_width": 0.0889,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3,
@@ -568,7 +593,7 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1016,
+        "track_width": 0.0889,
         "tuning_profile": "",
         "via_diameter": 0.45,
         "via_drill": 0.3
