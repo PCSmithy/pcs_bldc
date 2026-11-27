@@ -48,7 +48,8 @@ const HW_systemClock_config_S HW_systemClock_config =
         .Polarity = RCC_CRS_SYNC_POLARITY_RISING,
         .ReloadValue = __HAL_RCC_CRS_RELOADVALUE_CALCULATE(48000000, 1000),
         .ErrorLimitValue = 34,
-        .HSI48CalibrationValue = 32,
+        // The trim's midpoint. CubeMX emits 32, half-scale of a 6-bit field; this part's is 7-bit.
+        .HSI48CalibrationValue = RCC_CRS_HSI48CALIBRATION_DEFAULT,
     },
 #elif (BUILD_TARGET == BUILD_TARGET_SIM)
     ._void = 0U,
