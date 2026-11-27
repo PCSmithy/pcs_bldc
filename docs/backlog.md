@@ -305,7 +305,8 @@ exercise. Trip a break on the bench mid-commutation and confirm.
 
 The core command that opens the save dialog and writes the CSV
 (`save_capture_csv`, `sw/gui/src-tauri/src/main.rs`) has run only through
-the devmock. Exercise it once in the live app on Windows and macOS.
+the devmock and, on Windows, in the live app (a 10 s, 33-signal capture,
+no cycle lost). Exercise it once on macOS.
 
 ## App: named-sequence library has no delete
 
