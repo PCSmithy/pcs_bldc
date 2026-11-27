@@ -2,8 +2,8 @@
 
 `app~` requirements: the Rust + webview desktop app (`sw/gui/`) for
 observing, commanding, and configuring the device. Each spec needs at
-least one `impl` tag (in Rust source) and at least one `test` tag (unit
-and/or integration).
+least one `impl` tag (in Rust or `.js` source) and at least one `test` tag (unit
+and/or integration, in `.rs` or the playwright suite's `.py`).
 
 ## Topics
 

@@ -130,33 +130,31 @@ called on the concrete `Firmware` handle the driver holds.
 
 ## 4. Execution model (the crux)
 
-Today the native `main()` runs the `HW_*_init` calls and returns — FreeRTOS,
-the `task_1ms`/`ledTask` loops, and all io/dev code are gated
-`BUILD_TARGET_STM32G4`-only. The decided direction is to **run FreeRTOS and
-the upper layers in SIM**, which means:
+The native build **runs FreeRTOS and the upper layers in SIM**: the same
+`main.c` init, the same FreeRTOS tasks, and the same io / dev / app code as
+the embedded image, with only the hardware-specific bottom layer swapped:
 
-**Firmware-side work (on `main`-mergeable):**
-
-1. **Ungate the upper layers for SIM.** Move io / dev / app and the FreeRTOS
-   bring-up out of the `#if (BUILD_TARGET == BUILD_TARGET_STM32G4)` blocks in
-   `main.c`, and make their `CMakeLists` build for both targets.
-2. **Sim impls of the bottom-layer drivers** the upper layers sit on. HW
-   already has `sim/` for ADC/SPI/GPIO/systemClock. The gaps are the things
-   currently STM32G4-only: USB (tinyusb) → a sim CDC transport, and anything
-   else that pokes hardware directly. IO modules (AS5048, SK6805) ride on
-   `HW_SPI`, so they should build for SIM once SPI's sim behavior carries the
-   encoder/LED model data.
+1. **One init and task set for both targets.** io / dev / app and the FreeRTOS
+   bring-up build for both targets; `BUILD_TARGET` gating stays at the
+   hw-layer seam and the per-target entry points.
+2. **Sim impls of the bottom-layer drivers** the upper layers sit on: every
+   HW module has a `sim/` implementation under
+   `sw/lib/c/shared/hw/<Module>/sim/`, USB included (a sim CDC transport).
+   IO modules (AS5048, SK6805) ride on `HW_SPI` and build for SIM over it.
 3. **A single-threaded cooperative FreeRTOS fiber port + pluggable tick source**
    (decision D1, resolved — see [`freertos-tick.md`](freertos-tick.md) +
    [`performance.md`](performance.md)). Tasks are fibers, the framework is the
    main context, all in one OS thread; the tick comes from a swappable source —
    wall-clock-paced (realtime) or framework-driven (deterministic). Chosen over
    the OS-thread host ports for determinism *and* performance (fiber swaps
-   ~30–100 ns vs ~1–5 µs OS-thread switches, no cross-thread signaling). We
-   author the fiber port rather than vendoring a host port.
-4. **A sim ABI / native entry point** so the `FwBackend` can `init()` and
-   `advance()` the firmware and the framework owns the outer loop (rather
-   than `vTaskStartScheduler()` never returning).
+   ~30–100 ns vs ~1–5 µs OS-thread switches, no cross-thread signaling). The
+   port is our own (`sw/lib/c/FreeRTOS/portable/Native-Fiber/` on Windows,
+   `Native-Coro/` on Linux and macOS), not a vendored host port.
+4. **A control ABI** (`sw/fw/src/sil_fw.h`: `sil_fw_start`,
+   `sil_fw_advance_time`, `sil_fw_dispatch_isr`, `sil_fw_shutdown`, plus the
+   hook installers) through which the Rust backend drives the firmware, so
+   the framework owns the outer loop rather than `vTaskStartScheduler()`
+   never returning.
 
 **What this buys:** the real task priorities, blocking, scheduling order, and
 sim-time timing of the shipping firmware are all under test — not a

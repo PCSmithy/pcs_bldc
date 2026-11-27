@@ -17,7 +17,7 @@ section carries the feature inventory). The **firmware**: the spec'd +
 traced driver stack, motor drive (six-step, sensored sinusoidal, and
 field-oriented torque/velocity/position with cogging compensation, on a
 three-state encoder observer with a disturbance estimate; V/f specced,
-deferred), USB-PD sink monitoring, overcurrent + encoder-fault
+deferred), USB-PD sink monitoring, overcurrent + encoder-fault + bridge-break
 protection, and a protobuf-over-USB-CDC protocol (telemetry, signal
 trace engine, log stream, firmware identity, and the board command
 plane: timed setpoint sequences played by `app_sequencer`, the motor
@@ -74,9 +74,11 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   │   │       ├── lib/…             cobs, crc32, filterIIR, matrix, protobuf,
 │   │   │       │                     timer, transforms, CYPD3177 (decode)
 │   │   │       ├── test/mocks/       Shared test doubles as CMake targets
+│   │   │       ├── proto/            shared.proto + trace.proto (framework schema)
 │   │   │       ├── hw/               Channelized HW modules:
 │   │   │       │   ├── systemClock/  systemClock_init (single-instance)
 │   │   │       │   ├── GPIO/  ADC/  DMA/  SPI/  I2C/  TIM/  USB/  OPAMP/  CORDIC/  CRC/  (hw-layer drivers)
+│   │   │       │   ├── sim/          Sim-driver helpers (irq/, ports/)
 │   │   │       │   └── stm32g4/      Family glue (system_, syscalls, sysmem)
 │   │   │       ├── io/               IO-layer drivers (AS5048, SK6805, serial,
 │   │   │       │                     bridge, i2c, COBSFrame, ...)
@@ -97,6 +99,8 @@ The project uses **spec-driven development with end-to-end traceability** via
 │       ├── stm32cube/g4/ STM32CubeMX-generated reference (not built directly)
 │       └── src/
 │           ├── main.c    Entry point: HW/IO init + FreeRTOS tasks + Error_Handler
+│           ├── sil_fw.h  SIL control ABI (native build)
+│           ├── lib/      pcs_bldc lib configs (build identity, protobuf bindings, timer)
 │           ├── hw/       pcs_bldc-board channel configs + STM32G4 board glue
 │           │   ├── stm32g4/      hal_msp.c, it.c, startup, linker script, hal_conf.h
 │           │   ├── sim/          STATIC fw_hw placeholder for native build
@@ -126,6 +130,8 @@ The project uses **spec-driven development with end-to-end traceability** via
 │   ├── references/        Rotor-observer derivation (.md + .pdf), papers
 │   ├── position-trajectory-path.pdf  Sequence widget → 50 µs loop, end to end
 │   ├── sil/               SIL harness architecture notes + backlog
+│   ├── bench/             Dated bench-check records (written by tools/bench/)
+│   ├── hw-tests/  milestones/   Hardware bring-up test notes
 │   ├── c-coding-conventions.md  C code style: naming, MISRA-flavored patterns
 │   └── cpp-coding-conventions.md  What C++ adds: transition policy, class per
 │                                  channel, facade, enums, toolchain gotchas
@@ -137,9 +143,14 @@ The project uses **spec-driven development with end-to-end traceability** via
     ├── spec_convention.py Shared helper (parses the canonical topic table)
     ├── build_native.sh   Configure + build + ctest a CMake project natively
     ├── build_arm.sh      Cross-compile a CMake project for STM32G431
+    ├── build.sh          Run build_arm.sh then build_native.sh
     ├── run_sil.sh        Build the native firmware lib + run the SIL suite
     ├── generate_proto.sh Regenerate the nanopb protocol bindings manually
     ├── pcs_client.py     Reference host client (protocol decode over serial)
+    ├── pcs_client_gen/   Python protobuf bindings for pcs_client.py
+    ├── bench/            Bench checks (cycle_timing.py), records in docs/bench/
+    ├── cubemx_to_channels.py
+    │                     Generate HW_*_channels.cubemx.h from CubeMX main.c
     ├── convert_cubemx_to_canonical.sh
     │                     Copy CubeMX-generated code from sw/fw/stm32cube/g4/
     │                     into the canonical layout (vendor packages at the
@@ -234,8 +245,8 @@ sufficient to make the tooling aware of a new topic.
   `sys~ops_001`, `sys~persist_001`) plus topic folders (`conn`, `mc`,
   `obs`, `ops`, `pd`, `safety`), among them `sys~ops_003` (the host's
   timed setpoint sequence) and `sys~obs_011` (the motor rating report).
-  Most are test-uncovered on purpose (system-level tests land with the
-  SIL / system-test phases).
+  Most carry a system-level test (SIL or bench); the anchors named in
+  the defect classes below do not.
 - **Firmware specs** (`specs/firmware/`), traced to code, except the V/f
   method (`fw~mc_010`, `fw~mc_017`) deferred on `docs/motor-sprint.md` as
   the sensorless start-up ramp:
@@ -461,8 +472,10 @@ that almost everything depends on:
   toolchain file.
 - **`lib_types`** — `lib_types.h` with `<stdint.h>`, `<stdbool.h>`,
   `<stddef.h>` and project-wide typedefs (e.g. `float32_t`).
-- **`lib_utils`** — `lib_utils.h` with cross-cutting macros. Currently:
-  `COUNTOF(arr)` (GCC-checked, errors at compile time on pointer args).
+- **`lib_utils`** — `lib_utils.h` with cross-cutting macros:
+  `COUNTOF(arr)` (GCC-checked, errors at compile time on pointer args),
+  angle and unit conversions (`PI`, `DEG_TO_RAD`, `WRAP_RAD_TO_PI`,
+  `RPM_TO_RAD_PER_SEC`, `US_TO_MS`), and `MIN_OF`/`MAX_OF` (+ `3` forms).
 
 ### HW layer & dual-target swap
 
@@ -482,7 +495,9 @@ against `fw_hw`, and the toolchain file picks which side gets added.
   IT, linker script, startup file. No `board.c` — orchestration lives
   in `main.c`.
 - `sw/fw/src/hw/sim/` — `_placeholder.c` to keep `fw_hw` STATIC on
-  native; will grow real sim infrastructure (motor model, etc.) over time.
+  native, plus the native `FreeRTOSConfig.h`. The sim drivers live at
+  `sw/lib/c/shared/hw/<Module>/sim/` (shared helpers in
+  `sw/lib/c/shared/hw/sim/`); the plant models are Rust, in `sw/sil/`.
 
 ### CubeMX-generated code
 
@@ -495,11 +510,13 @@ subdir) into the canonical locations:
 - `sw/lib/c/STM32G4xx_HAL_Driver/` — ST's STM32G4 HAL driver. Top-level
   vendored package, exposed as a `stm32g4_hal` STATIC library.
 - `sw/lib/c/shared/hw/stm32g4/` — `system_stm32g4xx.c`, `syscalls.c`,
-  `sysmem.c` (STM32G4-family support glue). This layer is also where our
-  future channelized SPI/UART/ADC/etc. wrappers around the HAL will live.
+  `sysmem.c` (STM32G4-family support glue) and nothing else; the
+  channelized wrappers around the HAL live at
+  `sw/lib/c/shared/hw/<Module>/stm32g4/`.
 - `sw/fw/src/hw/stm32g4/` — `main.h`, `stm32g4xx_hal_conf.h`,
   `stm32g4xx_it.c`/`.h`, `stm32g4xx_hal_msp.c`, `startup_stm32g431vbtx.s`,
-  `STM32G431VBTX_FLASH.ld` (board-specific).
+  `STM32G431VBTX_FLASH.ld`, `FreeRTOSConfig.h`,
+  `stm32g4xx_hal_timebase_tim.c` (board-specific).
 
 The CubeMX-generated `main.c` is intentionally **not** copied — its
 untouched original lives in `sw/fw/stm32cube/g4/Core/Src/main.c`. Read it
@@ -507,7 +524,11 @@ there when you need to see what CubeMX generated for `SystemClock_Config`
 / peripheral inits.
 
 `tools/convert_cubemx_to_canonical.sh` removes only the known fixed list
-of generated filenames and re-copies them; hand-written files
+of generated filenames and re-copies them, holds the ADC1_2 interrupt at
+priority 4 in the copied MSP (CubeMX clamps it to 5), and runs
+`tools/cubemx_to_channels.py`, which regenerates
+`HW_{GPIO,ADC,SPI,TIM}_channels.cubemx.h` from the CubeMX `main.c`;
+hand-written files
 (`CMakeLists.txt`, `HW_<Module>_channels.c`, `HW_<Module>_config.c`)
 sit in the same directories and are never touched. Naming convention
 tells the two apart at a glance: vendor files are `stm32g4xx_*`,
@@ -518,10 +539,11 @@ Workflow when CubeMX needs to regenerate:
 
 1. Edit `sw/fw/stm32cube/g4/pcs_bldc_g4.ioc` in STM32CubeMX, regenerate.
 2. Run `tools/convert_cubemx_to_canonical.sh`.
-3. If the clock tree or any peripheral channel config changed, diff the
-   regenerated `sw/fw/stm32cube/g4/Core/Src/main.c` against the
-   relevant `HW_<Module>_channels.c` / `HW_<Module>_config.c` and
-   hand-merge the new init values.
+3. If the clock tree changed, or a channel field the `.cubemx.h`
+   headers do not carry, diff the regenerated
+   `sw/fw/stm32cube/g4/Core/Src/main.c` against
+   `HW_systemClock_config.c` or the relevant hand-written
+   `HW_<Module>_channels.c` and hand-merge the new init values.
 
 ### Conventions
 
@@ -580,8 +602,8 @@ CubeMX regenerations.
 A few small vendor-shipped support files (`system_stm32g4xx.c`,
 `syscalls.c`, `sysmem.c`) live at `sw/lib/c/shared/hw/stm32g4/` rather
 than at the top level, because they're conceptually "STM32G4 family
-glue" and will sit alongside our future channelized peripheral wrappers
-in that layer.
+glue", shared by the channelized peripheral wrappers at
+`sw/lib/c/shared/hw/<Module>/stm32g4/`.
 
 ## PCB Design Rules
 

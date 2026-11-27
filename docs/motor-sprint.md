@@ -9,8 +9,7 @@ validated against the simulation before the bench.
 
 ## [START HERE] — entry point
 
-**Where we are:** Milestones 1 and 2 done; Milestone 3 built, with the
-position method's bench verification pending. Full hw/io/dev/app driver stack, all 10 analog inputs bench-verified,
+**Where we are:** Milestones 1, 2 and 3 done and bench-verified. Full hw/io/dev/app driver stack, all 10 analog inputs bench-verified,
 FreeRTOS task architecture (`task_1ms` > `task_10ms` > `task_usb` >
 `server`) running. First motion is real: six-step commutation
 (`fw~mc_011`/`fw~mc_012`) with overcurrent and encoder-fault protection,
@@ -93,9 +92,8 @@ already in place.
 - **Control task** driven by the conversion-complete ISR — done
   (`fw~mc_015`).
 - **SIL:** motor electrical model with a rotor lock (`MotorParams::rotor_locked`);
-  the FOC step responses run on the 50 µs grid against it. No SIL test
-  carries `[test->sys~mc_001~1]` yet; a closed-loop tracking run is the
-  natural first.
+  the FOC step responses run on the 50 µs grid against it. The closed-loop
+  position run (`tests/position_method.rs`) carries `[test->sys~mc_001~1]`.
 
 ### 3. Velocity / position control + estimation
 
@@ -131,7 +129,7 @@ Outer loops and the first estimator work.
   are subtracted from every field-oriented demand; the compensated share
   T_k joins the observer's torque input (`fw~mc_016`), so T̂_d reads the
   residual rather than cancelling the ripple a second time.
-- **Position method** `fw~mc_029` — built, bench verification pending: a
+- **Position method** `fw~mc_029` — built and bench-verified: a
   PI on the rotor position `fw~mc_032` with the move profile's velocity
   fed forward, cascaded around the velocity method; the position setpoint
   `fw~mc_030` and the on-board move profile `fw~mc_031` (a minimum-time
@@ -143,7 +141,10 @@ Outer loops and the first estimator work.
   profile the board plans; a reversal in a chain stops at the turn; on
   the wire a position's `rate_limit` is its velocity limit. The integral
   holds while the velocity command is clamped. SIL: a 2π move lands
-  within 1 mrad, a 10 mNm load at rest moves the rotor 2 mrad. The dial
+  within 1 mrad, a 10 mNm load at rest moves the rotor 2 mrad. Bench
+  (2026-11-27, moves of up to 48 rad from the app's trace): at rest the
+  error averages under 1 mrad, 2.8 mrad RMS; a 17 rad/s cruise holds within
+  about 6 mrad, a ramped start within 20 mrad. The dial
   under the position method writes a position with a 0.01 rad send
   deadband. The end-to-end path is written up in
   `docs/position-trajectory-path.pdf`.
@@ -178,7 +179,12 @@ The control design is the owner's; these are the known gaps in it.
   propagation delay", `docs/sil/backlog.md`).
 - **float32 θ* resolution.** Past 32 rad one float step is 3.8e-6 rad, so
   a jog under about 1.9 mrad/s stalls.
-- **Position bench verification** of `fw~mc_029`..`fw~mc_032` is pending.
+- **No headroom at the velocity ceiling.** A move whose velocity limit
+  equals ω_max trails θ* by 40 to 125 mrad through its cruise: the lag
+  from the start of the move stands, since ω_c clamps at the speed the
+  profile already runs at (`fw~mc_029`). At 17 rad/s against the 18 rad/s
+  ω_max the same lag closes in about 200 ms. Either the profile's limit
+  stays under ω_max or the clamp sits above it.
 - **Move timing after completion.** A setpoint fires at its `t_us` from
   the sequence start (`Setpoint` in `sw/proto/board.proto`); there is no
   "after the previous move completes" timing.
@@ -189,8 +195,7 @@ The control design is the owner's; these are the known gaps in it.
 ## After this sprint (full roadmap, one durable home)
 
 4. **Operating modes & device UX** — the `sys~ops_001` mode state machine
-   has no firmware decomposition yet; knob + mode-button semantics (see the
-   `fw~mc_007` gesture mismatch in `docs/backlog.md`), LED-ring feedback,
+   has no firmware decomposition yet; knob + mode-button semantics, LED-ring feedback,
    fault presentation. The standalone-first device experience.
 5. **Persistence** — `sys~persist_001`: the NVRAM choice (littlefs vs
    emulated EEPROM) for calibration and config, then its specs.
@@ -199,8 +204,6 @@ The control design is the owner's; these are the known gaps in it.
    standalone-first.
 7. **Motor parameter auto-commissioning** — on-board R / L / K_e / J
    identification; the offline notebooks are its reference.
-8. **First system-level SIL test** — a closed-loop tracking run tagged
-   `[test->sys~mc_001~1]`; no SIL test carries it yet.
 
 ## Acceptance (every milestone)
 
