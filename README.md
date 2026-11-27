@@ -9,7 +9,7 @@ like end-to-end.
 
 ## Status
 
-*As of 2026-11-14.* The board drives the motor under field-oriented torque,
+*As of 2026-11-27.* The board drives the motor under field-oriented torque,
 velocity and position control, commanded from its own knob or from the
 desktop app, and every piece of that is specified, traced and tested in
 simulation. The estimation goals beyond a fixed-gain observer, sensorless
@@ -30,8 +30,10 @@ operation, and the comparison harness are not started.
   A protobuf-over-USB protocol carries telemetry, a signal trace sampled
   at the 20 kHz PWM rate, a log stream, and a command plane that plays
   timed setpoint sequences on the board. USB-PD sink monitoring reports
-  the negotiated supply. The 20 kHz control interrupt takes about 30 µs
-  of its 50 µs period under position control.
+  the negotiated supply. At the 170 MHz core clock the 20 kHz control
+  interrupt averages 23 µs of its 50 µs period at full speed with a
+  32-signal trace, and its timing requirement passes on the bench
+  ([`docs/bench/cycle-timing.md`](docs/bench/cycle-timing.md)).
 - **Desktop app:** connects behind a firmware-identity gate, picks signals
   from the firmware's DWARF, and plots them live (WebGL, min/max
   decimation) with a pause/zoom timeline, comparison cursor, value table
@@ -42,9 +44,9 @@ operation, and the comparison harness are not started.
 - **Simulation:** the SIL harness (`sw/sil`) runs the real firmware, built
   natively with the same RTOS tasks, against a motor, bridge and sensor
   model at the bench-fitted parameters, with cogging and load torque. It
-  is the main verification surface: 302 tests, alongside 44 unit-test
+  is the main verification surface: 304 tests, alongside 44 unit-test
   suites.
-- **Traceability:** 232 requirements. Every firmware and app requirement
+- **Traceability:** 233 requirements. Every firmware and app requirement
   that is built traces to code and to a test; requirements only the
   hardware can show are checked on the bench by scripts that write a
   dated record ([`docs/bench/`](docs/bench/)). CI builds the firmware and runs the unit and SIL suites on
@@ -75,7 +77,7 @@ Open work is tracked in [`docs/backlog.md`](docs/backlog.md),
 | 2026-08 | Full-loop commutation in SIL on a bench-parameterized plant; USB protocol and the desktop app's observability slice |
 | 2026-09 | Timer-triggered current sampling at the PWM crest; ADC over DMA; the 20 kHz signal trace |
 | 2026-10 | C++ for the control modules; space-vector modulation; sensored sinusoidal drive; the interrupt hot path; a rotor tracking estimator |
-| 2026-11 | Field-oriented torque, velocity and position control; the host command plane; the three-state observer |
+| 2026-11 | Field-oriented torque, velocity and position control; the host command plane; the three-state observer; the control interrupt inside its timing budget (link-time optimization, 170 MHz core clock) |
 
 Decisions made along the way:
 

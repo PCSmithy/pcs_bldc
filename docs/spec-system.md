@@ -23,8 +23,9 @@ silently.
 The project uses **OpenFastTrace (OFT)** as the traceability tool, pinned at
 version `4.2.2` and installed project-locally under
 [`tools/oft/`](../tools/oft/). See that directory's `README.md` for setup
-details. CI runs `oft trace` over the spec directories and source/test trees
-and fails the build on any uncovered spec, broken link, or stale ID.
+details. `oft trace` runs locally over the spec directories and source/test
+trees and reports any uncovered spec, broken link, or stale ID; CI does not
+run it yet.
 
 ## Hierarchy
 
@@ -104,8 +105,8 @@ Concretely:
   addresses from. Bench checks do not run in CI: the record is the
   evidence, and it is re-run when the code it measures changes.
 
-CI fails the build on any uncovered spec, any broken link, or any tag
-pointing at a stale or version-bumped ID.
+The trace reports any uncovered spec, any broken link, or any tag
+pointing at a stale or version-bumped ID; no CI gate enforces it yet.
 
 ## File organization
 
@@ -338,7 +339,7 @@ It:
 - Emits an HTML traceability report with coverage statistics and broken-link
   detection.
 - Is language-agnostic (works equally for C/C++ firmware, Rust app code,
-  Python SIL and notebook code).
+  Rust SIL and Python notebook code).
 - Is mature and used in industry-grade safety-critical projects.
 
 Workflow:
@@ -349,7 +350,8 @@ Workflow:
    `sys~`).
 3. Implement, tagging the implementation: `// [impl->fw~xxx~1]` (in C/C++)
    or `// [impl->app~xxx~1]` (in Rust).
-4. CI runs `tools/oft/oft.sh trace specs/ <source dirs>` and fails on:
+4. Run `tools/oft/oft.sh trace specs/ <source dirs>` locally (no CI gate
+   yet); it reports:
    - Any spec without downstream coverage.
    - Any spec without an upstream parent.
    - Any tag pointing at an ID that does not exist or has been

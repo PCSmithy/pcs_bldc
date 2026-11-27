@@ -93,9 +93,8 @@ already in place.
 - **Control task** driven by the conversion-complete ISR — done
   (`fw~mc_015`).
 - **SIL:** motor electrical model with a rotor lock (`MotorParams::rotor_locked`);
-  the FOC step responses run on the 50 µs grid against it. No SIL test
-  carries `[test->sys~mc_001~1]` yet; a closed-loop tracking run is the
-  natural first.
+  the FOC step responses run on the 50 µs grid against it. The closed-loop
+  position run (`tests/position_method.rs`) carries `[test->sys~mc_001~1]`.
 
 ### 3. Velocity / position control + estimation
 
@@ -189,8 +188,7 @@ The control design is the owner's; these are the known gaps in it.
 ## After this sprint (full roadmap, one durable home)
 
 4. **Operating modes & device UX** — the `sys~ops_001` mode state machine
-   has no firmware decomposition yet; knob + mode-button semantics (see the
-   `fw~mc_007` gesture mismatch in `docs/backlog.md`), LED-ring feedback,
+   has no firmware decomposition yet; knob + mode-button semantics, LED-ring feedback,
    fault presentation. The standalone-first device experience.
 5. **Persistence** — `sys~persist_001`: the NVRAM choice (littlefs vs
    emulated EEPROM) for calibration and config, then its specs.
@@ -199,8 +197,6 @@ The control design is the owner's; these are the known gaps in it.
    standalone-first.
 7. **Motor parameter auto-commissioning** — on-board R / L / K_e / J
    identification; the offline notebooks are its reference.
-8. **First system-level SIL test** — a closed-loop tracking run tagged
-   `[test->sys~mc_001~1]`; no SIL test carries it yet.
 
 ## Acceptance (every milestone)
 

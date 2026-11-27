@@ -4,7 +4,7 @@ Companion to [`c-coding-conventions.md`](c-coding-conventions.md), which
 still rules everything it covers: single return, explicit parens, `const`
 locals, lean comments, init functions returning `bool`. This file holds
 only what C++ adds, as ruled by the conversions so far (`IO_bridge`,
-`app_motorControl`). It grows when a new choice is made, not before.
+`app_motorControl`, `app_rotorEstimation`, `app_sequencer`). It grows when a new choice is made, not before.
 
 ## The transition
 
@@ -25,7 +25,7 @@ files enforce the flags.
 |---|---|
 | `X.h` | The C facade, `extern "C"` guarded: the `X_function` names every consumer calls today. Project tables (`X_channels.c`) and Unity tests include it |
 | `X.cpp` | The class and the facade's definitions |
-| `X.hpp` | Appears only when another C++ module needs the class directly. Neither converted module has one yet |
+| `X.hpp` | Appears only when another C++ module needs the class directly. No converted module has one yet |
 
 A module is not split between languages on purpose: when it converts, its
 project-side table converts with it if there is a reason to.

@@ -11,7 +11,7 @@ Sub-folders are created when a topic gets its first spec.
 - `architecture/` — task structure, ISR design, memory layout, build
   configuration
 - `hal/` — hardware abstraction layer (hw-layer peripheral drivers: SPI,
-  ADC, GPIO, DMA, timers, USB, op-amps, I2C). Uses per-peripheral sub-topic
+  ADC, GPIO, DMA, timers, USB, op-amps, I2C, CORDIC, CRC). Uses per-peripheral sub-topic
   IDs, e.g. `fw~hal_spi_001~1`, `fw~hal_i2c_001~1`, `fw~hal_adc_001~1`,
   `fw~hal_usb_001~1`, `fw~hal_opamp_001~1`
 - `io/` — generic, domain-independent io-layer infrastructure drivers (device
@@ -21,8 +21,8 @@ Sub-folders are created when a topic gets its first spec.
 - `pd/` — USB-PD sink status: register decode and runtime for the CYPD3177
   controller, e.g. `fw~pd_001~1` (lib_CYPD3177 decode library)
 - `mc/` — motor control, e.g. `fw~mc_001~1` (dev_gateDriver STSPIN32G4
-  gate-driver management), `fw~mc_006~1` (app_motorControl gating and
-  the PWM-synchronous commutation step), `fw~mc_013~1` / `fw~mc_014~1`
+  gate-driver management), `fw~mc_006~1` (app_motorControl bridge
+  enable gating), `fw~mc_015~1` (the PWM-synchronous commutation step), `fw~mc_013~1` / `fw~mc_014~1`
   (frame transforms, space-vector modulation), `fw~mc_019~1` (the
   per-cycle rotor angle), the six-step, sensored sinusoidal, and V/f
   methods, `fw~mc_022~1` / `fw~mc_023~1` / `fw~mc_024~1` (the

@@ -34,7 +34,7 @@ in Clarke, the modulator's limit, the PI back-calculation and the speed
 share, the injected data registers are read directly, and the CORDIC
 result is read with no ready poll. The core clock then went from 144 to
 170 MHz, USB moving to HSI48: step 15 us, callback 32 us, interrupt
-maximum 37 us.
+maximum 38 us.
 
 **Candidates left:** the modulator's `1 / vBus` and the bus-voltage read
 behind it, each cycle (`fw~io_bridge_008` specifies the voltage read at the
@@ -161,8 +161,7 @@ status.
 
 **What it is:** the HW_I2C driver handles per-transfer failure (NACK, error
 IRQ, timeout + abort) but has no recovery for a bus whose wires are stuck: a
-slave holding SDA low mid-bit, or SCL loaded so transfers can't clock (C28 on
-I2C1 does this until its rework). In that state `HAL_I2C_Master_Abort_IT`
+slave holding SDA low mid-bit, or SCL loaded so transfers can't clock. In that state `HAL_I2C_Master_Abort_IT`
 can't complete (the abort itself needs a working SCL), the HAL handle latches
 in ABORT/BUSY, and every later transfer on that bus returns `HAL_BUSY`
 immediately — the bus is dead until reset.
@@ -293,12 +292,6 @@ between a duty cap and reconstructing from the two lowest-duty phases (W is
 wired to ADC1 IN8), then gate the SIL sense model to match ("Current sense:
 gate the sense model on the low-side on-state", `docs/sil/backlog.md`).
 
-## ADC injected ISR: overrun loses a cycle silently
-
-JEOC/JEOS are cleared after the control-step callback, so a callback that
-overruns 50 µs swallows the next trigger's flags and that cycle is lost with
-no count or fault.
-
 ## Break input under six-step: bench check
 
 A real break (nFAULT / VDS trip) while six-step commutates should leave the
@@ -317,12 +310,6 @@ the devmock. Exercise it once in the live app on Windows and macOS.
 ## App: named-sequence library has no delete
 
 The Sequence widget saves sequences by name but offers no way to remove one.
-
-## cubemx_to_channels.py does not emit `updateAtPeriod`
-
-`HW_TIM_channels.cubemx.h` carries `updateAtPeriod` by hand; regenerating the
-header with `tools/cubemx_to_channels.py` drops it. Teach the generator the
-field (the sim-only `preload` flag lives in `HW_TIM_channels.c` and is safe).
 
 ## Bus overcurrent trip: one regular-ADC pass of lag
 

@@ -6,7 +6,7 @@ detail to pick up cold. Not roadmap items (see `roadmap.md` for those).
 ## hw: sync the design files with the as-built board (Y1 = 24 MHz)
 
 **When:** next hardware-design touch. The assembled board carries a 24 MHz
-crystal at Y1 — `HSE_VALUE = 24000000` is correct and silicon runs 144 MHz;
+crystal at Y1 — `HSE_VALUE = 24000000` is correct and silicon runs 170 MHz;
 the schematic (`hw/micro.kicad_sch`) and BOM still say 25 MHz. As-built
 deviations live in `hw/rework-log.md` — update the schematic/BOM to match,
 and log any future rework there.
@@ -299,6 +299,12 @@ the merged program), even with `-ffat-lto-objects`. LTO is gated to Windows
 (`CMAKE_HOST_WIN32` in `sw/cmake/toolchains/native.cmake`); Linux/macOS
 release keep `-O3` without `-flto`. macOS has no LTO (Apple clang lacks
 `-ffat-lto-objects`).
+
+**First thing to try:** the embedded LTO image showed the same symptom and
+the cause was in the reader: each static's located entry sits in the
+link-time unit and names the variable through a cross-unit
+`DW_AT_abstract_origin`, which `dwarf_map` now follows. Re-enable LTO on
+Linux and re-run before anything below.
 
 **To investigate:** whether GCC-on-ELF needs `-ffat-lto-objects` *plus* a
 `-flto`-aware objcopy/debug-link step; whether the fat objects' `.debug_*`

@@ -78,7 +78,7 @@ Smoke-test the OpenFastTrace traceability tool:
 
 Expected output: `ok - 5 total`, exit code 0.
 
-The `_smoketest/` directory contains one `sys~`, one `sw~`, one `impl`,
+The `_smoketest/` directory contains one `sys~`, one `fw~`, one `impl`,
 and two `test` items that fully cover each other — useful as a working
 example of the spec system described in [`spec-system.md`](spec-system.md).
 
