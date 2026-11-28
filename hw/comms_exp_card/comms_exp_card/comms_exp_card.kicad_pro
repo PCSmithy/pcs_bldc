@@ -632,13 +632,37 @@
         "uuid": "b002bf36-da98-4e64-a484-d1497edd9db8"
       }
     ],
-    "used_designators": "J1-5,J9-11,U1,U12",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
     [
       "b002bf36-da98-4e64-a484-d1497edd9db8",
       "Root"
+    ],
+    [
+      "8ecc4e03-d777-5975-a775-6c8664d632fb",
+      "ethercat"
+    ],
+    [
+      "4de5c41a-00f2-54d3-a28d-6f305e58e72f",
+      "port_in"
+    ],
+    [
+      "419ca758-ebe2-5751-a5f8-436c2ab4db54",
+      "port_out"
+    ],
+    [
+      "b83cb321-d346-5942-abec-0f8c573b4873",
+      "can1"
+    ],
+    [
+      "e014d360-a06d-5d1b-b2bb-a30c0785a452",
+      "can2"
+    ],
+    [
+      "dd42e60a-b0f5-5fe7-ba8f-08f47e739a5b",
+      "power"
     ]
   ],
   "text_variables": {},

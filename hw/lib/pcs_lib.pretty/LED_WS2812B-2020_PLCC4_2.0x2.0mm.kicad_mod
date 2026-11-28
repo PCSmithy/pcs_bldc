@@ -275,4 +275,15 @@
 			(xyz -90 -0 -0)
 		)
 	)
+	(model "${KIPRJMOD}/../../lib/3dmodels/WS2812-2020.STEP"
+		(offset
+			(xyz 0 0 0.3)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 -0 -0)
+		)
+	)
 )
