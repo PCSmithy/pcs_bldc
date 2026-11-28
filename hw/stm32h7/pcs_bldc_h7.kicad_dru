@@ -4,7 +4,7 @@
 # Class clearances stay at 0.15 mm so neighbouring pads inside small packages pass; the rules below
 # add spacing only where there is a reason for it, and only on tracks, vias and zones.
 
-# 32 V bus and phase copper: 0.2 mm to everything else (etch yield on the big pours, not voltage).
+# 24 V bus and phase copper: 0.2 mm to everything else (etch yield on the big pours, not voltage).
 (rule "motor_copper"
 	(condition "A.NetClass == 'Motor' && (A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Zone')")
 	(constraint clearance (min 0.2mm)))

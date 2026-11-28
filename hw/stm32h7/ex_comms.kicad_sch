@@ -2672,7 +2672,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "0f1f1bac-1b1c-4893-8eb1-e0ea4d7331e3")
-		(property "Reference" "R51"
+		(property "Reference" "R52"
 			(at 168.91 134.62 90)
 			(hide yes)
 			(show_name no)
@@ -2747,7 +2747,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R51")
+					(reference "R52")
 					(unit 1)
 				)
 			)
@@ -2765,7 +2765,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "17435f73-72bf-4f15-bb28-194e2d165985")
-		(property "Reference" "#PWR098"
+		(property "Reference" "#PWR099"
 			(at 196.85 186.69 0)
 			(hide yes)
 			(show_name no)
@@ -2827,7 +2827,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "#PWR098")
+					(reference "#PWR099")
 					(unit 1)
 				)
 			)
@@ -2932,7 +2932,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "4529f3fc-2253-4b11-9a0e-d4608029f867")
-		(property "Reference" "R54"
+		(property "Reference" "R55"
 			(at 168.91 144.78 90)
 			(hide yes)
 			(show_name no)
@@ -3007,7 +3007,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R54")
+					(reference "R55")
 					(unit 1)
 				)
 			)
@@ -3025,7 +3025,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "6d26b4cb-b6c7-4b78-9f25-69494f42dcb4")
-		(property "Reference" "R55"
+		(property "Reference" "R56"
 			(at 199.39 100.33 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3100,7 +3100,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R55")
+					(reference "R56")
 					(unit 1)
 				)
 			)
@@ -3118,7 +3118,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "7651b014-9fd4-43eb-b00f-cfa52286b10b")
-		(property "Reference" "R50"
+		(property "Reference" "R51"
 			(at 168.91 132.08 90)
 			(hide yes)
 			(show_name no)
@@ -3193,7 +3193,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R50")
+					(reference "R51")
 					(unit 1)
 				)
 			)
@@ -3210,7 +3210,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "830b666f-458e-4433-b74c-c706b1999050")
-		(property "Reference" "#PWR099"
+		(property "Reference" "#PWR0100"
 			(at 201.93 100.33 0)
 			(hide yes)
 			(show_name no)
@@ -3270,7 +3270,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "#PWR099")
+					(reference "#PWR0100")
 					(unit 1)
 				)
 			)
@@ -3288,7 +3288,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "8d1eeedf-f492-48f9-beea-aeaa5afbcb1a")
-		(property "Reference" "R49"
+		(property "Reference" "R50"
 			(at 168.91 129.54 90)
 			(hide yes)
 			(show_name no)
@@ -3363,7 +3363,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R49")
+					(reference "R50")
 					(unit 1)
 				)
 			)
@@ -3381,7 +3381,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ac7ed3c0-fb44-4b7a-a384-62a9a8535b75")
-		(property "Reference" "R53"
+		(property "Reference" "R54"
 			(at 168.91 142.24 90)
 			(hide yes)
 			(show_name no)
@@ -3456,7 +3456,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R53")
+					(reference "R54")
 					(unit 1)
 				)
 			)
@@ -3552,7 +3552,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "bdad46ca-ec36-460f-b7ea-8890b30443a6")
-		(property "Reference" "R52"
+		(property "Reference" "R53"
 			(at 168.91 137.16 90)
 			(hide yes)
 			(show_name no)
@@ -3627,7 +3627,7 @@
 		(instances
 			(project "pcs_bldc_h7"
 				(path "/5fd46c36-5bf8-4b01-84ef-7a32553f026d/b7ba28d5-4882-44af-b4b7-ca000ce6725d/42dd62fd-d180-4518-86fa-7752b0f3f982"
-					(reference "R52")
+					(reference "R53")
 					(unit 1)
 				)
 			)

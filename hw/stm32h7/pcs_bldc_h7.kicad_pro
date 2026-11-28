@@ -70,15 +70,23 @@
           ""
         ],
         [
-          "courtyards_overlap|164793000|131035000|37568a7f-379b-4b2f-a5fa-ef9752f3ef05|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          "courtyards_overlap|164175000|133969000|23b15990-051d-4451-abda-ccb7cb6c0367|93949cc7-0687-47eb-a1de-f12a630d545d",
           ""
         ],
         [
-          "courtyards_overlap|165809000|131035000|21b55ae4-fe9e-406e-a7da-de02d996a6e8|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          "courtyards_overlap|165009000|119955000|1a5c6c89-7b09-4f5e-9e9e-ff1c1a00f14d|7fa68a0a-d6d5-4cf2-a3bf-2f3bbe2f40d0",
           ""
         ],
         [
-          "courtyards_overlap|166825000|131035000|63057caa-16cc-46c4-83b0-c0b470fbac60|98c9afe8-7d0e-487f-a34d-cc8032381aca",
+          "courtyards_overlap|166461000|133969000|23b15990-051d-4451-abda-ccb7cb6c0367|c0ecf813-cbd2-4149-bf99-5aa2c36051a6",
+          ""
+        ],
+        [
+          "courtyards_overlap|166533000|133969000|11e55ea7-770a-49c3-815a-01e665a88181|23b15990-051d-4451-abda-ccb7cb6c0367",
+          ""
+        ],
+        [
+          "courtyards_overlap|166595000|135675000|23b15990-051d-4451-abda-ccb7cb6c0367|7ad23778-679e-46ab-90e0-be39be3ee946",
           ""
         ],
         [
@@ -87,14 +95,6 @@
         ],
         [
           "pth_inside_courtyard|164500000|103080000|ef6fc365-6f3e-41db-9508-70df12e8a56e|c9139391-9237-4e2f-916d-39fd36a6c32e",
-          ""
-        ],
-        [
-          "silk_over_copper|141870000|109245129|409fe322-5f30-4e18-a9c8-88c2c9dc10f4|fbbdd00d-7e82-4702-8419-107023dba18e",
-          ""
-        ],
-        [
-          "silk_over_copper|142123000|109149000|d0b32375-0c6f-419b-96e8-65fea05a446e|fbbdd00d-7e82-4702-8419-107023dba18e",
           ""
         ]
       ],
@@ -180,7 +180,7 @@
         "min_text_height": 1.0,
         "min_text_thickness": 0.153,
         "min_through_hole_diameter": 0.3,
-        "min_track_width": 0.0889,
+        "min_track_width": 0.1016,
         "min_via_annular_width": 0.05,
         "min_via_diameter": 0.4,
         "solder_mask_to_copper_clearance": 0.0,

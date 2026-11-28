@@ -3952,7 +3952,7 @@
 				(justify right)
 			)
 		)
-		(pin "VBUS_IN" input
+		(pin "VBUS_CONN" input
 			(at 114.3 67.31 180)
 			(uuid "a6464a5a-4a66-4844-890b-cfb608fe7d11")
 			(effects
